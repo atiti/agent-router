@@ -1,0 +1,558 @@
+diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
+index 4e27686..20d77c7 100644
+--- a/codex-rs/core/src/hook_runtime.rs
++++ b/codex-rs/core/src/hook_runtime.rs
+@@ -49,6 +49,8 @@ use codex_protocol::protocol::HookStartedEvent;
+ use codex_protocol::protocol::InternalSessionSource;
+ use codex_protocol::protocol::SessionSource;
+ use codex_protocol::protocol::SubAgentSource;
++use codex_protocol::protocol::TurnSettingsUpdate;
++use codex_protocol::protocol::TurnSettingsUpdateOutcome;
+ use codex_protocol::protocol::WarningEvent;
+ use codex_rollout::state_db;
+ use codex_thread_store::PersistContext;
+@@ -74,6 +76,9 @@ use crate::turn_metadata::ExecutionMetadata;
+ pub(crate) struct HookRuntimeOutcome {
+     pub should_stop: bool,
+     pub additional_contexts: Vec<String>,
++    pub model: Option<String>,
++    pub reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
++    pub settings_updated: bool,
+ }
+ 
+ pub(crate) enum PreToolUseHookResult {
+@@ -99,6 +104,9 @@ impl From<SessionStartOutcome> for ContextInjectingHookOutcome {
+             outcome: HookRuntimeOutcome {
+                 should_stop,
+                 additional_contexts,
++                model: None,
++                reasoning_effort: None,
++                settings_updated: false,
+             },
+         }
+     }
+@@ -111,12 +119,17 @@ impl From<UserPromptSubmitOutcome> for ContextInjectingHookOutcome {
+             should_stop,
+             stop_reason: _,
+             additional_contexts,
++            model,
++            reasoning_effort,
+         } = value;
+         Self {
+             hook_events,
+             outcome: HookRuntimeOutcome {
+                 should_stop,
+                 additional_contexts,
++                model,
++                reasoning_effort,
++                settings_updated: false,
+             },
+         }
+     }
+@@ -687,21 +700,61 @@ pub(crate) async fn inspect_pending_input(
+             };
+             let hooks = sess.hooks();
+             let preview_runs = hooks.preview_user_prompt_submit(&request);
+-            run_context_injecting_hook(
++            let mut outcome = run_context_injecting_hook(
+                 sess,
+                 turn_context,
+                 preview_runs,
+                 hooks.run_user_prompt_submit(request),
+             )
+-            .await
++            .await;
++            if !outcome.should_stop
++                && (outcome.model.is_some() || outcome.reasoning_effort.is_some())
++            {
++                let update = TurnSettingsUpdate {
++                    model: outcome.model.take(),
++                    effort: outcome.reasoning_effort.take().map(Some),
++                    ..Default::default()
++                };
++                match sess.apply_turn_settings(&turn_context.sub_id, update).await {
++                    TurnSettingsUpdateOutcome::Applied => outcome.settings_updated = true,
++                    TurnSettingsUpdateOutcome::TargetUnavailable => {
++                        sess.send_event(
++                            turn_context,
++                            EventMsg::Warning(WarningEvent {
++                                message: "UserPromptSubmit model override could not target the active turn"
++                                    .to_string(),
++                            }),
++                        )
++                        .await;
++                    }
++                    TurnSettingsUpdateOutcome::Rejected { reason } => {
++                        sess.send_event(
++                            turn_context,
++                            EventMsg::Warning(WarningEvent {
++                                message: format!(
++                                    "UserPromptSubmit model override was rejected: {reason}"
++                                ),
++                            }),
++                        )
++                        .await;
++                    }
++                }
++            }
++            outcome
+         }
+         TurnInput::ResponseItem(_) | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {
+             should_stop: false,
+             additional_contexts: Vec::new(),
++            model: None,
++            reasoning_effort: None,
++            settings_updated: false,
+         },
+         TurnInput::InterAgentCommunication(_) => HookRuntimeOutcome {
+             should_stop: false,
+             additional_contexts: Vec::new(),
++            model: None,
++            reasoning_effort: None,
++            settings_updated: false,
+         },
+     }
+ }
+diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
+index 8dc0903..9307ef1 100644
+--- a/codex-rs/core/src/session/step_activation.rs
++++ b/codex-rs/core/src/session/step_activation.rs
+@@ -233,7 +233,7 @@ impl Session {
+         clippy::await_holding_invalid_type,
+         reason = "the final managed-policy check and active settings publication must remain atomic"
+     )]
+-    pub(super) async fn apply_turn_settings(
++    pub(crate) async fn apply_turn_settings(
+         &self,
+         turn_id: &str,
+         update: TurnSettingsUpdate,
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 8ab4455..007751d 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -15,6 +15,7 @@ use crate::context::ContextualUserFragment;
+ use crate::context::UserVerificationNotice;
+ use crate::environment_selection::TurnEnvironmentSnapshot;
+ use crate::feedback_tags;
++use crate::hook_runtime::HookRuntimeOutcome;
+ use crate::hook_runtime::drain_async_hook_results;
+ use crate::hook_runtime::inspect_pending_input;
+ use crate::hook_runtime::record_additional_contexts;
+@@ -255,7 +256,7 @@ pub(crate) async fn run_turn(
+     required_servers.dedup();
+ 
+     // run_turn owns the step used to seed context and make the first sampling request.
+-    let first_step_context = match sess
++    let mut first_step_context = match sess
+         .capture_step_context_with_required_mcp_servers(
+             Arc::clone(&turn_context),
+             &cancellation_token,
+@@ -279,7 +280,7 @@ pub(crate) async fn run_turn(
+         Err(err) => return Err(err),
+     };
+     // Keep the exact model-visible state used by this turn and its inline compactions.
+-    let (world_state, display_roots) = tokio::join!(
++    let (world_state, mut display_roots) = tokio::join!(
+         sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref()),
+         async {
+             if first_step_context
+@@ -305,7 +306,7 @@ pub(crate) async fn run_turn(
+     );
+     let mut world_state = world_state?;
+ 
+-    let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
++    let Some((mut injection_items, mut explicitly_enabled_connectors)) = build_skills_and_plugins(
+         &sess,
+         first_step_context.as_ref(),
+         &user_input,
+@@ -363,11 +364,63 @@ pub(crate) async fn run_turn(
+         .await?;
+     }
+     let mut can_drain_pending_input = input.is_empty();
+-    if run_hooks_and_record_inputs(
++    let hook_outcomes = inspect_input_hooks(&sess, &turn_context, &input).await;
++    if hook_outcomes.iter().any(|outcome| outcome.settings_updated) {
++        first_step_context = sess
++            .capture_step_context_with_required_mcp_servers(
++                Arc::clone(&turn_context),
++                &cancellation_token,
++                required_servers,
++                required_plugins,
++            )
++            .await?;
++        let (refreshed_world_state, refreshed_display_roots) = tokio::join!(
++            sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref()),
++            async {
++                if first_step_context
++                    .turn
++                    .config
++                    .features
++                    .enabled(Feature::CwdRelativeTurnDiffs)
++                {
++                    first_step_context
++                        .environments
++                        .turn_environments()
++                        .map(|environment| {
++                            (
++                                environment.selection().environment_id,
++                                environment.cwd().clone(),
++                            )
++                        })
++                        .collect()
++                } else {
++                    turn_diff_display_roots(first_step_context.as_ref()).await
++                }
++            },
++        );
++        world_state = refreshed_world_state?;
++        display_roots = refreshed_display_roots;
++        let Some((refreshed_injection_items, refreshed_enabled_connectors)) =
++            build_skills_and_plugins(
++                &sess,
++                first_step_context.as_ref(),
++                &user_input,
++                &mentioned_plugins,
++                &cancellation_token,
++            )
++            .await
++        else {
++            return Ok(None);
++        };
++        injection_items = refreshed_injection_items;
++        explicitly_enabled_connectors = refreshed_enabled_connectors;
++    }
++    if record_inputs_with_hook_outcomes(
+         &sess,
+         &turn_context,
+         &first_step_context.settings.model_info,
+         &input,
++        hook_outcomes,
+         PersistContext::TurnStart,
+     )
+     .await
+@@ -387,8 +440,8 @@ pub(crate) async fn run_turn(
+     sess.merge_connector_selection(explicitly_enabled_connectors.clone())
+         .await;
+     sess.set_previous_turn_settings(Some(PreviousTurnSettings {
+-        model: turn_context.model_info().slug.clone(),
+-        comp_hash: turn_context.model_info().comp_hash.clone(),
++        model: first_step_context.settings.model_info.slug.clone(),
++        comp_hash: first_step_context.settings.model_info.comp_hash.clone(),
+         realtime_active: Some(turn_context.realtime_active),
+     }))
+     .await;
+@@ -812,6 +865,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
+     model_info: &ModelInfo,
+     input: &[TurnInput],
+     persist_context: PersistContext,
++) -> bool {
++    let hook_outcomes = inspect_input_hooks(sess, turn_context, input).await;
++    record_inputs_with_hook_outcomes(
++        sess,
++        turn_context,
++        model_info,
++        input,
++        hook_outcomes,
++        persist_context,
++    )
++    .await
++}
++
++async fn inspect_input_hooks(
++    sess: &Arc<Session>,
++    turn_context: &Arc<TurnContext>,
++    input: &[TurnInput],
++) -> Vec<HookRuntimeOutcome> {
++    let mut outcomes = Vec::with_capacity(input.len());
++    for input_item in input {
++        outcomes.push(inspect_pending_input(sess, turn_context, input_item).await);
++    }
++    outcomes
++}
++
++async fn record_inputs_with_hook_outcomes(
++    sess: &Arc<Session>,
++    turn_context: &Arc<TurnContext>,
++    model_info: &ModelInfo,
++    input: &[TurnInput],
++    hook_outcomes: Vec<HookRuntimeOutcome>,
++    persist_context: PersistContext,
+ ) -> bool {
+     // Cancellation can reach this path before Guardian's tools and context are
+     // resolved. Only finalized evidence may enter reusable reviewer history.
+@@ -825,8 +910,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
+     }
+     let mut blocked_input = false;
+     let mut accepted_user_input = false;
+-    for input_item in input {
+-        let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;
++    for (input_item, hook_outcome) in input.iter().zip(hook_outcomes) {
+         if hook_outcome.should_stop {
+             blocked_input = true;
+             record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
+diff --git a/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json b/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json
+index 97875c1..99f5b07 100644
+--- a/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json
++++ b/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json
+@@ -8,6 +8,11 @@
+       ],
+       "type": "string"
+     },
++    "ReasoningEffort": {
++      "description": "A non-empty reasoning effort value advertised by the model.",
++      "minLength": 1,
++      "type": "string"
++    },
+     "UserPromptSubmitHookSpecificOutputWire": {
+       "additionalProperties": false,
+       "properties": {
+@@ -18,6 +23,18 @@
+         "hookEventName": {
+           "const": "UserPromptSubmit",
+           "type": "string"
++        },
++        "model": {
++          "default": null,
++          "type": "string"
++        },
++        "reasoningEffort": {
++          "allOf": [
++            {
++              "$ref": "#/definitions/ReasoningEffort"
++            }
++          ],
++          "default": null
+         }
+       },
+       "required": [
+@@ -66,4 +83,4 @@
+   },
+   "title": "user-prompt-submit.command.output",
+   "type": "object"
+-}
+\ No newline at end of file
++}
+diff --git a/codex-rs/hooks/src/engine/output_parser.rs b/codex-rs/hooks/src/engine/output_parser.rs
+index aaefa46..fc84694 100644
+--- a/codex-rs/hooks/src/engine/output_parser.rs
++++ b/codex-rs/hooks/src/engine/output_parser.rs
+@@ -51,6 +51,8 @@ pub(crate) struct UserPromptSubmitOutput {
+     pub reason: Option<String>,
+     pub invalid_block_reason: Option<String>,
+     pub additional_context: Option<String>,
++    pub model: Option<String>,
++    pub reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+ }
+ 
+ #[derive(Debug, Clone)]
+@@ -275,15 +277,24 @@ pub(crate) fn parse_user_prompt_submit(stdout: &str) -> Option<UserPromptSubmitO
+     } else {
+         None
+     };
+-    let additional_context = wire
++    let (additional_context, model, reasoning_effort) = wire
+         .hook_specific_output
+-        .and_then(|output| output.additional_context);
++        .map(|output| {
++            (
++                output.additional_context,
++                output.model,
++                output.reasoning_effort,
++            )
++        })
++        .unwrap_or_default();
+     Some(UserPromptSubmitOutput {
+         universal: UniversalOutput::from(wire.universal),
+         should_block: should_block && invalid_block_reason.is_none(),
+         reason: wire.reason,
+         invalid_block_reason,
+         additional_context,
++        model,
++        reasoning_effort,
+     })
+ }
+ 
+diff --git a/codex-rs/hooks/src/events/user_prompt_submit.rs b/codex-rs/hooks/src/events/user_prompt_submit.rs
+index 9124431..b2e9fb3 100644
+--- a/codex-rs/hooks/src/events/user_prompt_submit.rs
++++ b/codex-rs/hooks/src/events/user_prompt_submit.rs
+@@ -1,6 +1,7 @@
+ use std::path::PathBuf;
+ 
+ use codex_protocol::ThreadId;
++use codex_protocol::openai_models::ReasoningEffort;
+ use codex_protocol::protocol::HookCompletedEvent;
+ use codex_protocol::protocol::HookEventName;
+ use codex_protocol::protocol::HookOutputEntry;
+@@ -38,6 +39,8 @@ pub struct UserPromptSubmitOutcome {
+     pub should_stop: bool,
+     pub stop_reason: Option<String>,
+     pub additional_contexts: Vec<String>,
++    pub model: Option<String>,
++    pub reasoning_effort: Option<ReasoningEffort>,
+ }
+ 
+ #[derive(Debug, PartialEq, Eq)]
+@@ -45,6 +48,8 @@ struct UserPromptSubmitHandlerData {
+     should_stop: bool,
+     stop_reason: Option<String>,
+     additional_contexts_for_model: Vec<AdditionalContext>,
++    model: Option<String>,
++    reasoning_effort: Option<ReasoningEffort>,
+ }
+ 
+ pub(crate) fn preview(
+@@ -76,6 +81,8 @@ pub(crate) async fn run(
+             should_stop: false,
+             stop_reason: None,
+             additional_contexts: Vec::new(),
++            model: None,
++            reasoning_effort: None,
+         };
+     }
+ 
+@@ -126,12 +133,18 @@ pub(crate) async fn run(
+         .output_spiller()
+         .maybe_spill_additional_contexts(additional_contexts)
+         .await;
++    let model = results.iter().find_map(|result| result.data.model.clone());
++    let reasoning_effort = results
++        .iter()
++        .find_map(|result| result.data.reasoning_effort.clone());
+ 
+     UserPromptSubmitOutcome {
+         hook_events: results.into_iter().map(|result| result.completed).collect(),
+         should_stop,
+         stop_reason,
+         additional_contexts,
++        model,
++        reasoning_effort,
+     }
+ }
+ 
+@@ -145,6 +158,8 @@ fn parse_completed(
+     let mut should_stop = false;
+     let mut stop_reason = None;
+     let mut additional_contexts_for_model = Vec::new();
++    let mut model = None;
++    let mut reasoning_effort = None;
+ 
+     match run_result.error.as_deref() {
+         Some(error) => {
+@@ -180,6 +195,8 @@ fn parse_completed(
+                     }
+                     let _ = parsed.universal.suppress_output;
+                     if handler.can_apply_control_effects() {
++                        model = parsed.model;
++                        reasoning_effort = parsed.reasoning_effort;
+                         if !parsed.universal.continue_processing {
+                             status = HookRunStatus::Stopped;
+                             should_stop = true;
+@@ -269,6 +286,8 @@ fn parse_completed(
+             should_stop,
+             stop_reason,
+             additional_contexts_for_model,
++            model,
++            reasoning_effort,
+         },
+         completion_order: 0,
+     }
+@@ -280,11 +299,14 @@ fn serialization_failure_outcome(hook_events: Vec<HookCompletedEvent>) -> UserPr
+         should_stop: false,
+         stop_reason: None,
+         additional_contexts: Vec::new(),
++        model: None,
++        reasoning_effort: None,
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
++    use codex_protocol::openai_models::ReasoningEffort;
+     use codex_protocol::protocol::HookEventName;
+     use codex_protocol::protocol::HookOutputEntry;
+     use codex_protocol::protocol::HookOutputEntryKind;
+@@ -320,6 +342,8 @@ mod tests {
+                     text: "do not inject".to_string(),
+                     limit: Default::default(),
+                 }],
++                model: None,
++                reasoning_effort: None,
+             }
+         );
+         assert_eq!(parsed.completed.run.status, HookRunStatus::Stopped);
+@@ -359,6 +383,8 @@ mod tests {
+                     text: "do not inject".to_string(),
+                     limit: Default::default(),
+                 }],
++                model: None,
++                reasoning_effort: None,
+             }
+         );
+         assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
+@@ -392,6 +418,8 @@ mod tests {
+                 should_stop: false,
+                 stop_reason: None,
+                 additional_contexts_for_model: Vec::new(),
++                model: None,
++                reasoning_effort: None,
+             }
+         );
+         assert_eq!(parsed.completed.run.status, HookRunStatus::Failed);
+@@ -434,6 +462,8 @@ mod tests {
+                 should_stop: true,
+                 stop_reason: Some("blocked by policy".to_string()),
+                 additional_contexts_for_model: Vec::new(),
++                model: None,
++                reasoning_effort: None,
+             }
+         );
+         assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
+@@ -455,6 +485,22 @@ mod tests {
+         assert!(!parsed.data.should_stop);
+     }
+ 
++    #[test]
++    fn parses_model_and_reasoning_effort_override() {
++        let parsed = parse_completed(
++            &handler(),
++            run_result(
++                Some(0),
++                r#"{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","model":"gpt-5.6-sol","reasoningEffort":"high"}}"#,
++                "",
++            ),
++            Some("turn-1".to_string()),
++        );
++
++        assert_eq!(parsed.data.model.as_deref(), Some("gpt-5.6-sol"));
++        assert_eq!(parsed.data.reasoning_effort, Some(ReasoningEffort::High));
++    }
++
+     fn handler() -> ConfiguredHandler {
+         handler_with_async(/*async*/ false)
+     }
+diff --git a/codex-rs/hooks/src/schema.rs b/codex-rs/hooks/src/schema.rs
+index bb50807..8b10c15 100644
+--- a/codex-rs/hooks/src/schema.rs
++++ b/codex-rs/hooks/src/schema.rs
+@@ -12,6 +12,8 @@ use serde_json::Value;
+ use std::path::Path;
+ use std::path::PathBuf;
+ 
++use codex_protocol::openai_models::ReasoningEffort;
++
+ use crate::events::common::SubagentHookContext;
+ 
+ const GENERATED_DIR: &str = "generated";
+@@ -446,6 +448,10 @@ pub(crate) struct UserPromptSubmitHookSpecificOutputWire {
+     pub hook_event_name: HookEventNameWire,
+     #[serde(default)]
+     pub additional_context: Option<String>,
++    #[serde(default)]
++    pub model: Option<String>,
++    #[serde(default)]
++    pub reasoning_effort: Option<ReasoningEffort>,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+
