@@ -53,7 +53,9 @@ codex
 The installer places everything under `~/.agentroute/`, adds `~/.agentroute/bin` to PATH, merges a
 hook into `~/.codex/hooks.json` after making a backup, and exposes:
 
-- `codex`: patched Codex with native step model switching enabled
+- `codex`: patched Codex with native step model switching and Code Mode enabled
+- `codex-code-mode-host`: the Code Mode host shipped with the stock Codex package, installed beside
+  the patched binary after an executable compatibility check
 - `codex-stock`: the Codex binary that was active before installation
 - `agentroute`: configuration, simulation, audit, and diagnostics CLI
 
@@ -74,6 +76,16 @@ agentroute history
 
 Use `agentroute observe` to audit decisions without changing models and `agentroute enable` to
 resume native switching.
+
+When a route is applied, Codex prints a highlighted line before the response, for example:
+
+```text
+◆ MODEL ROUTE · using gpt-5.6-sol · high reasoning for this turn
+```
+
+The status bar also reflects the active model and effort. Code Mode remains enabled by installing
+the companion host already distributed with stock Codex. Set `AGENTROUTE_CODE_MODE_HOST` if your
+Codex package keeps it in a non-standard location.
 
 ## Privacy and failure behavior
 

@@ -49,7 +49,7 @@ index 4e27686..20d77c7 100644
              },
          }
      }
-@@ -687,21 +700,61 @@ pub(crate) async fn inspect_pending_input(
+@@ -687,21 +700,78 @@ pub(crate) async fn inspect_pending_input(
              };
              let hooks = sess.hooks();
              let preview_runs = hooks.preview_user_prompt_submit(&request);
@@ -65,13 +65,30 @@ index 4e27686..20d77c7 100644
 +            if !outcome.should_stop
 +                && (outcome.model.is_some() || outcome.reasoning_effort.is_some())
 +            {
++                let route_notice = outcome.model.as_ref().map(|model| {
++                    let effort = outcome
++                        .reasoning_effort
++                        .as_ref()
++                        .map(|effort| format!(" · {} reasoning", effort.as_str()))
++                        .unwrap_or_default();
++                    format!("◆ MODEL ROUTE · using {model}{effort} for this turn")
++                });
 +                let update = TurnSettingsUpdate {
 +                    model: outcome.model.take(),
 +                    effort: outcome.reasoning_effort.take().map(Some),
 +                    ..Default::default()
 +                };
 +                match sess.apply_turn_settings(&turn_context.sub_id, update).await {
-+                    TurnSettingsUpdateOutcome::Applied => outcome.settings_updated = true,
++                    TurnSettingsUpdateOutcome::Applied => {
++                        outcome.settings_updated = true;
++                        if let Some(message) = route_notice {
++                            sess.send_event(
++                                turn_context,
++                                EventMsg::Warning(WarningEvent { message }),
++                            )
++                            .await;
++                        }
++                    }
 +                    TurnSettingsUpdateOutcome::TargetUnavailable => {
 +                        sess.send_event(
 +                            turn_context,
@@ -555,4 +572,3 @@ index bb50807..8b10c15 100644
  }
  
  #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-
