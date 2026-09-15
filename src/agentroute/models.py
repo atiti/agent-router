@@ -46,6 +46,8 @@ class ReasonCode(str, Enum):
     DOWNGRADE_HYSTERESIS = "DOWNGRADE_HYSTERESIS"
     AGENT_ESCALATION = "AGENT_ESCALATION"
     MODEL_COMPATIBILITY_FALLBACK = "MODEL_COMPATIBILITY_FALLBACK"
+    LLM_CLASSIFIER = "LLM_CLASSIFIER"
+    CLASSIFIER_FALLBACK = "CLASSIFIER_FALLBACK"
     QUOTA_LIMIT = "QUOTA_LIMIT"
 
 
@@ -90,7 +92,11 @@ class RouteDecision(BaseModel):
     metadata: dict[str, object] = Field(default_factory=dict)
     proposed_tier: Tier | None = None
     comparison_tier: Tier | None = None
-    classifier_version: str = "heuristic-v3"
+    classifier_version: str = "hybrid-v4"
+    classification_source: str = "heuristic"
+    classifier_confidence: float | None = Field(default=None, ge=0, le=1)
+    classifier_task_type: str | None = None
+    classifier_reason_hash: str | None = None
     task_context_used: bool = False
     risk_floor_applied: bool = False
     agent_requested_tier: Tier | None = None

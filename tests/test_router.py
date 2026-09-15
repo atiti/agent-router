@@ -1,3 +1,4 @@
+from agentroute.classifier import ClassifierResult
 from agentroute.config import default_config
 from agentroute.models import ReasonCode, RouteContext, Tier
 from agentroute.router import Router, confidence_for
@@ -7,6 +8,107 @@ def route(prompt: str, **kwargs):
     return Router(default_config()).route(
         RouteContext(session_id="test-session", latest_prompt=prompt, **kwargs)
     )
+
+
+class FakeClassifier:
+    source = "cloud_llm"
+
+    def __init__(self, tier=Tier.SMART, confidence=0.84):
+        self.tier = tier
+        self.confidence = confidence
+        self.calls = 0
+
+    def classify(self, context):
+        self.calls += 1
+        return ClassifierResult(
+            tier=self.tier,
+            confidence=self.confidence,
+            task_type="implementation",
+            reason="A stronger model is likely to improve task completion.",
+        )
+
+
+class BrokenClassifier:
+    source = "cloud_llm"
+
+    def classify(self, context):
+        raise TimeoutError("classifier timed out")
+
+
+def hybrid_route(prompt: str, classifier, **kwargs):
+    config = default_config()
+    config.routing.classifier.enabled = True
+    return Router(config, classifier=classifier).route(
+        RouteContext(session_id="test-session", latest_prompt=prompt, **kwargs)
+    )
+
+
+def test_hybrid_uses_llm_for_ambiguous_prompt():
+    classifier = FakeClassifier()
+    decision = hybrid_route("Please handle this", classifier, current_tier=Tier.NORMAL)
+
+    assert decision.tier is Tier.SMART
+    assert decision.classification_source == "cloud_llm"
+    assert decision.classifier_confidence == 0.84
+    assert decision.classifier_task_type == "implementation"
+    assert len(decision.classifier_reason_hash or "") == 64
+    assert ReasonCode.LLM_CLASSIFIER in decision.reason_codes
+
+
+def test_hybrid_skips_llm_for_high_confidence_rule():
+    classifier = FakeClassifier()
+    decision = hybrid_route("any outstanding commits?", classifier, current_tier=Tier.NORMAL)
+
+    assert decision.tier is Tier.FAST
+    assert classifier.calls == 0
+    assert decision.classification_source == "heuristic"
+
+
+def test_hybrid_never_sends_credential_shaped_prompt_to_llm():
+    classifier = FakeClassifier(tier=Tier.FAST)
+    decision = hybrid_route(
+        "service api key: abcdefghijklmnop1234", classifier, current_tier=Tier.NORMAL
+    )
+
+    assert decision.tier is Tier.SMART
+    assert classifier.calls == 0
+    assert decision.classification_source == "heuristic_sensitive"
+
+
+def test_hybrid_never_sends_credential_from_assistant_context_to_llm():
+    classifier = FakeClassifier(tier=Tier.FAST)
+    decision = hybrid_route(
+        "Please handle this",
+        classifier,
+        current_tier=Tier.NORMAL,
+        task_definition="Use api key: abcdefghijklmnop1234 to finish the task.",
+    )
+
+    assert classifier.calls == 0
+    assert decision.classification_source == "heuristic_sensitive"
+
+
+def test_hybrid_fails_back_to_heuristic():
+    decision = hybrid_route(
+        "Please handle this", BrokenClassifier(), current_tier=Tier.NORMAL
+    )
+
+    assert decision.tier is Tier.NORMAL
+    assert decision.classification_source == "heuristic_fallback"
+    assert ReasonCode.CLASSIFIER_FALLBACK in decision.reason_codes
+
+
+def test_confirmation_with_appended_question_uses_previous_task():
+    decision = hybrid_route(
+        "ok do it. should it run locally?",
+        FakeClassifier(),
+        current_tier=Tier.NORMAL,
+        task_definition="Implement a multi-step model-routing architecture end to end.",
+    )
+
+    assert decision.tier is Tier.SMART
+    assert decision.task_context_used
+    assert ReasonCode.TASK_DEFINITION_INHERITANCE in decision.reason_codes
 
 
 def test_mechanical_task_downgrades_to_fast():

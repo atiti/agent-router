@@ -1,11 +1,12 @@
 # AgentRoute
 
-AgentRoute is a local, deterministic model router for coding agents. It selects a model and
+AgentRoute is a local-first, auditable model router for coding agents. It selects a model and
 reasoning effort for every user turn while keeping the same Codex thread, transcript, tools, and
 working context.
 
-It is deliberately boring infrastructure: rules are inspectable, decisions are auditable, prompt
-text stays local, and `@fast`, `@normal`, `@smart`, or `@max` always gives the human control.
+It is deliberately boring infrastructure: rules are inspectable, decisions are auditable, and
+`@fast`, `@normal`, `@smart`, or `@max` always gives the human control. An optional LLM classifier
+can resolve ambiguous turns; it is disabled until explicitly configured.
 
 > **Alpha:** Codex does not currently accept model overrides from `UserPromptSubmit` hooks. The
 > installer builds a narrowly patched Codex from the pinned upstream commit documented below.
@@ -24,12 +25,19 @@ Codex UserPromptSubmit hook ──► AgentRoute classifier ──► SQLite aud
 the same active Codex thread ◄─────────┘
 ```
 
-The native patch applies the chosen settings before the first model call of that turn. Classification
-is deterministic and local. Explicit read-only retrievals, mechanical edits, and simple questions
-about existing context take a high-confidence FAST lane; hard risk floors still win. A short
+The native patch applies the chosen settings before the first model call of that turn. Explicit
+read-only retrievals, mechanical edits, and simple questions about existing context take a
+deterministic high-confidence FAST lane; hard risk floors still win. Ambiguous decisions can be
+sent to a small OpenAI-compatible classifier with a two-second timeout and immediate heuristic
+fallback. A short
 confirmation such as `ok do it` is never scored as a new tiny task: AgentRoute reads the previous
 assistant final answer from Codex's local transcript and classifies that task definition. If the
 transcript is unavailable, it inherits the previous selected tier.
+
+The classifier is a second-stage judge, not the primary router. Explicit overrides, approved agent
+requests, high-confidence rules, and credential-shaped prompts never reach it. It returns the
+cheapest sufficient tier, confidence, and task type; only the task type, confidence, and a hash of
+its explanation are audited.
 
 An agent that knows its current tier is insufficient can explicitly ask for the next turn's tier by
 ending its final response with two visible plain-text lines:
@@ -51,6 +59,33 @@ apply. The requested tier and a SHA-256 hash of the reason are audited; the reas
 | MAX | `gpt-6-astra`, high | architecture and high-risk cross-cutting work |
 
 All mappings, thresholds, and risk floors are editable in `~/.agentroute/config.yaml`.
+
+## Optional LLM classifier
+
+For best routing quality, use a small cloud model only for ambiguous turns. This avoids maintaining
+a local model runtime while deterministic turns remain sub-millisecond. AgentRoute requires a
+dedicated environment variable and explicit permission before any bounded task context leaves the
+machine:
+
+```sh
+export AGENTROUTE_CLASSIFIER_API_KEY="..."
+agentroute classifier-enable --allow-remote \
+  --endpoint https://api.openai.com/v1/chat/completions \
+  --model gpt-5-mini
+agentroute classifier-status
+```
+
+The key is never written to AgentRoute configuration or audit storage. To keep all classification
+local, point the same interface at an OpenAI-compatible loopback endpoint such as Ollama; local HTTP
+is permitted, while remote endpoints must use HTTPS:
+
+```sh
+agentroute classifier-enable \
+  --endpoint http://127.0.0.1:11434/v1/chat/completions \
+  --model qwen3:4b
+```
+
+Use `agentroute classifier-disable` to return to deterministic-only routing.
 
 ## Install locally
 
@@ -98,7 +133,7 @@ resume native switching.
 When a route is applied, Codex prints a highlighted line before the response, for example:
 
 ```text
-◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning · rule confidence 100% · score 3
+◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning · classifier confidence 84% · rule score 2.5 · implementation
 ```
 
 The status bar also reflects the active model and effort. Code Mode remains enabled by installing
@@ -113,7 +148,8 @@ present.
 
 ## Privacy and failure behavior
 
-- Routing is local and makes no network request.
+- Deterministic routing is local. The optional classifier makes network requests only after
+  `classifier-enable --allow-remote`; loopback endpoints do not require that flag.
 - SQLite stores a SHA-256 prompt hash, not prompt text, by default.
 - Continuation routing reads only a bounded tail of Codex's local transcript; task text is not
   copied into the AgentRoute audit database.
@@ -122,11 +158,14 @@ present.
 - Existing Codex hooks are preserved during installation.
 - Config can cap the highest tier and set mandatory floors for risky work.
 
-The displayed percentage is explicitly **rule confidence**, not a statistically calibrated
-probability. Audit rows include the classifier version, proposed and final tiers, comparison tier,
-task-context usage, and risk-floor application. Use `agentroute label` to build a local calibration
-set. Approved agent requests are also recorded. Manual overrides automatically label the previous
-automatic decision as overridden.
+For deterministic routes, the displayed percentage is explicitly **rule confidence**, not a
+statistically calibrated probability. For LLM-classified routes, it is the classifier's stated
+confidence and remains uncalibrated until enough labeled local outcomes exist. The separate rule
+score always remains visible. Audit rows include the classification source, classifier task type,
+hashed classifier reason, proposed and final tiers, comparison tier, task-context usage, and
+risk-floor application. Use `agentroute label` to build a local calibration set. Approved agent
+requests are also recorded. Manual overrides automatically label the previous automatic decision
+as overridden.
 
 ## Native Codex patch
 

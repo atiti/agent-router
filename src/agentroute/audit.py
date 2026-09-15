@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     inherited INTEGER NOT NULL,
     switched INTEGER NOT NULL,
     classifier_version TEXT NOT NULL DEFAULT 'legacy',
+    classification_source TEXT NOT NULL DEFAULT 'heuristic',
+    classifier_confidence REAL,
+    classifier_task_type TEXT,
+    classifier_reason_hash TEXT,
     proposed_tier TEXT,
     comparison_tier TEXT,
     task_context_used INTEGER NOT NULL DEFAULT 0,
@@ -45,6 +49,10 @@ ON routing_decisions(session_id, id DESC);
 
 MIGRATIONS = {
     "classifier_version": "TEXT NOT NULL DEFAULT 'legacy'",
+    "classification_source": "TEXT NOT NULL DEFAULT 'heuristic'",
+    "classifier_confidence": "REAL",
+    "classifier_task_type": "TEXT",
+    "classifier_reason_hash": "TEXT",
     "proposed_tier": "TEXT",
     "comparison_tier": "TEXT",
     "task_context_used": "INTEGER NOT NULL DEFAULT 0",
@@ -115,8 +123,13 @@ class AuditStore:
                     model, reasoning_effort, confidence, raw_score, reason_codes,
                     contributions, prompt_hash, prompt, manual_override, inherited, switched,
                     classifier_version, proposed_tier, comparison_tier, task_context_used,
-                    risk_floor_applied, agent_requested_tier, agent_request_reason_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    risk_floor_applied, agent_requested_tier, agent_request_reason_hash,
+                    classification_source, classifier_confidence, classifier_task_type,
+                    classifier_reason_hash
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?
+                )
                 """,
                 (
                     datetime.now(timezone.utc).isoformat(),
@@ -146,6 +159,10 @@ class AuditStore:
                         else None
                     ),
                     decision.agent_request_reason_hash,
+                    decision.classification_source,
+                    decision.classifier_confidence,
+                    decision.classifier_task_type,
+                    decision.classifier_reason_hash,
                 ),
             )
             return int(cursor.lastrowid)

@@ -3,17 +3,19 @@ from __future__ import annotations
 import hashlib
 import math
 
+from .classifier import OpenAICompatibleClassifier, TierClassifier
 from .config import AppConfig, load_config
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
 from .signals import (
+    contains_credential,
+    continues_previous_task,
     extract_signals,
     is_confirmation,
-    is_context_followup,
     prompt_override,
     reason_codes,
 )
 
-CLASSIFIER_VERSION = "heuristic-v3"
+CLASSIFIER_VERSION = "hybrid-v4"
 
 
 def tier_from_score(score: float) -> Tier:
@@ -36,8 +38,16 @@ def confidence_for(score: float, tier: Tier, signal_count: int) -> float:
 
 
 class Router:
-    def __init__(self, config: AppConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig | None = None,
+        classifier: TierClassifier | None = None,
+    ) -> None:
         self.config = config or load_config()
+        classifier_config = self.config.routing.classifier
+        self.classifier = classifier
+        if self.classifier is None and classifier_config.enabled:
+            self.classifier = OpenAICompatibleClassifier(classifier_config)
 
     def route(self, context: RouteContext) -> RouteDecision:
         provider = self.config.providers[context.provider]
@@ -47,10 +57,15 @@ class Router:
         inherited = False
         task_context_used = False
         manual = override not in (None, "auto")
+        classification_source = "heuristic"
+        classifier_confidence: float | None = None
+        classifier_task_type: str | None = None
+        classifier_reason_hash: str | None = None
 
         if manual:
             proposed = Tier.parse(override or "normal")
             confidence = 1.0
+            classification_source = "manual"
             contributions.append(
                 ScoreContribution(
                     code=ReasonCode.MANUAL_OVERRIDE,
@@ -69,6 +84,7 @@ class Router:
                 raw_score = sum(item.weight for item in contributions)
             proposed = context.agent_requested_tier
             confidence = 0.99
+            classification_source = "agent_request"
             contributions.append(
                 ScoreContribution(
                     code=ReasonCode.AGENT_ESCALATION,
@@ -76,7 +92,7 @@ class Router:
                     detail=f"user approved assistant request for {proposed}",
                 )
             )
-        elif is_confirmation(context.latest_prompt) or is_context_followup(context.latest_prompt):
+        elif continues_previous_task(context.latest_prompt):
             inherited = True
             if context.task_definition:
                 task_context = context.model_copy(
@@ -85,6 +101,14 @@ class Router:
                 contributions = extract_signals(task_context)
                 raw_score = sum(item.weight for item in contributions)
                 proposed, confidence = self._score(raw_score, contributions)
+                (
+                    proposed,
+                    confidence,
+                    classification_source,
+                    classifier_confidence,
+                    classifier_task_type,
+                    classifier_reason_hash,
+                ) = self._maybe_classify(task_context, proposed, confidence, contributions)
                 task_context_used = True
                 contributions.append(
                     ScoreContribution(
@@ -98,6 +122,7 @@ class Router:
             elif context.previous_task_tier is not None:
                 proposed = context.previous_task_tier
                 confidence = 0.98
+                classification_source = "inheritance"
                 contributions.append(
                     ScoreContribution(
                         code=ReasonCode.PREVIOUS_TASK_INHERITANCE,
@@ -109,6 +134,14 @@ class Router:
                 proposed, confidence = self._score(raw_score, contributions)
         else:
             proposed, confidence = self._score(raw_score, contributions)
+            (
+                proposed,
+                confidence,
+                classification_source,
+                classifier_confidence,
+                classifier_task_type,
+                classifier_reason_hash,
+            ) = self._maybe_classify(context, proposed, confidence, contributions)
 
         score_proposed = proposed
 
@@ -163,10 +196,58 @@ class Router:
             proposed_tier=score_proposed,
             comparison_tier=comparison_tier,
             classifier_version=CLASSIFIER_VERSION,
+            classification_source=classification_source,
+            classifier_confidence=classifier_confidence,
+            classifier_task_type=classifier_task_type,
+            classifier_reason_hash=classifier_reason_hash,
             task_context_used=task_context_used,
             risk_floor_applied=risk_floor_applied,
             agent_requested_tier=context.agent_requested_tier,
             agent_request_reason_hash=context.agent_request_reason_hash,
+        )
+
+    def _maybe_classify(
+        self,
+        context: RouteContext,
+        proposed: Tier,
+        confidence: float,
+        contributions: list[ScoreContribution],
+    ) -> tuple[Tier, float, str, float | None, str | None, str | None]:
+        routing = self.config.routing
+        if routing.mode == "heuristic" or self.classifier is None:
+            return proposed, confidence, "heuristic", None, None, None
+        codes = {item.code for item in contributions}
+        if ReasonCode.CREDENTIAL_EXPOSURE in codes or contains_credential(
+            context.task_definition
+        ):
+            return proposed, confidence, "heuristic_sensitive", None, None, None
+        if routing.mode == "hybrid" and confidence >= routing.classifier.ambiguity_threshold:
+            return proposed, confidence, "heuristic", None, None, None
+        try:
+            result = self.classifier.classify(context)
+        except Exception as error:
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.CLASSIFIER_FALLBACK,
+                    weight=0,
+                    detail=f"classifier unavailable ({type(error).__name__}); used heuristic",
+                )
+            )
+            return proposed, confidence, "heuristic_fallback", None, None, None
+        contributions.append(
+            ScoreContribution(
+                code=ReasonCode.LLM_CLASSIFIER,
+                weight=0,
+                detail=f"{self.classifier.source} selected {result.tier.name}",
+            )
+        )
+        return (
+            result.tier,
+            result.confidence,
+            self.classifier.source,
+            result.confidence,
+            result.task_type,
+            result.reason_hash,
         )
 
     @staticmethod

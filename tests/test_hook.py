@@ -6,6 +6,25 @@ from agentroute.config import default_config
 from agentroute.hook import codex_user_prompt_submit
 
 
+class FakeClassifierResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return None
+
+    def read(self):
+        content = json.dumps(
+            {
+                "tier": "SMART",
+                "confidence": 0.87,
+                "task_type": "implementation",
+                "reason": "The task requires substantial implementation judgment.",
+            }
+        )
+        return json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+
+
 def invoke(config, store, prompt, model="gpt-5.6-terra", transcript_path=None):
     source = io.StringIO(
         json.dumps(
@@ -45,7 +64,7 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path):
     assert first["hookSpecificOutput"]["reasoningEffort"] == "high"
     assert first["hookSpecificOutput"]["routeMessage"] == (
         "◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning "
-        "· rule confidence 100% · score -0.5"
+        "· rule confidence 100% · rule score -0.5"
     )
     assert second["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
     assert len(store.history("same-thread")) == 2
@@ -101,6 +120,31 @@ def test_credential_route_notice_is_visible(tmp_path):
 
     assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
     assert "CREDENTIAL RISK" in output["hookSpecificOutput"]["routeMessage"]
+
+
+def test_hook_surfaces_llm_classifier_confidence_and_audits_hash(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agentroute.classifier.urllib.request.urlopen",
+        lambda request, timeout: FakeClassifierResponse(),
+    )
+    config = default_config()
+    config.enabled = True
+    config.routing.classifier.enabled = True
+    config.routing.classifier.endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+    store = AuditStore(tmp_path / "audit.db")
+
+    output = invoke(config, store, "Please handle this")
+    row = store.latest("same-thread")
+
+    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert "classifier confidence 87%" in output["hookSpecificOutput"]["routeMessage"]
+    assert "rule score -0.5" in output["hookSpecificOutput"]["routeMessage"]
+    assert "implementation" in output["hookSpecificOutput"]["routeMessage"]
+    assert row is not None
+    assert row["classification_source"] == "local_llm"
+    assert row["classifier_task_type"] == "implementation"
+    assert len(row["classifier_reason_hash"]) == 64
+    assert "substantial implementation" not in str(dict(row)).lower()
 
 
 def test_explicit_confirmation_approves_agent_request(tmp_path):

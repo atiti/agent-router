@@ -35,9 +35,22 @@ class SwitchingConfig(BaseModel):
     switch_penalty: float = 0.35
 
 
+class ClassifierConfig(BaseModel):
+    enabled: bool = False
+    endpoint: str = "https://api.openai.com/v1/chat/completions"
+    model: str = "gpt-5-mini"
+    api_key_env: str = "AGENTROUTE_CLASSIFIER_API_KEY"
+    allow_remote: bool = False
+    timeout_seconds: float = Field(default=2.0, ge=0.1, le=30)
+    ambiguity_threshold: float = Field(default=0.80, ge=0, le=1)
+    max_context_chars: int = Field(default=4_000, ge=0, le=50_000)
+    include_previous_assistant: bool = True
+
+
 class RoutingConfig(BaseModel):
-    mode: Literal["heuristic"] = "heuristic"
+    mode: Literal["heuristic", "hybrid", "llm"] = "hybrid"
     switching: SwitchingConfig = Field(default_factory=SwitchingConfig)
+    classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
 
 
 class PolicyConfig(BaseModel):

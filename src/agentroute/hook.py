@@ -9,7 +9,7 @@ from .audit import AuditStore
 from .config import AppConfig, load_config
 from .models import ReasonCode, RouteContext, Tier
 from .router import Router
-from .signals import is_confirmation, is_context_followup
+from .signals import continues_previous_task, is_confirmation
 from .transcript import parse_agent_model_request, previous_assistant_task
 
 
@@ -31,10 +31,15 @@ def codex_user_prompt_submit(
         session_id = str(payload["session_id"])
         previous_tier = store.previous_tier(session_id)
         prompt = str(payload.get("prompt", ""))
-        continuation = is_confirmation(prompt) or is_context_followup(prompt)
+        continuation = continues_previous_task(prompt)
+        classifier_needs_context = (
+            config.routing.classifier.enabled
+            and config.routing.classifier.include_previous_assistant
+            and config.routing.mode in {"hybrid", "llm"}
+        )
         task_definition = (
             previous_assistant_task(payload.get("transcript_path"))
-            if continuation
+            if continuation or classifier_needs_context
             else None
         )
         agent_request = (
@@ -63,6 +68,11 @@ def codex_user_prompt_submit(
         )
         action = "Selected" if config.enabled else "Would select"
         reasons = ", ".join(code.value for code in decision.reason_codes) or "DEFAULT"
+        confidence_kind = (
+            "classifier confidence"
+            if decision.classifier_confidence is not None
+            else "rule confidence"
+        )
         output: dict[str, Any] = {
             "continue": True,
             "hookSpecificOutput": {
@@ -70,7 +80,7 @@ def codex_user_prompt_submit(
                 "additionalContext": (
                     "[AgentRoute routing metadata — not a user task]\n"
                     f"{action} {decision.tier.name} → {decision.model} "
-                    f"({decision.confidence:.0%} rule confidence); reasons: {reasons}.\n"
+                    f"({decision.confidence:.0%} {confidence_kind}); reasons: {reasons}.\n"
                     "If this tier is materially insufficient, end your final response with "
                     "two plain lines: MODEL_REQUEST: <FAST|NORMAL|SMART|MAX> and "
                     "MODEL_REQUEST_REASON: <one-line reason>. Request only when needed; it is "
@@ -90,7 +100,13 @@ def codex_user_prompt_submit(
             )
             specific["routeMessage"] = (
                 f"◆ MODEL ROUTE · {decision.tier.name} → {decision.model}{effort}"
-                f" · rule confidence {decision.confidence:.0%} · score {decision.raw_score:g}"
+                f" · {confidence_kind} {decision.confidence:.0%}"
+                f" · rule score {decision.raw_score:g}"
+                + (
+                    f" · {decision.classifier_task_type}"
+                    if decision.classifier_task_type
+                    else ""
+                )
                 + (
                     " · CREDENTIAL RISK"
                     if ReasonCode.CREDENTIAL_EXPOSURE in decision.reason_codes

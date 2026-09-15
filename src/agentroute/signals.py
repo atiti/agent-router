@@ -177,6 +177,24 @@ def is_confirmation(prompt: str) -> bool:
     return bool(CONFIRMATION.match(prompt))
 
 
+def contains_credential(text: str | None) -> bool:
+    return bool(text and CREDENTIAL_EXPOSURE.search(text))
+
+
+def continues_previous_task(prompt: str) -> bool:
+    """Recognize approvals that also append a follow-up question or constraint."""
+    if is_confirmation(prompt) or is_context_followup(prompt):
+        return True
+    return bool(
+        re.match(
+            r"^\s*(?:yes|yep|yeah|ok(?:ay)?|do it|go ahead|continue|proceed|sounds good)"
+            r"(?:\s+do it)?[.!,:;\-]+\s+\S",
+            prompt,
+            re.IGNORECASE,
+        )
+    )
+
+
 def is_context_followup(prompt: str) -> bool:
     return bool(CONTEXT_FOLLOWUP.match(prompt))
 

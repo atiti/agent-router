@@ -17,7 +17,8 @@ def test_audit_defaults_to_prompt_hash_only(tmp_path):
     assert row["prompt"] is None
     assert len(row["prompt_hash"]) == 64
     assert store.previous_tier("session-1") is Tier.SMART
-    assert row["classifier_version"] == "heuristic-v3"
+    assert row["classifier_version"] == "hybrid-v4"
+    assert row["classification_source"] == "manual"
     assert row["comparison_tier"] == "normal"
 
 
@@ -55,3 +56,6 @@ def test_audit_schema_has_calibration_columns(tmp_path):
     assert "outcome_label" in columns
     assert "agent_requested_tier" in columns
     assert "agent_request_reason_hash" in columns
+    assert "classification_source" in columns
+    assert "classifier_confidence" in columns
+    assert "classifier_reason_hash" in columns
