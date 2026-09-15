@@ -51,14 +51,16 @@ else
     git -C "$AGENTROUTE_CODEX_SOURCE" apply "$AGENTROUTE_PATCH"
 fi
 
-CARGO_TARGET_DIR="$AGENTROUTE_CODEX_TARGET" \
-CARGO_INCREMENTAL=0 \
-CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2} \
-    cargo build --manifest-path "$AGENTROUTE_CODEX_SOURCE/codex-rs/Cargo.toml" \
-    --profile "$AGENTROUTE_BUILD_PROFILE" -p codex-cli --bin codex
+if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ]; then
+    CARGO_TARGET_DIR="$AGENTROUTE_CODEX_TARGET" \
+    CARGO_INCREMENTAL=0 \
+    CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2} \
+        cargo build --manifest-path "$AGENTROUTE_CODEX_SOURCE/codex-rs/Cargo.toml" \
+        --profile "$AGENTROUTE_BUILD_PROFILE" -p codex-cli --bin codex
 
-cp "$AGENTROUTE_CODEX_TARGET/$AGENTROUTE_BUILD_PROFILE/codex" "$AGENTROUTE_BIN_DIR/codex-bin"
-chmod 755 "$AGENTROUTE_BIN_DIR/codex-bin"
+    cp "$AGENTROUTE_CODEX_TARGET/$AGENTROUTE_BUILD_PROFILE/codex" "$AGENTROUTE_BIN_DIR/codex-bin"
+    chmod 755 "$AGENTROUTE_BIN_DIR/codex-bin"
+fi
 
 if [ -n "$AGENTROUTE_STOCK_CODEX" ] && [ "$AGENTROUTE_STOCK_CODEX" != "$AGENTROUTE_BIN_DIR/codex" ]; then
     ln -sf "$AGENTROUTE_STOCK_CODEX" "$AGENTROUTE_BIN_DIR/codex-stock"
