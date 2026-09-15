@@ -66,7 +66,7 @@ if [ -n "$AGENTROUTE_STOCK_CODEX" ] && [ "$AGENTROUTE_STOCK_CODEX" != "$AGENTROU
     ln -sf "$AGENTROUTE_STOCK_CODEX" "$AGENTROUTE_BIN_DIR/codex-stock"
 fi
 
-printf '#!/bin/sh\nexec "%s/bin/codex-bin" --enable step_model_switching "$@"\n' \
+printf '#!/bin/sh\nexec "%s/bin/codex-bin" --enable step_model_switching --disable code_mode_host "$@"\n' \
     "$AGENTROUTE_HOME_DIR" >"$AGENTROUTE_BIN_DIR/codex"
 chmod 755 "$AGENTROUTE_BIN_DIR/codex"
 
