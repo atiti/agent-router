@@ -59,6 +59,15 @@ def codex_user_prompt_submit(
             specific["model"] = decision.model
             if decision.reasoning_effort:
                 specific["reasoningEffort"] = decision.reasoning_effort
+            effort = (
+                f" · {decision.reasoning_effort} reasoning"
+                if decision.reasoning_effort
+                else ""
+            )
+            specific["routeMessage"] = (
+                f"◆ MODEL ROUTE · {decision.tier.name} → {decision.model}{effort}"
+                f" · confidence {decision.confidence:.0%} · score {decision.raw_score:g}"
+            )
         json.dump(output, sink, separators=(",", ":"))
         sink.write("\n")
         return 0

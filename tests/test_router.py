@@ -17,6 +17,35 @@ def test_mechanical_task_downgrades_to_fast():
     assert ReasonCode.MECHANICAL_TASK in decision.reason_codes
 
 
+def test_read_only_issue_comment_retrieval_routes_to_fast():
+    decision = route(
+        "pull latest comment from tamas: "
+        "https://github.com/markster-exec/project-tracker/issues/1226#issuecomment-5678199421",
+        current_tier=Tier.FAST,
+    )
+
+    assert decision.tier is Tier.FAST
+    assert decision.raw_score == -2
+    assert ReasonCode.READ_ONLY_RETRIEVAL in decision.reason_codes
+
+
+def test_simple_existing_context_question_routes_to_fast():
+    decision = route("didn't we tell him how to do that already?", current_tier=Tier.NORMAL)
+
+    assert decision.tier is Tier.FAST
+    assert decision.raw_score == -1.5
+    assert ReasonCode.SIMPLE_CONTEXT_QUESTION in decision.reason_codes
+
+
+def test_retrieval_wording_does_not_lower_risky_analysis():
+    decision = route(
+        "Open this issue and redesign the authentication architecture",
+        current_tier=Tier.NORMAL,
+    )
+
+    assert decision.tier >= Tier.SMART
+
+
 def test_architecture_and_migration_routes_to_max():
     decision = route(
         "Redesign the architecture for a zero-downtime database migration",

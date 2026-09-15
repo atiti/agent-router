@@ -24,7 +24,9 @@ Codex UserPromptSubmit hook ──► AgentRoute classifier ──► SQLite aud
 the same active Codex thread ◄─────────┘
 ```
 
-The native patch applies the chosen settings before the first model call of that turn. A short
+The native patch applies the chosen settings before the first model call of that turn. Classification
+is deterministic and local. Explicit read-only retrievals, mechanical edits, and simple questions
+about existing context take a high-confidence FAST lane; hard risk floors still win. A short
 confirmation such as `go ahead` inherits the previous task's tier within that session.
 
 | Tier | Default Codex target | Typical work |
@@ -80,7 +82,7 @@ resume native switching.
 When a route is applied, Codex prints a highlighted line before the response, for example:
 
 ```text
-◆ MODEL ROUTE · using gpt-5.6-sol · high reasoning for this turn
+◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning · confidence 100% · score 3
 ```
 
 The status bar also reflects the active model and effort. Code Mode remains enabled by installing

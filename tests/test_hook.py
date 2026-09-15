@@ -42,6 +42,10 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path):
 
     assert first["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
     assert first["hookSpecificOutput"]["reasoningEffort"] == "high"
+    assert first["hookSpecificOutput"]["routeMessage"] == (
+        "◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning "
+        "· confidence 100% · score -0.5"
+    )
     assert second["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
     assert len(store.history("same-thread")) == 2
 

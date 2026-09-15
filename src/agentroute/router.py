@@ -63,8 +63,13 @@ class Router:
         else:
             proposed = tier_from_score(raw_score)
             confidence = confidence_for(raw_score, proposed, len(contributions))
+            high_confidence_fast_codes = {
+                ReasonCode.MECHANICAL_TASK,
+                ReasonCode.READ_ONLY_RETRIEVAL,
+                ReasonCode.SIMPLE_CONTEXT_QUESTION,
+            }
             if proposed is Tier.FAST and any(
-                item.code is ReasonCode.MECHANICAL_TASK for item in contributions
+                item.code in high_confidence_fast_codes for item in contributions
             ):
                 confidence = max(confidence, 0.90)
 

@@ -10,6 +10,18 @@ MECHANICAL = re.compile(
     r"add (?:a )?field|simple crud|bump (?:the )?version)\b",
     re.IGNORECASE,
 )
+READ_ONLY_RETRIEVAL = re.compile(
+    r"(?:\b(?:fetch|get|pull|read|open|show|list|look\s+up|check|inspect)\b"
+    r"[^\n]{0,100}\b(?:comment|issue|pr|pull request|status|thread|page|url|link)\b)"
+    r"|(?:\b(?:fetch|get|pull|read|open|show|check|inspect)\b[^\n]{0,140}https?://)",
+    re.IGNORECASE,
+)
+SIMPLE_CONTEXT_QUESTION = re.compile(
+    r"^\s*(?:did(?:n't| not)?\s+we|did\s+we|have\s+we|had\s+we|"
+    r"was(?:n't| not)?\s+(?:that|this)|what\s+did\s+(?:he|she|they|we))\b"
+    r"[^\n]{0,180}[?]?\s*$",
+    re.IGNORECASE,
+)
 DEBUGGING = re.compile(r"\b(debug|root cause|why (?:does|is|did)|still (?:fails|broken))\b", re.I)
 ARCHITECTURE = re.compile(
     r"\b(architecture|redesign|rearchitect|system design|cross[- ]cutting)\b", re.I
@@ -50,6 +62,20 @@ def extract_signals(context: RouteContext) -> list[ScoreContribution]:
         ReasonCode.MECHANICAL_TASK,
         -2,
         "mechanical wording",
+    )
+    _add(
+        output,
+        bool(READ_ONLY_RETRIEVAL.search(prompt)),
+        ReasonCode.READ_ONLY_RETRIEVAL,
+        -1.5,
+        "read-only retrieval wording",
+    )
+    _add(
+        output,
+        bool(SIMPLE_CONTEXT_QUESTION.search(prompt)),
+        ReasonCode.SIMPLE_CONTEXT_QUESTION,
+        -1,
+        "simple question about existing context",
     )
     _add(
         output,
