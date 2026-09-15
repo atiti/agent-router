@@ -157,7 +157,7 @@ resume native switching.
 When a route is applied, Codex prints a highlighted line before the response, for example:
 
 ```text
-◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning · classifier confidence 84% · rule score 2.5 · implementation
+◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning · source LLM/private · classifier confidence 84% · rule score 2.5 · implementation
 ```
 
 The status bar also reflects the active model and effort. Code Mode remains enabled by installing
@@ -196,9 +196,11 @@ score always remains visible. Audit rows include the classification source, clas
 hashed classifier reason, proposed and final tiers, comparison tier, task-context usage, and
 risk-floor application. Each row also contains a hashed selection receipt with the resolved-task
 hash, candidate model/effort pairs, explicit exclusions, policy state, cached catalog receipt, and
-provider-returned model metadata. Use `agentroute label` to build a local calibration set. Approved
-agent requests are also recorded. Manual overrides automatically label the previous automatic
-decision as overridden.
+provider-returned model metadata. LLM rows distinguish previous context sent from explicit task
+inheritance, hash the exact request body, and record request latency plus numeric token-usage fields
+returned by the provider. Prompt and classifier reason text remain excluded. Use `agentroute label`
+to build a local calibration set. Approved agent requests are also recorded. Manual overrides
+automatically label the previous automatic decision as overridden.
 
 ## Native Codex patch
 

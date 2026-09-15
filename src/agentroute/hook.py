@@ -73,6 +73,13 @@ def codex_user_prompt_submit(
             if decision.classifier_confidence is not None
             else "rule confidence"
         )
+        route_source = (
+            f"LLM/{decision.classification_source.removesuffix('_llm')}"
+            if decision.classification_source in {"local_llm", "private_llm", "cloud_llm"}
+            else "DETERMINISTIC/FALLBACK"
+            if decision.classification_source == "heuristic_fallback"
+            else f"{decision.classification_source.upper()}"
+        )
         output: dict[str, Any] = {
             "continue": True,
             "hookSpecificOutput": {
@@ -100,6 +107,7 @@ def codex_user_prompt_submit(
             )
             specific["routeMessage"] = (
                 f"◆ MODEL ROUTE · {decision.tier.name} → {decision.model}{effort}"
+                f" · source {route_source}"
                 f" · {confidence_kind} {decision.confidence:.0%}"
                 f" · rule score {decision.raw_score:g}"
                 + (

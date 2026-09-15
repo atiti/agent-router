@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -132,6 +133,10 @@ class OpenAICompatibleClassifier:
             else "cloud_llm"
         )
         self.last_response_metadata: dict[str, object] = {}
+        self.last_request_hash: str | None = None
+        self.last_latency_ms: float | None = None
+        self.last_usage: dict[str, int | float] = {}
+        self.last_previous_context_chars = 0
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "User-Agent": "agentroute/0.3"}
@@ -189,11 +194,15 @@ class OpenAICompatibleClassifier:
             "current_tier": str(context.current_tier),
             "candidate_tiers": ["FAST", "NORMAL", "SMART", "MAX"],
         }
+        classifier_input_json = json.dumps(
+            classifier_input, sort_keys=True, separators=(",", ":")
+        )
+        self.last_previous_context_chars = len(previous)
         payload: dict[str, object] = {
             "model": self.config.model,
             "messages": [
                 {"role": "system", "content": CLASSIFIER_SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(classifier_input)},
+                {"role": "user", "content": classifier_input_json},
             ],
             "response_format": {"type": "json_object"},
             "max_completion_tokens": self.config.max_completion_tokens,
@@ -201,19 +210,34 @@ class OpenAICompatibleClassifier:
         if self.config.reasoning_effort:
             payload["reasoning_effort"] = self.config.reasoning_effort
         body = json.dumps(payload).encode("utf-8")
+        self.last_request_hash = hashlib.sha256(body).hexdigest()
         request = urllib.request.Request(
             self.config.endpoint,
             data=body,
             headers=self._headers(),
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
-            response_payload = json.loads(response.read())
+        started = time.perf_counter()
+        try:
+            with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
+                response_payload = json.loads(response.read())
+        finally:
+            self.last_latency_ms = round((time.perf_counter() - started) * 1_000, 1)
         self.last_response_metadata = {
             key: response_payload[key]
             for key in ("id", "model", "created", "system_fingerprint")
             if response_payload.get(key) is not None
         }
+        usage = response_payload.get("usage")
+        self.last_usage = (
+            {
+                str(key): value
+                for key, value in usage.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
+            if isinstance(usage, dict)
+            else {}
+        )
         content = response_payload["choices"][0]["message"]["content"]
         if not isinstance(content, str):
             raise ValueError("classifier returned no text content")

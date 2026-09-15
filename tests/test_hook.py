@@ -22,7 +22,17 @@ class FakeClassifierResponse:
                 "reason": "The task requires substantial implementation judgment.",
             }
         )
-        return json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+        return json.dumps(
+            {
+                "model": "dev-gpt-5.6-luna",
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "total_tokens": 120,
+                },
+                "choices": [{"message": {"content": content}}],
+            }
+        ).encode()
 
 
 def invoke(config, store, prompt, model="gpt-5.6-terra", transcript_path=None):
@@ -64,7 +74,7 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path):
     assert first["hookSpecificOutput"]["reasoningEffort"] == "high"
     assert first["hookSpecificOutput"]["routeMessage"] == (
         "◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning "
-        "· rule confidence 100% · rule score -0.5"
+        "· source MANUAL · rule confidence 100% · rule score -0.5"
     )
     assert second["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
     assert len(store.history("same-thread")) == 2
@@ -145,6 +155,54 @@ def test_hook_surfaces_llm_classifier_confidence_and_audits_hash(tmp_path, monke
     assert row["classifier_task_type"] == "implementation"
     assert len(row["classifier_reason_hash"]) == 64
     assert "substantial implementation" not in str(dict(row)).lower()
+    assert row["classifier_latency_ms"] is not None
+    assert len(row["classifier_request_hash"]) == 64
+    assert json.loads(row["classifier_usage"])["total_tokens"] == 120
+
+
+def test_llm_context_telemetry_distinguishes_sent_from_inherited(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agentroute.classifier.urllib.request.urlopen",
+        lambda request, timeout: FakeClassifierResponse(),
+    )
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "phase": "final_answer",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Verify the production records against the source system.",
+                        }
+                    ],
+                },
+            }
+        )
+        + "\n"
+    )
+    config = default_config()
+    config.enabled = True
+    config.routing.classifier.enabled = True
+    config.routing.classifier.endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+    store = AuditStore(tmp_path / "audit.db")
+
+    invoke(config, store, "ok check?", transcript_path=transcript)
+    row = store.latest("same-thread")
+    receipt = json.loads(row["selection_receipt"])
+
+    assert row["previous_context_sent"] == 1
+    assert row["resolved_task_inherited"] == 0
+    assert row["task_context_used"] == 1
+    assert receipt["context"] == {
+        "previous_context_sent": True,
+        "resolved_task_inherited": False,
+    }
+    assert receipt["classifier"]["request_hash"] == row["classifier_request_hash"]
 
 
 def test_explicit_confirmation_approves_agent_request(tmp_path):

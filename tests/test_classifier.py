@@ -39,6 +39,8 @@ def test_local_classifier_needs_no_api_key_and_parses_json(monkeypatch):
         captured["timeout"] = timeout
         return FakeResponse(
             {
+                "model": "qwen3:4b",
+                "usage": {"prompt_tokens": 42, "completion_tokens": 9, "ignored": "text"},
                 "choices": [
                     {
                         "message": {
@@ -81,6 +83,10 @@ def test_local_classifier_needs_no_api_key_and_parses_json(monkeypatch):
     body = json.loads(captured["request"].data)
     classifier_input = json.loads(body["messages"][1]["content"])
     assert classifier_input["previous_assistant_context"] == "finition"
+    assert len(classifier.last_request_hash or "") == 64
+    assert classifier.last_latency_ms is not None
+    assert classifier.last_usage == {"prompt_tokens": 42, "completion_tokens": 9}
+    assert classifier.last_previous_context_chars == 8
 
 
 def test_public_remote_http_endpoint_is_rejected():

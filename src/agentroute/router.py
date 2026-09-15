@@ -16,7 +16,7 @@ from .signals import (
     reason_codes,
 )
 
-CLASSIFIER_VERSION = "hybrid-v5"
+CLASSIFIER_VERSION = "hybrid-v6"
 
 
 def tier_from_score(score: float) -> Tier:
@@ -181,6 +181,28 @@ class Router:
         digest = hashlib.sha256(context.latest_prompt.encode("utf-8")).hexdigest()
         comparison_tier = context.previous_task_tier or context.current_tier
         classifier_config = self.config.routing.classifier
+        resolved_task_inherited = task_context_used
+        classifier_attempted = classification_source in {
+            "local_llm",
+            "private_llm",
+            "cloud_llm",
+            "heuristic_fallback",
+        }
+        classifier_latency_ms = (
+            getattr(self.classifier, "last_latency_ms", None) if classifier_attempted else None
+        )
+        classifier_request_hash = (
+            getattr(self.classifier, "last_request_hash", None) if classifier_attempted else None
+        )
+        classifier_usage = (
+            getattr(self.classifier, "last_usage", {}) if classifier_attempted else {}
+        )
+        previous_context_sent = bool(
+            classifier_request_hash
+            and classifier_config.include_previous_assistant
+            and context.task_definition
+        )
+        task_context_used = resolved_task_inherited or previous_context_sent
         catalog_age = catalog_age_seconds(classifier_config)
         if catalog_age is None:
             catalog_status = "unverified"
@@ -211,7 +233,7 @@ class Router:
             )
         resolved_task = (
             context.task_definition
-            if task_context_used and context.task_definition
+            if resolved_task_inherited and context.task_definition
             else context.latest_prompt
         )
         receipt: dict[str, object] = {
@@ -228,6 +250,13 @@ class Router:
                 "catalog_checked_at": classifier_config.catalog_checked_at,
                 "catalog_status": catalog_status,
                 "provider_response": getattr(self.classifier, "last_response_metadata", {}),
+                "request_hash": classifier_request_hash,
+                "latency_ms": classifier_latency_ms,
+                "usage": classifier_usage,
+                "previous_context_sent": previous_context_sent,
+                "previous_context_chars": getattr(
+                    self.classifier, "last_previous_context_chars", 0
+                ),
             },
             "resolved_task_hash": hashlib.sha256(resolved_task.encode("utf-8")).hexdigest(),
             "candidates": candidates,
@@ -240,6 +269,10 @@ class Router:
             "policy": {
                 "max_tier": str(max_tier),
                 "risk_floor_applied": risk_floor_applied,
+            },
+            "context": {
+                "previous_context_sent": previous_context_sent,
+                "resolved_task_inherited": resolved_task_inherited,
             },
         }
         receipt_hash = hashlib.sha256(
@@ -267,6 +300,11 @@ class Router:
             classifier_task_type=classifier_task_type,
             classifier_reason_hash=classifier_reason_hash,
             task_context_used=task_context_used,
+            previous_context_sent=previous_context_sent,
+            resolved_task_inherited=resolved_task_inherited,
+            classifier_latency_ms=classifier_latency_ms,
+            classifier_request_hash=classifier_request_hash,
+            classifier_usage=classifier_usage,
             risk_floor_applied=risk_floor_applied,
             agent_requested_tier=context.agent_requested_tier,
             agent_request_reason_hash=context.agent_request_reason_hash,

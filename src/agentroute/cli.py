@@ -117,10 +117,17 @@ def why_command(session: str | None = None) -> None:
             f"LLM confidence: {row['classifier_confidence']:.0%}; "
             f"task type: {row['classifier_task_type']}"
         )
+    if row["classifier_latency_ms"] is not None:
+        usage = json.loads(row["classifier_usage"] or "{}")
+        console.print(
+            f"Classifier latency: {row['classifier_latency_ms']:.1f} ms; "
+            f"usage: {json.dumps(usage, sort_keys=True)}"
+        )
     if row["comparison_tier"]:
         console.print(
             f"Compared with: {row['comparison_tier']}; proposed: {row['proposed_tier']}; "
-            f"task context: {'yes' if row['task_context_used'] else 'no'}"
+            f"previous context sent: {'yes' if row['previous_context_sent'] else 'no'}; "
+            f"task inherited: {'yes' if row['resolved_task_inherited'] else 'no'}"
         )
     if row["agent_requested_tier"]:
         console.print(f"Approved agent request: {row['agent_requested_tier']}")
@@ -189,6 +196,24 @@ def audit_report_command(limit: int = 500) -> None:
         counts[label] = counts.get(label, 0) + 1
     for label, count in sorted(counts.items()):
         console.print(f"  {label}: {count}")
+    llm = [
+        row
+        for row in automatic
+        if row["classification_source"] in {"local_llm", "private_llm", "cloud_llm"}
+    ]
+    latencies = [float(row["classifier_latency_ms"]) for row in llm if row["classifier_latency_ms"]]
+    if latencies:
+        console.print(
+            f"LLM latency: avg {sum(latencies) / len(latencies):.0f} ms; "
+            f"min {min(latencies):.0f}; max {max(latencies):.0f}"
+        )
+    usage_totals: dict[str, int | float] = {}
+    for row in llm:
+        for name, value in json.loads(row["classifier_usage"] or "{}").items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                usage_totals[name] = usage_totals.get(name, 0) + value
+    if usage_totals:
+        console.print(f"LLM usage totals: {json.dumps(usage_totals, sort_keys=True)}")
 
 
 @app.command("classifier-status")
