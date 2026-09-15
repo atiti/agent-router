@@ -19,7 +19,7 @@ def tier_from_score(score: float) -> Tier:
 
 
 def confidence_for(score: float, tier: Tier, signal_count: int) -> float:
-    boundaries = {-1.0, 3.0, 6.0}
+    boundaries = {-1.0, 3.0, 5.5}
     distance = min(abs(score - value) for value in boundaries)
     base = 0.60 + min(distance, 3.0) * 0.09 + min(signal_count, 4) * 0.025
     if tier in (Tier.FAST, Tier.MAX) and distance >= 2:

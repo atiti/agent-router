@@ -1,6 +1,6 @@
 from agentroute.config import default_config
 from agentroute.models import ReasonCode, RouteContext, Tier
-from agentroute.router import Router
+from agentroute.router import Router, confidence_for
 
 
 def route(prompt: str, **kwargs):
@@ -44,6 +44,10 @@ def test_retrieval_wording_does_not_lower_risky_analysis():
     )
 
     assert decision.tier >= Tier.SMART
+
+
+def test_confidence_uses_the_actual_max_boundary():
+    assert confidence_for(5.5, Tier.MAX, 1) == 0.62
 
 
 def test_architecture_and_migration_routes_to_max():
