@@ -70,7 +70,11 @@ printf '#!/bin/sh\nexec "%s/bin/codex-bin" --enable step_model_switching "$@"\n'
     "$AGENTROUTE_HOME_DIR" >"$AGENTROUTE_BIN_DIR/codex"
 chmod 755 "$AGENTROUTE_BIN_DIR/codex"
 
-"$AGENTROUTE_BIN_DIR/agentroute" init --enable --force
+if [ -f "$AGENTROUTE_HOME_DIR/config.yaml" ]; then
+    "$AGENTROUTE_BIN_DIR/agentroute" enable
+else
+    "$AGENTROUTE_BIN_DIR/agentroute" init --enable
+fi
 "$AGENTROUTE_BIN_DIR/agentroute" install-hook
 
 AGENTROUTE_SHELL_RC=${ZDOTDIR:-"$HOME"}/.zshrc
