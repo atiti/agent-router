@@ -11,7 +11,13 @@ from rich.console import Console
 from rich.table import Table
 
 from .audit import AuditStore
-from .classifier import is_loopback_endpoint
+from .classifier import (
+    OpenAICompatibleClassifier,
+    catalog_age_seconds,
+    is_loopback_endpoint,
+    is_private_endpoint,
+    read_api_key,
+)
 from .codex_patch import apply_patch, build_codex, install_binary
 from .config import config_path, default_config, load_config, save_config
 from .hook import codex_user_prompt_submit
@@ -118,6 +124,8 @@ def why_command(session: str | None = None) -> None:
         )
     if row["agent_requested_tier"]:
         console.print(f"Approved agent request: {row['agent_requested_tier']}")
+    if row["selection_receipt_hash"]:
+        console.print(f"Selection receipt: {row['selection_receipt_hash']}")
     for item in json.loads(row["contributions"]):
         sign = "+" if item["weight"] > 0 else ""
         console.print(f"  {sign}{item['weight']:g} {item['code']}: {item['detail']}")
@@ -188,19 +196,43 @@ def classifier_status_command() -> None:
     """Show classifier backend, privacy gate, and credential readiness."""
     routing = load_config().routing
     classifier = routing.classifier
-    backend = "local" if is_loopback_endpoint(classifier.endpoint) else "cloud"
-    credential = bool(os.environ.get(classifier.api_key_env))
+    backend = (
+        "local"
+        if is_loopback_endpoint(classifier.endpoint)
+        else "private"
+        if is_private_endpoint(classifier.endpoint)
+        else "cloud"
+    )
+    if backend == "local":
+        credential_detail = "not required"
+    else:
+        try:
+            credential = bool(read_api_key(classifier))
+            credential_detail = "available" if credential else "missing"
+        except (OSError, RuntimeError) as error:
+            credential_detail = str(error)
     console.print(f"Mode: {routing.mode}")
     console.print(f"Classifier: {'enabled' if classifier.enabled else 'disabled'} ({backend})")
     console.print(f"Model: {classifier.model}")
     console.print(f"Endpoint: {classifier.endpoint}")
     console.print(f"Remote prompt egress: {'allowed' if classifier.allow_remote else 'blocked'}")
-    console.print(
-        f"Credential {classifier.api_key_env}: {'available' if credential else 'missing'}"
-    )
+    credential_source = classifier.api_key_file or classifier.api_key_env
+    console.print(f"Credential {credential_source}: {credential_detail}")
     console.print(
         f"Ambiguity threshold: {classifier.ambiguity_threshold:.0%}; "
         f"timeout: {classifier.timeout_seconds:g}s"
+    )
+    age = catalog_age_seconds(classifier)
+    catalog_status = (
+        "unverified"
+        if age is None
+        else "fresh"
+        if age <= classifier.catalog_ttl_seconds
+        else "stale"
+    )
+    console.print(
+        f"Catalog: {catalog_status}; checked: {classifier.catalog_checked_at or 'never'}; "
+        f"models: {len(classifier.catalog_models)}"
     )
 
 
@@ -213,24 +245,97 @@ def classifier_enable_command(
     api_key_env: str = typer.Option(
         "AGENTROUTE_CLASSIFIER_API_KEY", help="Environment variable containing the API key."
     ),
+    api_key_file: Path | None = typer.Option(
+        None, help="Private (chmod 600) file containing the API key."
+    ),
     allow_remote: bool = typer.Option(
         False, "--allow-remote", help="Allow sending bounded task context to a remote endpoint."
+    ),
+    allow_private_http: bool = typer.Option(
+        False,
+        "--allow-private-http",
+        help="Allow HTTP only when the endpoint host is a private or Tailscale IP.",
+    ),
+    timeout_seconds: float = typer.Option(
+        5.0, "--timeout", min=0.1, max=30, help="Classifier request timeout in seconds."
+    ),
+    ambiguity_threshold: float = typer.Option(
+        0.80,
+        "--ambiguity-threshold",
+        min=0.0,
+        max=1.0,
+        help="Use the LLM below this deterministic confidence.",
+    ),
+    reasoning_effort: str = typer.Option(
+        "low", help="Reasoning effort sent to compatible classifier models."
     ),
 ) -> None:
     """Enable ambiguity-only LLM classification without storing credentials."""
     if not is_loopback_endpoint(endpoint) and not allow_remote:
         raise typer.BadParameter("remote endpoints require --allow-remote")
+    if endpoint.startswith("http://") and not is_loopback_endpoint(endpoint):
+        if not allow_private_http or not is_private_endpoint(endpoint):
+            raise typer.BadParameter(
+                "remote HTTP requires a private/Tailscale IP and --allow-private-http"
+            )
     config = load_config()
     config.routing.mode = "hybrid"
     config.routing.classifier.enabled = True
     config.routing.classifier.endpoint = endpoint
     config.routing.classifier.model = model
     config.routing.classifier.api_key_env = api_key_env
+    config.routing.classifier.api_key_file = (
+        str(api_key_file.expanduser()) if api_key_file is not None else None
+    )
     config.routing.classifier.allow_remote = allow_remote
+    config.routing.classifier.allow_private_http = allow_private_http
+    config.routing.classifier.timeout_seconds = timeout_seconds
+    config.routing.classifier.ambiguity_threshold = ambiguity_threshold
+    config.routing.classifier.reasoning_effort = reasoning_effort or None
+    config.routing.classifier.catalog_checked_at = None
+    config.routing.classifier.catalog_hash = None
+    config.routing.classifier.catalog_models = []
+    OpenAICompatibleClassifier(config.routing.classifier)
     save_config(config)
     console.print(f"Enabled hybrid classification with {model}.")
-    if not is_loopback_endpoint(endpoint) and not os.environ.get(api_key_env):
-        console.print(f"Set {api_key_env} before launching Codex; heuristics remain the fallback.")
+    if not is_loopback_endpoint(endpoint) and not api_key_file and not os.environ.get(api_key_env):
+        console.print(
+            f"Set {api_key_env} before launching Codex; heuristics remain the fallback."
+        )
+
+
+@app.command("classifier-verify")
+def classifier_verify_command() -> None:
+    """Verify the configured model against the provider catalog and cache the receipt."""
+    config = load_config()
+    classifier = OpenAICompatibleClassifier(config.routing.classifier)
+    models, digest, checked_at = classifier.verify_catalog()
+    config.routing.classifier.catalog_models = models
+    config.routing.classifier.catalog_hash = digest
+    config.routing.classifier.catalog_checked_at = checked_at
+    save_config(config)
+    console.print(
+        f"Verified {config.routing.classifier.model} in {len(models)} visible models; "
+        f"catalog {digest[:12]}."
+    )
+
+
+@app.command("classifier-refresh")
+def classifier_refresh_command() -> None:
+    """Refresh a missing or stale remote catalog; otherwise return immediately."""
+    config = load_config()
+    classifier_config = config.routing.classifier
+    if not classifier_config.enabled or is_loopback_endpoint(classifier_config.endpoint):
+        return
+    age = catalog_age_seconds(classifier_config)
+    if age is not None and age <= classifier_config.catalog_ttl_seconds:
+        return
+    classifier = OpenAICompatibleClassifier(classifier_config)
+    models, digest, checked_at = classifier.verify_catalog()
+    classifier_config.catalog_models = models
+    classifier_config.catalog_hash = digest
+    classifier_config.catalog_checked_at = checked_at
+    save_config(config)
 
 
 @app.command("classifier-disable")

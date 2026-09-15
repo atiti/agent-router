@@ -111,8 +111,8 @@ if [ -n "$AGENTROUTE_STOCK_CODEX" ] && [ "$AGENTROUTE_STOCK_CODEX" != "$AGENTROU
     ln -sf "$AGENTROUTE_STOCK_CODEX" "$AGENTROUTE_BIN_DIR/codex-stock"
 fi
 
-printf '#!/bin/sh\nexec "%s/bin/codex-bin" --enable step_model_switching --enable code_mode -c suppress_unstable_features_warning=true "$@"\n' \
-    "$AGENTROUTE_HOME_DIR" >"$AGENTROUTE_BIN_DIR/codex"
+printf '#!/bin/sh\n"%s/bin/agentroute" classifier-refresh >/dev/null 2>&1 || true\nexec "%s/bin/codex-bin" --enable step_model_switching --enable code_mode -c suppress_unstable_features_warning=true "$@"\n' \
+    "$AGENTROUTE_HOME_DIR" "$AGENTROUTE_HOME_DIR" >"$AGENTROUTE_BIN_DIR/codex"
 chmod 755 "$AGENTROUTE_BIN_DIR/codex"
 
 if [ -f "$AGENTROUTE_HOME_DIR/config.yaml" ]; then

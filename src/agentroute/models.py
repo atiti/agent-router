@@ -92,7 +92,7 @@ class RouteDecision(BaseModel):
     metadata: dict[str, object] = Field(default_factory=dict)
     proposed_tier: Tier | None = None
     comparison_tier: Tier | None = None
-    classifier_version: str = "hybrid-v4"
+    classifier_version: str = "hybrid-v5"
     classification_source: str = "heuristic"
     classifier_confidence: float | None = Field(default=None, ge=0, le=1)
     classifier_task_type: str | None = None
@@ -101,3 +101,5 @@ class RouteDecision(BaseModel):
     risk_floor_applied: bool = False
     agent_requested_tier: Tier | None = None
     agent_request_reason_hash: str | None = None
+    selection_receipt: dict[str, object] = Field(default_factory=dict)
+    selection_receipt_hash: str | None = None

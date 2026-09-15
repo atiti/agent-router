@@ -1,3 +1,5 @@
+import json
+
 from agentroute.audit import AuditStore
 from agentroute.config import default_config
 from agentroute.models import RouteContext, Tier
@@ -17,9 +19,13 @@ def test_audit_defaults_to_prompt_hash_only(tmp_path):
     assert row["prompt"] is None
     assert len(row["prompt_hash"]) == 64
     assert store.previous_tier("session-1") is Tier.SMART
-    assert row["classifier_version"] == "hybrid-v4"
+    assert row["classifier_version"] == "hybrid-v5"
     assert row["classification_source"] == "manual"
     assert row["comparison_tier"] == "normal"
+    assert len(row["selection_receipt_hash"]) == 64
+    receipt = json.loads(row["selection_receipt"])
+    assert receipt["selected"]["model"] == "gpt-5.6-sol"
+    assert receipt["version"] == "selection-v1"
 
 
 def test_manual_override_labels_previous_automatic_decision(tmp_path):
@@ -59,3 +65,5 @@ def test_audit_schema_has_calibration_columns(tmp_path):
     assert "classification_source" in columns
     assert "classifier_confidence" in columns
     assert "classifier_reason_hash" in columns
+    assert "selection_receipt" in columns
+    assert "selection_receipt_hash" in columns

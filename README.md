@@ -75,9 +75,33 @@ agentroute classifier-enable --allow-remote \
 agentroute classifier-status
 ```
 
-The key is never written to AgentRoute configuration or audit storage. To keep all classification
-local, point the same interface at an OpenAI-compatible loopback endpoint such as Ollama; local HTTP
-is permitted, while remote endpoints must use HTTPS:
+The key is never written to AgentRoute configuration or audit storage. It can also be read from an
+owner-only file, which avoids requiring a long-lived shell environment variable. Verify the model
+against the provider's `/v1/models` catalog after enabling it:
+
+```sh
+install -m 600 /private/path/classifier.key ~/.agentroute/classifier.key
+agentroute classifier-enable --allow-remote \
+  --endpoint https://models.example.com/v1/chat/completions \
+  --model classifier-model \
+  --api-key-file ~/.agentroute/classifier.key
+agentroute classifier-verify
+```
+
+For a LiteLLM service exposed only on a private or Tailscale IP, HTTP requires a second, narrowly
+scoped acknowledgement. Public HTTP endpoints remain rejected:
+
+```sh
+agentroute classifier-enable --allow-remote --allow-private-http \
+  --endpoint http://100.64.0.10:4000/v1/chat/completions \
+  --model dev-classifier \
+  --api-key-file ~/.agentroute/classifier.key \
+  --timeout 5 --reasoning-effort low
+agentroute classifier-verify
+```
+
+To keep all classification local, point the same interface at an OpenAI-compatible loopback
+endpoint such as Ollama; loopback HTTP is permitted without remote-egress flags:
 
 ```sh
 agentroute classifier-enable \
@@ -148,8 +172,15 @@ present.
 
 ## Privacy and failure behavior
 
-- Deterministic routing is local. The optional classifier makes network requests only after
-  `classifier-enable --allow-remote`; loopback endpoints do not require that flag.
+- Deterministic routing is local. The optional classifier makes inference requests only after
+  `classifier-enable --allow-remote`; loopback endpoints do not require that flag. Non-loopback
+  HTTP is accepted only for literal private/Tailscale IPs with `--allow-private-http`.
+- Remote credentials can come from an environment variable or a mode-600 file. Provider catalog
+  verification is cached in configuration; turns do not add a catalog request to the hot path.
+  An unverified or stale remote catalog fails back to deterministic routing until
+  `agentroute classifier-verify` refreshes it. The installed Codex launcher runs a no-op-fast
+  `classifier-refresh` at session start and contacts the catalog only when the receipt is missing
+  or stale.
 - SQLite stores a SHA-256 prompt hash, not prompt text, by default.
 - Continuation routing reads only a bounded tail of Codex's local transcript; task text is not
   copied into the AgentRoute audit database.
@@ -163,9 +194,11 @@ statistically calibrated probability. For LLM-classified routes, it is the class
 confidence and remains uncalibrated until enough labeled local outcomes exist. The separate rule
 score always remains visible. Audit rows include the classification source, classifier task type,
 hashed classifier reason, proposed and final tiers, comparison tier, task-context usage, and
-risk-floor application. Use `agentroute label` to build a local calibration set. Approved agent
-requests are also recorded. Manual overrides automatically label the previous automatic decision
-as overridden.
+risk-floor application. Each row also contains a hashed selection receipt with the resolved-task
+hash, candidate model/effort pairs, explicit exclusions, policy state, cached catalog receipt, and
+provider-returned model metadata. Use `agentroute label` to build a local calibration set. Approved
+agent requests are also recorded. Manual overrides automatically label the previous automatic
+decision as overridden.
 
 ## Native Codex patch
 

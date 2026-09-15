@@ -19,4 +19,5 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
 
     assert "--enable code_mode" in installer
     assert "codex-code-mode-host" in installer
+    assert "classifier-refresh" in installer
     assert "codesign --force --sign -" in installer

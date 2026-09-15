@@ -188,3 +188,18 @@ def test_hook_fails_open_on_invalid_input(tmp_path):
 
     assert codex_user_prompt_submit(io.StringIO("{}"), sink) == 0
     assert json.loads(sink.getvalue())["continue"] is True
+
+
+def test_classifier_fallback_is_visible_in_model_line(tmp_path, monkeypatch):
+    def unavailable(request, timeout):
+        raise TimeoutError("classifier timed out")
+
+    monkeypatch.setattr("agentroute.classifier.urllib.request.urlopen", unavailable)
+    config = default_config()
+    config.enabled = True
+    config.routing.classifier.enabled = True
+    config.routing.classifier.endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+
+    output = invoke(config, AuditStore(tmp_path / "audit.db"), "Please handle this")
+
+    assert "CLASSIFIER FALLBACK" in output["hookSpecificOutput"]["routeMessage"]

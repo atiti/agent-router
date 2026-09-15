@@ -53,6 +53,10 @@ def test_hybrid_uses_llm_for_ambiguous_prompt():
     assert decision.classifier_task_type == "implementation"
     assert len(decision.classifier_reason_hash or "") == 64
     assert ReasonCode.LLM_CLASSIFIER in decision.reason_codes
+    assert len(decision.selection_receipt_hash or "") == 64
+    assert decision.selection_receipt["classifier"]["model"] == "gpt-5-mini"
+    candidates = decision.selection_receipt["candidates"]
+    assert next(item for item in candidates if item["tier"] == "max")["eligible"] is False
 
 
 def test_hybrid_skips_llm_for_high_confidence_rule():

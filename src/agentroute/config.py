@@ -40,11 +40,19 @@ class ClassifierConfig(BaseModel):
     endpoint: str = "https://api.openai.com/v1/chat/completions"
     model: str = "gpt-5-mini"
     api_key_env: str = "AGENTROUTE_CLASSIFIER_API_KEY"
+    api_key_file: str | None = None
     allow_remote: bool = False
-    timeout_seconds: float = Field(default=2.0, ge=0.1, le=30)
+    allow_private_http: bool = False
+    timeout_seconds: float = Field(default=5.0, ge=0.1, le=30)
     ambiguity_threshold: float = Field(default=0.80, ge=0, le=1)
     max_context_chars: int = Field(default=4_000, ge=0, le=50_000)
     include_previous_assistant: bool = True
+    reasoning_effort: str | None = "low"
+    max_completion_tokens: int = Field(default=1_024, ge=128, le=8_192)
+    catalog_ttl_seconds: int = Field(default=86_400, ge=60, le=2_592_000)
+    catalog_checked_at: str | None = None
+    catalog_hash: str | None = None
+    catalog_models: list[str] = Field(default_factory=list)
 
 
 class RoutingConfig(BaseModel):

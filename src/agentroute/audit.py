@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     risk_floor_applied INTEGER NOT NULL DEFAULT 0,
     agent_requested_tier TEXT,
     agent_request_reason_hash TEXT,
+    selection_receipt TEXT NOT NULL DEFAULT '{}',
+    selection_receipt_hash TEXT,
     outcome_label TEXT,
     outcome_notes TEXT
 );
@@ -59,6 +61,8 @@ MIGRATIONS = {
     "risk_floor_applied": "INTEGER NOT NULL DEFAULT 0",
     "agent_requested_tier": "TEXT",
     "agent_request_reason_hash": "TEXT",
+    "selection_receipt": "TEXT NOT NULL DEFAULT '{}'",
+    "selection_receipt_hash": "TEXT",
     "outcome_label": "TEXT",
     "outcome_notes": "TEXT",
 }
@@ -125,10 +129,10 @@ class AuditStore:
                     classifier_version, proposed_tier, comparison_tier, task_context_used,
                     risk_floor_applied, agent_requested_tier, agent_request_reason_hash,
                     classification_source, classifier_confidence, classifier_task_type,
-                    classifier_reason_hash
+                    classifier_reason_hash, selection_receipt, selection_receipt_hash
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -163,6 +167,8 @@ class AuditStore:
                     decision.classifier_confidence,
                     decision.classifier_task_type,
                     decision.classifier_reason_hash,
+                    json.dumps(decision.selection_receipt, sort_keys=True, separators=(",", ":")),
+                    decision.selection_receipt_hash,
                 ),
             )
             return int(cursor.lastrowid)

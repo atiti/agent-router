@@ -122,6 +122,11 @@ def codex_user_prompt_submit(
                     if ReasonCode.AGENT_ESCALATION in decision.reason_codes
                     else ""
                 )
+                + (
+                    " · CLASSIFIER FALLBACK"
+                    if ReasonCode.CLASSIFIER_FALLBACK in decision.reason_codes
+                    else ""
+                )
             )
         json.dump(output, sink, separators=(",", ":"))
         sink.write("\n")

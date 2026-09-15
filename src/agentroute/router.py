@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 
-from .classifier import OpenAICompatibleClassifier, TierClassifier
+from .classifier import OpenAICompatibleClassifier, TierClassifier, catalog_age_seconds
 from .config import AppConfig, load_config
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
 from .signals import (
@@ -15,7 +16,7 @@ from .signals import (
     reason_codes,
 )
 
-CLASSIFIER_VERSION = "hybrid-v4"
+CLASSIFIER_VERSION = "hybrid-v5"
 
 
 def tier_from_score(score: float) -> Tier:
@@ -179,6 +180,71 @@ class Router:
         target = provider.target(proposed)
         digest = hashlib.sha256(context.latest_prompt.encode("utf-8")).hexdigest()
         comparison_tier = context.previous_task_tier or context.current_tier
+        classifier_config = self.config.routing.classifier
+        catalog_age = catalog_age_seconds(classifier_config)
+        if catalog_age is None:
+            catalog_status = "unverified"
+        elif catalog_age <= classifier_config.catalog_ttl_seconds:
+            catalog_status = "fresh"
+        else:
+            catalog_status = "stale"
+        candidates: list[dict[str, object]] = []
+        for candidate_tier in Tier:
+            candidate_target = provider.target(candidate_tier)
+            exclusions: list[str] = []
+            if candidate_tier > max_tier:
+                exclusions.append("policy_max_tier")
+            if (
+                candidate_tier is Tier.MAX
+                and not manual
+                and context.current_tier is not Tier.MAX
+            ):
+                exclusions.append("codex_step_safety_metadata_incompatible")
+            candidates.append(
+                {
+                    "tier": str(candidate_tier),
+                    "model": candidate_target.model,
+                    "reasoning_effort": candidate_target.reasoning_effort,
+                    "eligible": not exclusions,
+                    "exclusions": exclusions,
+                }
+            )
+        resolved_task = (
+            context.task_definition
+            if task_context_used and context.task_definition
+            else context.latest_prompt
+        )
+        receipt: dict[str, object] = {
+            "version": "selection-v1",
+            "classifier": {
+                "policy_version": CLASSIFIER_VERSION,
+                "source": classification_source,
+                "model": (
+                    classifier_config.model
+                    if classification_source in {"local_llm", "private_llm", "cloud_llm"}
+                    else None
+                ),
+                "catalog_hash": classifier_config.catalog_hash,
+                "catalog_checked_at": classifier_config.catalog_checked_at,
+                "catalog_status": catalog_status,
+                "provider_response": getattr(self.classifier, "last_response_metadata", {}),
+            },
+            "resolved_task_hash": hashlib.sha256(resolved_task.encode("utf-8")).hexdigest(),
+            "candidates": candidates,
+            "proposed_tier": str(score_proposed),
+            "selected": {
+                "tier": str(proposed),
+                "model": target.model,
+                "reasoning_effort": target.reasoning_effort,
+            },
+            "policy": {
+                "max_tier": str(max_tier),
+                "risk_floor_applied": risk_floor_applied,
+            },
+        }
+        receipt_hash = hashlib.sha256(
+            json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         return RouteDecision(
             tier=proposed,
             model=target.model,
@@ -204,6 +270,8 @@ class Router:
             risk_floor_applied=risk_floor_applied,
             agent_requested_tier=context.agent_requested_tier,
             agent_request_reason_hash=context.agent_request_reason_hash,
+            selection_receipt=receipt,
+            selection_receipt_hash=receipt_hash,
         )
 
     def _maybe_classify(
