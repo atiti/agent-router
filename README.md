@@ -27,7 +27,9 @@ the same active Codex thread ◄─────────┘
 The native patch applies the chosen settings before the first model call of that turn. Classification
 is deterministic and local. Explicit read-only retrievals, mechanical edits, and simple questions
 about existing context take a high-confidence FAST lane; hard risk floors still win. A short
-confirmation such as `go ahead` inherits the previous task's tier within that session.
+confirmation such as `ok do it` is never scored as a new tiny task: AgentRoute reads the previous
+assistant final answer from Codex's local transcript and classifies that task definition. If the
+transcript is unavailable, it inherits the previous selected tier.
 
 | Tier | Default Codex target | Typical work |
 |---|---|---|
@@ -74,6 +76,8 @@ agentroute test "Redesign authentication for a zero-downtime migration"
 agentroute test "@max audit this concurrency design"
 agentroute why
 agentroute history
+agentroute audit-report
+agentroute label 42 correct --notes "appropriate model for the completed task"
 ```
 
 Use `agentroute observe` to audit decisions without changing models and `agentroute enable` to
@@ -82,20 +86,34 @@ resume native switching.
 When a route is applied, Codex prints a highlighted line before the response, for example:
 
 ```text
-◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning · confidence 100% · score 3
+◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning · rule confidence 100% · score 3
 ```
 
 The status bar also reflects the active model and effort. Code Mode remains enabled by installing
 the companion host already distributed with stock Codex. Set `AGENTROUTE_CODE_MODE_HOST` if your
 Codex package keeps it in a non-standard location.
 
+The pinned Codex build rejects automatic transitions to `gpt-6-astra` when its Node REPL safety
+metadata differs from the model admitted at turn start. AgentRoute therefore reports and applies a
+MAX→SMART safety fallback for automatic routes instead of claiming a rejected switch. An explicit
+`@max` remains the operator escape hatch and may be rejected by Codex when that incompatibility is
+present.
+
 ## Privacy and failure behavior
 
 - Routing is local and makes no network request.
 - SQLite stores a SHA-256 prompt hash, not prompt text, by default.
+- Continuation routing reads only a bounded tail of Codex's local transcript; task text is not
+  copied into the AgentRoute audit database.
+- Credential-shaped values trigger a visible warning and a SMART minimum route.
 - Hook failures fail open so a router error does not block Codex.
 - Existing Codex hooks are preserved during installation.
 - Config can cap the highest tier and set mandatory floors for risky work.
+
+The displayed percentage is explicitly **rule confidence**, not a statistically calibrated
+probability. Audit rows include the classifier version, proposed and final tiers, comparison tier,
+task-context usage, and risk-floor application. Use `agentroute label` to build a local calibration
+set. Manual overrides automatically label the previous automatic decision as overridden.
 
 ## Native Codex patch
 

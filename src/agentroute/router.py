@@ -5,7 +5,15 @@ import math
 
 from .config import AppConfig, load_config
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
-from .signals import extract_signals, is_confirmation, prompt_override, reason_codes
+from .signals import (
+    extract_signals,
+    is_confirmation,
+    is_context_followup,
+    prompt_override,
+    reason_codes,
+)
+
+CLASSIFIER_VERSION = "heuristic-v2"
 
 
 def tier_from_score(score: float) -> Tier:
@@ -37,6 +45,7 @@ class Router:
         contributions = extract_signals(context)
         raw_score = sum(item.weight for item in contributions)
         inherited = False
+        task_context_used = False
         manual = override not in (None, "auto")
 
         if manual:
@@ -49,37 +58,66 @@ class Router:
                     detail=f"explicit @{override} override",
                 )
             )
-        elif is_confirmation(context.latest_prompt) and context.previous_task_tier is not None:
-            proposed = context.previous_task_tier
-            confidence = 0.98
+        elif is_confirmation(context.latest_prompt) or is_context_followup(context.latest_prompt):
             inherited = True
-            contributions.append(
-                ScoreContribution(
-                    code=ReasonCode.PREVIOUS_TASK_INHERITANCE,
-                    weight=0,
-                    detail="confirmation inherited the previous task tier",
+            if context.task_definition:
+                task_context = context.model_copy(
+                    update={"latest_prompt": context.task_definition, "task_definition": None}
                 )
-            )
+                contributions = extract_signals(task_context)
+                raw_score = sum(item.weight for item in contributions)
+                proposed, confidence = self._score(raw_score, contributions)
+                task_context_used = True
+                contributions.append(
+                    ScoreContribution(
+                        code=ReasonCode.TASK_DEFINITION_INHERITANCE,
+                        weight=0,
+                        detail=(
+                            "continuation classified from the previous assistant task definition"
+                        ),
+                    )
+                )
+            elif context.previous_task_tier is not None:
+                proposed = context.previous_task_tier
+                confidence = 0.98
+                contributions.append(
+                    ScoreContribution(
+                        code=ReasonCode.PREVIOUS_TASK_INHERITANCE,
+                        weight=0,
+                        detail="continuation inherited the previous selected tier",
+                    )
+                )
+            else:
+                proposed, confidence = self._score(raw_score, contributions)
         else:
-            proposed = tier_from_score(raw_score)
-            confidence = confidence_for(raw_score, proposed, len(contributions))
-            high_confidence_fast_codes = {
-                ReasonCode.MECHANICAL_TASK,
-                ReasonCode.READ_ONLY_RETRIEVAL,
-                ReasonCode.SIMPLE_CONTEXT_QUESTION,
-            }
-            if proposed is Tier.FAST and any(
-                item.code in high_confidence_fast_codes for item in contributions
-            ):
-                confidence = max(confidence, 0.90)
+            proposed, confidence = self._score(raw_score, contributions)
+
+        score_proposed = proposed
 
         # An explicit tier is an escape hatch and therefore bypasses automatic
         # risk floors and hysteresis. Policy max_tier still caps every route.
+        risk_floor_applied = False
         if not manual:
-            proposed = self._apply_risk_floor(proposed, context, contributions)
+            proposed, risk_floor_applied = self._apply_risk_floor(
+                proposed, context, contributions
+            )
+            if risk_floor_applied:
+                confidence = max(confidence, 0.90)
             proposed, confidence = self._apply_switching(
                 proposed, confidence, context, contributions
             )
+            if proposed is Tier.MAX and context.current_tier is not Tier.MAX:
+                proposed = Tier.SMART
+                contributions.append(
+                    ScoreContribution(
+                        code=ReasonCode.MODEL_COMPATIBILITY_FALLBACK,
+                        weight=0,
+                        detail=(
+                            "automatic MAX transition is incompatible with admitted Codex "
+                            "Node REPL safety metadata; used SMART"
+                        ),
+                    )
+                )
         max_tier = Tier.parse(self.config.policy.max_tier)
         if proposed > max_tier:
             proposed = max_tier
@@ -89,6 +127,7 @@ class Router:
 
         target = provider.target(proposed)
         digest = hashlib.sha256(context.latest_prompt.encode("utf-8")).hexdigest()
+        comparison_tier = context.previous_task_tier or context.current_tier
         return RouteDecision(
             tier=proposed,
             model=target.model,
@@ -102,21 +141,51 @@ class Router:
             prompt_hash=digest,
             manual_override=manual,
             inherited=inherited,
-            switched=proposed != context.current_tier,
+            switched=proposed != comparison_tier,
+            proposed_tier=score_proposed,
+            comparison_tier=comparison_tier,
+            classifier_version=CLASSIFIER_VERSION,
+            task_context_used=task_context_used,
+            risk_floor_applied=risk_floor_applied,
         )
+
+    @staticmethod
+    def _score(
+        raw_score: float, contributions: list[ScoreContribution]
+    ) -> tuple[Tier, float]:
+        proposed = tier_from_score(raw_score)
+        confidence = confidence_for(raw_score, proposed, len(contributions))
+        codes = {item.code for item in contributions}
+        high_confidence_fast_codes = {
+            ReasonCode.MECHANICAL_TASK,
+            ReasonCode.READ_ONLY_RETRIEVAL,
+            ReasonCode.SIMPLE_CONTEXT_QUESTION,
+            ReasonCode.READ_ONLY_STATUS,
+        }
+        if proposed is Tier.FAST and codes & high_confidence_fast_codes:
+            confidence = max(confidence, 0.90)
+        if codes & {ReasonCode.CREDENTIAL_EXPOSURE, ReasonCode.OPERATIONAL_INCIDENT}:
+            confidence = max(confidence, 0.90)
+        if codes <= {ReasonCode.SMALL_SCOPE}:
+            confidence = min(confidence, 0.55)
+        return proposed, confidence
 
     def _apply_risk_floor(
         self,
         proposed: Tier,
         context: RouteContext,
         contributions: list[ScoreContribution],
-    ) -> Tier:
+    ) -> tuple[Tier, bool]:
         flags = set(context.task_risk_flags)
         codes = {item.code for item in contributions}
         if ReasonCode.SECURITY in codes:
             flags.add("security")
         if ReasonCode.MIGRATION in codes:
             flags.add("database_migration")
+        if ReasonCode.CREDENTIAL_EXPOSURE in codes:
+            flags.add("security")
+        if ReasonCode.OPERATIONAL_INCIDENT in codes:
+            flags.add("production")
         floor = Tier.FAST
         matched: list[str] = []
         for flag in flags:
@@ -134,8 +203,8 @@ class Router:
                     detail=f"risk floor from {', '.join(sorted(matched))}",
                 )
             )
-            return floor
-        return proposed
+            return floor, True
+        return proposed, False
 
     def _apply_switching(
         self,

@@ -22,6 +22,24 @@ SIMPLE_CONTEXT_QUESTION = re.compile(
     r"[^\n]{0,180}[?]?\s*$",
     re.IGNORECASE,
 )
+READ_ONLY_STATUS = re.compile(
+    r"(?:\bany\s+outstanding\s+(?:commits?|changes?|issues?|tasks?|prs?|pull requests?)\b)"
+    r"|(?:^\s*(?:is|are|was|were|has|have)\b[^\n]{0,120}"
+    r"\b(?:fixed|solved|resolved|working|healthy|up|done|merged|deployed|pushed)\b[?]?\s*$)"
+    r"|(?:\b(?:status|state)\s+of\b)",
+    re.IGNORECASE,
+)
+CREDENTIAL_EXPOSURE = re.compile(
+    r"(?:\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|"
+    r"password|secret)\b\s*(?:is\s+|[:=]\s*)[\"']?"
+    r"(?!\[?(?:redacted|hidden|masked)\]?\b)[A-Za-z0-9_./+=-]{12,})"
+    r"|(?:-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)",
+    re.IGNORECASE,
+)
+OPERATIONAL_INCIDENT = re.compile(
+    r"\b(?:production|prod|outage|incident|critical alert|service unavailable|flapping)\b",
+    re.IGNORECASE,
+)
 DEBUGGING = re.compile(r"\b(debug|root cause|why (?:does|is|did)|still (?:fails|broken))\b", re.I)
 ARCHITECTURE = re.compile(
     r"\b(architecture|redesign|rearchitect|system design|cross[- ]cutting)\b", re.I
@@ -35,9 +53,16 @@ CONCURRENCY = re.compile(
 MIGRATION = re.compile(r"\b(migration|zero[- ]downtime|schema change|backfill)\b", re.I)
 PERFORMANCE = re.compile(r"\b(performance|latency|throughput|memory leak|profil(?:e|ing))\b", re.I)
 CONFIRMATION = re.compile(
-    r"^\s*(yes|yep|yeah|do it|go ahead|continue|implement (?:it|that)|proceed|"
+    r"^\s*(yes|yep|yeah|ok(?:ay)?(?:,?\s+(?:do it|go ahead|proceed))?|"
+    r"do it|go ahead|continue|implement (?:it|that)|proceed|"
     r"sounds good)[.!]?\s*$",
     re.I,
+)
+CONTEXT_FOLLOWUP = re.compile(
+    r"^\s*(?:check|try|run|look|test)\s+(?:it\s+)?again[.!?]?\s*$"
+    r"|^\s*so\s+how\s+(?:do\s+we\s+|to\s+)?fix(?:\s+(?:it|that|this))?[?]?\s*$"
+    r"|^\s*what\s+about\s+(?:it|that|this)[?]?\s*$",
+    re.IGNORECASE,
 )
 MANUAL = re.compile(r"^\s*@(?P<tier>fast|normal|smart|max|auto)\b[: ]*", re.I)
 
@@ -76,6 +101,27 @@ def extract_signals(context: RouteContext) -> list[ScoreContribution]:
         ReasonCode.SIMPLE_CONTEXT_QUESTION,
         -1,
         "simple question about existing context",
+    )
+    _add(
+        output,
+        bool(READ_ONLY_STATUS.search(prompt)),
+        ReasonCode.READ_ONLY_STATUS,
+        -1.5,
+        "read-only status question",
+    )
+    _add(
+        output,
+        bool(CREDENTIAL_EXPOSURE.search(prompt)),
+        ReasonCode.CREDENTIAL_EXPOSURE,
+        4,
+        "credential-shaped value in prompt",
+    )
+    _add(
+        output,
+        bool(OPERATIONAL_INCIDENT.search(prompt)),
+        ReasonCode.OPERATIONAL_INCIDENT,
+        3.5,
+        "production or operational incident wording",
     )
     _add(
         output,
@@ -129,6 +175,10 @@ def prompt_override(prompt: str) -> tuple[str | None, str]:
 
 def is_confirmation(prompt: str) -> bool:
     return bool(CONFIRMATION.match(prompt))
+
+
+def is_context_followup(prompt: str) -> bool:
+    return bool(CONTEXT_FOLLOWUP.match(prompt))
 
 
 def reason_codes(contributions: Iterable[ScoreContribution]) -> list[ReasonCode]:

@@ -6,8 +6,10 @@ from typing import Any, TextIO
 
 from .audit import AuditStore
 from .config import AppConfig, load_config
-from .models import RouteContext
+from .models import ReasonCode, RouteContext
 from .router import Router
+from .signals import is_confirmation, is_context_followup
+from .transcript import previous_assistant_task
 
 
 def codex_user_prompt_submit(
@@ -27,13 +29,20 @@ def codex_user_prompt_submit(
         store = store or AuditStore()
         session_id = str(payload["session_id"])
         previous_tier = store.previous_tier(session_id)
+        prompt = str(payload.get("prompt", ""))
+        continuation = is_confirmation(prompt) or is_context_followup(prompt)
         context = RouteContext(
             session_id=session_id,
             provider="codex",
-            latest_prompt=str(payload.get("prompt", "")),
+            latest_prompt=prompt,
             current_model=current_model,
             current_tier=current_tier,
             previous_task_tier=previous_tier,
+            task_definition=(
+                previous_assistant_task(payload.get("transcript_path"))
+                if continuation
+                else None
+            ),
         )
         decision = Router(config).route(context)
         store.record(
@@ -50,7 +59,7 @@ def codex_user_prompt_submit(
                 "additionalContext": (
                     "[AgentRoute routing metadata — not a user task]\n"
                     f"{action} {decision.tier.name} → {decision.model} "
-                    f"({decision.confidence:.0%}); reasons: {reasons}."
+                    f"({decision.confidence:.0%} rule confidence); reasons: {reasons}."
                 ),
             },
         }
@@ -66,7 +75,17 @@ def codex_user_prompt_submit(
             )
             specific["routeMessage"] = (
                 f"◆ MODEL ROUTE · {decision.tier.name} → {decision.model}{effort}"
-                f" · confidence {decision.confidence:.0%} · score {decision.raw_score:g}"
+                f" · rule confidence {decision.confidence:.0%} · score {decision.raw_score:g}"
+                + (
+                    " · CREDENTIAL RISK"
+                    if ReasonCode.CREDENTIAL_EXPOSURE in decision.reason_codes
+                    else ""
+                )
+                + (
+                    " · MAX→SMART SAFETY FALLBACK"
+                    if ReasonCode.MODEL_COMPATIBILITY_FALLBACK in decision.reason_codes
+                    else ""
+                )
             )
         json.dump(output, sink, separators=(",", ":"))
         sink.write("\n")

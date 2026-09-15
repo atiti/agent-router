@@ -6,7 +6,7 @@ from agentroute.config import default_config
 from agentroute.hook import codex_user_prompt_submit
 
 
-def invoke(config, store, prompt, model="gpt-5.6-terra"):
+def invoke(config, store, prompt, model="gpt-5.6-terra", transcript_path=None):
     source = io.StringIO(
         json.dumps(
             {
@@ -14,6 +14,7 @@ def invoke(config, store, prompt, model="gpt-5.6-terra"):
                 "turn_id": "turn-1",
                 "model": model,
                 "prompt": prompt,
+                "transcript_path": str(transcript_path) if transcript_path else None,
             }
         )
     )
@@ -44,10 +45,62 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path):
     assert first["hookSpecificOutput"]["reasoningEffort"] == "high"
     assert first["hookSpecificOutput"]["routeMessage"] == (
         "◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning "
-        "· confidence 100% · score -0.5"
+        "· rule confidence 100% · score -0.5"
     )
     assert second["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
     assert len(store.history("same-thread")) == 2
+
+
+def test_confirmation_uses_previous_assistant_task_definition(tmp_path):
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "phase": "final_answer",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": (
+                                "Redesign the authentication architecture and perform a "
+                                "zero-downtime database migration across the services."
+                            ),
+                        }
+                    ],
+                },
+            }
+        )
+        + "\n"
+    )
+    config = default_config()
+    config.enabled = True
+    store = AuditStore(tmp_path / "audit.db")
+
+    output = invoke(config, store, "ok do it", transcript_path=transcript)
+    row = store.latest("same-thread")
+
+    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert "MAX→SMART SAFETY FALLBACK" in output["hookSpecificOutput"]["routeMessage"]
+    assert row is not None
+    assert row["task_context_used"] == 1
+    assert "TASK_DEFINITION_INHERITANCE" in row["reason_codes"]
+
+
+def test_credential_route_notice_is_visible(tmp_path):
+    config = default_config()
+    config.enabled = True
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "service api key: abcdefghijklmnop1234",
+    )
+
+    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert "CREDENTIAL RISK" in output["hookSpecificOutput"]["routeMessage"]
 
 
 def test_hook_fails_open_on_invalid_input(tmp_path):
