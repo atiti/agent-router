@@ -103,6 +103,42 @@ def test_credential_route_notice_is_visible(tmp_path):
     assert "CREDENTIAL RISK" in output["hookSpecificOutput"]["routeMessage"]
 
 
+def test_explicit_confirmation_approves_agent_request(tmp_path):
+    transcript = tmp_path / "rollout.jsonl"
+    assistant_text = (
+        "This needs a stronger review.\n\n"
+        "MODEL_REQUEST: SMART\n"
+        "MODEL_REQUEST_REASON: The production failure spans several services."
+    )
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "phase": "final_answer",
+                    "content": [{"type": "output_text", "text": assistant_text}],
+                },
+            }
+        )
+        + "\n"
+    )
+    config = default_config()
+    config.enabled = True
+    store = AuditStore(tmp_path / "audit.db")
+
+    output = invoke(config, store, "ok do it", transcript_path=transcript)
+    row = store.latest("same-thread")
+
+    assert "AGENT REQUEST APPROVED" in output["hookSpecificOutput"]["routeMessage"]
+    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert row is not None
+    assert row["agent_requested_tier"] == "smart"
+    assert len(row["agent_request_reason_hash"]) == 64
+    assert "production failure" not in str(dict(row)).lower()
+
+
 def test_hook_fails_open_on_invalid_input(tmp_path):
     sink = io.StringIO()
 

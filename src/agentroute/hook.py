@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from typing import Any, TextIO
 
 from .audit import AuditStore
 from .config import AppConfig, load_config
-from .models import ReasonCode, RouteContext
+from .models import ReasonCode, RouteContext, Tier
 from .router import Router
 from .signals import is_confirmation, is_context_followup
-from .transcript import previous_assistant_task
+from .transcript import parse_agent_model_request, previous_assistant_task
 
 
 def codex_user_prompt_submit(
@@ -31,6 +32,14 @@ def codex_user_prompt_submit(
         previous_tier = store.previous_tier(session_id)
         prompt = str(payload.get("prompt", ""))
         continuation = is_confirmation(prompt) or is_context_followup(prompt)
+        task_definition = (
+            previous_assistant_task(payload.get("transcript_path"))
+            if continuation
+            else None
+        )
+        agent_request = (
+            parse_agent_model_request(task_definition) if is_confirmation(prompt) else None
+        )
         context = RouteContext(
             session_id=session_id,
             provider="codex",
@@ -38,9 +47,11 @@ def codex_user_prompt_submit(
             current_model=current_model,
             current_tier=current_tier,
             previous_task_tier=previous_tier,
-            task_definition=(
-                previous_assistant_task(payload.get("transcript_path"))
-                if continuation
+            task_definition=task_definition,
+            agent_requested_tier=(Tier.parse(agent_request.tier) if agent_request else None),
+            agent_request_reason_hash=(
+                hashlib.sha256(agent_request.reason.encode("utf-8")).hexdigest()
+                if agent_request
                 else None
             ),
         )
@@ -59,7 +70,11 @@ def codex_user_prompt_submit(
                 "additionalContext": (
                     "[AgentRoute routing metadata — not a user task]\n"
                     f"{action} {decision.tier.name} → {decision.model} "
-                    f"({decision.confidence:.0%} rule confidence); reasons: {reasons}."
+                    f"({decision.confidence:.0%} rule confidence); reasons: {reasons}.\n"
+                    "If this tier is materially insufficient, end your final response with "
+                    "two plain lines: MODEL_REQUEST: <FAST|NORMAL|SMART|MAX> and "
+                    "MODEL_REQUEST_REASON: <one-line reason>. Request only when needed; it is "
+                    "applied only after explicit user confirmation."
                 ),
             },
         }
@@ -84,6 +99,11 @@ def codex_user_prompt_submit(
                 + (
                     " · MAX→SMART SAFETY FALLBACK"
                     if ReasonCode.MODEL_COMPATIBILITY_FALLBACK in decision.reason_codes
+                    else ""
+                )
+                + (
+                    " · AGENT REQUEST APPROVED"
+                    if ReasonCode.AGENT_ESCALATION in decision.reason_codes
                     else ""
                 )
             )

@@ -13,7 +13,7 @@ from .signals import (
     reason_codes,
 )
 
-CLASSIFIER_VERSION = "heuristic-v2"
+CLASSIFIER_VERSION = "heuristic-v3"
 
 
 def tier_from_score(score: float) -> Tier:
@@ -56,6 +56,24 @@ class Router:
                     code=ReasonCode.MANUAL_OVERRIDE,
                     weight=0,
                     detail=f"explicit @{override} override",
+                )
+            )
+        elif is_confirmation(context.latest_prompt) and context.agent_requested_tier is not None:
+            inherited = True
+            task_context_used = context.task_definition is not None
+            if context.task_definition:
+                task_context = context.model_copy(
+                    update={"latest_prompt": context.task_definition, "task_definition": None}
+                )
+                contributions = extract_signals(task_context)
+                raw_score = sum(item.weight for item in contributions)
+            proposed = context.agent_requested_tier
+            confidence = 0.99
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.AGENT_ESCALATION,
+                    weight=0,
+                    detail=f"user approved assistant request for {proposed}",
                 )
             )
         elif is_confirmation(context.latest_prompt) or is_context_followup(context.latest_prompt):
@@ -147,6 +165,8 @@ class Router:
             classifier_version=CLASSIFIER_VERSION,
             task_context_used=task_context_used,
             risk_floor_applied=risk_floor_applied,
+            agent_requested_tier=context.agent_requested_tier,
+            agent_request_reason_hash=context.agent_request_reason_hash,
         )
 
     @staticmethod

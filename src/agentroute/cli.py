@@ -107,6 +107,8 @@ def why_command(session: str | None = None) -> None:
             f"Compared with: {row['comparison_tier']}; proposed: {row['proposed_tier']}; "
             f"task context: {'yes' if row['task_context_used'] else 'no'}"
         )
+    if row["agent_requested_tier"]:
+        console.print(f"Approved agent request: {row['agent_requested_tier']}")
     for item in json.loads(row["contributions"]):
         sign = "+" if item["weight"] > 0 else ""
         console.print(f"  {sign}{item['weight']:g} {item['code']}: {item['detail']}")

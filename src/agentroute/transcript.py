@@ -1,11 +1,34 @@
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 MAX_TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024
 MAX_TASK_DEFINITION_CHARS = 12_000
+MODEL_REQUEST = re.compile(
+    r"(?:^|\n)MODEL_REQUEST:\s*(FAST|NORMAL|SMART|MAX)\s*\n"
+    r"MODEL_REQUEST_REASON:\s*([^\n]{3,500})\s*\Z",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class AgentModelRequest:
+    tier: str
+    reason: str
+
+
+def parse_agent_model_request(text: str | None) -> AgentModelRequest | None:
+    """Parse a strict, visible request placed at the end of an assistant final answer."""
+    if not text:
+        return None
+    match = MODEL_REQUEST.search(text)
+    if not match:
+        return None
+    return AgentModelRequest(tier=match.group(1).lower(), reason=match.group(2).strip())
 
 
 def previous_assistant_task(transcript_path: object) -> str | None:

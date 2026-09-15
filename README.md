@@ -31,6 +31,18 @@ confirmation such as `ok do it` is never scored as a new tiny task: AgentRoute r
 assistant final answer from Codex's local transcript and classifies that task definition. If the
 transcript is unavailable, it inherits the previous selected tier.
 
+An agent that knows its current tier is insufficient can explicitly ask for the next turn's tier by
+ending its final response with two visible plain-text lines:
+
+```text
+MODEL_REQUEST: SMART
+MODEL_REQUEST_REASON: The production failure spans several services.
+```
+
+AgentRoute accepts the request only when the next user turn is an explicit confirmation such as
+`ok`, `ok do it`, or `proceed`. Policy caps, risk floors, and Codex model-compatibility checks still
+apply. The requested tier and a SHA-256 hash of the reason are audited; the reason text is not.
+
 | Tier | Default Codex target | Typical work |
 |---|---|---|
 | FAST | `gpt-5.6-luna`, low | renames, formatting, mechanical edits |
@@ -113,7 +125,8 @@ present.
 The displayed percentage is explicitly **rule confidence**, not a statistically calibrated
 probability. Audit rows include the classifier version, proposed and final tiers, comparison tier,
 task-context usage, and risk-floor application. Use `agentroute label` to build a local calibration
-set. Manual overrides automatically label the previous automatic decision as overridden.
+set. Approved agent requests are also recorded. Manual overrides automatically label the previous
+automatic decision as overridden.
 
 ## Native Codex patch
 

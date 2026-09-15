@@ -126,6 +126,35 @@ def test_confirmation_uses_assistant_defined_task_scope():
     assert ReasonCode.MODEL_COMPATIBILITY_FALLBACK in decision.reason_codes
 
 
+def test_user_confirmation_approves_agent_model_request():
+    decision = route(
+        "ok do it",
+        current_tier=Tier.NORMAL,
+        previous_task_tier=Tier.NORMAL,
+        task_definition="This routine task needs a stronger review.",
+        agent_requested_tier=Tier.SMART,
+        agent_request_reason_hash="a" * 64,
+    )
+
+    assert decision.tier is Tier.SMART
+    assert decision.confidence == 0.99
+    assert decision.agent_requested_tier is Tier.SMART
+    assert ReasonCode.AGENT_ESCALATION in decision.reason_codes
+
+
+def test_risk_floor_can_override_approved_agent_downgrade():
+    decision = route(
+        "ok",
+        current_tier=Tier.SMART,
+        task_definition="service api key: abcdefghijklmnop1234",
+        agent_requested_tier=Tier.FAST,
+    )
+
+    assert decision.tier is Tier.SMART
+    assert decision.risk_floor_applied
+    assert ReasonCode.AGENT_ESCALATION in decision.reason_codes
+
+
 def test_manual_max_still_honors_explicit_escape_hatch():
     decision = route("@max do the task", current_tier=Tier.SMART)
 

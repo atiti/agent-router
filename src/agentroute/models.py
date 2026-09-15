@@ -63,6 +63,8 @@ class RouteContext(BaseModel):
     current_tier: Tier = Tier.NORMAL
     previous_task_tier: Tier | None = None
     task_definition: str | None = None
+    agent_requested_tier: Tier | None = None
+    agent_request_reason_hash: str | None = None
     touched_files: int = 0
     changed_lines: int = 0
     tool_errors: int = 0
@@ -88,6 +90,8 @@ class RouteDecision(BaseModel):
     metadata: dict[str, object] = Field(default_factory=dict)
     proposed_tier: Tier | None = None
     comparison_tier: Tier | None = None
-    classifier_version: str = "heuristic-v2"
+    classifier_version: str = "heuristic-v3"
     task_context_used: bool = False
     risk_floor_applied: bool = False
+    agent_requested_tier: Tier | None = None
+    agent_request_reason_hash: str | None = None

@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     comparison_tier TEXT,
     task_context_used INTEGER NOT NULL DEFAULT 0,
     risk_floor_applied INTEGER NOT NULL DEFAULT 0,
+    agent_requested_tier TEXT,
+    agent_request_reason_hash TEXT,
     outcome_label TEXT,
     outcome_notes TEXT
 );
@@ -47,6 +49,8 @@ MIGRATIONS = {
     "comparison_tier": "TEXT",
     "task_context_used": "INTEGER NOT NULL DEFAULT 0",
     "risk_floor_applied": "INTEGER NOT NULL DEFAULT 0",
+    "agent_requested_tier": "TEXT",
+    "agent_request_reason_hash": "TEXT",
     "outcome_label": "TEXT",
     "outcome_notes": "TEXT",
 }
@@ -111,8 +115,8 @@ class AuditStore:
                     model, reasoning_effort, confidence, raw_score, reason_codes,
                     contributions, prompt_hash, prompt, manual_override, inherited, switched,
                     classifier_version, proposed_tier, comparison_tier, task_context_used,
-                    risk_floor_applied
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    risk_floor_applied, agent_requested_tier, agent_request_reason_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     datetime.now(timezone.utc).isoformat(),
@@ -136,6 +140,12 @@ class AuditStore:
                     str(decision.comparison_tier) if decision.comparison_tier is not None else None,
                     int(decision.task_context_used),
                     int(decision.risk_floor_applied),
+                    (
+                        str(decision.agent_requested_tier)
+                        if decision.agent_requested_tier is not None
+                        else None
+                    ),
+                    decision.agent_request_reason_hash,
                 ),
             )
             return int(cursor.lastrowid)
