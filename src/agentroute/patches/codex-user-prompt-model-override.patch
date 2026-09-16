@@ -1,3 +1,31 @@
+diff --git a/codex-rs/config/src/thread_config/remote.rs b/codex-rs/config/src/thread_config/remote.rs
+index 8d5b8febe4..addba288a7 100644
+--- a/codex-rs/config/src/thread_config/remote.rs
++++ b/codex-rs/config/src/thread_config/remote.rs
+@@ -192,6 +192,7 @@ fn model_provider_from_proto(
+         requires_openai_auth: provider.requires_openai_auth,
+         supports_websockets: provider.supports_websockets,
+         supports_standalone_web_search: provider.supports_standalone_web_search,
++        tool_compatibility: None,
+     };
+     Ok((id, info))
+ }
+@@ -220,6 +221,7 @@ fn model_provider_to_proto(
+         requires_openai_auth,
+         supports_websockets,
+         supports_standalone_web_search,
++        tool_compatibility: _,
+     } = provider;
+ 
+     proto::ModelProvider {
+@@ -568,6 +570,7 @@ mod tests {
+             requires_openai_auth: false,
+             supports_websockets: true,
+             supports_standalone_web_search: true,
++            tool_compatibility: None,
+             aws: None,
+         }
+     }
 diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
 index 2981b13b0a..5631a5072b 100644
 --- a/codex-rs/core/src/agent/control_tests.rs
@@ -468,18 +496,25 @@ index ea078a451e..cfee96aca7 100644
          history_mode: parent_turn_context.history_mode,
          parent_thread_id: parent_turn_context.parent_thread_id,
 diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
-index 8dc090315a..983faf47bb 100644
+index 8dc090315a..cacea25632 100644
 --- a/codex-rs/core/src/session/step_activation.rs
 +++ b/codex-rs/core/src/session/step_activation.rs
-@@ -12,6 +12,7 @@ use crate::context::GuardianNodeReplPolicy;
+@@ -12,10 +12,14 @@ use crate::context::GuardianNodeReplPolicy;
  use crate::exec_policy::AllowPrefixRules;
  use crate::guardian::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
  use codex_features::Feature;
++use codex_model_provider_info::ToolCompatibility;
 +use codex_model_provider::create_model_provider;
++use codex_protocol::openai_models::ApplyPatchToolType;
  use codex_protocol::openai_models::GuardianV2ModelConfig;
  use codex_protocol::openai_models::GuardianV2TranscriptModelConfig;
  use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
-@@ -91,9 +92,10 @@ fn check_legacy_model_safety(
+ use codex_protocol::openai_models::ModelInfo;
++use codex_protocol::openai_models::ToolMode;
+ use codex_protocol::protocol::TurnSettingsUpdate;
+ use codex_protocol::protocol::TurnSettingsUpdateOutcome;
+ use std::sync::Arc;
+@@ -91,9 +95,10 @@ fn check_legacy_model_safety(
      if admitted.used_fallback_model_metadata || current.used_fallback_model_metadata {
          return Err("the active model has only fallback metadata".to_string());
      }
@@ -493,7 +528,7 @@ index 8dc090315a..983faf47bb 100644
      let retained_models = [admitted, current];
      // guardian::review::record_guardian_denial still selects its circuit-breaker
      // policy from the admitted model's Cyber classification.
-@@ -233,13 +235,23 @@ impl Session {
+@@ -233,13 +238,23 @@ impl Session {
          clippy::await_holding_invalid_type,
          reason = "the final managed-policy check and active settings publication must remain atomic"
      )]
@@ -518,7 +553,7 @@ index 8dc090315a..983faf47bb 100644
              && update.effort.is_none()
              && update.summary.is_none()
              && update.service_tier.is_none();
-@@ -277,6 +289,31 @@ impl Session {
+@@ -277,6 +292,32 @@ impl Session {
              summary,
              service_tier,
          } = update;
@@ -542,6 +577,7 @@ index 8dc090315a..983faf47bb 100644
 +            };
 +            Some((
 +                provider_id,
++                provider_info.tool_compatibility,
 +                create_model_provider(provider_info.clone(), turn_context.auth_manager.clone()),
 +            ))
 +        } else {
@@ -550,21 +586,114 @@ index 8dc090315a..983faf47bb 100644
          let update = StepSettingsUpdate {
              approvals_reviewer,
              model,
-@@ -341,6 +378,9 @@ impl Session {
+@@ -305,10 +346,17 @@ impl Session {
+         {
+             return TurnSettingsUpdateOutcome::TargetUnavailable;
+         }
+-        let destination = match prepared {
++        let mut destination = match prepared {
+             Ok(destination) => destination,
+             Err(reason) => return TurnSettingsUpdateOutcome::Rejected { reason },
+         };
++        if let Some((_, Some(tool_compatibility), _)) = requested_provider.as_ref() {
++            destination.model_info = Arc::new(model_info_for_provider_compatibility(
++                &current.model_info,
++                &destination.model_info,
++                *tool_compatibility,
++            ));
++        }
+         // Managed requirements can change during resolution. Keep the live
+         // authorization and safety checks atomic with publication under state
+         // and active_turn; no asynchronous preparation runs under these locks.
+@@ -341,6 +389,9 @@ impl Session {
          task.turn_context
              .current_settings
              .store(Arc::new(destination));
-+        if let Some((provider_id, provider)) = requested_provider {
++        if let Some((provider_id, _, provider)) = requested_provider {
 +            task.turn_context.set_model_provider(provider_id, provider);
 +        }
          TurnSettingsUpdateOutcome::Applied
      }
  
+@@ -405,6 +456,31 @@ impl Session {
+     }
+ }
+ 
++fn model_info_for_provider_compatibility(
++    admitted: &ModelInfo,
++    destination: &ModelInfo,
++    compatibility: ToolCompatibility,
++) -> ModelInfo {
++    // Start with the admitted metadata so a provider switch cannot change local
++    // approval, Guardian, reviewer, or Node REPL authority. Only model identity
++    // and wire-level tool capabilities are provider-specific here.
++    let mut model_info = admitted.clone();
++    model_info.slug.clone_from(&destination.slug);
++    model_info.display_name.clone_from(&destination.display_name);
++    model_info.description.clone_from(&destination.description);
++    match compatibility {
++        ToolCompatibility::FunctionsAndApplyPatch => {
++            model_info.tool_mode = Some(ToolMode::Direct);
++            model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
++            model_info.supports_search_tool = false;
++            model_info.use_responses_lite = false;
++            model_info.experimental_supported_tools.clear();
++        }
++    }
++    model_info.used_fallback_model_metadata = false;
++    model_info
++}
++
+ #[cfg(test)]
+ #[path = "step_activation_tests.rs"]
+ mod tests;
 diff --git a/codex-rs/core/src/session/step_activation_tests.rs b/codex-rs/core/src/session/step_activation_tests.rs
-index dcaa598eb6..413905f88f 100644
+index dcaa598eb6..d68d31d556 100644
 --- a/codex-rs/core/src/session/step_activation_tests.rs
 +++ b/codex-rs/core/src/session/step_activation_tests.rs
-@@ -1175,7 +1175,7 @@ async fn model_safety_changes_must_match_the_admitted_authority(
+@@ -1137,6 +1137,41 @@ fn parent_review_messages(model: &mut ModelInfo) -> &mut AutoReviewMessages {
+         })
+ }
+ 
++#[test]
++fn provider_tool_compatibility_preserves_admitted_safety_authority() {
++    let (mut admitted, mut destination) = safety_models();
++    admitted.node_repl_disabled = true;
++    admitted.auto_review_model_override = Some("reviewer-model".to_string());
++    parent_review_messages(&mut admitted).policy = Some("admitted policy".to_string());
++    destination.slug = "external-model".to_string();
++    destination.display_name = "External model".to_string();
++    destination.used_fallback_model_metadata = true;
++
++    let compatible = model_info_for_provider_compatibility(
++        &admitted,
++        &destination,
++        ToolCompatibility::FunctionsAndApplyPatch,
++    );
++
++    assert_eq!(compatible.slug, destination.slug);
++    assert_eq!(compatible.display_name, destination.display_name);
++    assert_eq!(compatible.guardian, admitted.guardian);
++    assert_eq!(compatible.model_messages, admitted.model_messages);
++    assert_eq!(compatible.node_repl_disabled, admitted.node_repl_disabled);
++    assert_eq!(
++        compatible.auto_review_model_override,
++        admitted.auto_review_model_override
++    );
++    assert_eq!(compatible.tool_mode, Some(ToolMode::Direct));
++    assert_eq!(
++        compatible.apply_patch_tool_type,
++        Some(ApplyPatchToolType::Freeform)
++    );
++    assert!(!compatible.supports_search_tool);
++    assert!(!compatible.use_responses_lite);
++    assert!(!compatible.used_fallback_model_metadata);
++}
++
+ #[derive(Clone, Copy)]
+ enum ModelSafetyChange {
+     Cyber,
+@@ -1175,7 +1210,7 @@ async fn model_safety_changes_must_match_the_admitted_authority(
  }
  
  #[tokio::test]
@@ -573,7 +702,7 @@ index dcaa598eb6..413905f88f 100644
      let (_, turn) = make_session_and_context().await;
      let (admitted, destination) = safety_models();
      let mut fallback = admitted.clone();
-@@ -1193,18 +1193,23 @@ async fn model_safety_rejects_fallback_metadata() {
+@@ -1193,18 +1228,23 @@ async fn model_safety_rejects_fallback_metadata() {
              &destination,
              "the active model has only fallback metadata",
          ),
@@ -672,7 +801,7 @@ index 72ae069562..b36296aaf7 100644
      let session = Arc::new(session);
      let turn_context = Arc::new(turn_context_raw);
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 8ab44553be..bc44d6bf0b 100644
+index 8ab44553be..cee1ca656b 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -15,6 +15,7 @@ use crate::context::ContextualUserFragment;
@@ -683,7 +812,16 @@ index 8ab44553be..bc44d6bf0b 100644
  use crate::hook_runtime::drain_async_hook_results;
  use crate::hook_runtime::inspect_pending_input;
  use crate::hook_runtime::record_additional_contexts;
-@@ -174,8 +175,11 @@ pub(crate) async fn run_turn(
+@@ -78,6 +79,8 @@ use codex_file_system::FindUpErrorPolicy;
+ use codex_file_system::find_nearest_ancestor_with_markers;
+ use codex_login::CodexAuth;
+ use codex_model_provider::RemoteCompactionSupport;
++use codex_model_provider_info::ModelProviderInfo;
++use codex_model_provider_info::ToolCompatibility;
+ use codex_protocol::ResponseItemId;
+ use codex_protocol::config_types::AutoCompactTokenLimitScope;
+ use codex_protocol::config_types::ModeKind;
+@@ -174,8 +177,11 @@ pub(crate) async fn run_turn(
      // Record results from hooks that finished after the previous turn before this turn's user prompt.
      drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ true).await;
  
@@ -697,7 +835,7 @@ index 8ab44553be..bc44d6bf0b 100644
      // TODO(ccunningham): Pre-turn compaction runs before context updates and the
      // new user message are recorded. Estimate pending incoming items (context
      // diffs/full reinjection + user input) and trigger compaction preemptively
-@@ -208,7 +212,11 @@ pub(crate) async fn run_turn(
+@@ -208,7 +214,11 @@ pub(crate) async fn run_turn(
              .await;
          // Publish the failure only after prompt hooks finish, so clients cannot react to
          // an error by steering follow-up input into a turn still preserving its prompt.
@@ -710,7 +848,7 @@ index 8ab44553be..bc44d6bf0b 100644
              RemoteCompactionSupport::V2 => Some("Error running remote compact task".to_string()),
              RemoteCompactionSupport::Unsupported => None,
          };
-@@ -255,7 +263,7 @@ pub(crate) async fn run_turn(
+@@ -255,7 +265,7 @@ pub(crate) async fn run_turn(
      required_servers.dedup();
  
      // run_turn owns the step used to seed context and make the first sampling request.
@@ -719,7 +857,7 @@ index 8ab44553be..bc44d6bf0b 100644
          .capture_step_context_with_required_mcp_servers(
              Arc::clone(&turn_context),
              &cancellation_token,
-@@ -279,7 +287,7 @@ pub(crate) async fn run_turn(
+@@ -279,7 +289,7 @@ pub(crate) async fn run_turn(
          Err(err) => return Err(err),
      };
      // Keep the exact model-visible state used by this turn and its inline compactions.
@@ -728,7 +866,7 @@ index 8ab44553be..bc44d6bf0b 100644
          sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref()),
          async {
              if first_step_context
-@@ -305,7 +313,7 @@ pub(crate) async fn run_turn(
+@@ -305,7 +315,7 @@ pub(crate) async fn run_turn(
      );
      let mut world_state = world_state?;
  
@@ -737,7 +875,7 @@ index 8ab44553be..bc44d6bf0b 100644
          &sess,
          first_step_context.as_ref(),
          &user_input,
-@@ -363,11 +371,67 @@ pub(crate) async fn run_turn(
+@@ -363,11 +373,67 @@ pub(crate) async fn run_turn(
          .await?;
      }
      let mut can_drain_pending_input = input.is_empty();
@@ -806,7 +944,7 @@ index 8ab44553be..bc44d6bf0b 100644
          PersistContext::TurnStart,
      )
      .await
-@@ -387,8 +451,8 @@ pub(crate) async fn run_turn(
+@@ -387,8 +453,8 @@ pub(crate) async fn run_turn(
      sess.merge_connector_selection(explicitly_enabled_connectors.clone())
          .await;
      sess.set_previous_turn_settings(Some(PreviousTurnSettings {
@@ -817,7 +955,26 @@ index 8ab44553be..bc44d6bf0b 100644
          realtime_active: Some(turn_context.realtime_active),
      }))
      .await;
-@@ -812,6 +876,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -508,13 +574,17 @@ pub(crate) async fn run_turn(
+                 .await;
+ 
+             // Construct the input that we will send to the model.
+-            let sampling_request_input: Vec<ResponseItem> = async {
++            let mut sampling_request_input: Vec<ResponseItem> = async {
+                 sess.clone_history()
+                     .await
+                     .for_prompt(&step_context.settings.model_info.input_modalities)
+             }
+             .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
+             .await;
++            normalize_prompt_for_provider(
++                &mut sampling_request_input,
++                turn_context.model_provider().info(),
++            );
+ 
+             let responses_metadata = sess
+                 .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
+@@ -812,6 +882,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
      model_info: &ModelInfo,
      input: &[TurnInput],
      persist_context: PersistContext,
@@ -856,7 +1013,7 @@ index 8ab44553be..bc44d6bf0b 100644
  ) -> bool {
      // Cancellation can reach this path before Guardian's tools and context are
      // resolved. Only finalized evidence may enter reusable reviewer history.
-@@ -825,8 +921,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -825,8 +927,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
      }
      let mut blocked_input = false;
      let mut accepted_user_input = false;
@@ -866,7 +1023,7 @@ index 8ab44553be..bc44d6bf0b 100644
          if hook_outcome.should_stop {
              blocked_input = true;
              record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
-@@ -1290,7 +1385,7 @@ async fn capture_current_model_fallback_step_context(
+@@ -1290,7 +1391,7 @@ async fn capture_current_model_fallback_step_context(
          .as_deref()
          .is_some_and(codex_login::AuthManager::current_auth_uses_codex_backend);
      if !uses_codex_backend
@@ -875,7 +1032,7 @@ index 8ab44553be..bc44d6bf0b 100644
          || previous_model == turn_context.model_info().slug
      {
          return Ok(None);
-@@ -1425,7 +1520,11 @@ async fn run_auto_compact(
+@@ -1425,7 +1526,11 @@ async fn run_auto_compact(
          return Ok(());
      }
  
@@ -888,7 +1045,72 @@ index 8ab44553be..bc44d6bf0b 100644
          RemoteCompactionSupport::V2 => {
              emit_compact_metric(
                  &sess.services.session_telemetry,
-@@ -1566,7 +1665,7 @@ async fn run_sampling_request(
+@@ -1533,6 +1638,64 @@ pub(crate) fn build_prompt(
+     }
+ }
+ 
++fn normalize_prompt_for_provider(input: &mut Vec<ResponseItem>, provider: &ModelProviderInfo) {
++    match provider.tool_compatibility {
++        Some(ToolCompatibility::FunctionsAndApplyPatch) => {
++            let unsupported_custom_calls = input
++                .iter()
++                .filter_map(|item| match item {
++                    ResponseItem::CustomToolCall { call_id, name, .. }
++                        if name != "apply_patch" =>
++                    {
++                        Some(call_id.clone())
++                    }
++                    _ => None,
++                })
++                .collect::<HashSet<_>>();
++            input.retain(|item| match item {
++                ResponseItem::Reasoning { .. }
++                | ResponseItem::AdditionalTools { .. }
++                | ResponseItem::LocalShellCall { .. }
++                | ResponseItem::ToolSearchCall { .. }
++                | ResponseItem::ToolSearchOutput { .. }
++                | ResponseItem::WebSearchCall { .. }
++                | ResponseItem::ImageGenerationCall { .. }
++                | ResponseItem::Compaction { .. }
++                | ResponseItem::ContextCompaction { .. } => false,
++                ResponseItem::CustomToolCall { name, .. } => name == "apply_patch",
++                ResponseItem::CustomToolCallOutput { call_id, .. } => {
++                    !unsupported_custom_calls.contains(call_id)
++                }
++                _ => true,
++            });
++            // Response item IDs are provider-owned and are not portable across
++            // OpenAI-compatible implementations. Call IDs remain intact so
++            // function/custom output pairing is preserved.
++            for item in input.iter_mut() {
++                item.set_id(None);
++            }
++        }
++        None if provider.is_openai() => {
++            input.retain(|item| match item {
++                // OpenAI reasoning items have an `rs_` ID and no plaintext
++                // reasoning content. Third-party Responses implementations may
++                // return plaintext here, which OpenAI rejects when replayed.
++                ResponseItem::Reasoning { id, content, .. } => {
++                    id.as_ref().is_some_and(|id| id.starts_with("rs_"))
++                        && content.as_ref().is_none_or(Vec::is_empty)
++                }
++                _ => true,
++            });
++            for item in input.iter_mut() {
++                if item.id().is_some_and(|id| !id.is_prefixed()) {
++                    item.set_id(None);
++                }
++            }
++        }
++        None => {}
++    }
++}
++
+ #[allow(clippy::too_many_arguments)]
+ #[allow(deprecated)]
+ #[instrument(level = "trace",
+@@ -1566,7 +1729,7 @@ async fn run_sampling_request(
          Arc::clone(&step_context),
          Arc::clone(&turn_diff_tracker),
      );
@@ -897,7 +1119,15 @@ index 8ab44553be..bc44d6bf0b 100644
      let mut retry_state = ResponsesStreamRetryState::default();
      let mut initial_input = Some(input);
      let mut original_input = None;
-@@ -2435,14 +2534,14 @@ async fn try_run_sampling_request(
+@@ -1582,6 +1745,7 @@ async fn run_sampling_request(
+                 .for_prompt(&step_context.settings.model_info.input_modalities)
+         };
+         let mut prompt_input = prompt_input;
++        normalize_prompt_for_provider(&mut prompt_input, turn_context.model_provider().info());
+         sess.services
+             .executed_tool_calls
+             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
+@@ -2435,14 +2599,14 @@ async fn try_run_sampling_request(
      let inference_trace = sess.services.rollout_thread_trace.inference_trace_context(
          turn_context.sub_id.as_str(),
          step_context.settings.model_info.slug.as_str(),
@@ -988,6 +1218,78 @@ index 9f86627a45..e9e5cbbab9 100644
              session_source,
              history_mode: session_configuration.history_mode,
              parent_thread_id: session_configuration.parent_thread_id,
+diff --git a/codex-rs/core/src/session/turn_tests.rs b/codex-rs/core/src/session/turn_tests.rs
+index e43fb6a2ae..2642534de2 100644
+--- a/codex-rs/core/src/session/turn_tests.rs
++++ b/codex-rs/core/src/session/turn_tests.rs
+@@ -108,3 +108,67 @@ fn realtime_user_verification_notice_excludes_request_payload() {
+         )),
+     );
+ }
++
++#[test]
++fn openai_prompt_drops_third_party_plaintext_reasoning() {
++    let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
++    let native = ResponseItem::Reasoning {
++        id: Some(ResponseItemId::with_suffix("rs", "native")),
++        summary: Vec::new(),
++        content: None,
++        encrypted_content: Some("native encrypted reasoning".to_string()),
++        internal_chat_message_metadata_passthrough: None,
++    };
++    let foreign = ResponseItem::Reasoning {
++        id: Some(ResponseItemId::from_server("foreign-id".to_string())),
++        summary: Vec::new(),
++        content: Some(vec![
++            codex_protocol::models::ReasoningItemContent::ReasoningText {
++                text: "third-party plaintext".to_string(),
++            },
++        ]),
++        encrypted_content: Some("third-party marker".to_string()),
++        internal_chat_message_metadata_passthrough: None,
++    };
++    let mut input = vec![native.clone(), foreign, assistant_output_text("answer")];
++
++    normalize_prompt_for_provider(&mut input, &provider);
++
++    assert_eq!(input, vec![native, assistant_output_text("answer")]);
++}
++
++#[test]
++fn restricted_provider_prompt_keeps_only_portable_custom_tools() {
++    let mut provider = ModelProviderInfo::default();
++    provider.tool_compatibility = Some(ToolCompatibility::FunctionsAndApplyPatch);
++    let custom_call = |name: &str, call_id: &str| ResponseItem::CustomToolCall {
++        id: Some(ResponseItemId::with_suffix("ctc", call_id)),
++        status: Some("completed".to_string()),
++        call_id: call_id.to_string(),
++        name: name.to_string(),
++        namespace: None,
++        input: "input".to_string(),
++        internal_chat_message_metadata_passthrough: None,
++    };
++    let apply_patch = custom_call("apply_patch", "patch-call");
++    let mut input = vec![
++        custom_call("exec", "exec-call"),
++        apply_patch.clone(),
++        ResponseItem::Reasoning {
++            id: Some(ResponseItemId::from_server("foreign-id".to_string())),
++            summary: Vec::new(),
++            content: None,
++            encrypted_content: None,
++            internal_chat_message_metadata_passthrough: None,
++        },
++        assistant_output_text("answer"),
++    ];
++
++    normalize_prompt_for_provider(&mut input, &provider);
++
++    let mut expected_apply_patch = apply_patch;
++    expected_apply_patch.set_id(None);
++    let mut expected_message = assistant_output_text("answer");
++    expected_message.set_id(None);
++    assert_eq!(input, vec![expected_apply_patch, expected_message]);
++}
 diff --git a/codex-rs/core/src/tasks/compact.rs b/codex-rs/core/src/tasks/compact.rs
 index 14913d95c8..0f8f5f52b0 100644
 --- a/codex-rs/core/src/tasks/compact.rs
@@ -1135,6 +1437,106 @@ index c0125ad996..645cbc5859 100644
  }
  
  struct TestNamespaceExtensionTool {
+diff --git a/codex-rs/core/tests/responses_headers.rs b/codex-rs/core/tests/responses_headers.rs
+index be184753e7..469c852bce 100644
+--- a/codex-rs/core/tests/responses_headers.rs
++++ b/codex-rs/core/tests/responses_headers.rs
+@@ -90,6 +90,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
+         requires_openai_auth: false,
+         supports_websockets: false,
+         supports_standalone_web_search: false,
++        tool_compatibility: None,
+     };
+ 
+     let codex_home = TempDir::new().expect("failed to create TempDir");
+@@ -227,6 +228,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
+         requires_openai_auth: false,
+         supports_websockets: false,
+         supports_standalone_web_search: false,
++        tool_compatibility: None,
+     };
+ 
+     let codex_home = TempDir::new().expect("failed to create TempDir");
+@@ -345,6 +347,7 @@ async fn responses_respects_model_info_overrides_from_config() {
+         requires_openai_auth: false,
+         supports_websockets: false,
+         supports_standalone_web_search: false,
++        tool_compatibility: None,
+     };
+ 
+     let codex_home = TempDir::new().expect("failed to create TempDir");
+diff --git a/codex-rs/core/tests/suite/client.rs b/codex-rs/core/tests/suite/client.rs
+index 79d0eb4f6d..215df1b13d 100644
+--- a/codex-rs/core/tests/suite/client.rs
++++ b/codex-rs/core/tests/suite/client.rs
+@@ -1528,6 +1528,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
+         requires_openai_auth: false,
+         supports_websockets: false,
+         supports_standalone_web_search: false,
++        tool_compatibility: None,
+     };
+ 
+     send_request_with_provider(provider).await;
+@@ -3026,6 +3027,7 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
+         requires_openai_auth: false,
+         supports_websockets: false,
+         supports_standalone_web_search: false,
++        tool_compatibility: None,
+     };
+ 
+     let codex_home = TempDir::new().unwrap();
+@@ -3658,6 +3660,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
+         requires_openai_auth: false,
+         supports_websockets: false,
+         supports_standalone_web_search: false,
++        tool_compatibility: None,
+     };
+ 
+     // Init session
+@@ -3742,6 +3745,7 @@ async fn env_var_overrides_loaded_auth() {
+         requires_openai_auth: false,
+         supports_websockets: false,
+         supports_standalone_web_search: false,
++        tool_compatibility: None,
+     };
+ 
+     // Init session
+diff --git a/codex-rs/core/tests/suite/client_websockets.rs b/codex-rs/core/tests/suite/client_websockets.rs
+index 4d2ba3c926..c00dca4e2f 100755
+--- a/codex-rs/core/tests/suite/client_websockets.rs
++++ b/codex-rs/core/tests/suite/client_websockets.rs
+@@ -2691,6 +2691,7 @@ fn websocket_provider_with_connect_timeout(
+         requires_openai_auth: false,
+         supports_websockets: true,
+         supports_standalone_web_search: false,
++        tool_compatibility: None,
+     }
+ }
+ 
+diff --git a/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs b/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs
+index 32ebbf2979..3a90d17009 100644
+--- a/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs
++++ b/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs
+@@ -82,6 +82,7 @@ async fn continue_after_stream_error() {
+         requires_openai_auth: false,
+         supports_websockets: false,
+         supports_standalone_web_search: false,
++        tool_compatibility: None,
+     };
+ 
+     let TestCodex { codex, .. } = test_codex()
+diff --git a/codex-rs/core/tests/suite/stream_no_completed.rs b/codex-rs/core/tests/suite/stream_no_completed.rs
+index d9741d0381..578dfa4ebd 100644
+--- a/codex-rs/core/tests/suite/stream_no_completed.rs
++++ b/codex-rs/core/tests/suite/stream_no_completed.rs
+@@ -68,6 +68,7 @@ async fn retries_on_early_close() {
+         requires_openai_auth: false,
+         supports_websockets: false,
+         supports_standalone_web_search: false,
++        tool_compatibility: None,
+     };
+ 
+     let TestCodex { codex, .. } = test_codex()
 diff --git a/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json b/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json
 index 6a10a9f75c..22858f6eda 100644
 --- a/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json
@@ -1542,6 +1944,59 @@ index bb50807af5..7fef1196c6 100644
      #[schemars(schema_with = "permission_mode_schema")]
      pub permission_mode: String,
      pub prompt: String,
+diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
+index 9c27b15cc4..a2d1685b40 100644
+--- a/codex-rs/model-provider-info/src/lib.rs
++++ b/codex-rs/model-provider-info/src/lib.rs
+@@ -94,6 +94,14 @@ impl<'de> Deserialize<'de> for WireApi {
+     }
+ }
+ 
++/// Provider-specific restrictions on the tool schemas accepted by a Responses API.
++#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
++#[serde(rename_all = "snake_case")]
++pub enum ToolCompatibility {
++    /// Function tools plus the Responses API `apply_patch` custom tool.
++    FunctionsAndApplyPatch,
++}
++
+ /// Serializable representation of a provider definition.
+ #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, JsonSchema)]
+ #[schemars(deny_unknown_fields)]
+@@ -152,6 +160,9 @@ pub struct ModelProviderInfo {
+     /// Whether this provider supports the standalone web-search endpoint.
+     #[serde(default)]
+     pub supports_standalone_web_search: bool,
++    /// Optional tool-schema compatibility profile for OpenAI-compatible providers.
++    #[serde(default)]
++    pub tool_compatibility: Option<ToolCompatibility>,
+ }
+ 
+ /// AWS SigV4 auth configuration for a model provider.
+@@ -495,6 +506,7 @@ other non-default provider fields are not supported"
+             requires_openai_auth: true,
+             supports_websockets: true,
+             supports_standalone_web_search: true,
++            tool_compatibility: None,
+         }
+     }
+ 
+@@ -531,6 +543,7 @@ other non-default provider fields are not supported"
+             requires_openai_auth: false,
+             supports_websockets: false,
+             supports_standalone_web_search: false,
++            tool_compatibility: None,
+         }
+     }
+ 
+@@ -702,6 +715,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
+         requires_openai_auth: false,
+         supports_websockets: false,
+         supports_standalone_web_search: false,
++        tool_compatibility: None,
+     }
+ }
+ 
 diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
 index ceeaa80e31..b38fb3f28a 100644
 --- a/codex-rs/protocol/src/protocol.rs

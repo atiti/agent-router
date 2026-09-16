@@ -108,6 +108,10 @@ Backend mappings are defaults, not lock-in. Prefix a prompt with `@gpt`, `@azure
 `@deepseek @smart review this design`. Disabled or unavailable configured backends visibly fall
 back to `gpt`. Provider changes happen inside the active thread: Codex rebuilds only its
 provider-specific request session while retaining the local conversation, tools, and turn state.
+AgentRoute also applies a provider-declared tool compatibility profile. DeepSeek currently receives
+ordinary function tools plus the `apply_patch` custom tool because its Responses API rejects
+Codex's custom Code Mode `exec` tool. This changes only the wire format: the active Codex sandbox,
+approval, Guardian, reviewer, and Node/Code Mode safety authority remains local and unchanged.
 
 ## Optional LLM classifier
 

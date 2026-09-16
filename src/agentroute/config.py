@@ -24,6 +24,7 @@ class ExecutionBackendConfig(BaseModel):
     base_url: str | None = None
     api_key_env: str | None = None
     api_key_header: str = "authorization"
+    tool_compatibility: Literal["full", "functions_and_apply_patch"] | None = None
     tiers: dict[str, ModelTarget]
 
     def target(self, tier: Tier) -> ModelTarget:
@@ -214,8 +215,9 @@ def default_config() -> AppConfig:
                 display_name="DeepSeek API",
                 base_url="https://api.deepseek.com",
                 api_key_env="DEEPSEEK_API_KEY",
+                tool_compatibility="functions_and_apply_patch",
                 tiers={
-                    "fast": ModelTarget(model="deepseek-flash", reasoning_effort="none"),
+                    "fast": ModelTarget(model="deepseek-flash", reasoning_effort="low"),
                     "normal": ModelTarget(model="deepseek-flash", reasoning_effort="low"),
                     "smart": ModelTarget(model="deepseek-v4-pro", reasoning_effort="high"),
                     "max": ModelTarget(model="deepseek-v4-pro", reasoning_effort="max"),
@@ -234,11 +236,21 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
     else:
         for name, backend in defaults.backends.items():
             config.backends.setdefault(name, backend)
+            configured = config.backends[name]
+            if configured.tool_compatibility is None:
+                configured.tool_compatibility = backend.tool_compatibility
     deepseek = config.backends.get("deepseek")
     if deepseek:
         legacy_models = {"deepseek-chat", "deepseek-reasoner"}
         if any(target.model in legacy_models for target in deepseek.tiers.values()):
             deepseek.tiers = defaults.backends["deepseek"].tiers
+        fast_target = deepseek.tiers.get("fast")
+        if (
+            fast_target
+            and fast_target.model == "deepseek-flash"
+            and fast_target.reasoning_effort == "none"
+        ):
+            fast_target.reasoning_effort = "low"
     for model, price in defaults.pricing.models.items():
         config.pricing.models.setdefault(model, price)
     return config

@@ -36,6 +36,11 @@ def _provider_block(config: AppConfig) -> str:
                 "supports_websockets = false",
             ]
         )
+        if backend.tool_compatibility == "functions_and_apply_patch":
+            lines.append(
+                "tool_compatibility = "
+                f"{_toml_string(backend.tool_compatibility)}"
+            )
         if backend.api_key_env:
             if backend.api_key_header.lower() == "authorization":
                 lines.append(f"env_key = {_toml_string(backend.api_key_env)}")

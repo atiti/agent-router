@@ -16,6 +16,10 @@ def test_native_patch_is_packaged():
     assert "apply_routed_turn_settings" in content
     assert "new_session_for_provider" in content
     assert "TurnInput::InterAgentCommunication" in content
+    assert "ToolCompatibility::FunctionsAndApplyPatch" in content
+    assert "provider_tool_compatibility_preserves_admitted_safety_authority" in content
+    assert "normalize_prompt_for_provider" in content
+    assert "openai_prompt_drops_third_party_plaintext_reasoning" in content
 
 
 def test_installer_enables_code_mode_and_signs_macos_binary():
@@ -25,3 +29,4 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "codex-code-mode-host" in installer
     assert "classifier-refresh" in installer
     assert "codesign --force --sign -" in installer
+    assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer

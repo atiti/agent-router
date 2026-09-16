@@ -1,8 +1,9 @@
 import os
 
 import pytest
+import yaml
 
-from agentroute.config import default_config
+from agentroute.config import default_config, load_config
 from agentroute.providers import (
     END_MARKER,
     START_MARKER,
@@ -31,7 +32,26 @@ def test_sync_codex_providers_is_idempotent_and_never_writes_keys(tmp_path):
     assert "AZURE_OPENAI_API_KEY" in first
     assert "DEEPSEEK_API_KEY" in first
     assert "api-key" in first
+    assert 'tool_compatibility = "functions_and_apply_patch"' in first
     assert "secret" not in first.lower()
+
+
+def test_legacy_deepseek_backend_gains_safe_tool_compatibility(tmp_path):
+    path = tmp_path / "config.yaml"
+    payload = default_config().model_dump(mode="json", exclude_none=True)
+    payload["backends"]["deepseek"].pop("tool_compatibility")
+    payload["backends"]["deepseek"]["tiers"]["fast"][
+        "reasoning_effort"
+    ] = "none"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    loaded = load_config(path)
+
+    assert (
+        loaded.backends["deepseek"].tool_compatibility
+        == "functions_and_apply_patch"
+    )
+    assert loaded.backends["deepseek"].tiers["fast"].reasoning_effort == "low"
 
 
 def test_imported_credential_is_owner_only_and_counts_as_ready(tmp_path, monkeypatch):
