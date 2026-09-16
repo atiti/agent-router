@@ -84,6 +84,45 @@ class UIConfig(BaseModel):
     verbosity: Literal["silent", "compact", "verbose", "debug"] = "compact"
 
 
+class ModelPrice(BaseModel):
+    input_per_million: float = Field(ge=0)
+    cached_input_per_million: float = Field(ge=0)
+    output_per_million: float = Field(ge=0)
+    cache_write_per_million: float | None = Field(default=None, ge=0)
+
+
+class PricingConfig(BaseModel):
+    currency: str = "USD"
+    baseline_model: str = "gpt-6-astra"
+    source_checked_at: str = "2026-09-16"
+    models: dict[str, ModelPrice] = Field(
+        default_factory=lambda: {
+            "gpt-5.6-luna": ModelPrice(
+                input_per_million=0.20,
+                cached_input_per_million=0.02,
+                output_per_million=1.20,
+            ),
+            "gpt-5.6-terra": ModelPrice(
+                input_per_million=2.00,
+                cached_input_per_million=0.20,
+                output_per_million=12.00,
+            ),
+            "gpt-5.6-sol": ModelPrice(
+                input_per_million=4.00,
+                cached_input_per_million=0.40,
+                output_per_million=20.00,
+            ),
+            "gpt-6-astra": ModelPrice(
+                input_per_million=10.00,
+                cached_input_per_million=1.00,
+                cache_write_per_million=12.50,
+                output_per_million=50.00,
+            ),
+        }
+    )
+    aliases: dict[str, str] = Field(default_factory=dict)
+
+
 class AppConfig(BaseModel):
     preset: str = "balanced"
     enabled: bool = False
@@ -92,6 +131,7 @@ class AppConfig(BaseModel):
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
+    pricing: PricingConfig = Field(default_factory=PricingConfig)
 
 
 def default_config() -> AppConfig:

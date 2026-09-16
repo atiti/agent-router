@@ -27,6 +27,7 @@ class ReasonCode(str, Enum):
     READ_ONLY_RETRIEVAL = "READ_ONLY_RETRIEVAL"
     SIMPLE_CONTEXT_QUESTION = "SIMPLE_CONTEXT_QUESTION"
     READ_ONLY_STATUS = "READ_ONLY_STATUS"
+    BOUNDED_COMMUNICATION = "BOUNDED_COMMUNICATION"
     CREDENTIAL_EXPOSURE = "CREDENTIAL_EXPOSURE"
     OPERATIONAL_INCIDENT = "OPERATIONAL_INCIDENT"
     SMALL_SCOPE = "SMALL_SCOPE"
@@ -59,6 +60,7 @@ class ScoreContribution(BaseModel):
 
 class RouteContext(BaseModel):
     session_id: str
+    turn_id: str | None = None
     provider: str = "codex"
     latest_prompt: str
     current_model: str = ""
@@ -85,6 +87,7 @@ class RouteDecision(BaseModel):
     contributions: list[ScoreContribution]
     provider: str
     session_id: str
+    turn_id: str | None = None
     prompt_hash: str
     manual_override: bool = False
     inherited: bool = False
@@ -92,7 +95,7 @@ class RouteDecision(BaseModel):
     metadata: dict[str, object] = Field(default_factory=dict)
     proposed_tier: Tier | None = None
     comparison_tier: Tier | None = None
-    classifier_version: str = "hybrid-v6"
+    classifier_version: str = "hybrid-v7"
     classification_source: str = "heuristic"
     classifier_confidence: float | None = Field(default=None, ge=0, le=1)
     classifier_task_type: str | None = None

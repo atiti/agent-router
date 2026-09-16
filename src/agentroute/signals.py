@@ -29,6 +29,11 @@ READ_ONLY_STATUS = re.compile(
     r"|(?:\b(?:status|state)\s+of\b)",
     re.IGNORECASE,
 )
+BOUNDED_COMMUNICATION = re.compile(
+    r"^\s*(?:please\s+)?(?:reply|respond|send|post)\b[^\n]{0,160}"
+    r"\b(?:slack|thread|message|comment|email)\b[^\n]{0,80}$",
+    re.IGNORECASE,
+)
 CREDENTIAL_EXPOSURE = re.compile(
     r"(?:\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|"
     r"password|secret)\b\s*(?:is\s+|[:=]\s*)[\"']?"
@@ -108,6 +113,13 @@ def extract_signals(context: RouteContext) -> list[ScoreContribution]:
         ReasonCode.READ_ONLY_STATUS,
         -1.5,
         "read-only status question",
+    )
+    _add(
+        output,
+        bool(BOUNDED_COMMUNICATION.search(prompt)),
+        ReasonCode.BOUNDED_COMMUNICATION,
+        -2,
+        "bounded communication action",
     )
     _add(
         output,

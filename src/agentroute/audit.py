@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
     session_id TEXT NOT NULL,
+    turn_id TEXT,
     provider TEXT NOT NULL,
     current_tier TEXT NOT NULL,
     selected_tier TEXT NOT NULL,
@@ -48,13 +49,22 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     selection_receipt TEXT NOT NULL DEFAULT '{}',
     selection_receipt_hash TEXT,
     outcome_label TEXT,
-    outcome_notes TEXT
+    outcome_notes TEXT,
+    answer_model TEXT,
+    answer_input_tokens INTEGER,
+    answer_cached_input_tokens INTEGER,
+    answer_cache_write_input_tokens INTEGER,
+    answer_output_tokens INTEGER,
+    answer_reasoning_output_tokens INTEGER,
+    answer_total_tokens INTEGER,
+    usage_recorded_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_routing_session
 ON routing_decisions(session_id, id DESC);
 """
 
 MIGRATIONS = {
+    "turn_id": "TEXT",
     "classifier_version": "TEXT NOT NULL DEFAULT 'legacy'",
     "classification_source": "TEXT NOT NULL DEFAULT 'heuristic'",
     "classifier_confidence": "REAL",
@@ -75,6 +85,14 @@ MIGRATIONS = {
     "selection_receipt_hash": "TEXT",
     "outcome_label": "TEXT",
     "outcome_notes": "TEXT",
+    "answer_model": "TEXT",
+    "answer_input_tokens": "INTEGER",
+    "answer_cached_input_tokens": "INTEGER",
+    "answer_cache_write_input_tokens": "INTEGER",
+    "answer_output_tokens": "INTEGER",
+    "answer_reasoning_output_tokens": "INTEGER",
+    "answer_total_tokens": "INTEGER",
+    "usage_recorded_at": "TEXT",
 }
 
 
@@ -93,6 +111,10 @@ class AuditStore:
                     connection.execute(
                         f"ALTER TABLE routing_decisions ADD COLUMN {name} {declaration}"
                     )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_routing_turn "
+                "ON routing_decisions(session_id, turn_id)"
+            )
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -133,7 +155,7 @@ class AuditStore:
             cursor = connection.execute(
                 """
                 INSERT INTO routing_decisions (
-                    created_at, session_id, provider, current_tier, selected_tier,
+                    created_at, session_id, turn_id, provider, current_tier, selected_tier,
                     model, reasoning_effort, confidence, raw_score, reason_codes,
                     contributions, prompt_hash, prompt, manual_override, inherited, switched,
                     classifier_version, proposed_tier, comparison_tier, task_context_used,
@@ -143,13 +165,14 @@ class AuditStore:
                     classification_source, classifier_confidence, classifier_task_type,
                     classifier_reason_hash, selection_receipt, selection_receipt_hash
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
                     datetime.now(timezone.utc).isoformat(),
                     decision.session_id,
+                    decision.turn_id,
                     decision.provider,
                     str(current_tier),
                     str(decision.tier),
@@ -189,6 +212,37 @@ class AuditStore:
                 ),
             )
             return int(cursor.lastrowid)
+
+    def record_usage(
+        self, session_id: str, turn_id: str, model: str, usage: dict[str, int]
+    ) -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE routing_decisions SET
+                    answer_model = ?, answer_input_tokens = ?,
+                    answer_cached_input_tokens = ?, answer_cache_write_input_tokens = ?,
+                    answer_output_tokens = ?, answer_reasoning_output_tokens = ?,
+                    answer_total_tokens = ?, usage_recorded_at = ?
+                WHERE id = (
+                    SELECT id FROM routing_decisions
+                    WHERE session_id = ? AND turn_id = ? ORDER BY id DESC LIMIT 1
+                )
+                """,
+                (
+                    model,
+                    usage.get("input_tokens", 0),
+                    usage.get("cached_input_tokens", 0),
+                    usage.get("cache_write_input_tokens", 0),
+                    usage.get("output_tokens", 0),
+                    usage.get("reasoning_output_tokens", 0),
+                    usage.get("total_tokens", 0),
+                    datetime.now(timezone.utc).isoformat(),
+                    session_id,
+                    turn_id,
+                ),
+            )
+            return cursor.rowcount == 1
 
     def latest(self, session_id: str | None = None) -> sqlite3.Row | None:
         query = "SELECT * FROM routing_decisions"

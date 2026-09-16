@@ -23,10 +23,12 @@ Codex UserPromptSubmit hook ──► AgentRoute classifier ──► SQLite aud
     │                           model + reasoning effort
     ▼                                  │
 the same active Codex thread ◄─────────┘
+    │
+    └── Stop hook ──► exact per-turn token counters ──► cost statistics
 ```
 
 The native patch applies the chosen settings before the first model call of that turn. Explicit
-read-only retrievals, mechanical edits, and simple questions about existing context take a
+read-only retrievals, mechanical edits, bounded replies/messages, and simple questions about existing context take a
 deterministic high-confidence FAST lane; hard risk floors still win. Ambiguous decisions can be
 sent to a small OpenAI-compatible classifier with a two-second timeout and immediate heuristic
 fallback. A short
@@ -148,11 +150,20 @@ agentroute test "@max audit this concurrency design"
 agentroute why
 agentroute history
 agentroute audit-report
+agentroute stats --baseline gpt-6-astra
 agentroute label 42 correct --notes "appropriate model for the completed task"
 ```
 
 Use `agentroute observe` to audit decisions without changing models and `agentroute enable` to
 resume native switching.
+
+`agentroute stats` uses Codex's cumulative per-turn transcript counters for input, cached input,
+cache-write input, output, and reasoning-output tokens. It estimates routed answer cost, the cost
+of running the same observed token counts on a fixed baseline model, classifier overhead, and net
+savings. Reasoning tokens are already included in output tokens and are not charged twice. Prices
+and aliases are editable under `pricing` in `~/.agentroute/config.yaml`; the bundled defaults were
+checked on 2026-09-16 against the official OpenAI model pages. This is an API-equivalent estimate,
+not a Codex subscription invoice, and a different model may produce a different number of tokens.
 
 When a route is applied, Codex prints a highlighted line before the response, for example:
 
@@ -187,6 +198,7 @@ present.
 - Credential-shaped values trigger a visible warning and a SMART minimum route.
 - Hook failures fail open so a router error does not block Codex.
 - Existing Codex hooks are preserved during installation.
+- A fail-open Stop hook records exact answer token counters against the matching session and turn.
 - Config can cap the highest tier and set mandatory floors for risky work.
 
 For deterministic routes, the displayed percentage is explicitly **rule confidence**, not a

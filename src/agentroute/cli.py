@@ -20,10 +20,11 @@ from .classifier import (
 )
 from .codex_patch import apply_patch, build_codex, install_binary
 from .config import config_path, default_config, load_config, save_config
-from .hook import codex_user_prompt_submit
+from .hook import codex_stop, codex_user_prompt_submit
 from .install import hook_command as installed_hook_command
 from .install import merge_codex_hook
 from .models import RouteContext, Tier
+from .pricing import cost_report
 from .router import Router
 
 app = typer.Typer(no_args_is_help=True, help="Local, auditable model routing for coding agents.")
@@ -94,9 +95,14 @@ def test_command(
 @app.command("hook")
 def hook_command(provider: str, event: str) -> None:
     """Run a provider hook protocol over stdin/stdout."""
-    if (provider, event) != ("codex", "user-prompt-submit"):
-        raise typer.BadParameter("supported hook: codex user-prompt-submit")
-    raise typer.Exit(codex_user_prompt_submit())
+    handlers = {
+        ("codex", "user-prompt-submit"): codex_user_prompt_submit,
+        ("codex", "stop"): codex_stop,
+    }
+    handler = handlers.get((provider, event))
+    if handler is None:
+        raise typer.BadParameter("supported hooks: codex user-prompt-submit, codex stop")
+    raise typer.Exit(handler())
 
 
 @app.command("why")
@@ -214,6 +220,42 @@ def audit_report_command(limit: int = 500) -> None:
                 usage_totals[name] = usage_totals.get(name, 0) + value
     if usage_totals:
         console.print(f"LLM usage totals: {json.dumps(usage_totals, sort_keys=True)}")
+
+
+@app.command("stats")
+def stats_command(
+    baseline: str | None = typer.Option(None, help="Fixed model used for comparison."),
+    limit: int = typer.Option(500, min=1, help="Most recent routing decisions to include."),
+) -> None:
+    """Estimate routed cost and savings from measured per-turn token usage."""
+    config = load_config()
+    baseline = baseline or config.pricing.baseline_model
+    if baseline not in config.pricing.models and baseline not in config.pricing.aliases:
+        raise typer.BadParameter(f"no configured price for baseline model: {baseline}")
+    rows = AuditStore().history(limit=limit)
+    report = cost_report(rows, config.pricing, baseline)
+    currency = config.pricing.currency
+    console.print(
+        f"Measured turns: {report.measured_turns}; "
+        f"awaiting/unmeasured: {report.unmeasured_turns}"
+    )
+    console.print(
+        "Answer tokens: "
+        f"input {report.input_tokens:,}; cached {report.cached_input_tokens:,}; "
+        f"cache write {report.cache_write_input_tokens:,}; output {report.output_tokens:,}; "
+        f"reasoning output {report.reasoning_output_tokens:,}"
+    )
+    console.print(f"Routed answer cost: {currency} {report.actual_cost:.4f}")
+    console.print(f"Fixed {baseline} baseline: {currency} {report.baseline_cost:.4f}")
+    console.print(f"Classifier overhead: {currency} {report.classifier_cost:.4f}")
+    console.print(
+        f"Net estimated savings: {currency} {report.net_savings:.4f} "
+        f"({report.savings_percent:.1f}%)"
+    )
+    console.print(
+        "Estimate uses observed routed-turn token counts at configured API rates; "
+        "it is not a Codex subscription invoice or a prediction of another model's token count."
+    )
 
 
 @app.command("classifier-status")
@@ -408,7 +450,7 @@ def codex_patch_command(
 @app.command("hook-json")
 def hook_json_command() -> None:
     """Print the Codex hooks.json fragment for AgentRoute."""
-    command = installed_hook_command()
+    command = installed_hook_command("user-prompt-submit")
     payload = {
         "hooks": {
             "UserPromptSubmit": [
@@ -421,7 +463,18 @@ def hook_json_command() -> None:
                         }
                     ]
                 }
-            ]
+            ],
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": installed_hook_command("stop"),
+                            "statusMessage": "AgentRoute is recording token usage",
+                        }
+                    ]
+                }
+            ],
         }
     }
     console.print_json(data=payload)

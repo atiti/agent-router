@@ -125,8 +125,8 @@ def test_mechanical_task_downgrades_to_fast():
 
 def test_read_only_issue_comment_retrieval_routes_to_fast():
     decision = route(
-        "pull latest comment from tamas: "
-        "https://github.com/markster-exec/project-tracker/issues/1226#issuecomment-5678199421",
+        "pull the latest comment from the issue owner: "
+        "https://github.com/example/project/issues/1226#issuecomment-5678199421",
         current_tier=Tier.FAST,
     )
 
@@ -213,6 +213,25 @@ def test_confirmation_inherits_previous_task_tier():
     assert decision.tier is Tier.SMART
     assert decision.inherited
     assert ReasonCode.PREVIOUS_TASK_INHERITANCE in decision.reason_codes
+
+
+def test_bounded_slack_reply_routes_fast_without_inheriting_completed_work():
+    config = default_config()
+    config.routing.classifier.enabled = True
+    classifier = FakeClassifier(tier=Tier.SMART)
+    decision = Router(config, classifier=classifier).route(
+        RouteContext(
+            session_id="reply",
+            latest_prompt="reply to the project owner in the Slack thread",
+            current_tier=Tier.SMART,
+            previous_task_tier=Tier.SMART,
+            task_definition="Implemented and merged a complex cross-repository production fix.",
+        )
+    )
+
+    assert decision.tier is Tier.FAST
+    assert classifier.calls == 0
+    assert ReasonCode.BOUNDED_COMMUNICATION in decision.reason_codes
 
 
 def test_confirmation_uses_assistant_defined_task_scope():

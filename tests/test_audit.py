@@ -19,7 +19,7 @@ def test_audit_defaults_to_prompt_hash_only(tmp_path):
     assert row["prompt"] is None
     assert len(row["prompt_hash"]) == 64
     assert store.previous_tier("session-1") is Tier.SMART
-    assert row["classifier_version"] == "hybrid-v6"
+    assert row["classifier_version"] == "hybrid-v7"
     assert row["classification_source"] == "manual"
     assert row["comparison_tier"] == "normal"
     assert len(row["selection_receipt_hash"]) == 64
@@ -72,3 +72,6 @@ def test_audit_schema_has_calibration_columns(tmp_path):
     assert "classifier_latency_ms" in columns
     assert "classifier_request_hash" in columns
     assert "classifier_usage" in columns
+    assert "turn_id" in columns
+    assert "answer_input_tokens" in columns
+    assert "usage_recorded_at" in columns

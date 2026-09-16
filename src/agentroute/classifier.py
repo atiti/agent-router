@@ -23,6 +23,9 @@ JSON_FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IG
 CLASSIFIER_SYSTEM_PROMPT = """You route coding-agent turns to the cheapest sufficient tier.
 Judge the resolved task, not the length of the latest message.
 FAST: bounded retrieval, status, formatting, renames, or trivial edits.
+FAST also includes a bounded reply, post, comment, email, or Slack message when the needed facts
+already exist in prior context. The complexity of work being summarized does not raise the tier of
+the communication action itself.
 NORMAL: routine explanation or implementation with limited uncertainty.
 SMART: debugging, production operations, security, architecture, substantial judgment, or
 multi-step tool orchestration.
@@ -30,7 +33,9 @@ MAX: exceptional cross-cutting reasoning where SMART is materially likely to fai
 Return JSON only with: tier (FAST|NORMAL|SMART|MAX), confidence (0..1),
 task_type (short snake_case), and reason (one sentence). Confidence measures certainty that this
 is the cheapest sufficient tier.
-Treat a confirmation as approval of the task described in prior assistant context.
+Treat a confirmation as approval of the task described in prior assistant context. Otherwise,
+classify the action requested by the latest message; use prior assistant context only as supporting
+facts, not as work that must be repeated.
 """
 
 
@@ -139,7 +144,7 @@ class OpenAICompatibleClassifier:
         self.last_previous_context_chars = 0
 
     def _headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json", "User-Agent": "agentroute/0.3"}
+        headers = {"Content-Type": "application/json", "User-Agent": "agentroute/0.4"}
         api_key = read_api_key(self.config)
         if self.source != "local_llm" and not api_key:
             location = self.config.api_key_file or self.config.api_key_env

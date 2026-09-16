@@ -138,20 +138,20 @@ def test_catalog_verification_requires_configured_model(monkeypatch):
     monkeypatch.setattr(
         "urllib.request.urlopen",
         lambda request, timeout: FakeResponse(
-            {"data": [{"id": "dev-gpt-5.6-luna"}, {"id": "dev-gpt-5.6-sol"}]}
+            {"data": [{"id": "classifier-fast"}, {"id": "classifier-smart"}]}
         ),
     )
     classifier = OpenAICompatibleClassifier(
         ClassifierConfig(
             enabled=True,
             endpoint="http://127.0.0.1:11434/v1/chat/completions",
-            model="dev-gpt-5.6-luna",
+            model="classifier-fast",
         )
     )
 
     models, digest, checked_at = classifier.verify_catalog()
 
-    assert models == ["dev-gpt-5.6-luna", "dev-gpt-5.6-sol"]
+    assert models == ["classifier-fast", "classifier-smart"]
     assert len(digest) == 64
     assert "+00:00" in checked_at
 

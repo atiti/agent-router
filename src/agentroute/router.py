@@ -16,7 +16,7 @@ from .signals import (
     reason_codes,
 )
 
-CLASSIFIER_VERSION = "hybrid-v6"
+CLASSIFIER_VERSION = "hybrid-v7"
 
 
 def tier_from_score(score: float) -> Tier:
@@ -288,6 +288,7 @@ class Router:
             contributions=contributions,
             provider=context.provider,
             session_id=context.session_id,
+            turn_id=context.turn_id,
             prompt_hash=digest,
             manual_override=manual,
             inherited=inherited,
@@ -368,6 +369,7 @@ class Router:
             ReasonCode.READ_ONLY_RETRIEVAL,
             ReasonCode.SIMPLE_CONTEXT_QUESTION,
             ReasonCode.READ_ONLY_STATUS,
+            ReasonCode.BOUNDED_COMMUNICATION,
         }
         if proposed is Tier.FAST and codes & high_confidence_fast_codes:
             confidence = max(confidence, 0.90)

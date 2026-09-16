@@ -17,6 +17,12 @@ def test_hook_install_preserves_existing_hooks_and_is_idempotent(tmp_path, monke
     assert backup is not None and backup.exists()
     assert second_backup is not None and second_backup.exists()
     assert payload["hooks"]["Stop"][0]["hooks"][0]["command"] == "existing"
+    stop_commands = [
+        item["command"]
+        for group in payload["hooks"]["Stop"]
+        for item in group["hooks"]
+    ]
+    assert sum(command.endswith("agentroute hook codex stop") for command in stop_commands) == 1
     groups = payload["hooks"]["UserPromptSubmit"]
     commands = [item["command"] for group in groups for item in group["hooks"]]
     assert len(commands) == 1

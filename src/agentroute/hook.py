@@ -10,7 +10,7 @@ from .config import AppConfig, load_config
 from .models import ReasonCode, RouteContext, Tier
 from .router import Router
 from .signals import continues_previous_task, is_confirmation
-from .transcript import parse_agent_model_request, previous_assistant_task
+from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
 
 
 def codex_user_prompt_submit(
@@ -47,6 +47,7 @@ def codex_user_prompt_submit(
         )
         context = RouteContext(
             session_id=session_id,
+            turn_id=str(payload["turn_id"]) if payload.get("turn_id") else None,
             provider="codex",
             latest_prompt=prompt,
             current_model=current_model,
@@ -148,5 +149,31 @@ def codex_user_prompt_submit(
             sink,
             separators=(",", ":"),
         )
+        sink.write("\n")
+        return 0
+
+
+def codex_stop(
+    source: TextIO = sys.stdin,
+    sink: TextIO = sys.stdout,
+    *,
+    store: AuditStore | None = None,
+) -> int:
+    """Attach Codex's final per-turn token counters to the matching route decision."""
+    try:
+        payload: dict[str, Any] = json.load(source)
+        usage = turn_token_usage(payload.get("transcript_path"), payload.get("turn_id"))
+        if usage:
+            (store or AuditStore()).record_usage(
+                str(payload["session_id"]),
+                str(payload["turn_id"]),
+                str(payload.get("model", "")),
+                usage,
+            )
+        json.dump({"continue": True, "suppressOutput": True}, sink, separators=(",", ":"))
+        sink.write("\n")
+        return 0
+    except Exception:  # Usage accounting must never prevent a turn from stopping.
+        json.dump({"continue": True, "suppressOutput": True}, sink, separators=(",", ":"))
         sink.write("\n")
         return 0

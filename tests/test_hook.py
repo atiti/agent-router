@@ -3,7 +3,7 @@ import json
 
 from agentroute.audit import AuditStore
 from agentroute.config import default_config
-from agentroute.hook import codex_user_prompt_submit
+from agentroute.hook import codex_stop, codex_user_prompt_submit
 
 
 class FakeClassifierResponse:
@@ -24,7 +24,7 @@ class FakeClassifierResponse:
         )
         return json.dumps(
             {
-                "model": "dev-gpt-5.6-luna",
+                "model": "classifier-fast",
                 "usage": {
                     "prompt_tokens": 100,
                     "completion_tokens": 20,
@@ -261,3 +261,45 @@ def test_classifier_fallback_is_visible_in_model_line(tmp_path, monkeypatch):
     output = invoke(config, AuditStore(tmp_path / "audit.db"), "Please handle this")
 
     assert "CLASSIFIER FALLBACK" in output["hookSpecificOutput"]["routeMessage"]
+
+
+def test_stop_hook_records_exact_turn_usage(tmp_path):
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "token_usage_record",
+                "payload": {
+                    "turn_id": "turn-1",
+                    "turn_token_usage": {
+                        "input_tokens": 1000,
+                        "cached_input_tokens": 800,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 50,
+                        "reasoning_output_tokens": 10,
+                        "total_tokens": 1050,
+                    },
+                },
+            }
+        )
+        + "\n"
+    )
+    config = default_config()
+    store = AuditStore(tmp_path / "audit.db")
+    invoke(config, store, "show status")
+    sink = io.StringIO()
+    payload = {
+        "session_id": "same-thread",
+        "turn_id": "turn-1",
+        "model": "gpt-5.6-luna",
+        "transcript_path": str(transcript),
+    }
+
+    assert codex_stop(io.StringIO(json.dumps(payload)), sink, store=store) == 0
+    row = store.latest("same-thread")
+
+    assert json.loads(sink.getvalue()) == {"continue": True, "suppressOutput": True}
+    assert row["answer_model"] == "gpt-5.6-luna"
+    assert row["answer_input_tokens"] == 1000
+    assert row["answer_cached_input_tokens"] == 800
+    assert row["answer_output_tokens"] == 50

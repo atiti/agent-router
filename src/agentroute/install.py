@@ -9,8 +9,20 @@ from typing import Any
 from .config import agentroute_home
 
 
-def hook_command() -> str:
-    return str(agentroute_home() / "bin" / "agentroute") + " hook codex user-prompt-submit"
+def hook_command(event: str = "user-prompt-submit") -> str:
+    return str(agentroute_home() / "bin" / "agentroute") + f" hook codex {event}"
+
+
+def _merge_command(hooks: dict[str, Any], event: str, command: str, status: str) -> None:
+    groups = hooks.setdefault(event, [])
+    for group in groups:
+        for item in group.get("hooks", []):
+            if "agentroute" in str(item.get("command", "")):
+                item.update({"type": "command", "command": command, "statusMessage": status})
+                return
+    groups.append(
+        {"hooks": [{"type": "command", "command": command, "statusMessage": status}]}
+    )
 
 
 def merge_codex_hook(path: Path | None = None) -> tuple[Path, Path | None]:
@@ -26,30 +38,12 @@ def merge_codex_hook(path: Path | None = None) -> tuple[Path, Path | None]:
     else:
         payload = {}
     hooks = payload.setdefault("hooks", {})
-    groups = hooks.setdefault("UserPromptSubmit", [])
-    command = hook_command()
-    for group in groups:
-        for item in group.get("hooks", []):
-            if "agentroute" in str(item.get("command", "")):
-                item.update(
-                    {
-                        "type": "command",
-                        "command": command,
-                        "statusMessage": "AgentRoute is selecting a model",
-                    }
-                )
-                path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-                return path, backup
-    groups.append(
-        {
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": command,
-                    "statusMessage": "AgentRoute is selecting a model",
-                }
-            ]
-        }
+    _merge_command(
+        hooks,
+        "UserPromptSubmit",
+        hook_command("user-prompt-submit"),
+        "AgentRoute is selecting a model",
     )
+    _merge_command(hooks, "Stop", hook_command("stop"), "AgentRoute is recording token usage")
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path, backup
