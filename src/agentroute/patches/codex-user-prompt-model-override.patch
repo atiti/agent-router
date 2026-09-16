@@ -801,7 +801,7 @@ index 72ae069562..b36296aaf7 100644
      let session = Arc::new(session);
      let turn_context = Arc::new(turn_context_raw);
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 8ab44553be..cee1ca656b 100644
+index 8ab44553be..2cf9d9dc4b 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -15,6 +15,7 @@ use crate::context::ContextualUserFragment;
@@ -1045,7 +1045,7 @@ index 8ab44553be..cee1ca656b 100644
          RemoteCompactionSupport::V2 => {
              emit_compact_metric(
                  &sess.services.session_telemetry,
-@@ -1533,6 +1638,64 @@ pub(crate) fn build_prompt(
+@@ -1533,6 +1638,88 @@ pub(crate) fn build_prompt(
      }
  }
  
@@ -1103,14 +1103,38 @@ index 8ab44553be..cee1ca656b 100644
 +                }
 +            }
 +        }
-+        None => {}
++        None => {
++            // OpenAI-compatible API providers can support the same tool wire
++            // format while belonging to a different encryption authority.
++            // Reasoning and compaction ciphertext, encrypted function args,
++            // and response item IDs are bound to the organization/deployment
++            // that produced them and must not cross that boundary.
++            input.retain(|item| {
++                !matches!(
++                    item,
++                    ResponseItem::Reasoning { .. }
++                        | ResponseItem::Compaction { .. }
++                        | ResponseItem::ContextCompaction { .. }
++                )
++            });
++            for item in input.iter_mut() {
++                if let ResponseItem::FunctionCall {
++                    encrypted_function_args,
++                    ..
++                } = item
++                {
++                    *encrypted_function_args = None;
++                }
++                item.set_id(None);
++            }
++        }
 +    }
 +}
 +
  #[allow(clippy::too_many_arguments)]
  #[allow(deprecated)]
  #[instrument(level = "trace",
-@@ -1566,7 +1729,7 @@ async fn run_sampling_request(
+@@ -1566,7 +1753,7 @@ async fn run_sampling_request(
          Arc::clone(&step_context),
          Arc::clone(&turn_diff_tracker),
      );
@@ -1119,7 +1143,7 @@ index 8ab44553be..cee1ca656b 100644
      let mut retry_state = ResponsesStreamRetryState::default();
      let mut initial_input = Some(input);
      let mut original_input = None;
-@@ -1582,6 +1745,7 @@ async fn run_sampling_request(
+@@ -1582,6 +1769,7 @@ async fn run_sampling_request(
                  .for_prompt(&step_context.settings.model_info.input_modalities)
          };
          let mut prompt_input = prompt_input;
@@ -1127,7 +1151,7 @@ index 8ab44553be..cee1ca656b 100644
          sess.services
              .executed_tool_calls
              .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
-@@ -2435,14 +2599,14 @@ async fn try_run_sampling_request(
+@@ -2435,14 +2623,14 @@ async fn try_run_sampling_request(
      let inference_trace = sess.services.rollout_thread_trace.inference_trace_context(
          turn_context.sub_id.as_str(),
          step_context.settings.model_info.slug.as_str(),
@@ -1219,10 +1243,10 @@ index 9f86627a45..e9e5cbbab9 100644
              history_mode: session_configuration.history_mode,
              parent_thread_id: session_configuration.parent_thread_id,
 diff --git a/codex-rs/core/src/session/turn_tests.rs b/codex-rs/core/src/session/turn_tests.rs
-index e43fb6a2ae..2642534de2 100644
+index e43fb6a2ae..7c042ead8c 100644
 --- a/codex-rs/core/src/session/turn_tests.rs
 +++ b/codex-rs/core/src/session/turn_tests.rs
-@@ -108,3 +108,67 @@ fn realtime_user_verification_notice_excludes_request_payload() {
+@@ -108,3 +108,121 @@ fn realtime_user_verification_notice_excludes_request_payload() {
          )),
      );
  }
@@ -1289,6 +1313,60 @@ index e43fb6a2ae..2642534de2 100644
 +    let mut expected_message = assistant_output_text("answer");
 +    expected_message.set_id(None);
 +    assert_eq!(input, vec![expected_apply_patch, expected_message]);
++}
++
++#[test]
++fn compatible_third_party_provider_drops_encrypted_provider_state() {
++    let provider = ModelProviderInfo {
++        name: "compatible-cloud".to_string(),
++        base_url: Some("https://example.invalid/v1".to_string()),
++        ..Default::default()
++    };
++    let function_call = ResponseItem::FunctionCall {
++        id: Some(ResponseItemId::with_suffix("fc", "portable")),
++        name: "lookup".to_string(),
++        namespace: None,
++        arguments: "{}".to_string(),
++        encrypted_function_args: Some(vec!["provider-bound".to_string()]),
++        call_id: "call-portable".to_string(),
++        internal_chat_message_metadata_passthrough: None,
++    };
++    let mut input = vec![
++        ResponseItem::Reasoning {
++            id: Some(ResponseItemId::with_suffix("rs", "foreign")),
++            summary: Vec::new(),
++            content: None,
++            encrypted_content: Some("provider-bound".to_string()),
++            internal_chat_message_metadata_passthrough: None,
++        },
++        ResponseItem::Compaction {
++            id: Some(ResponseItemId::with_suffix("cmp", "foreign")),
++            encrypted_content: "provider-bound".to_string(),
++            internal_chat_message_metadata_passthrough: None,
++        },
++        ResponseItem::ContextCompaction {
++            id: Some(ResponseItemId::with_suffix("cmp", "foreign-context")),
++            encrypted_content: Some("provider-bound".to_string()),
++            internal_chat_message_metadata_passthrough: None,
++        },
++        function_call.clone(),
++        assistant_output_text("answer"),
++    ];
++
++    normalize_prompt_for_provider(&mut input, &provider);
++
++    let mut expected_function_call = function_call;
++    expected_function_call.set_id(None);
++    if let ResponseItem::FunctionCall {
++        encrypted_function_args,
++        ..
++    } = &mut expected_function_call
++    {
++        *encrypted_function_args = None;
++    }
++    let mut expected_message = assistant_output_text("answer");
++    expected_message.set_id(None);
++    assert_eq!(input, vec![expected_function_call, expected_message]);
 +}
 diff --git a/codex-rs/core/src/tasks/compact.rs b/codex-rs/core/src/tasks/compact.rs
 index 14913d95c8..0f8f5f52b0 100644

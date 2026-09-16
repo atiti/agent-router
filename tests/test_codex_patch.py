@@ -20,6 +20,7 @@ def test_native_patch_is_packaged():
     assert "provider_tool_compatibility_preserves_admitted_safety_authority" in content
     assert "normalize_prompt_for_provider" in content
     assert "openai_prompt_drops_third_party_plaintext_reasoning" in content
+    assert "compatible_third_party_provider_drops_encrypted_provider_state" in content
 
 
 def test_installer_enables_code_mode_and_signs_macos_binary():
