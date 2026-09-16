@@ -166,8 +166,8 @@ Use `agentroute classifier-disable` to return to deterministic-only routing.
 
 ## Install locally
 
-Requirements: macOS or Linux, Git, `uv`, Rust/Cargo, a working Codex login, and at least 6 GiB of
-free disk space for the Codex build.
+Requirements: macOS or Linux, Git, Node/npm, `uv`, Rust/Cargo, a working Codex login, and at least
+6 GiB of free disk space for the Codex build.
 
 ```sh
 git clone https://github.com/YOUR_ORG/agentroute.git
@@ -182,8 +182,8 @@ The installer places everything under `~/.agentroute/`, adds `~/.agentroute/bin`
 hook into `~/.codex/hooks.json` after making a backup, and exposes:
 
 - `codex`: patched Codex with native step model switching and Code Mode enabled
-- `codex-code-mode-host`: the Code Mode host shipped with the stock Codex package, installed beside
-  the patched binary after an executable compatibility check
+- `codex-code-mode-host`: a pinned official Codex package host from the same release lineage as the
+  patched CLI, selected for wire-protocol compatibility instead of copying an arbitrary stock host
 - `codex-stock`: the Codex binary that was active before installation
 - `agentroute`: configuration, simulation, audit, and diagnostics CLI
 
@@ -191,6 +191,8 @@ It never replaces the original Codex binary. Set `AGENTROUTE_HOME` to choose ano
 root. `AGENTROUTE_CONFIG` and `AGENTROUTE_DATA_DIR` can override individual state paths.
 The default local build uses Codex's stripped `dev-small` profile to limit disk use; set
 `AGENTROUTE_BUILD_PROFILE=release` if you prefer an optimized build and have ample free space.
+The installer pins the official Code Mode host package alongside the Codex source commit. Advanced
+installations can provide a preverified executable with `AGENTROUTE_CODE_MODE_HOST`.
 
 ## Try it
 

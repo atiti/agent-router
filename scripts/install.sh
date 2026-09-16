@@ -8,11 +8,12 @@ AGENTROUTE_CODEX_SOURCE="$AGENTROUTE_HOME_DIR/src/codex"
 AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-"$AGENTROUTE_HOME_DIR/build/codex"}
 AGENTROUTE_BUILD_PROFILE=${AGENTROUTE_BUILD_PROFILE:-dev-small}
 AGENTROUTE_CODEX_COMMIT=b0af519c39766c173191fc39b341808619b51c74
-AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v6"
+AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.155.0-alpha.10}
+AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v7"
 AGENTROUTE_BUILD_ID_FILE="$AGENTROUTE_HOME_DIR/build-id"
 AGENTROUTE_PATCH="$AGENTROUTE_PROJECT_ROOT/patches/codex-user-prompt-model-override.patch"
 
-for command_name in git cargo uv; do
+for command_name in git cargo uv npm; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         printf 'Missing required command: %s\n' "$command_name" >&2
         exit 1
@@ -47,19 +48,6 @@ if [ -L "$AGENTROUTE_BIN_DIR/codex-stock" ]; then
     AGENTROUTE_STOCK_CODEX=$(readlink "$AGENTROUTE_BIN_DIR/codex-stock")
 fi
 
-AGENTROUTE_SOURCE_CODE_MODE_HOST=${AGENTROUTE_CODE_MODE_HOST:-}
-if [ -z "$AGENTROUTE_SOURCE_CODE_MODE_HOST" ] && [ -n "$AGENTROUTE_STOCK_CODEX" ]; then
-    AGENTROUTE_STOCK_BIN_DIR=$(CDPATH= cd -- "$(dirname -- "$AGENTROUTE_STOCK_CODEX")" && pwd)
-    if [ -x "$AGENTROUTE_STOCK_BIN_DIR/codex-code-mode-host" ]; then
-        AGENTROUTE_SOURCE_CODE_MODE_HOST="$AGENTROUTE_STOCK_BIN_DIR/codex-code-mode-host"
-    else
-        AGENTROUTE_STOCK_PREFIX=$(dirname -- "$AGENTROUTE_STOCK_BIN_DIR")
-        AGENTROUTE_SOURCE_CODE_MODE_HOST=$(find \
-            "$AGENTROUTE_STOCK_PREFIX/lib/node_modules/@openai/codex" \
-            -type f -name codex-code-mode-host -perm -111 -print -quit 2>/dev/null || true)
-    fi
-fi
-
 if [ ! -x "$AGENTROUTE_HOME_DIR/venv/bin/python" ]; then
     uv venv --python 3.12 "$AGENTROUTE_HOME_DIR/venv"
 fi
@@ -91,6 +79,38 @@ fi
 if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
     || [ ! -x "$AGENTROUTE_BIN_DIR/codex-code-mode-host" ] \
     || [ "$AGENTROUTE_INSTALLED_BUILD_ID" != "$AGENTROUTE_BUILD_ID" ]; then
+    AGENTROUTE_SOURCE_CODE_MODE_HOST=${AGENTROUTE_CODE_MODE_HOST:-}
+    AGENTROUTE_CODE_MODE_HOST_TMP=
+    if [ -z "$AGENTROUTE_SOURCE_CODE_MODE_HOST" ]; then
+        case "$(uname -s)" in
+            Darwin) AGENTROUTE_NPM_PLATFORM=darwin ;;
+            Linux) AGENTROUTE_NPM_PLATFORM=linux ;;
+            *)
+                printf 'AgentRoute cannot install Code Mode on unsupported platform %s.\n' "$(uname -s)" >&2
+                exit 1
+                ;;
+        esac
+        case "$(uname -m)" in
+            arm64|aarch64) AGENTROUTE_NPM_ARCH=arm64 ;;
+            x86_64|amd64) AGENTROUTE_NPM_ARCH=x64 ;;
+            *)
+                printf 'AgentRoute cannot install Code Mode on unsupported architecture %s.\n' "$(uname -m)" >&2
+                exit 1
+                ;;
+        esac
+        AGENTROUTE_CODE_MODE_HOST_TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentroute-code-mode-host.XXXXXX")
+        AGENTROUTE_CODE_MODE_HOST_PACKAGE=$(npm pack \
+            "@openai/codex@$AGENTROUTE_CODE_MODE_HOST_VERSION-$AGENTROUTE_NPM_PLATFORM-$AGENTROUTE_NPM_ARCH" \
+            --pack-destination "$AGENTROUTE_CODE_MODE_HOST_TMP")
+        tar -xzf "$AGENTROUTE_CODE_MODE_HOST_TMP/$AGENTROUTE_CODE_MODE_HOST_PACKAGE" \
+            -C "$AGENTROUTE_CODE_MODE_HOST_TMP"
+        AGENTROUTE_SOURCE_CODE_MODE_HOST=$(find "$AGENTROUTE_CODE_MODE_HOST_TMP/package/vendor" \
+            -type f -name codex-code-mode-host -perm -111 -print -quit)
+    fi
+    if [ ! -x "$AGENTROUTE_SOURCE_CODE_MODE_HOST" ]; then
+        printf 'No executable Code Mode host was found.\n' >&2
+        exit 1
+    fi
     CARGO_TARGET_DIR="$AGENTROUTE_CODEX_TARGET" \
     CARGO_INCREMENTAL=0 \
     CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2} \
@@ -99,20 +119,18 @@ if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
         -p codex-cli --bin codex
 
     cp "$AGENTROUTE_CODEX_TARGET/$AGENTROUTE_BUILD_PROFILE/codex" "$AGENTROUTE_BIN_DIR/codex-bin"
+    cp "$AGENTROUTE_SOURCE_CODE_MODE_HOST" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
     if [ "$(uname -s)" = Darwin ]; then
         codesign --force --sign - "$AGENTROUTE_BIN_DIR/codex-bin"
+        codesign --force --sign - "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
     fi
-    if [ -z "$AGENTROUTE_SOURCE_CODE_MODE_HOST" ]; then
-        printf 'No compatible Code Mode host was found beside the stock Codex installation.\n' >&2
-        printf 'Set AGENTROUTE_CODE_MODE_HOST to the host executable and rerun.\n' >&2
-        exit 1
-    fi
-    "$AGENTROUTE_SOURCE_CODE_MODE_HOST" --help >/dev/null
-    cp "$AGENTROUTE_SOURCE_CODE_MODE_HOST" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
     chmod 755 "$AGENTROUTE_BIN_DIR/codex-bin" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
     printf '%s\n' "$AGENTROUTE_BUILD_ID" >"$AGENTROUTE_BUILD_ID_FILE"
     if [ "${AGENTROUTE_KEEP_BUILD:-0}" != 1 ]; then
         rm -rf "$AGENTROUTE_CODEX_TARGET"
+    fi
+    if [ -n "$AGENTROUTE_CODE_MODE_HOST_TMP" ]; then
+        rm -rf "$AGENTROUTE_CODE_MODE_HOST_TMP"
     fi
 fi
 
@@ -120,7 +138,7 @@ if [ -n "$AGENTROUTE_STOCK_CODEX" ] && [ "$AGENTROUTE_STOCK_CODEX" != "$AGENTROU
     ln -sf "$AGENTROUTE_STOCK_CODEX" "$AGENTROUTE_BIN_DIR/codex-stock"
 fi
 
-printf '#!/bin/sh\nAGENTROUTE_CREDENTIALS="%s/backend-credentials.env"\nif [ -f "$AGENTROUTE_CREDENTIALS" ]; then\n    . "$AGENTROUTE_CREDENTIALS"\nfi\n"%s/bin/agentroute" classifier-refresh >/dev/null 2>&1 || true\nexec "%s/bin/codex-bin" --enable step_model_switching --enable code_mode -c suppress_unstable_features_warning=true "$@"\n' \
+printf '#!/bin/sh\nAGENTROUTE_CREDENTIALS="%s/backend-credentials.env"\nif [ -f "$AGENTROUTE_CREDENTIALS" ]; then\n    . "$AGENTROUTE_CREDENTIALS"\nfi\n"%s/bin/agentroute" classifier-refresh >/dev/null 2>&1 || true\nexec "%s/bin/codex-bin" --enable step_model_switching --enable code_mode --enable code_mode_host -c suppress_unstable_features_warning=true "$@"\n' \
     "$AGENTROUTE_HOME_DIR" "$AGENTROUTE_HOME_DIR" "$AGENTROUTE_HOME_DIR" >"$AGENTROUTE_BIN_DIR/codex"
 chmod 755 "$AGENTROUTE_BIN_DIR/codex"
 

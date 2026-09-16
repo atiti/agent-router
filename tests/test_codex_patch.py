@@ -26,7 +26,11 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     installer = (Path(__file__).parents[1] / "scripts" / "install.sh").read_text()
 
     assert "--enable code_mode" in installer
+    assert "--enable code_mode_host" in installer
     assert "codex-code-mode-host" in installer
+    assert "AGENTROUTE_CODE_MODE_HOST_VERSION" in installer
+    assert 'npm pack \\' in installer
+    assert "-p codex-code-mode-host --bin codex-code-mode-host" not in installer
     assert "classifier-refresh" in installer
     assert "codesign --force --sign -" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
