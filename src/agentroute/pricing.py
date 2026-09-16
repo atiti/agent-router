@@ -19,6 +19,7 @@ class CostReport:
     cache_write_input_tokens: int
     output_tokens: int
     reasoning_output_tokens: int
+    unpriced_models: tuple[str, ...]
 
     @property
     def gross_savings(self) -> float:
@@ -62,6 +63,7 @@ def token_cost(model: str, usage: dict[str, int | float], pricing: PricingConfig
 def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) -> CostReport:
     measured = 0
     actual = baseline_cost = classifier_cost = 0.0
+    unpriced_models: set[str] = set()
     totals = {
         "input_tokens": 0,
         "cached_input_tokens": 0,
@@ -77,6 +79,11 @@ def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) 
         receipt = json.loads(row["selection_receipt"] or "{}")
         classifier = receipt.get("classifier", {}) if isinstance(receipt, dict) else {}
         classifier_model = classifier.get("model", "") if isinstance(classifier, dict) else ""
+        if (
+            classifier_model
+            and canonical_model(str(classifier_model), pricing) not in pricing.models
+        ):
+            unpriced_models.add(str(classifier_model))
         classifier_cost += token_cost(
             str(classifier_model),
             {
@@ -98,7 +105,10 @@ def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) 
         }
         for name in totals:
             totals[name] += int(row[f"answer_{name}"] or 0)
-        actual += token_cost(str(row["answer_model"] or row["model"]), usage, pricing)
+        answer_model = str(row["answer_model"] or row["model"])
+        if canonical_model(answer_model, pricing) not in pricing.models:
+            unpriced_models.add(answer_model)
+        actual += token_cost(answer_model, usage, pricing)
         baseline_cost += token_cost(baseline, usage, pricing)
     return CostReport(
         measured,
@@ -107,4 +117,5 @@ def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) 
         baseline_cost,
         classifier_cost,
         **totals,
+        unpriced_models=tuple(sorted(unpriced_models)),
     )

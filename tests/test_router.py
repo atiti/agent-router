@@ -315,3 +315,49 @@ def test_policy_max_tier_still_caps_manual_override():
 
     assert decision.tier is Tier.SMART
     assert ReasonCode.QUOTA_LIMIT in decision.reason_codes
+
+
+def test_explicit_deepseek_backend_selects_its_model_and_provider(monkeypatch):
+    config = default_config()
+    config.backends["deepseek"].enabled = True
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    decision = Router(config).route(
+        RouteContext(
+            session_id="test-session",
+            latest_prompt="@deepseek @smart investigate this failure",
+            current_tier=Tier.NORMAL,
+        )
+    )
+
+    assert decision.backend == "deepseek"
+    assert decision.model_provider == "agentroute-deepseek"
+    assert decision.model == "deepseek-v4-pro"
+    assert ReasonCode.BACKEND_OVERRIDE in decision.reason_codes
+
+
+def test_disabled_backend_fails_visibly_to_gpt():
+    decision = route("@azure rename the label", current_tier=Tier.NORMAL)
+
+    assert decision.backend == "gpt"
+    assert decision.model_provider == "openai"
+    assert ReasonCode.BACKEND_FALLBACK in decision.reason_codes
+
+
+def test_backend_missing_credential_fails_visibly_to_gpt(tmp_path, monkeypatch):
+    config = default_config()
+    config.backends["deepseek"].enabled = True
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv(
+        "AGENTROUTE_CREDENTIALS_FILE", str(tmp_path / "missing-credentials.env")
+    )
+
+    decision = Router(config).route(
+        RouteContext(
+            session_id="test-session",
+            latest_prompt="@deepseek @smart investigate this failure",
+        )
+    )
+
+    assert decision.backend == "gpt"
+    assert decision.model_provider == "openai"
+    assert ReasonCode.BACKEND_FALLBACK in decision.reason_codes

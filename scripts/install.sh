@@ -8,7 +8,7 @@ AGENTROUTE_CODEX_SOURCE="$AGENTROUTE_HOME_DIR/src/codex"
 AGENTROUTE_CODEX_TARGET="$AGENTROUTE_HOME_DIR/build/codex"
 AGENTROUTE_BUILD_PROFILE=${AGENTROUTE_BUILD_PROFILE:-dev-small}
 AGENTROUTE_CODEX_COMMIT=b0af519c39766c173191fc39b341808619b51c74
-AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-routing-metadata-v2"
+AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v4"
 AGENTROUTE_BUILD_ID_FILE="$AGENTROUTE_HOME_DIR/build-id"
 AGENTROUTE_PATCH="$AGENTROUTE_PROJECT_ROOT/patches/codex-user-prompt-model-override.patch"
 
@@ -75,6 +75,15 @@ git -C "$AGENTROUTE_CODEX_SOURCE" checkout --detach "$AGENTROUTE_CODEX_COMMIT"
 if git -C "$AGENTROUTE_CODEX_SOURCE" apply --reverse --check "$AGENTROUTE_PATCH" >/dev/null 2>&1; then
     printf 'Codex patch is already applied.\n'
 else
+    if ! git -C "$AGENTROUTE_CODEX_SOURCE" diff --quiet; then
+        AGENTROUTE_BACKUP_DIR="$AGENTROUTE_HOME_DIR/backups"
+        AGENTROUTE_BACKUP_STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
+        AGENTROUTE_SOURCE_BACKUP="$AGENTROUTE_BACKUP_DIR/codex-source-$AGENTROUTE_BACKUP_STAMP.patch"
+        mkdir -p "$AGENTROUTE_BACKUP_DIR"
+        git -C "$AGENTROUTE_CODEX_SOURCE" diff --binary --output="$AGENTROUTE_SOURCE_BACKUP"
+        printf 'Backed up the previous managed Codex patch to %s\n' "$AGENTROUTE_SOURCE_BACKUP"
+        git -C "$AGENTROUTE_CODEX_SOURCE" reset --hard "$AGENTROUTE_CODEX_COMMIT"
+    fi
     git -C "$AGENTROUTE_CODEX_SOURCE" apply --check "$AGENTROUTE_PATCH"
     git -C "$AGENTROUTE_CODEX_SOURCE" apply "$AGENTROUTE_PATCH"
 fi
@@ -111,8 +120,8 @@ if [ -n "$AGENTROUTE_STOCK_CODEX" ] && [ "$AGENTROUTE_STOCK_CODEX" != "$AGENTROU
     ln -sf "$AGENTROUTE_STOCK_CODEX" "$AGENTROUTE_BIN_DIR/codex-stock"
 fi
 
-printf '#!/bin/sh\n"%s/bin/agentroute" classifier-refresh >/dev/null 2>&1 || true\nexec "%s/bin/codex-bin" --enable step_model_switching --enable code_mode -c suppress_unstable_features_warning=true "$@"\n' \
-    "$AGENTROUTE_HOME_DIR" "$AGENTROUTE_HOME_DIR" >"$AGENTROUTE_BIN_DIR/codex"
+printf '#!/bin/sh\nAGENTROUTE_CREDENTIALS="%s/backend-credentials.env"\nif [ -f "$AGENTROUTE_CREDENTIALS" ]; then\n    . "$AGENTROUTE_CREDENTIALS"\nfi\n"%s/bin/agentroute" classifier-refresh >/dev/null 2>&1 || true\nexec "%s/bin/codex-bin" --enable step_model_switching --enable code_mode -c suppress_unstable_features_warning=true "$@"\n' \
+    "$AGENTROUTE_HOME_DIR" "$AGENTROUTE_HOME_DIR" "$AGENTROUTE_HOME_DIR" >"$AGENTROUTE_BIN_DIR/codex"
 chmod 755 "$AGENTROUTE_BIN_DIR/codex"
 
 if [ -f "$AGENTROUTE_HOME_DIR/config.yaml" ]; then
@@ -121,6 +130,7 @@ else
     "$AGENTROUTE_BIN_DIR/agentroute" init --enable
 fi
 "$AGENTROUTE_BIN_DIR/agentroute" install-hook
+"$AGENTROUTE_BIN_DIR/agentroute" backend-sync
 
 AGENTROUTE_SHELL_RC=${ZDOTDIR:-"$HOME"}/.zshrc
 AGENTROUTE_PATH_LINE='export PATH="$HOME/.agentroute/bin:$PATH" # agentroute'

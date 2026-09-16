@@ -59,3 +59,23 @@ def test_report_compares_same_observed_tokens_and_includes_classifier(tmp_path):
     assert report.baseline_cost == pytest.approx(0.0053)
     assert report.classifier_cost == pytest.approx(0.000032)
     assert report.net_savings == pytest.approx(0.005152)
+    assert report.unpriced_models == ()
+
+
+def test_report_names_unpriced_backend_models(tmp_path):
+    config = default_config()
+    store = AuditStore(tmp_path / "audit.db")
+    decision = Router(config).route(
+        RouteContext(session_id="s", turn_id="t", latest_prompt="show status")
+    )
+    store.record(decision, Tier.NORMAL)
+    store.record_usage(
+        "s",
+        "t",
+        "my-azure-deployment",
+        {"input_tokens": 100, "output_tokens": 10},
+    )
+
+    report = cost_report(store.history(limit=10), config.pricing, "gpt-6-astra")
+
+    assert report.unpriced_models == ("my-azure-deployment",)

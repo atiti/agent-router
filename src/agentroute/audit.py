@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     session_id TEXT NOT NULL,
     turn_id TEXT,
     provider TEXT NOT NULL,
+    backend TEXT NOT NULL DEFAULT 'gpt',
+    model_provider TEXT NOT NULL DEFAULT 'openai',
+    route_scope TEXT NOT NULL DEFAULT 'root',
+    agent_id TEXT,
     current_tier TEXT NOT NULL,
     selected_tier TEXT NOT NULL,
     model TEXT NOT NULL,
@@ -65,6 +69,10 @@ ON routing_decisions(session_id, id DESC);
 
 MIGRATIONS = {
     "turn_id": "TEXT",
+    "backend": "TEXT NOT NULL DEFAULT 'gpt'",
+    "model_provider": "TEXT NOT NULL DEFAULT 'openai'",
+    "route_scope": "TEXT NOT NULL DEFAULT 'root'",
+    "agent_id": "TEXT",
     "classifier_version": "TEXT NOT NULL DEFAULT 'legacy'",
     "classification_source": "TEXT NOT NULL DEFAULT 'heuristic'",
     "classifier_confidence": "REAL",
@@ -155,7 +163,8 @@ class AuditStore:
             cursor = connection.execute(
                 """
                 INSERT INTO routing_decisions (
-                    created_at, session_id, turn_id, provider, current_tier, selected_tier,
+                    created_at, session_id, turn_id, provider, backend, model_provider,
+                    route_scope, agent_id, current_tier, selected_tier,
                     model, reasoning_effort, confidence, raw_score, reason_codes,
                     contributions, prompt_hash, prompt, manual_override, inherited, switched,
                     classifier_version, proposed_tier, comparison_tier, task_context_used,
@@ -166,7 +175,7 @@ class AuditStore:
                     classifier_reason_hash, selection_receipt, selection_receipt_hash
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -174,6 +183,10 @@ class AuditStore:
                     decision.session_id,
                     decision.turn_id,
                     decision.provider,
+                    decision.backend,
+                    decision.model_provider,
+                    decision.route_scope,
+                    decision.agent_id,
                     str(current_tier),
                     str(decision.tier),
                     decision.model,

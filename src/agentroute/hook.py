@@ -31,6 +31,8 @@ def codex_user_prompt_submit(
         session_id = str(payload["session_id"])
         previous_tier = store.previous_tier(session_id)
         prompt = str(payload.get("prompt", ""))
+        subagent = payload.get("subagent") or {}
+        route_scope = "subagent" if subagent else "root"
         continuation = continues_previous_task(prompt)
         classifier_needs_context = (
             config.routing.classifier.enabled
@@ -49,6 +51,9 @@ def codex_user_prompt_submit(
             session_id=session_id,
             turn_id=str(payload["turn_id"]) if payload.get("turn_id") else None,
             provider="codex",
+            current_model_provider=str(payload.get("model_provider", "openai")),
+            route_scope=route_scope,
+            agent_id=(str(subagent.get("agent_id")) if subagent.get("agent_id") else None),
             latest_prompt=prompt,
             current_model=current_model,
             current_tier=current_tier,
@@ -99,6 +104,7 @@ def codex_user_prompt_submit(
         if config.enabled:
             specific = output["hookSpecificOutput"]
             specific["model"] = decision.model
+            specific["modelProvider"] = decision.model_provider
             if decision.reasoning_effort:
                 specific["reasoningEffort"] = decision.reasoning_effort
             effort = (
@@ -108,6 +114,8 @@ def codex_user_prompt_submit(
             )
             specific["routeMessage"] = (
                 f"◆ MODEL ROUTE · {decision.tier.name} → {decision.model}{effort}"
+                f" · backend {decision.backend}/{decision.model_provider}"
+                f" · scope {decision.route_scope}"
                 f" · source {route_source}"
                 f" · {confidence_kind} {decision.confidence:.0%}"
                 f" · rule score {decision.raw_score:g}"

@@ -185,6 +185,29 @@ def prompt_override(prompt: str) -> tuple[str | None, str]:
     return match.group("tier").lower(), prompt[match.end() :].lstrip()
 
 
+BACKEND_MANUAL = re.compile(r"^\s*@(?P<backend>gpt|azure|deepseek)\b", re.IGNORECASE)
+
+
+def route_overrides(prompt: str) -> tuple[str | None, str | None, str]:
+    """Parse tier/backend prefixes in either order while preserving the task text."""
+    tier: str | None = None
+    backend: str | None = None
+    remaining = prompt
+    for _ in range(2):
+        tier_match = MANUAL.match(remaining)
+        backend_match = BACKEND_MANUAL.match(remaining)
+        if tier_match and tier is None:
+            tier = tier_match.group("tier").lower()
+            remaining = remaining[tier_match.end() :].lstrip()
+            continue
+        if backend_match and backend is None:
+            backend = backend_match.group("backend").lower()
+            remaining = remaining[backend_match.end() :].lstrip()
+            continue
+        break
+    return tier, backend, remaining
+
+
 def is_confirmation(prompt: str) -> bool:
     return bool(CONFIRMATION.match(prompt))
 

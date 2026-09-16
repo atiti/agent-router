@@ -15,6 +15,21 @@ class ModelTarget(BaseModel):
     reasoning_effort: str | None = None
 
 
+class ExecutionBackendConfig(BaseModel):
+    """One Codex model provider plus its tier-specific model deployments."""
+
+    enabled: bool = False
+    codex_provider: str
+    display_name: str
+    base_url: str | None = None
+    api_key_env: str | None = None
+    api_key_header: str = "authorization"
+    tiers: dict[str, ModelTarget]
+
+    def target(self, tier: Tier) -> ModelTarget:
+        return self.tiers[str(tier)]
+
+
 class ProviderConfig(BaseModel):
     enabled: bool = True
     tiers: dict[str, ModelTarget]
@@ -59,6 +74,14 @@ class RoutingConfig(BaseModel):
     mode: Literal["heuristic", "hybrid", "llm"] = "hybrid"
     switching: SwitchingConfig = Field(default_factory=SwitchingConfig)
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
+    backend_by_tier: dict[str, str] = Field(
+        default_factory=lambda: {
+            "fast": "gpt",
+            "normal": "gpt",
+            "smart": "gpt",
+            "max": "gpt",
+        }
+    )
 
 
 class PolicyConfig(BaseModel):
@@ -118,6 +141,16 @@ class PricingConfig(BaseModel):
                 cache_write_per_million=12.50,
                 output_per_million=50.00,
             ),
+            "deepseek-flash": ModelPrice(
+                input_per_million=0.14,
+                cached_input_per_million=0.0028,
+                output_per_million=0.28,
+            ),
+            "deepseek-v4-pro": ModelPrice(
+                input_per_million=0.435,
+                cached_input_per_million=0.003625,
+                output_per_million=0.87,
+            ),
         }
     )
     aliases: dict[str, str] = Field(default_factory=dict)
@@ -128,6 +161,7 @@ class AppConfig(BaseModel):
     enabled: bool = False
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     providers: dict[str, ProviderConfig]
+    backends: dict[str, ExecutionBackendConfig] = Field(default_factory=dict)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
@@ -135,15 +169,16 @@ class AppConfig(BaseModel):
 
 
 def default_config() -> AppConfig:
+    gpt_tiers = {
+        "fast": ModelTarget(model="gpt-5.6-luna", reasoning_effort="low"),
+        "normal": ModelTarget(model="gpt-5.6-terra", reasoning_effort="medium"),
+        "smart": ModelTarget(model="gpt-5.6-sol", reasoning_effort="high"),
+        "max": ModelTarget(model="gpt-6-astra", reasoning_effort="high"),
+    }
     return AppConfig(
         providers={
             "codex": ProviderConfig(
-                tiers={
-                    "fast": ModelTarget(model="gpt-5.6-luna", reasoning_effort="low"),
-                    "normal": ModelTarget(model="gpt-5.6-terra", reasoning_effort="medium"),
-                    "smart": ModelTarget(model="gpt-5.6-sol", reasoning_effort="high"),
-                    "max": ModelTarget(model="gpt-6-astra", reasoning_effort="high"),
-                }
+                tiers=gpt_tiers
             ),
             "claude": ProviderConfig(
                 enabled=False,
@@ -154,8 +189,59 @@ def default_config() -> AppConfig:
                     "max": ModelTarget(model="opus"),
                 },
             ),
-        }
+        },
+        backends={
+            "gpt": ExecutionBackendConfig(
+                enabled=True,
+                codex_provider="openai",
+                display_name="ChatGPT subscription",
+                tiers=gpt_tiers,
+            ),
+            "azure": ExecutionBackendConfig(
+                codex_provider="agentroute-azure",
+                display_name="Azure OpenAI API",
+                api_key_env="AZURE_OPENAI_API_KEY",
+                api_key_header="api-key",
+                tiers={
+                    "fast": ModelTarget(model="gpt-5-mini", reasoning_effort="low"),
+                    "normal": ModelTarget(model="gpt-5", reasoning_effort="medium"),
+                    "smart": ModelTarget(model="gpt-5", reasoning_effort="high"),
+                    "max": ModelTarget(model="gpt-5", reasoning_effort="high"),
+                },
+            ),
+            "deepseek": ExecutionBackendConfig(
+                codex_provider="agentroute-deepseek",
+                display_name="DeepSeek API",
+                base_url="https://api.deepseek.com",
+                api_key_env="DEEPSEEK_API_KEY",
+                tiers={
+                    "fast": ModelTarget(model="deepseek-flash", reasoning_effort="none"),
+                    "normal": ModelTarget(model="deepseek-flash", reasoning_effort="low"),
+                    "smart": ModelTarget(model="deepseek-v4-pro", reasoning_effort="high"),
+                    "max": ModelTarget(model="deepseek-v4-pro", reasoning_effort="max"),
+                },
+            ),
+        },
     )
+
+
+def _with_default_backends(config: AppConfig) -> AppConfig:
+    """Migrate pre-backend configs without changing their established GPT mappings."""
+    defaults = default_config()
+    if not config.backends:
+        defaults.backends["gpt"].tiers = config.providers["codex"].tiers
+        config.backends = defaults.backends
+    else:
+        for name, backend in defaults.backends.items():
+            config.backends.setdefault(name, backend)
+    deepseek = config.backends.get("deepseek")
+    if deepseek:
+        legacy_models = {"deepseek-chat", "deepseek-reasoner"}
+        if any(target.model in legacy_models for target in deepseek.tiers.values()):
+            deepseek.tiers = defaults.backends["deepseek"].tiers
+    for model, price in defaults.pricing.models.items():
+        config.pricing.models.setdefault(model, price)
+    return config
 
 
 def config_path() -> Path:
@@ -183,7 +269,9 @@ def load_config(path: Path | None = None) -> AppConfig:
     path = path or config_path()
     if not path.exists():
         return default_config()
-    return AppConfig.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+    return _with_default_backends(
+        AppConfig.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+    )
 
 
 def save_config(config: AppConfig, path: Path | None = None) -> Path:

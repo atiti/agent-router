@@ -35,14 +35,24 @@ class FakeClassifierResponse:
         ).encode()
 
 
-def invoke(config, store, prompt, model="gpt-5.6-terra", transcript_path=None):
+def invoke(
+    config,
+    store,
+    prompt,
+    model="gpt-5.6-terra",
+    transcript_path=None,
+    subagent=None,
+    model_provider="openai",
+):
     source = io.StringIO(
         json.dumps(
             {
                 "session_id": "same-thread",
                 "turn_id": "turn-1",
                 "model": model,
+                "model_provider": model_provider,
                 "prompt": prompt,
+                "subagent": subagent,
                 "transcript_path": str(transcript_path) if transcript_path else None,
             }
         )
@@ -74,10 +84,31 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path):
     assert first["hookSpecificOutput"]["reasoningEffort"] == "high"
     assert first["hookSpecificOutput"]["routeMessage"] == (
         "◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning "
-        "· source MANUAL · rule confidence 100% · rule score -0.5"
+        "· backend gpt/openai · scope root · source MANUAL "
+        "· rule confidence 100% · rule score -0.5"
     )
     assert second["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
     assert len(store.history("same-thread")) == 2
+
+
+def test_subagent_task_is_independently_routed_and_audited(tmp_path):
+    config = default_config()
+    config.enabled = True
+    store = AuditStore(tmp_path / "audit.db")
+
+    output = invoke(
+        config,
+        store,
+        "Rename the internal label and fix the typo",
+        subagent={"agent_id": "/root/mechanical", "agent_type": "worker"},
+    )
+    row = store.latest("same-thread")
+
+    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-luna"
+    assert output["hookSpecificOutput"]["modelProvider"] == "openai"
+    assert "scope subagent" in output["hookSpecificOutput"]["routeMessage"]
+    assert row["route_scope"] == "subagent"
+    assert row["agent_id"] == "/root/mechanical"
 
 
 def test_confirmation_uses_previous_assistant_task_definition(tmp_path):

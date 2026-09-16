@@ -1,8 +1,8 @@
 # AgentRoute
 
-AgentRoute is a local-first, auditable model router for coding agents. It selects a model and
-reasoning effort for every user turn while keeping the same Codex thread, transcript, tools, and
-working context.
+AgentRoute is a local-first, auditable model router for coding agents. It selects a model,
+reasoning effort, and execution backend for every user turn while keeping the same Codex thread,
+transcript, tools, and working context.
 
 It is deliberately boring infrastructure: rules are inspectable, decisions are auditable, and
 `@fast`, `@normal`, `@smart`, or `@max` always gives the human control. An optional LLM classifier
@@ -20,7 +20,7 @@ user prompt
     ▼
 Codex UserPromptSubmit hook ──► AgentRoute classifier ──► SQLite audit
     │                                  │
-    │                           model + reasoning effort
+    │                    provider + model + reasoning effort
     ▼                                  │
 the same active Codex thread ◄─────────┘
     │
@@ -35,6 +35,12 @@ fallback. A short
 confirmation such as `ok do it` is never scored as a new tiny task: AgentRoute reads the previous
 assistant final answer from Codex's local transcript and classifies that task definition. If the
 transcript is unavailable, it inherits the previous selected tier.
+
+Spawned subagents are routed independently. Their triggering task is classified by the same hook
+before the child's first model call, and each audit row and route banner identifies whether the
+decision belongs to the root agent or a subagent. A child starts with the parent's full or bounded
+context according to Codex's spawn request, but it does not have to keep the parent's model or
+backend.
 
 The classifier is a second-stage judge, not the primary router. Explicit overrides, approved agent
 requests, high-confidence rules, and credential-shaped prompts never reach it. It returns the
@@ -61,6 +67,47 @@ apply. The requested tier and a SHA-256 hash of the reason are audited; the reas
 | MAX | `gpt-6-astra`, high | architecture and high-risk cross-cutting work |
 
 All mappings, thresholds, and risk floors are editable in `~/.agentroute/config.yaml`.
+
+## Execution backends
+
+The built-in `gpt` backend uses the existing ChatGPT subscription login. Azure OpenAI and
+DeepSeek use API credentials from environment variables; AgentRoute never writes those secrets to
+configuration or audit storage. Enable and map them with:
+
+```sh
+# Azure's URL includes /openai/v1; model names are your deployment names.
+export AZURE_OPENAI_API_KEY="..."
+agentroute backend-enable azure \
+  --base-url https://YOUR-RESOURCE.openai.azure.com/openai/v1 \
+  --fast-model YOUR_FAST_DEPLOYMENT \
+  --normal-model YOUR_NORMAL_DEPLOYMENT \
+  --smart-model YOUR_SMART_DEPLOYMENT \
+  --max-model YOUR_MAX_DEPLOYMENT
+
+export DEEPSEEK_API_KEY="..."
+agentroute backend-enable deepseek
+
+agentroute backend-route fast deepseek
+agentroute backend-route normal azure
+agentroute backend-status
+```
+
+For an OpenAI-compatible bearer-auth proxy in front of Azure, use its `/v1` base URL and add
+`--api-key-header authorization`.
+
+For a persistent local test without putting a key in YAML or Codex TOML, import it from the
+current process into AgentRoute's owner-only credential file, then unset the source variable:
+
+```sh
+agentroute backend-credential-import deepseek DEEPSEEK_API_KEY
+unset DEEPSEEK_API_KEY
+```
+
+Backend mappings are defaults, not lock-in. Prefix a prompt with `@gpt`, `@azure`, or
+`@deepseek`; combine it with a tier override in either order, such as
+`@deepseek @smart review this design`. Disabled or unavailable configured backends visibly fall
+back to `gpt`. Provider changes happen inside the active thread: Codex rebuilds only its
+provider-specific request session while retaining the local conversation, tools, and turn state.
 
 ## Optional LLM classifier
 
@@ -146,7 +193,7 @@ The default local build uses Codex's stripped `dev-small` profile to limit disk 
 ```sh
 agentroute test "Rename the account label"
 agentroute test "Redesign authentication for a zero-downtime migration"
-agentroute test "@max audit this concurrency design"
+agentroute test "@deepseek @smart audit this concurrency design"
 agentroute why
 agentroute history
 agentroute audit-report
@@ -162,13 +209,15 @@ cache-write input, output, and reasoning-output tokens. It estimates routed answ
 of running the same observed token counts on a fixed baseline model, classifier overhead, and net
 savings. Reasoning tokens are already included in output tokens and are not charged twice. Prices
 and aliases are editable under `pricing` in `~/.agentroute/config.yaml`; the bundled defaults were
-checked on 2026-09-16 against the official OpenAI model pages. This is an API-equivalent estimate,
-not a Codex subscription invoice, and a different model may produce a different number of tokens.
+checked on 2026-09-16 against the official OpenAI and DeepSeek model pages. Azure deployment prices
+vary, so add their rates or aliases explicitly; unpriced models are named and excluded instead of
+silently presented as free. This is an API-equivalent estimate, not a Codex subscription invoice,
+and a different model may produce a different number of tokens.
 
 When a route is applied, Codex prints a highlighted line before the response, for example:
 
 ```text
-◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning · source LLM/private · classifier confidence 84% · rule score 2.5 · implementation
+◆ MODEL ROUTE · SMART → deepseek-v4-pro · high reasoning · backend deepseek/agentroute-deepseek · scope subagent · source LLM/private · classifier confidence 84% · rule score 2.5 · implementation
 ```
 
 The status bar also reflects the active model and effort. Code Mode remains enabled by installing
@@ -216,9 +265,12 @@ automatically label the previous automatic decision as overridden.
 
 ## Native Codex patch
 
-The patch extends synchronous `UserPromptSubmit` hook output with optional `model` and
-`reasoningEffort` fields, then applies them through Codex's existing turn-settings machinery before
-the first step begins. Async hooks cannot change execution settings.
+The patch extends synchronous `UserPromptSubmit` hook output with optional `model`,
+`modelProvider`, and `reasoningEffort` fields, then applies them through Codex's existing
+turn-settings machinery before the first step begins. Triggering subagent communications pass
+through the same hook. A provider switch creates a fresh provider-specific client session so
+websocket, authentication fallback, and sticky-routing state cannot leak across backends. Async
+hooks cannot change execution settings.
 
 The installer pins OpenAI Codex commit `b0af519c39766c173191fc39b341808619b51c74`. The maintained
 patch is in `patches/codex-user-prompt-model-override.patch`. AgentRoute is not affiliated with or

@@ -25,6 +25,7 @@ from .install import hook_command as installed_hook_command
 from .install import merge_codex_hook
 from .models import RouteContext, Tier
 from .pricing import cost_report
+from .providers import backend_readiness, import_backend_credential, sync_codex_providers
 from .router import Router
 
 app = typer.Typer(no_args_is_help=True, help="Local, auditable model routing for coding agents.")
@@ -84,6 +85,7 @@ def test_command(
     decision = Router().route(context)
     console.print(
         f"[bold]{decision.tier.name}[/bold] → {decision.model} "
+        f"via {decision.backend}/{decision.model_provider} "
         f"({decision.confidence:.0%} "
         f"{'classifier' if decision.classifier_confidence is not None else 'rule'} confidence)"
     )
@@ -112,7 +114,10 @@ def why_command(session: str | None = None) -> None:
     if row is None:
         console.print("No routing decisions recorded.")
         raise typer.Exit(1)
-    console.print(f"[bold]{row['selected_tier'].upper()}[/bold] → {row['model']}")
+    console.print(
+        f"[bold]{row['selected_tier'].upper()}[/bold] → {row['model']} "
+        f"via {row['backend']}/{row['model_provider']} ({row['route_scope']})"
+    )
     console.print(
         f"Confidence: {row['confidence']:.0%}; rule score: {row['raw_score']:g}; "
         f"classifier: {row['classifier_version']}"
@@ -147,14 +152,19 @@ def why_command(session: str | None = None) -> None:
 @app.command("history")
 def history_command(session: str | None = None, limit: int = 20) -> None:
     """Show recent routing decisions."""
-    table = Table("ID", "Time", "Session", "Route", "Model", "Source", "Confidence", "Reasons")
+    table = Table(
+        "ID", "Time", "Scope", "Session", "Route", "Backend", "Model", "Source",
+        "Confidence", "Reasons"
+    )
     for row in AuditStore().history(session, limit):
         reasons = ", ".join(json.loads(row["reason_codes"]))
         table.add_row(
             str(row["id"]),
             row["created_at"][11:19],
+            row["route_scope"],
             row["session_id"][:8],
             f"{row['comparison_tier'] or row['current_tier']} → {row['selected_tier']}",
+            row["backend"],
             row["model"],
             row["classification_source"],
             f"{row['confidence']:.0%}",
@@ -248,6 +258,12 @@ def stats_command(
     console.print(f"Routed answer cost: {currency} {report.actual_cost:.4f}")
     console.print(f"Fixed {baseline} baseline: {currency} {report.baseline_cost:.4f}")
     console.print(f"Classifier overhead: {currency} {report.classifier_cost:.4f}")
+    if report.unpriced_models:
+        console.print(
+            "[yellow]Unpriced models excluded from routed cost: "
+            + ", ".join(report.unpriced_models)
+            + ". Add rates or aliases under pricing.models/pricing.aliases.[/yellow]"
+        )
     console.print(
         f"Net estimated savings: {currency} {report.net_savings:.4f} "
         f"({report.savings_percent:.1f}%)"
@@ -412,6 +428,145 @@ def classifier_disable_command() -> None:
     config.routing.classifier.enabled = False
     save_config(config)
     console.print("LLM classification disabled; deterministic routing remains active.")
+
+
+@app.command("backend-enable")
+def backend_enable_command(
+    name: str = typer.Argument(..., help="Backend name: gpt, azure, or deepseek."),
+    base_url: str | None = typer.Option(None, help="Responses API base URL."),
+    fast_model: str | None = typer.Option(None),
+    normal_model: str | None = typer.Option(None),
+    smart_model: str | None = typer.Option(None),
+    max_model: str | None = typer.Option(None),
+    api_key_header: str | None = typer.Option(
+        None,
+        help="Credential header: api-key for direct Azure, authorization for bearer proxies.",
+    ),
+) -> None:
+    """Enable an execution backend and sync its non-secret Codex provider config."""
+    config = load_config()
+    name = name.lower()
+    if name not in config.backends:
+        raise typer.BadParameter(f"unknown backend: {name}")
+    backend = config.backends[name]
+    if base_url:
+        backend.base_url = base_url.rstrip("/")
+    if name == "azure" and not backend.base_url:
+        raise typer.BadParameter("Azure requires --base-url ending in /openai/v1")
+    if api_key_header:
+        normalized_header = api_key_header.lower()
+        if normalized_header not in {"api-key", "authorization"}:
+            raise typer.BadParameter("--api-key-header must be api-key or authorization")
+        backend.api_key_header = normalized_header
+    for tier, model in {
+        "fast": fast_model,
+        "normal": normal_model,
+        "smart": smart_model,
+        "max": max_model,
+    }.items():
+        if model:
+            backend.tiers[tier].model = model
+    backend.enabled = True
+    save_config(config)
+    path, backup = sync_codex_providers(config)
+    console.print(f"Enabled {name}; synced {path}")
+    if backup:
+        console.print(f"Backup: {backup}")
+    ready, problems = backend_readiness(config, name)
+    if not ready:
+        missing_credentials = [item for item in problems if item.startswith("missing ")]
+        if missing_credentials:
+            console.print(
+                f"Import {backend.api_key_env} before launching Codex with "
+                f"`agentroute backend-credential-import {name} SOURCE_ENV`."
+            )
+
+
+@app.command("backend-disable")
+def backend_disable_command(name: str) -> None:
+    """Disable an API backend and remove its generated Codex provider entry."""
+    config = load_config()
+    name = name.lower()
+    if name == "gpt":
+        raise typer.BadParameter("the ChatGPT subscription backend cannot be disabled")
+    if name not in config.backends:
+        raise typer.BadParameter(f"unknown backend: {name}")
+    config.backends[name].enabled = False
+    for tier, selected in list(config.routing.backend_by_tier.items()):
+        if selected == name:
+            config.routing.backend_by_tier[tier] = "gpt"
+    save_config(config)
+    path, _ = sync_codex_providers(config)
+    console.print(f"Disabled {name}; synced {path}")
+
+
+@app.command("backend-credential-import")
+def backend_credential_import_command(
+    name: str = typer.Argument(..., help="Backend name: azure or deepseek."),
+    source_env: str = typer.Argument(..., help="Environment variable to import from."),
+) -> None:
+    """Store one backend credential in AgentRoute's owner-only local credential file."""
+    config = load_config()
+    name = name.lower()
+    if name not in config.backends or name == "gpt":
+        raise typer.BadParameter(f"backend does not accept an API credential: {name}")
+    try:
+        path, target_env = import_backend_credential(config, name, source_env)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+    console.print(f"Stored {target_env} for {name} in owner-only file {path}; value not shown.")
+
+
+@app.command("backend-route")
+def backend_route_command(
+    tier: str = typer.Argument(..., help="fast, normal, smart, or max"),
+    backend: str = typer.Argument(..., help="gpt, azure, or deepseek"),
+) -> None:
+    """Choose the default execution backend for one intelligence tier."""
+    config = load_config()
+    parsed_tier = str(Tier.parse(tier))
+    backend = backend.lower()
+    if backend not in config.backends or not config.backends[backend].enabled:
+        raise typer.BadParameter(f"backend is not enabled: {backend}")
+    config.routing.backend_by_tier[parsed_tier] = backend
+    save_config(config)
+    console.print(f"{parsed_tier.upper()} now routes through {backend}.")
+
+
+@app.command("backend-status")
+def backend_status_command() -> None:
+    """Show execution-provider mappings without printing credentials."""
+    config = load_config()
+    table = Table("Backend", "State", "Codex provider", "Endpoint", "Models")
+    for name, backend in config.backends.items():
+        ready, problems = backend_readiness(config, name)
+        state = "ready" if ready else ", ".join(problems)
+        models = ", ".join(
+            f"{tier}={target.model}" for tier, target in backend.tiers.items()
+        )
+        table.add_row(
+            name,
+            state,
+            backend.codex_provider,
+            backend.base_url or "ChatGPT subscription",
+            models,
+        )
+    console.print(table)
+    console.print(
+        "Defaults: "
+        + ", ".join(
+            f"{tier}={backend}" for tier, backend in config.routing.backend_by_tier.items()
+        )
+    )
+
+
+@app.command("backend-sync")
+def backend_sync_command() -> None:
+    """Synchronize enabled non-secret providers into Codex configuration."""
+    path, backup = sync_codex_providers(load_config())
+    console.print(f"Synced {path}")
+    if backup:
+        console.print(f"Backup: {backup}")
 
 
 @app.command("doctor")

@@ -7,13 +7,14 @@ import math
 from .classifier import OpenAICompatibleClassifier, TierClassifier, catalog_age_seconds
 from .config import AppConfig, load_config
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
+from .providers import backend_readiness
 from .signals import (
     contains_credential,
     continues_previous_task,
     extract_signals,
     is_confirmation,
-    prompt_override,
     reason_codes,
+    route_overrides,
 )
 
 CLASSIFIER_VERSION = "hybrid-v7"
@@ -51,8 +52,7 @@ class Router:
             self.classifier = OpenAICompatibleClassifier(classifier_config)
 
     def route(self, context: RouteContext) -> RouteDecision:
-        provider = self.config.providers[context.provider]
-        override, _ = prompt_override(context.latest_prompt)
+        override, backend_override, _ = route_overrides(context.latest_prompt)
         contributions = extract_signals(context)
         raw_score = sum(item.weight for item in contributions)
         inherited = False
@@ -158,18 +158,6 @@ class Router:
             proposed, confidence = self._apply_switching(
                 proposed, confidence, context, contributions
             )
-            if proposed is Tier.MAX and context.current_tier is not Tier.MAX:
-                proposed = Tier.SMART
-                contributions.append(
-                    ScoreContribution(
-                        code=ReasonCode.MODEL_COMPATIBILITY_FALLBACK,
-                        weight=0,
-                        detail=(
-                            "automatic MAX transition is incompatible with admitted Codex "
-                            "Node REPL safety metadata; used SMART"
-                        ),
-                    )
-                )
         max_tier = Tier.parse(self.config.policy.max_tier)
         if proposed > max_tier:
             proposed = max_tier
@@ -177,7 +165,62 @@ class Router:
                 ScoreContribution(code=ReasonCode.QUOTA_LIMIT, weight=0, detail="policy max tier")
             )
 
-        target = provider.target(proposed)
+        backend_name = backend_override or self.config.routing.backend_by_tier.get(
+            str(proposed), "gpt"
+        )
+        backend = self.config.backends.get(backend_name)
+        if backend_override:
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.BACKEND_OVERRIDE,
+                    weight=0,
+                    detail=f"explicit @{backend_override} backend override",
+                )
+            )
+        if (
+            backend is None
+            or not backend.enabled
+            or not backend_readiness(self.config, backend_name)[0]
+        ):
+            requested_backend = backend_name
+            backend_name = "gpt"
+            backend = self.config.backends[backend_name]
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.BACKEND_FALLBACK,
+                    weight=0,
+                    detail=f"backend {requested_backend} is unavailable; used gpt",
+                )
+            )
+        if (
+            proposed is Tier.MAX
+            and context.current_tier is not Tier.MAX
+            and not manual
+            and backend_name == "gpt"
+        ):
+            proposed = Tier.SMART
+            backend_name = backend_override or self.config.routing.backend_by_tier.get(
+                str(proposed), "gpt"
+            )
+            backend = self.config.backends.get(backend_name)
+            if (
+                backend is None
+                or not backend.enabled
+                or not backend_readiness(self.config, backend_name)[0]
+            ):
+                backend_name = "gpt"
+                backend = self.config.backends[backend_name]
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.MODEL_COMPATIBILITY_FALLBACK,
+                    weight=0,
+                    detail=(
+                        "automatic MAX transition is incompatible with admitted Codex "
+                        "Node REPL safety metadata; used SMART"
+                    ),
+                )
+            )
+        target = backend.target(proposed)
         digest = hashlib.sha256(context.latest_prompt.encode("utf-8")).hexdigest()
         comparison_tier = context.previous_task_tier or context.current_tier
         classifier_config = self.config.routing.classifier
@@ -212,7 +255,18 @@ class Router:
             catalog_status = "stale"
         candidates: list[dict[str, object]] = []
         for candidate_tier in Tier:
-            candidate_target = provider.target(candidate_tier)
+            candidate_backend_name = self.config.routing.backend_by_tier.get(
+                str(candidate_tier), "gpt"
+            )
+            candidate_backend = self.config.backends.get(candidate_backend_name)
+            if (
+                candidate_backend is None
+                or not candidate_backend.enabled
+                or not backend_readiness(self.config, candidate_backend_name)[0]
+            ):
+                candidate_backend_name = "gpt"
+                candidate_backend = self.config.backends[candidate_backend_name]
+            candidate_target = candidate_backend.target(candidate_tier)
             exclusions: list[str] = []
             if candidate_tier > max_tier:
                 exclusions.append("policy_max_tier")
@@ -226,6 +280,8 @@ class Router:
                 {
                     "tier": str(candidate_tier),
                     "model": candidate_target.model,
+                    "backend": candidate_backend_name,
+                    "model_provider": candidate_backend.codex_provider,
                     "reasoning_effort": candidate_target.reasoning_effort,
                     "eligible": not exclusions,
                     "exclusions": exclusions,
@@ -264,6 +320,8 @@ class Router:
             "selected": {
                 "tier": str(proposed),
                 "model": target.model,
+                "backend": backend_name,
+                "model_provider": backend.codex_provider,
                 "reasoning_effort": target.reasoning_effort,
             },
             "policy": {
@@ -287,12 +345,19 @@ class Router:
             reason_codes=reason_codes(contributions),
             contributions=contributions,
             provider=context.provider,
+            backend=backend_name,
+            model_provider=backend.codex_provider,
+            route_scope=context.route_scope,
+            agent_id=context.agent_id,
             session_id=context.session_id,
             turn_id=context.turn_id,
             prompt_hash=digest,
             manual_override=manual,
             inherited=inherited,
-            switched=proposed != comparison_tier,
+            switched=(
+                proposed != comparison_tier
+                or backend.codex_provider != context.current_model_provider
+            ),
             proposed_tier=score_proposed,
             comparison_tier=comparison_tier,
             classifier_version=CLASSIFIER_VERSION,

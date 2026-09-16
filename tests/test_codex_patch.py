@@ -12,6 +12,10 @@ def test_native_patch_is_packaged():
     assert "MODEL ROUTE" in content
     assert "routeMessage" in content
     assert "routed_turn_model" in content
+    assert "modelProvider" in content
+    assert "apply_routed_turn_settings" in content
+    assert "new_session_for_provider" in content
+    assert "TurnInput::InterAgentCommunication" in content
 
 
 def test_installer_enables_code_mode_and_signs_macos_binary():

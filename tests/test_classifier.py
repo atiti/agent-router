@@ -105,7 +105,7 @@ def test_tailscale_http_requires_explicit_private_transport_permission():
         OpenAICompatibleClassifier(
             ClassifierConfig(
                 enabled=True,
-                endpoint="http://100.71.77.40:4000/v1/chat/completions",
+                endpoint="http://100.64.0.42:4000/v1/chat/completions",
                 allow_remote=True,
             )
         )
@@ -113,7 +113,7 @@ def test_tailscale_http_requires_explicit_private_transport_permission():
     classifier = OpenAICompatibleClassifier(
         ClassifierConfig(
             enabled=True,
-            endpoint="http://100.71.77.40:4000/v1/chat/completions",
+            endpoint="http://100.64.0.42:4000/v1/chat/completions",
             allow_remote=True,
             allow_private_http=True,
         )

@@ -50,6 +50,8 @@ class ReasonCode(str, Enum):
     LLM_CLASSIFIER = "LLM_CLASSIFIER"
     CLASSIFIER_FALLBACK = "CLASSIFIER_FALLBACK"
     QUOTA_LIMIT = "QUOTA_LIMIT"
+    BACKEND_OVERRIDE = "BACKEND_OVERRIDE"
+    BACKEND_FALLBACK = "BACKEND_FALLBACK"
 
 
 class ScoreContribution(BaseModel):
@@ -62,6 +64,9 @@ class RouteContext(BaseModel):
     session_id: str
     turn_id: str | None = None
     provider: str = "codex"
+    current_model_provider: str = "openai"
+    route_scope: str = "root"
+    agent_id: str | None = None
     latest_prompt: str
     current_model: str = ""
     current_tier: Tier = Tier.NORMAL
@@ -86,6 +91,10 @@ class RouteDecision(BaseModel):
     reason_codes: list[ReasonCode]
     contributions: list[ScoreContribution]
     provider: str
+    backend: str = "gpt"
+    model_provider: str = "openai"
+    route_scope: str = "root"
+    agent_id: str | None = None
     session_id: str
     turn_id: str | None = None
     prompt_hash: str
