@@ -21,6 +21,8 @@ def test_native_patch_is_packaged():
     assert "normalize_prompt_for_provider" in content
     assert "openai_prompt_drops_third_party_plaintext_reasoning" in content
     assert "compatible_third_party_provider_drops_encrypted_provider_state" in content
+    assert "final_request_boundary_drops_third_party_encrypted_state" in content
+    assert "normalize_response_items_for_provider(input, self.state.provider.info())" in content
 
 
 def test_installer_enables_code_mode_and_signs_macos_binary():

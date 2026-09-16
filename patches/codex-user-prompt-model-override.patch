@@ -40,10 +40,110 @@ index 2981b13b0a..5631a5072b 100644
                  .clone(),
          ),
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 9e4cf7df6f..e23a3cf587 100644
+index 9e4cf7df6f..06350c63f3 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
-@@ -539,6 +539,47 @@ impl ModelClient {
+@@ -26,6 +26,7 @@
+ //! fails, normal stream retry/fallback logic handles recovery on the same turn.
+ 
+ use std::collections::HashMap;
++use std::collections::HashSet;
+ use std::sync::Arc;
+ use std::sync::Mutex as StdMutex;
+ use std::sync::OnceLock;
+@@ -140,6 +141,7 @@ use codex_model_provider::create_model_provider;
+ #[cfg(test)]
+ use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
+ use codex_model_provider_info::ModelProviderInfo;
++use codex_model_provider_info::ToolCompatibility;
+ use codex_model_provider_info::WireApi;
+ use codex_protocol::error::CodexErr;
+ use codex_protocol::error::Result;
+@@ -301,6 +303,83 @@ struct WebsocketSession {
+     connection_reused: StdMutex<bool>,
+ }
+ 
++/// Remove provider-owned state at the final shared request boundary.
++///
++/// Every Responses caller passes through this path, including ordinary turns,
++/// reviews, compaction, and retries. Keeping this normalization here prevents
++/// secondary model paths from replaying ciphertext owned by another provider.
++pub(crate) fn normalize_response_items_for_provider(
++    input: &mut Vec<ResponseItem>,
++    provider: &ModelProviderInfo,
++) {
++    match provider.tool_compatibility {
++        Some(ToolCompatibility::FunctionsAndApplyPatch) => {
++            let unsupported_custom_calls = input
++                .iter()
++                .filter_map(|item| match item {
++                    ResponseItem::CustomToolCall { call_id, name, .. } if name != "apply_patch" => {
++                        Some(call_id.clone())
++                    }
++                    _ => None,
++                })
++                .collect::<HashSet<_>>();
++            input.retain(|item| match item {
++                ResponseItem::Reasoning { .. }
++                | ResponseItem::AdditionalTools { .. }
++                | ResponseItem::LocalShellCall { .. }
++                | ResponseItem::ToolSearchCall { .. }
++                | ResponseItem::ToolSearchOutput { .. }
++                | ResponseItem::WebSearchCall { .. }
++                | ResponseItem::ImageGenerationCall { .. }
++                | ResponseItem::Compaction { .. }
++                | ResponseItem::ContextCompaction { .. } => false,
++                ResponseItem::CustomToolCall { name, .. } => name == "apply_patch",
++                ResponseItem::CustomToolCallOutput { call_id, .. } => {
++                    !unsupported_custom_calls.contains(call_id)
++                }
++                _ => true,
++            });
++            for item in input.iter_mut() {
++                item.set_id(None);
++            }
++        }
++        None if provider.is_openai() => {
++            input.retain(|item| match item {
++                ResponseItem::Reasoning { id, content, .. } => {
++                    id.as_ref().is_some_and(|id| id.starts_with("rs_"))
++                        && content.as_ref().is_none_or(Vec::is_empty)
++                }
++                _ => true,
++            });
++            for item in input.iter_mut() {
++                if item.id().is_some_and(|id| !id.is_prefixed()) {
++                    item.set_id(None);
++                }
++            }
++        }
++        None => {
++            input.retain(|item| {
++                !matches!(
++                    item,
++                    ResponseItem::Reasoning { .. }
++                        | ResponseItem::Compaction { .. }
++                        | ResponseItem::ContextCompaction { .. }
++                )
++            });
++            for item in input.iter_mut() {
++                if let ResponseItem::FunctionCall {
++                    encrypted_function_args,
++                    ..
++                } = item
++                {
++                    *encrypted_function_args = None;
++                }
++                item.set_id(None);
++            }
++        }
++    }
++}
++
+ // This is intentionally not a `PartialEq` implementation: request equality includes `input` and
+ // `client_metadata`, while websocket reuse compares the input separately and ignores metadata.
+ // Access programs are authorized per response, including continuations, without replaying input.
+@@ -539,6 +618,47 @@ impl ModelClient {
          }
      }
  
@@ -91,6 +191,84 @@ index 9e4cf7df6f..e23a3cf587 100644
      pub(crate) fn auth_manager(&self) -> Option<Arc<AuthManager>> {
          self.state.provider.auth_manager()
      }
+@@ -919,7 +1039,8 @@ impl ModelClient {
+         }
+     }
+ 
+-    fn prepare_response_items_for_request(&self, input: &mut [ResponseItem]) {
++    fn prepare_response_items_for_request(&self, input: &mut Vec<ResponseItem>) {
++        normalize_response_items_for_provider(input, self.state.provider.info());
+         for item in input {
+             if item.id().is_some_and(|id| !id.is_prefixed()) {
+                 item.set_id(/*new_id*/ None);
+diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
+index 8936f5afab..a1c83b0cac 100644
+--- a/codex-rs/core/src/client_tests.rs
++++ b/codex-rs/core/src/client_tests.rs
+@@ -8,6 +8,7 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
+ use super::X_CODEX_TURN_METADATA_HEADER;
+ use super::X_CODEX_WINDOW_ID_HEADER;
+ use super::X_OPENAI_SUBAGENT_HEADER;
++use super::normalize_response_items_for_provider;
+ use crate::AttestationContext;
+ use crate::AttestationProvider;
+ use crate::GenerateAttestationFuture;
+@@ -38,6 +39,7 @@ use codex_model_provider_info::WireApi;
+ use codex_model_provider_info::create_oss_provider_with_base_url;
+ use codex_models_manager::manager::SharedModelsManager;
+ use codex_otel::SessionTelemetry;
++use codex_protocol::ResponseItemId;
+ use codex_protocol::ThreadId;
+ use codex_protocol::auth::AuthMode;
+ use codex_protocol::error::CodexErr;
+@@ -78,6 +80,47 @@ use std::sync::atomic::AtomicUsize;
+ use std::sync::atomic::Ordering;
+ use std::task::Context;
+ use std::task::Poll;
++
++#[test]
++fn final_request_boundary_drops_third_party_encrypted_state() {
++    let provider = ModelProviderInfo {
++        name: "compatible-cloud".to_string(),
++        base_url: Some("https://example.invalid/v1".to_string()),
++        ..Default::default()
++    };
++    let function_call = ResponseItem::FunctionCall {
++        id: Some(ResponseItemId::with_suffix("fc", "portable")),
++        name: "lookup".to_string(),
++        namespace: None,
++        arguments: "{}".to_string(),
++        encrypted_function_args: Some(vec!["provider-bound".to_string()]),
++        call_id: "call-portable".to_string(),
++        internal_chat_message_metadata_passthrough: None,
++    };
++    let mut input = vec![
++        ResponseItem::Reasoning {
++            id: Some(ResponseItemId::with_suffix("rs", "foreign")),
++            summary: Vec::new(),
++            content: None,
++            encrypted_content: Some("provider-bound".to_string()),
++            internal_chat_message_metadata_passthrough: None,
++        },
++        function_call.clone(),
++    ];
++
++    normalize_response_items_for_provider(&mut input, &provider);
++
++    let mut expected = function_call;
++    expected.set_id(None);
++    if let ResponseItem::FunctionCall {
++        encrypted_function_args,
++        ..
++    } = &mut expected
++    {
++        *encrypted_function_args = None;
++    }
++    assert_eq!(input, vec![expected]);
++}
+ use std::time::Duration;
+ use tempfile::TempDir;
+ use tokio::sync::Notify;
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
 index 77e28b85e5..377a37f3ad 100644
 --- a/codex-rs/core/src/compact.rs
