@@ -91,6 +91,19 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path):
     assert len(store.history("same-thread")) == 2
 
 
+def test_route_message_identifies_managed_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "AGENTROUTE_RUNTIME_BUILD_ID",
+        "upstream-commit-provider-routing-v8",
+    )
+    config = default_config()
+    config.enabled = True
+
+    output = invoke(config, AuditStore(tmp_path / "audit.db"), "@fast say hi")
+
+    assert output["hookSpecificOutput"]["routeMessage"].endswith(" · runtime v8")
+
+
 def test_subagent_task_is_independently_routed_and_audited(tmp_path):
     config = default_config()
     config.enabled = True

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from typing import Any, TextIO
 
@@ -11,6 +12,19 @@ from .models import ReasonCode, RouteContext, Tier
 from .router import Router
 from .signals import continues_previous_task, is_confirmation
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
+
+
+def _runtime_label() -> str | None:
+    """Return a compact, non-sensitive label for the managed Codex runtime."""
+    build_id = os.environ.get("AGENTROUTE_RUNTIME_BUILD_ID")
+    if not build_id:
+        return None
+    marker = "-provider-routing-v"
+    if marker in build_id:
+        version = build_id.rsplit(marker, 1)[1]
+        if version.isdigit():
+            return f"v{version}"
+    return "managed"
 
 
 def codex_user_prompt_submit(
@@ -142,6 +156,11 @@ def codex_user_prompt_submit(
                 + (
                     " · CLASSIFIER FALLBACK"
                     if ReasonCode.CLASSIFIER_FALLBACK in decision.reason_codes
+                    else ""
+                )
+                + (
+                    f" · runtime {runtime_label}"
+                    if (runtime_label := _runtime_label())
                     else ""
                 )
             )
