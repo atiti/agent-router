@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+ROUTED_RESOURCES=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+AGENTROUTE_HOME_DIR=${AGENTROUTE_HOME:-"$HOME/.agentroute"}
+AGENTROUTE_CREDENTIALS="$AGENTROUTE_HOME_DIR/backend-credentials.env"
+
+if [ -f "$AGENTROUTE_CREDENTIALS" ]; then
+    . "$AGENTROUTE_CREDENTIALS"
+fi
+
+if [ -f "$AGENTROUTE_HOME_DIR/build-id" ]; then
+    AGENTROUTE_RUNTIME_BUILD_ID=$(sed -n '1p' "$AGENTROUTE_HOME_DIR/build-id")
+    export AGENTROUTE_RUNTIME_BUILD_ID
+fi
+
+if [ -x "$AGENTROUTE_HOME_DIR/bin/agentroute" ]; then
+    "$AGENTROUTE_HOME_DIR/bin/agentroute" classifier-refresh >/dev/null 2>&1 || true
+fi
+
+exec "$ROUTED_RESOURCES/codex-bin" \
+    --enable step_model_switching \
+    --enable code_mode \
+    --enable code_mode_host \
+    -c suppress_unstable_features_warning=true \
+    "$@"

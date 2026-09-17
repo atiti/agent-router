@@ -9,10 +9,12 @@ AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-"$AGENTROUTE_HOME_DIR/build/c
 AGENTROUTE_BUILD_PROFILE=${AGENTROUTE_BUILD_PROFILE:-dev-small}
 AGENTROUTE_CODEX_COMMIT=b0af519c39766c173191fc39b341808619b51c74
 AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.155.0-alpha.10}
-AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v20"
+AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v22"
 AGENTROUTE_BUILD_ID_FILE="$AGENTROUTE_HOME_DIR/build-id"
 AGENTROUTE_PATCHES="
 $AGENTROUTE_PROJECT_ROOT/patches/codex-user-prompt-model-override.patch
+$AGENTROUTE_PROJECT_ROOT/patches/codex-desktop-route-notice.patch
+$AGENTROUTE_PROJECT_ROOT/patches/codex-package-version.patch
 "
 
 for command_name in git cargo uv npm; do
@@ -68,7 +70,13 @@ if grep -F 'Route the turn before pre-sampling compaction' \
     && grep -F 'foreign_provider_state_ids' \
     "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/client.rs" >/dev/null 2>&1 \
     && grep -F 'routed_turn_model' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/turn.rs" >/dev/null 2>&1; then
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/tui/src/chatwidget.rs" >/dev/null 2>&1 \
+    && grep -F 'AgentMessageContentDeltaEvent' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/hook_runtime.rs" >/dev/null 2>&1 \
+    && grep -F 'MessagePhase::Commentary' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/hook_runtime.rs" >/dev/null 2>&1 \
+    && grep -F 'version = "0.155.0-alpha.2.6"' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/Cargo.toml" >/dev/null 2>&1; then
     AGENTROUTE_PATCHES_APPLIED=1
 fi
 if [ "$AGENTROUTE_PATCHES_APPLIED" = 1 ]; then
@@ -84,8 +92,8 @@ else
         git -C "$AGENTROUTE_CODEX_SOURCE" reset --hard "$AGENTROUTE_CODEX_COMMIT"
     fi
     for AGENTROUTE_PATCH in $AGENTROUTE_PATCHES; do
-        git -C "$AGENTROUTE_CODEX_SOURCE" apply --check "$AGENTROUTE_PATCH"
-        git -C "$AGENTROUTE_CODEX_SOURCE" apply "$AGENTROUTE_PATCH"
+        git -C "$AGENTROUTE_CODEX_SOURCE" apply --recount --check "$AGENTROUTE_PATCH"
+        git -C "$AGENTROUTE_CODEX_SOURCE" apply --recount "$AGENTROUTE_PATCH"
     done
 fi
 
@@ -157,21 +165,19 @@ printf '#!/bin/sh\nAGENTROUTE_CREDENTIALS="%s/backend-credentials.env"\nif [ -f 
     "$AGENTROUTE_HOME_DIR" "$AGENTROUTE_BUILD_ID" "$AGENTROUTE_HOME_DIR" "$AGENTROUTE_HOME_DIR" >"$AGENTROUTE_BIN_DIR/codex"
 chmod 755 "$AGENTROUTE_BIN_DIR/codex"
 
-if [ -f "$AGENTROUTE_HOME_DIR/config.yaml" ]; then
-    "$AGENTROUTE_BIN_DIR/agentroute" enable
+if [ "${AGENTROUTE_INSTALL_ACTIVATE:-1}" = 1 ]; then
+    "$AGENTROUTE_BIN_DIR/agentroute" setup
+
+    AGENTROUTE_SHELL_RC=${ZDOTDIR:-"$HOME"}/.zshrc
+    AGENTROUTE_PATH_LINE='export PATH="$HOME/.agentroute/bin:$PATH" # agentroute'
+    if ! grep -F "$AGENTROUTE_PATH_LINE" "$AGENTROUTE_SHELL_RC" >/dev/null 2>&1; then
+        printf '\n%s\n' "$AGENTROUTE_PATH_LINE" >>"$AGENTROUTE_SHELL_RC"
+    fi
+
+    printf '\nAgentRoute installed in %s\n' "$AGENTROUTE_HOME_DIR"
+    printf 'Run: source %s\n' "$AGENTROUTE_SHELL_RC"
+    printf 'Then launch Codex normally: codex\n'
+    printf 'Original Codex remains available as: codex-stock\n'
 else
-    "$AGENTROUTE_BIN_DIR/agentroute" init --enable
+    printf '\nAgentRoute build payload prepared in %s\n' "$AGENTROUTE_HOME_DIR"
 fi
-"$AGENTROUTE_BIN_DIR/agentroute" install-hook
-"$AGENTROUTE_BIN_DIR/agentroute" backend-sync
-
-AGENTROUTE_SHELL_RC=${ZDOTDIR:-"$HOME"}/.zshrc
-AGENTROUTE_PATH_LINE='export PATH="$HOME/.agentroute/bin:$PATH" # agentroute'
-if ! grep -F "$AGENTROUTE_PATH_LINE" "$AGENTROUTE_SHELL_RC" >/dev/null 2>&1; then
-    printf '\n%s\n' "$AGENTROUTE_PATH_LINE" >>"$AGENTROUTE_SHELL_RC"
-fi
-
-printf '\nAgentRoute installed in %s\n' "$AGENTROUTE_HOME_DIR"
-printf 'Run: source %s\n' "$AGENTROUTE_SHELL_RC"
-printf 'Then launch Codex normally: codex\n'
-printf 'Original Codex remains available as: codex-stock\n'

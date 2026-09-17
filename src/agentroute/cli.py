@@ -20,6 +20,13 @@ from .classifier import (
 )
 from .codex_patch import apply_patch, build_codex, install_binary
 from .config import config_path, default_config, load_config, save_config
+from .desktop import (
+    DEFAULT_DESTINATION_APP,
+    DEFAULT_SOURCE_APP,
+    build_desktop_app,
+    desktop_status,
+    rollback_desktop_app,
+)
 from .hook import codex_stop, codex_user_prompt_submit
 from .install import hook_command as installed_hook_command
 from .install import merge_codex_hook
@@ -31,9 +38,12 @@ from .providers import (
     import_backend_credential,
     sync_codex_providers,
 )
+from .release import install_latest_release
 from .router import Router
 
 app = typer.Typer(no_args_is_help=True, help="Local, auditable model routing for coding agents.")
+desktop_app = typer.Typer(no_args_is_help=True, help="Build and manage Codex Desktop locally.")
+app.add_typer(desktop_app, name="desktop")
 console = Console()
 
 
@@ -61,6 +71,53 @@ def enable_command() -> None:
     config.enabled = True
     save_config(config)
     console.print("AgentRoute enabled. Use a patched Codex binary with step_model_switching.")
+
+
+@app.command("setup")
+def setup_command() -> None:
+    """Initialize, enable, and connect an installed AgentRoute runtime."""
+    path = config_path()
+    if path.exists():
+        config = load_config()
+        config.enabled = True
+    else:
+        config = default_config()
+        config.enabled = True
+    save_config(config, path)
+    hooks_path, backup = merge_codex_hook()
+    providers_path, providers_backup = sync_codex_providers(config)
+    console.print(f"✓ Config enabled: {path}")
+    console.print(f"✓ Codex hooks connected: {hooks_path}")
+    console.print(f"✓ Provider config synchronized: {providers_path}")
+    if backup:
+        console.print(f"  Hooks backup: {backup}")
+    if providers_backup:
+        console.print(f"  Provider backup: {providers_backup}")
+    routed = Path(os.environ.get("AGENTROUTE_HOME", str(Path.home() / ".agentroute")))
+    routed /= "bin/codex-bin"
+    if not routed.exists():
+        console.print(
+            "[yellow]Patched Codex binary is missing; install a release or build from source."
+            "[/yellow]"
+        )
+    else:
+        console.print("✓ Routed Codex runtime is installed")
+
+
+@app.command("update")
+def update_command(
+    repository: str | None = typer.Option(
+        None, help="GitHub owner/repository; defaults to the official AgentRoute repository."
+    ),
+) -> None:
+    """Download, checksum, and install the latest prebuilt AgentRoute release."""
+    console.print("Downloading the latest release for this platform...")
+    try:
+        version = install_latest_release(repository)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        console.print(f"[red]Update failed: {error}[/red]")
+        raise typer.Exit(1) from error
+    console.print(f"AgentRoute {version} installed. Restart active Codex sessions.")
 
 
 @app.command("observe")
@@ -584,10 +641,16 @@ def backend_sync_command() -> None:
 @app.command("doctor")
 def doctor_command() -> None:
     """Check local prerequisites and configuration."""
+    home = Path(os.environ.get("AGENTROUTE_HOME", str(Path.home() / ".agentroute")))
     checks = {
         "Codex": shutil.which("codex") or "missing",
+        "Routed Codex": str(home / "bin/codex-bin")
+        if (home / "bin/codex-bin").exists()
+        else "missing",
+        "Code Mode host": str(home / "bin/codex-code-mode-host")
+        if (home / "bin/codex-code-mode-host").exists()
+        else "missing",
         "Git": shutil.which("git") or "missing",
-        "Cargo": shutil.which("cargo") or "missing",
         "Config": str(config_path()) if config_path().exists() else "not initialized",
     }
     for name, value in checks.items():
@@ -595,6 +658,87 @@ def doctor_command() -> None:
     if shutil.which("codex"):
         result = subprocess.run(["codex", "--version"], capture_output=True, text=True)
         console.print(result.stdout.strip() or result.stderr.strip())
+
+
+@desktop_app.command("status")
+def desktop_status_command(
+    source: Path = typer.Option(DEFAULT_SOURCE_APP, help="Official ChatGPT.app path."),
+    destination: Path = typer.Option(DEFAULT_DESTINATION_APP, help="Routed app path."),
+) -> None:
+    """Show official, routed, and embedded Codex compatibility versions."""
+    status = desktop_status(source.expanduser(), destination.expanduser())
+    for key, value in status.items():
+        console.print(f"{key.replace('_', ' ').title()}: {value}")
+
+
+@desktop_app.command("install")
+def desktop_install_command(
+    source: Path = typer.Option(DEFAULT_SOURCE_APP, help="Official ChatGPT.app path."),
+    destination: Path = typer.Option(DEFAULT_DESTINATION_APP, help="Routed app path."),
+    signing_identity: str = typer.Option(
+        "-", help="Apple signing identity; '-' creates a local ad-hoc signature."
+    ),
+    allow_version_mismatch: bool = typer.Option(
+        False,
+        help="Bypass the app-server compatibility guard (mobile remote may reject it).",
+    ),
+) -> None:
+    """Create a routed app from the locally installed official ChatGPT app."""
+    try:
+        installed, _ = build_desktop_app(
+            source.expanduser(),
+            destination.expanduser(),
+            signing_identity=signing_identity,
+            allow_version_mismatch=allow_version_mismatch,
+        )
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        console.print(f"[red]Desktop install failed: {error}[/red]")
+        raise typer.Exit(1) from error
+    console.print(f"Created {installed}")
+    console.print("The official app was not modified. Quit it before opening the routed copy.")
+
+
+@desktop_app.command("rebuild")
+def desktop_rebuild_command(
+    source: Path = typer.Option(DEFAULT_SOURCE_APP, help="Official ChatGPT.app path."),
+    destination: Path = typer.Option(DEFAULT_DESTINATION_APP, help="Routed app path."),
+    signing_identity: str = typer.Option(
+        "-", help="Apple signing identity; '-' creates a local ad-hoc signature."
+    ),
+    allow_version_mismatch: bool = typer.Option(
+        False,
+        help="Bypass the app-server compatibility guard (mobile remote may reject it).",
+    ),
+) -> None:
+    """Rebuild from the latest official app while preserving a rollback copy."""
+    try:
+        installed, backup = build_desktop_app(
+            source.expanduser(),
+            destination.expanduser(),
+            signing_identity=signing_identity,
+            replace=True,
+            allow_version_mismatch=allow_version_mismatch,
+        )
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        console.print(f"[red]Desktop rebuild failed: {error}[/red]")
+        raise typer.Exit(1) from error
+    console.print(f"Rebuilt {installed}")
+    if backup:
+        console.print(f"Rollback copy: {backup}")
+
+
+@desktop_app.command("rollback")
+def desktop_rollback_command(
+    destination: Path = typer.Option(DEFAULT_DESTINATION_APP, help="Routed app path."),
+) -> None:
+    """Restore the newest routed Desktop backup."""
+    try:
+        restored, replaced = rollback_desktop_app(destination.expanduser())
+    except (OSError, RuntimeError) as error:
+        console.print(f"[red]Desktop rollback failed: {error}[/red]")
+        raise typer.Exit(1) from error
+    console.print(f"Restored {restored}")
+    console.print(f"Replaced app retained at {replaced}")
 
 
 @app.command("codex-patch")

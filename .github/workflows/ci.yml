@@ -16,3 +16,18 @@ jobs:
       - run: uv sync --all-extras
       - run: uv run pytest
       - run: uv run ruff check .
+      - run: sh -n scripts/*.sh packaging/*.sh assets/desktop/codex-launcher
+      - run: uv build --wheel
+      - name: Verify wheel contains runtime patches and Desktop assets
+        run: |
+          unzip -l dist/*.whl | grep 'agentroute/patches/codex-user-prompt-model-override.patch'
+          unzip -l dist/*.whl | grep 'agentroute/desktop_assets/codex-launcher'
+
+  pinned-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify maintained patch stack at the pinned Codex commit
+        env:
+          AGENTROUTE_UPSTREAM_CARGO_CHECK: "0"
+        run: ./scripts/check_upstream.sh b0af519c39766c173191fc39b341808619b51c74

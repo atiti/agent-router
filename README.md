@@ -183,13 +183,39 @@ agentroute classifier-enable \
 
 Use `agentroute classifier-disable` to return to deterministic-only routing.
 
-## Install locally
+## Install
 
-Requirements: macOS or Linux, Git, Node/npm, `uv`, Rust/Cargo, a working Codex login, and at least
-6 GiB of free disk space for the Codex build.
+The recommended installer downloads the release for the current OS and CPU, verifies its SHA-256
+checksum, and installs it under `~/.agentroute/`. It never replaces the official Codex binary.
+`uv` and a working Codex login are the only prerequisites.
 
 ```sh
-git clone https://github.com/YOUR_ORG/agentroute.git
+curl -fsSL https://raw.githubusercontent.com/atiti/agent-router/main/scripts/bootstrap.sh | sh
+source ~/.zshrc  # use ~/.profile on non-zsh shells
+agentroute doctor
+codex
+```
+
+For a review-before-running flow, download `scripts/bootstrap.sh`, inspect it, and execute it with
+`sh`. Every GitHub release includes per-platform checksums and GitHub build-provenance attestations.
+macOS release binaries are Developer ID signed when the project signing secrets are configured;
+the installer always verifies the published checksum before executing the bundled installer.
+Downloaded archives can also be independently checked with
+`gh attestation verify ARCHIVE --repo atiti/agent-router`.
+
+To update later:
+
+```sh
+agentroute update
+```
+
+### Build from source
+
+Source builds require macOS or Linux, Git, Node/npm, `uv`, Rust/Cargo, a working Codex login, and
+at least 6 GiB of free disk space.
+
+```sh
+git clone https://github.com/atiti/agent-router.git
 cd agentroute
 ./scripts/install.sh
 source ~/.zshrc
@@ -197,7 +223,7 @@ agentroute doctor
 codex
 ```
 
-The installer places everything under `~/.agentroute/`, adds `~/.agentroute/bin` to PATH, merges a
+Both installers place everything under `~/.agentroute/`, add `~/.agentroute/bin` to PATH, merge a
 hook into `~/.codex/hooks.json` after making a backup, and exposes:
 
 - `codex`: patched Codex with native step model switching and Code Mode enabled
@@ -258,12 +284,12 @@ MAX→SMART safety fallback for automatic routes instead of claiming a rejected 
 `@max` remains the operator escape hatch and may be rejected by Codex when that incompatibility is
 present.
 
-## Experimental Codex Desktop build
+## Codex Desktop on macOS
 
-On macOS, a source checkout can create a separate routed copy of the installed Codex Desktop app:
+AgentRoute can derive a separate routed copy from the official app already installed on the Mac:
 
 ```sh
-scripts/build_desktop_app.sh /Applications/ChatGPT.app /Applications/ChatGPT-Routed.app
+agentroute desktop install
 open -a /Applications/ChatGPT-Routed.app
 ```
 
@@ -271,10 +297,23 @@ The builder does not modify the original app. It embeds the AgentRoute Codex bin
 Code Mode host, and a launcher that loads the owner-only backend credential file. It retains the
 original bundle identifier for frontend compatibility, changes the visible name, disables automatic
 updates, signs nested code inside the copied bundle, verifies the complete signature, and smoke-tests
-the embedded app-server before publishing the destination.
+the embedded app-server before publishing the destination. The official app is never uploaded,
+packaged, or redistributed.
+The installer also refuses a stock/routed Codex version mismatch by default, because that can make
+mobile remote clients report that the Desktop app must be updated. `agentroute desktop status`
+shows all three versions before any change is made.
+
+After updating the official ChatGPT app or AgentRoute, rebuild with an automatic rollback copy:
+
+```sh
+agentroute desktop rebuild
+agentroute desktop status
+# If needed:
+agentroute desktop rollback
+```
 
 The default `-` identity is an ad-hoc signature for local testing. To use an installed Apple signing
-identity instead, set `AGENTROUTE_DESKTOP_SIGNING_IDENTITY` to its exact Keychain name. The copied app
+identity instead, pass `--signing-identity 'Developer ID Application: …'`. The copied app
 cannot retain OpenAI-only application groups, push, or Keychain access groups under another identity,
 so those restricted entitlements are deliberately omitted. Close the stock app before normal use of
 the routed copy: both retain `com.openai.codex` and therefore share the normal Codex profile and
@@ -354,8 +393,11 @@ can work. This preserves reasoning continuity without attempting to decrypt or c
 state across trust boundaries.
 
 The installer pins OpenAI Codex commit `b0af519c39766c173191fc39b341808619b51c74`. The maintained
-patches are in `patches/codex-user-prompt-model-override.patch` and
-`patches/codex-provider-provenance.patch`. AgentRoute is not affiliated with or endorsed by OpenAI.
+patches are `patches/codex-user-prompt-model-override.patch`,
+`patches/codex-desktop-route-notice.patch`, and `patches/codex-package-version.patch`.
+A weekly GitHub Actions job applies all patches to the latest upstream Codex release and compiles
+the CLI. Failures open one actionable compatibility issue; automation never publishes an unreviewed
+Codex upgrade. AgentRoute is not affiliated with or endorsed by OpenAI.
 
 ## Development
 

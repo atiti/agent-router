@@ -1,0 +1,66 @@
+name: Upstream Codex compatibility
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      codex_ref:
+        description: OpenAI Codex tag to test; blank means latest release
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_REF: ${{ inputs.codex_ref }}
+        run: |
+          if [ -n "$REQUESTED_REF" ]; then
+            ref="$REQUESTED_REF"
+          else
+            ref=$(gh api repos/openai/codex/releases/latest --jq .tag_name)
+          fi
+          printf 'ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
+      - name: Apply patches and compile Codex CLI
+        id: check
+        continue-on-error: true
+        run: ./scripts/check_upstream.sh "${{ steps.upstream.outputs.ref }}"
+      - name: Open one actionable compatibility issue on failure
+        if: steps.check.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REF: ${{ steps.upstream.outputs.ref }}
+        run: |
+          title="Codex upstream compatibility failed: $UPSTREAM_REF"
+          existing=$(gh issue list --state open --search "\"$title\" in:title" \
+            --json number --jq '.[0].number // empty')
+          if [ -z "$existing" ]; then
+            gh issue create --title "$title" --body \
+              "The scheduled patch/apply and codex-cli compile check failed against OpenAI Codex **$UPSTREAM_REF**. Review the failed workflow, rebase the maintained patches, verify Desktop app-server compatibility, and release only after manual testing. No release was published automatically."
+          fi
+      - name: Record a compatible upgrade candidate
+        if: steps.check.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REF: ${{ steps.upstream.outputs.ref }}
+        run: |
+          title="Codex upgrade candidate passed: $UPSTREAM_REF"
+          existing=$(gh issue list --state open --search "\"$title\" in:title" \
+            --json number --jq '.[0].number // empty')
+          if [ -z "$existing" ]; then
+            gh issue create --title "$title" --body \
+              "The maintained AgentRoute patch stack applied and codex-cli compiled against OpenAI Codex **$UPSTREAM_REF**. This is a candidate, not a release approval. Complete the manual provider, approval-review, Desktop, mobile, resume, and compaction gates in docs/releasing.md before updating the pin."
+          fi
+      - name: Fail after recording the incident
+        if: steps.check.outcome == 'failure'
+        run: exit 1

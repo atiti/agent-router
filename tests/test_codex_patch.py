@@ -42,6 +42,10 @@ def test_native_patch_is_packaged():
     assert "model_provider_id" in content
     assert "foreign_provider_state_ids" in content
     assert "history_has_foreign_provider_state" in content
+    assert "SessionSource::VSCode" in content
+    assert "MessagePhase::Commentary" in content
+    assert "emit_turn_item_completed" in content
+    assert "not added to the model's input history" in content
     continuation_test = (
         "mixed_provider_history_preserves_destination_reasoning_across_tool_continuations"
     )
@@ -65,7 +69,15 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "codesign --force --sign -" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v20" in installer
+    assert "provider-routing-v22" in installer
+    assert "codex-desktop-route-notice.patch" in installer
+    assert "codex-package-version.patch" in installer
+    assert "0.155.0-alpha.2.6" in "\n".join(
+        path.read_text() for path in patch_paths()
+    )
+    assert "apply --recount" in installer
+    assert "MessagePhase::Commentary" in installer
+    assert 'version = "0.155.0-alpha.2.6"' in installer
     same_host_guard = (
         'AGENTROUTE_SOURCE_CODE_MODE_HOST" != "$AGENTROUTE_BIN_DIR/codex-code-mode-host'
     )

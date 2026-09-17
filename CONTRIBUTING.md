@@ -13,3 +13,7 @@ avoid sending prompt data to external services, and preserve fail-open hook beha
 When updating the Codex patch, update its pinned commit in `src/agentroute/codex_patch.py` and
 `scripts/install.sh`, run the relevant Rust checks, and export the same final diff to both patch
 copies. Contributions are licensed under Apache-2.0.
+
+Before a release, follow [docs/releasing.md](docs/releasing.md). The scheduled upstream workflow is
+an early-warning system, not an automatic release authority: a human must verify CLI routing,
+provider boundaries, approval review, Desktop app-server behavior, and mobile remote connectivity.

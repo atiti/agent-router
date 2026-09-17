@@ -11,6 +11,8 @@ def patch_paths() -> tuple[Path, ...]:
     patch_dir = Path(__file__).with_name("patches")
     return (
         patch_dir / "codex-user-prompt-model-override.patch",
+        patch_dir / "codex-desktop-route-notice.patch",
+        patch_dir / "codex-package-version.patch",
     )
 
 
@@ -27,7 +29,7 @@ def validate_codex_source(source: Path) -> None:
 def apply_patch(source: Path, *, check: bool = False) -> None:
     validate_codex_source(source)
     for codex_patch in patch_paths():
-        command = ["git", "apply"]
+        command = ["git", "apply", "--recount"]
         if check:
             command.append("--check")
         command.append(str(codex_patch))

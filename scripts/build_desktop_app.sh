@@ -25,6 +25,16 @@ for required in "$ROUTED_CODEX" "$ROUTED_CODE_MODE_HOST" "$LAUNCHER"; do
         exit 1
     fi
 done
+SOURCE_CODEX="$SOURCE_APP/Contents/Resources/codex"
+SOURCE_VERSION=$("$SOURCE_CODEX" --version 2>/dev/null || true)
+ROUTED_VERSION=$("$ROUTED_CODEX" --version 2>/dev/null || true)
+if [ "${AGENTROUTE_ALLOW_DESKTOP_VERSION_MISMATCH:-0}" != 1 ] \
+    && [ "$SOURCE_VERSION" != "$ROUTED_VERSION" ]; then
+    printf 'Official and routed Codex versions differ (%s != %s).\n' \
+        "${SOURCE_VERSION:-unknown}" "${ROUTED_VERSION:-unknown}" >&2
+    printf 'Update AgentRoute first; a mismatch can break mobile remote connections.\n' >&2
+    exit 1
+fi
 
 DESTINATION_PARENT=$(dirname -- "$DESTINATION_APP")
 DESTINATION_NAME=$(basename -- "$DESTINATION_APP")

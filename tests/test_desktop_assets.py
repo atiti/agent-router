@@ -6,7 +6,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_desktop_launcher_uses_embedded_codex_and_external_credentials():
     launcher = (ROOT / "assets/desktop/codex-launcher").read_text(encoding="utf-8")
+    packaged_launcher = (
+        ROOT / "src/agentroute/desktop_assets/codex-launcher"
+    ).read_text(encoding="utf-8")
 
+    assert launcher == packaged_launcher
     assert 'exec "$ROUTED_RESOURCES/codex-bin"' in launcher
     assert '"$AGENTROUTE_HOME_DIR/backend-credentials.env"' in launcher
     assert "--enable step_model_switching" in launcher
@@ -16,6 +20,8 @@ def test_desktop_launcher_uses_embedded_codex_and_external_credentials():
 
 def test_adhoc_desktop_entitlements_exclude_openai_restricted_groups():
     path = ROOT / "assets/desktop/ChatGPT-Routed.entitlements.plist"
+    packaged_path = ROOT / "src/agentroute/desktop_assets/ChatGPT-Routed.entitlements.plist"
+    assert path.read_bytes() == packaged_path.read_bytes()
     with path.open("rb") as handle:
         entitlements = plistlib.load(handle)
 
