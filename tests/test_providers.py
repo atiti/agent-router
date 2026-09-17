@@ -8,6 +8,7 @@ from agentroute.providers import (
     END_MARKER,
     START_MARKER,
     backend_readiness,
+    effective_review_model,
     import_backend_credential,
     sync_codex_providers,
 )
@@ -32,10 +33,31 @@ def test_sync_codex_providers_is_idempotent_and_never_writes_keys(tmp_path):
     assert "AZURE_OPENAI_API_KEY" in first
     assert "DEEPSEEK_API_KEY" in first
     assert "api-key" in first
-    assert 'approval_review_model = "gpt-5"' in first
-    assert 'approval_review_model = "deepseek-v4-pro"' in first
+    assert 'approval_review_model = "gpt-5-mini"' in first
+    assert 'approval_review_model = "deepseek-flash"' in first
     assert 'tool_compatibility = "functions_and_apply_patch"' in first
     assert "secret" not in first.lower()
+
+
+def test_explicit_review_model_overrides_fast_default(tmp_path):
+    path = tmp_path / "config.toml"
+    config = default_config()
+    config.backends["deepseek"].enabled = True
+    config.backends["deepseek"].review_model = "validated-reviewer"
+
+    sync_codex_providers(config, path, backup=False)
+
+    rendered = path.read_text(encoding="utf-8")
+    assert 'approval_review_model = "validated-reviewer"' in rendered
+    assert rendered.count('approval_review_model = "validated-reviewer"') == 1
+
+
+def test_effective_review_model_uses_managed_gpt_and_fast_api_defaults():
+    config = default_config()
+
+    assert effective_review_model(config, "gpt") == "codex-auto-review"
+    assert effective_review_model(config, "azure") == "gpt-5-mini"
+    assert effective_review_model(config, "deepseek") == "deepseek-flash"
 
 
 def test_legacy_deepseek_backend_gains_safe_tool_compatibility(tmp_path):

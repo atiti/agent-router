@@ -19,6 +19,14 @@ def _toml_string(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def effective_review_model(config: AppConfig, backend_name: str) -> str:
+    """Return the bounded automatic-review model actually used by a backend."""
+    if backend_name == "gpt":
+        return "codex-auto-review"
+    backend = config.backends[backend_name]
+    return backend.review_model or backend.tiers["fast"].model
+
+
 def _provider_block(config: AppConfig) -> str:
     lines = [START_MARKER]
     for name, backend in sorted(config.backends.items()):
@@ -36,7 +44,10 @@ def _provider_block(config: AppConfig) -> str:
                 "supports_websockets = false",
             ]
         )
-        review_target = backend.review_model or backend.tiers["smart"].model
+        # Approval review is an isolated, bounded classification task. Default to
+        # the backend's cheapest FAST deployment rather than coupling review cost
+        # to the worker tier. Operators can still pin a separately validated model.
+        review_target = effective_review_model(config, name)
         lines.append(f"approval_review_model = {_toml_string(review_target)}")
         if backend.tool_compatibility == "functions_and_apply_patch":
             lines.append(

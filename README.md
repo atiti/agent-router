@@ -124,6 +124,14 @@ The same compatibility profile is applied when Codex starts an isolated automati
 so its existing read-only inspection tools are encoded as ordinary functions rather than an
 unsupported custom `exec` tool.
 
+Automatic approval review is routed independently from the worker tier. Each API backend defaults
+to its FAST model at low reasoning effort, so a SMART or MAX worker does not make a bounded command
+review unnecessarily expensive. The review stays on the same backend and credential boundary for
+predictable availability and tool compatibility. Pin a separately validated reviewer when enabling
+a backend with `--review-model MODEL`; `agentroute backend-status` shows the effective reviewer.
+Guardian remains fail-closed and retains the same local policy, sandbox evidence, and authority
+regardless of reviewer model.
+
 ## Optional LLM classifier
 
 For best routing quality, use a small cloud model only for ambiguous turns. This avoids maintaining

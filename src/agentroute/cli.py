@@ -25,7 +25,12 @@ from .install import hook_command as installed_hook_command
 from .install import merge_codex_hook
 from .models import RouteContext, Tier
 from .pricing import cost_report
-from .providers import backend_readiness, import_backend_credential, sync_codex_providers
+from .providers import (
+    backend_readiness,
+    effective_review_model,
+    import_backend_credential,
+    sync_codex_providers,
+)
 from .router import Router
 
 app = typer.Typer(no_args_is_help=True, help="Local, auditable model routing for coding agents.")
@@ -438,6 +443,10 @@ def backend_enable_command(
     normal_model: str | None = typer.Option(None),
     smart_model: str | None = typer.Option(None),
     max_model: str | None = typer.Option(None),
+    review_model: str | None = typer.Option(
+        None,
+        help="Dedicated automatic-approval model; defaults to this backend's FAST model.",
+    ),
     api_key_header: str | None = typer.Option(
         None,
         help="Credential header: api-key for direct Azure, authorization for bearer proxies.",
@@ -466,6 +475,8 @@ def backend_enable_command(
     }.items():
         if model:
             backend.tiers[tier].model = model
+    if review_model:
+        backend.review_model = review_model
     backend.enabled = True
     save_config(config)
     path, backup = sync_codex_providers(config)
@@ -537,7 +548,7 @@ def backend_route_command(
 def backend_status_command() -> None:
     """Show execution-provider mappings without printing credentials."""
     config = load_config()
-    table = Table("Backend", "State", "Codex provider", "Endpoint", "Models")
+    table = Table("Backend", "State", "Codex provider", "Endpoint", "Reviewer", "Models")
     for name, backend in config.backends.items():
         ready, problems = backend_readiness(config, name)
         state = "ready" if ready else ", ".join(problems)
@@ -549,6 +560,7 @@ def backend_status_command() -> None:
             state,
             backend.codex_provider,
             backend.base_url or "ChatGPT subscription",
+            effective_review_model(config, name),
             models,
         )
     console.print(table)
