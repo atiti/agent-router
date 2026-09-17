@@ -23,6 +23,9 @@ def test_native_patch_is_packaged():
     assert "compatible_third_party_provider_drops_encrypted_provider_state" in content
     assert "final_request_boundary_drops_third_party_encrypted_state" in content
     assert "normalize_response_items_for_provider(input, self.state.provider.info())" in content
+    assert "guardian_review_session_config_uses_routed_turn_provider" in content
+    assert "routed_parent_config.model_provider = provider.info().clone()" in content
+    assert "approval_review_model" in content
 
 
 def test_installer_enables_code_mode_and_signs_macos_binary():

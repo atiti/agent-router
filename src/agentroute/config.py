@@ -25,6 +25,7 @@ class ExecutionBackendConfig(BaseModel):
     api_key_env: str | None = None
     api_key_header: str = "authorization"
     tool_compatibility: Literal["full", "functions_and_apply_patch"] | None = None
+    review_model: str | None = None
     tiers: dict[str, ModelTarget]
 
     def target(self, tier: Tier) -> ModelTarget:

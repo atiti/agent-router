@@ -36,6 +36,8 @@ def _provider_block(config: AppConfig) -> str:
                 "supports_websockets = false",
             ]
         )
+        review_target = backend.review_model or backend.tiers["smart"].model
+        lines.append(f"approval_review_model = {_toml_string(review_target)}")
         if backend.tool_compatibility == "functions_and_apply_patch":
             lines.append(
                 "tool_compatibility = "

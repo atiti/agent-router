@@ -32,6 +32,8 @@ def test_sync_codex_providers_is_idempotent_and_never_writes_keys(tmp_path):
     assert "AZURE_OPENAI_API_KEY" in first
     assert "DEEPSEEK_API_KEY" in first
     assert "api-key" in first
+    assert 'approval_review_model = "gpt-5"' in first
+    assert 'approval_review_model = "deepseek-v4-pro"' in first
     assert 'tool_compatibility = "functions_and_apply_patch"' in first
     assert "secret" not in first.lower()
 
