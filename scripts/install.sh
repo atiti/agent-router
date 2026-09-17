@@ -9,11 +9,10 @@ AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-"$AGENTROUTE_HOME_DIR/build/c
 AGENTROUTE_BUILD_PROFILE=${AGENTROUTE_BUILD_PROFILE:-dev-small}
 AGENTROUTE_CODEX_COMMIT=b0af519c39766c173191fc39b341808619b51c74
 AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.155.0-alpha.10}
-AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v14"
+AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v20"
 AGENTROUTE_BUILD_ID_FILE="$AGENTROUTE_HOME_DIR/build-id"
 AGENTROUTE_PATCHES="
 $AGENTROUTE_PROJECT_ROOT/patches/codex-user-prompt-model-override.patch
-$AGENTROUTE_PROJECT_ROOT/patches/codex-provider-provenance.patch
 "
 
 for command_name in git cargo uv npm; do
@@ -64,7 +63,9 @@ fi
 git -C "$AGENTROUTE_CODEX_SOURCE" fetch origin "$AGENTROUTE_CODEX_COMMIT"
 git -C "$AGENTROUTE_CODEX_SOURCE" checkout --detach "$AGENTROUTE_CODEX_COMMIT"
 AGENTROUTE_PATCHES_APPLIED=0
-if grep -F 'foreign_provider_state_ids' \
+if grep -F 'Route the turn before pre-sampling compaction' \
+    "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/turn.rs" >/dev/null 2>&1 \
+    && grep -F 'foreign_provider_state_ids' \
     "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/client.rs" >/dev/null 2>&1 \
     && grep -F 'routed_turn_model' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/turn.rs" >/dev/null 2>&1; then

@@ -11,7 +11,6 @@ def patch_paths() -> tuple[Path, ...]:
     patch_dir = Path(__file__).with_name("patches")
     return (
         patch_dir / "codex-user-prompt-model-override.patch",
-        patch_dir / "codex-provider-provenance.patch",
     )
 
 

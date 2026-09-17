@@ -120,6 +120,9 @@ AgentRoute also applies a provider-declared tool compatibility profile. DeepSeek
 ordinary function tools plus the `apply_patch` custom tool because its Responses API rejects
 Codex's custom Code Mode `exec` tool. This changes only the wire format: the active Codex sandbox,
 approval, Guardian, reviewer, and Node/Code Mode safety authority remains local and unchanged.
+The same compatibility profile is applied when Codex starts an isolated automatic-review session,
+so its existing read-only inspection tools are encoded as ordinary functions rather than an
+unsupported custom `exec` tool.
 
 ## Optional LLM classifier
 
@@ -289,6 +292,18 @@ provider-owned history item is tagged with its producer provider. At a provider 
 removes only opaque reasoning/compaction state produced by another provider; portable messages and
 tool results remain, while reasoning produced by the active provider survives later tool-call
 continuations and turns. Legacy untagged opaque state is removed on the first mixed-provider turn.
+Routing and provider-state filtering also happen before automatic pre-turn compaction, because
+compaction is itself a provider request and can otherwise fail before the ordinary turn begins.
+Local compaction reuses that routed request session instead of silently constructing an unfiltered
+default-provider session. When the turn crosses a provider boundary, Codex also skips the
+previous-model compaction pass: that model belongs to the old backend and cannot safely be sent
+through the newly selected provider.
+This boundary is inferred from transcript provenance as well as hook audit state, so resumed and
+forked sessions remain safe even when they have a new audit-session identifier.
+The local compactor consumes the immutable routed step settings, including its model, reasoning,
+service-tier, and telemetry selection; it never falls back to stale turn-start model metadata.
+For function-compatible providers, automatic approval reviews retain the same read-only Guardian
+authority but explicitly disable Code Mode so reviewer tools are serialized as ordinary functions.
 Async hooks cannot change execution settings.
 
 For a load-balanced Responses API backend, the proxy must also keep encrypted reasoning on the

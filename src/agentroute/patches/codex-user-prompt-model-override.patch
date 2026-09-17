@@ -43,7 +43,7 @@ index 2981b13b0a..5631a5072b 100644
                  .clone(),
          ),
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 9e4cf7df6f..254a2ba554 100644
+index 9e4cf7df6f..78e9e199a9 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -26,6 +26,7 @@
@@ -62,15 +62,16 @@ index 9e4cf7df6f..254a2ba554 100644
  use codex_model_provider_info::WireApi;
  use codex_protocol::error::CodexErr;
  use codex_protocol::error::Result;
-@@ -281,6 +283,7 @@ pub struct ModelClientSession {
+@@ -281,6 +283,8 @@ pub struct ModelClientSession {
      /// appends, or continuation requests), and must not send it between different turns.
      /// An auth ownership change clears it so the new owner gets fresh routing state.
      turn_state: Arc<OnceLock<String>>,
-+    strip_provider_state: bool,
++    foreign_provider_state_ids: HashSet<ResponseItemId>,
++    strip_unattributed_provider_state: bool,
  }
  
  #[derive(Debug, Clone)]
-@@ -301,6 +304,104 @@ struct WebsocketSession {
+@@ -301,6 +305,124 @@ struct WebsocketSession {
      connection_reused: StdMutex<bool>,
  }
  
@@ -82,26 +83,37 @@ index 9e4cf7df6f..254a2ba554 100644
 +pub(crate) fn normalize_response_items_for_provider(
 +    input: &mut Vec<ResponseItem>,
 +    provider: &ModelProviderInfo,
-+    strip_provider_state: bool,
++    foreign_provider_state_ids: &HashSet<ResponseItemId>,
++    strip_unattributed_provider_state: bool,
 +) {
-+    if strip_provider_state {
++    if !foreign_provider_state_ids.is_empty() || strip_unattributed_provider_state {
 +        input.retain(|item| {
-+            !matches!(
-+                item,
-+                ResponseItem::Reasoning { .. }
-+                    | ResponseItem::Compaction { .. }
-+                    | ResponseItem::ContextCompaction { .. }
-+            )
++            let foreign = item
++                .id()
++                .is_some_and(|id| foreign_provider_state_ids.contains(id));
++            let unattributed = item.id().is_none() && strip_unattributed_provider_state;
++            !(foreign || unattributed)
++                || !matches!(
++                    item,
++                    ResponseItem::Reasoning { .. }
++                        | ResponseItem::Compaction { .. }
++                        | ResponseItem::ContextCompaction { .. }
++                )
 +        });
 +        for item in input.iter_mut() {
-+            if let ResponseItem::FunctionCall {
-+                encrypted_function_args,
-+                ..
-+            } = item
-+            {
-+                *encrypted_function_args = None;
++            let foreign = item
++                .id()
++                .is_some_and(|id| foreign_provider_state_ids.contains(id));
++            if foreign {
++                if let ResponseItem::FunctionCall {
++                    encrypted_function_args,
++                    ..
++                } = item
++                {
++                    *encrypted_function_args = None;
++                }
++                item.set_id(None);
 +            }
-+            item.set_id(None);
 +        }
 +    }
 +    match provider.tool_compatibility {
@@ -138,7 +150,9 @@ index 9e4cf7df6f..254a2ba554 100644
 +        None if provider.is_openai() => {
 +            input.retain(|item| match item {
 +                ResponseItem::Reasoning { id, content, .. } => {
-+                    id.as_ref().is_some_and(|id| id.starts_with("rs_"))
++                    id.as_ref().is_some_and(|id| {
++                        id.starts_with("rs_") || id.starts_with("encitem_")
++                    })
 +                        && content.as_ref().is_none_or(Vec::is_empty)
 +                }
 +                _ => true,
@@ -150,13 +164,13 @@ index 9e4cf7df6f..254a2ba554 100644
 +            }
 +        }
 +        None => {
-+            input.retain(|item| {
-+                !matches!(
-+                    item,
-+                    ResponseItem::Reasoning { .. }
-+                        | ResponseItem::Compaction { .. }
-+                        | ResponseItem::ContextCompaction { .. }
-+                )
++            input.retain(|item| match item {
++                ResponseItem::Reasoning { id, content, .. } => {
++                    id.as_ref().is_some_and(|id| id.starts_with("encitem_"))
++                        && content.as_ref().is_none_or(Vec::is_empty)
++                }
++                ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. } => false,
++                _ => true,
 +            });
 +            for item in input.iter_mut() {
 +                if let ResponseItem::FunctionCall {
@@ -166,7 +180,14 @@ index 9e4cf7df6f..254a2ba554 100644
 +                {
 +                    *encrypted_function_args = None;
 +                }
-+                item.set_id(None);
++                let preserve_affinity_id = matches!(
++                    item,
++                    ResponseItem::Reasoning { id: Some(id), .. }
++                        if id.starts_with("encitem_")
++                );
++                if !preserve_affinity_id {
++                    item.set_id(None);
++                }
 +            }
 +        }
 +    }
@@ -175,11 +196,12 @@ index 9e4cf7df6f..254a2ba554 100644
  // This is intentionally not a `PartialEq` implementation: request equality includes `input` and
  // `client_metadata`, while websocket reuse compares the input separately and ignores metadata.
  // Access programs are authorized per response, including continuations, without replaying input.
-@@ -536,9 +637,60 @@ impl ModelClient {
+@@ -536,9 +658,63 @@ impl ModelClient {
              client: self.clone(),
              websocket_session,
              turn_state: Arc::new(OnceLock::new()),
-+            strip_provider_state: false,
++            foreign_provider_state_ids: HashSet::new(),
++            strip_unattributed_provider_state: false,
          }
      }
  
@@ -227,16 +249,18 @@ index 9e4cf7df6f..254a2ba554 100644
 +    pub fn new_session_for_mixed_provider_history(
 +        &self,
 +        provider: SharedModelProvider,
++        foreign_provider_state_ids: HashSet<ResponseItemId>,
 +    ) -> ModelClientSession {
 +        let mut session = self.new_session_for_provider(provider);
-+        session.strip_provider_state = true;
++        session.foreign_provider_state_ids = foreign_provider_state_ids;
++        session.strip_unattributed_provider_state = true;
 +        session
 +    }
 +
      pub(crate) fn auth_manager(&self) -> Option<Arc<AuthManager>> {
          self.state.provider.auth_manager()
      }
-@@ -919,7 +1071,16 @@ impl ModelClient {
+@@ -919,7 +1095,18 @@ impl ModelClient {
          }
      }
  
@@ -244,53 +268,86 @@ index 9e4cf7df6f..254a2ba554 100644
 +    fn prepare_response_items_for_request(
 +        &self,
 +        input: &mut Vec<ResponseItem>,
-+        strip_provider_state: bool,
++        foreign_provider_state_ids: &HashSet<ResponseItemId>,
++        strip_unattributed_provider_state: bool,
 +    ) {
 +        normalize_response_items_for_provider(
 +            input,
 +            self.state.provider.info(),
-+            strip_provider_state,
++            foreign_provider_state_ids,
++            strip_unattributed_provider_state,
 +        );
          for item in input {
              if item.id().is_some_and(|id| !id.is_prefixed()) {
                  item.set_id(/*new_id*/ None);
-@@ -1569,7 +1730,7 @@ impl ModelClientSession {
+@@ -1568,8 +1755,11 @@ impl ModelClientSession {
+                 client_setup.auth.as_ref(),
                  prompt.cyber_access_program,
              );
-             self.client
+-            self.client
 -                .prepare_response_items_for_request(&mut request.input);
-+                .prepare_response_items_for_request(&mut request.input, self.strip_provider_state);
++            self.client.prepare_response_items_for_request(
++                &mut request.input,
++                &self.foreign_provider_state_ids,
++                self.strip_unattributed_provider_state,
++            );
              if crate::guardian::is_basic_session_source(&self.client.state.session_source) {
                  crate::guardian::observe_guardian_request(session_telemetry, &request);
              }
-@@ -1795,8 +1956,10 @@ impl ModelClientSession {
+@@ -1774,6 +1964,11 @@ impl ModelClientSession {
+             if let Some(turn_state) = self.turn_state.get() {
+                 client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
+             }
++            self.client.prepare_response_items_for_request(
++                &mut request.input,
++                &self.foreign_provider_state_ids,
++                self.strip_unattributed_provider_state,
++            );
+             let (incremental_request, previous_response_id_from_untraced_warmup) =
+                 self.prepare_websocket_request(&request);
+             let inference_trace_attempt = if warmup {
+@@ -1794,20 +1989,13 @@ impl ModelClientSession {
+                 Some((response_id, items)) => (Some(response_id), Some(items)),
                  None => (None, None),
              };
-             let original_item_ids = if let Some(incremental_items) = &mut incremental_items {
+-            let original_item_ids = if let Some(incremental_items) = &mut incremental_items {
 -                self.client
 -                    .prepare_response_items_for_request(incremental_items);
-+                self.client.prepare_response_items_for_request(
-+                    incremental_items,
-+                    self.strip_provider_state,
-+                );
-                 None
-             } else {
-                 let original_item_ids = request
-@@ -1804,8 +1967,10 @@ impl ModelClientSession {
-                     .iter()
-                     .map(|item| item.id().cloned())
-                     .collect::<Vec<_>>();
+-                None
+-            } else {
+-                let original_item_ids = request
+-                    .input
+-                    .iter()
+-                    .map(|item| item.id().cloned())
+-                    .collect::<Vec<_>>();
 -                self.client
 -                    .prepare_response_items_for_request(&mut request.input);
+-                Some(original_item_ids)
+-            };
++            if let Some(incremental_items) = &mut incremental_items {
 +                self.client.prepare_response_items_for_request(
-+                    &mut request.input,
-+                    self.strip_provider_state,
++                    incremental_items,
++                    &self.foreign_provider_state_ids,
++                    self.strip_unattributed_provider_state,
 +                );
-                 Some(original_item_ids)
-             };
++            }
              let mut ws_payload = ResponseCreateWsRequest {
+                 previous_response_id,
+                 input: incremental_items.as_deref().unwrap_or(&request.input),
+@@ -1843,11 +2031,6 @@ impl ModelClientSession {
+                     Some(Arc::clone(&self.turn_state)),
+                 )
+                 .await;
+-            if let Some(original_item_ids) = original_item_ids {
+-                for (item, original_item_id) in request.input.iter_mut().zip(original_item_ids) {
+-                    item.set_id(original_item_id);
+-                }
+-            }
+             self.websocket_session.last_request = Some(request);
+             self.websocket_session.last_response_from_untraced_warmup = warmup;
+             let stream_result = stream_result.map_err(|err| {
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index 8936f5afab..629f65045d 100644
+index 8936f5afab..c678bfed12 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
 @@ -8,6 +8,7 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
@@ -309,7 +366,15 @@ index 8936f5afab..629f65045d 100644
  use codex_protocol::ThreadId;
  use codex_protocol::auth::AuthMode;
  use codex_protocol::error::CodexErr;
-@@ -78,6 +80,64 @@ use std::sync::atomic::AtomicUsize;
+@@ -69,6 +71,7 @@ use futures::StreamExt;
+ use pretty_assertions::assert_eq;
+ use serde_json::json;
+ use std::collections::BTreeMap;
++use std::collections::HashSet;
+ use std::collections::VecDeque;
+ use std::path::PathBuf;
+ use std::pin::Pin;
+@@ -78,6 +81,102 @@ use std::sync::atomic::AtomicUsize;
  use std::sync::atomic::Ordering;
  use std::task::Context;
  use std::task::Poll;
@@ -341,7 +406,7 @@ index 8936f5afab..629f65045d 100644
 +        function_call.clone(),
 +    ];
 +
-+    normalize_response_items_for_provider(&mut input, &provider, false);
++    normalize_response_items_for_provider(&mut input, &provider, &HashSet::new(), false);
 +
 +    let mut expected = function_call;
 +    expected.set_id(None);
@@ -367,28 +432,234 @@ index 8936f5afab..629f65045d 100644
 +        internal_chat_message_metadata_passthrough: None,
 +    }];
 +
-+    normalize_response_items_for_provider(&mut input, &provider, true);
++    let foreign_ids = HashSet::from([ResponseItemId::with_suffix("rs", "foreign")]);
++    normalize_response_items_for_provider(&mut input, &provider, &foreign_ids, true);
 +
 +    assert!(input.is_empty());
++}
++
++#[test]
++fn mixed_provider_history_preserves_destination_reasoning_across_tool_continuations() {
++    let provider = ModelProviderInfo {
++        name: "compatible-cloud".to_string(),
++        base_url: Some("https://example.invalid/v1".to_string()),
++        ..Default::default()
++    };
++    let foreign_id = ResponseItemId::with_suffix("rs", "foreign");
++    let destination_id = ResponseItemId::from_server("encitem_destination".to_string());
++    let destination_reasoning = ResponseItem::Reasoning {
++        id: Some(destination_id),
++        summary: Vec::new(),
++        content: None,
++        encrypted_content: Some("destination-owned".to_string()),
++        internal_chat_message_metadata_passthrough: None,
++    };
++    let mut input = vec![
++        ResponseItem::Reasoning {
++            id: Some(foreign_id.clone()),
++            summary: Vec::new(),
++            content: None,
++            encrypted_content: Some("foreign".to_string()),
++            internal_chat_message_metadata_passthrough: None,
++        },
++        destination_reasoning.clone(),
++    ];
++
++    normalize_response_items_for_provider(
++        &mut input,
++        &provider,
++        &HashSet::from([foreign_id]),
++        true,
++    );
++
++    assert_eq!(input, vec![destination_reasoning]);
 +}
  use std::time::Duration;
  use tempfile::TempDir;
  use tokio::sync::Notify;
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 77e28b85e5..377a37f3ad 100644
+index 77e28b85e5..45d5382ba8 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
-@@ -250,7 +250,7 @@ async fn run_compact_task_inner_impl(
-         turn_context.model_info().truncation_policy.into(),
+@@ -86,6 +86,7 @@ pub(crate) struct CompactedHistoryMetadata {
+     pub(crate) window_ids: AutoCompactWindowIds,
+     pub(crate) compaction_response_id: Option<String>,
+     pub(crate) compaction_model_hash: Option<String>,
++    pub(crate) model_provider_id: String,
+ }
+ 
+ pub(crate) async fn build_compaction_initial_context(
+@@ -112,11 +113,13 @@ pub(crate) async fn build_compaction_initial_context(
+ 
+ pub(crate) async fn run_inline_auto_compact_task(
+     sess: Arc<Session>,
+-    turn_context: Arc<TurnContext>,
++    step_context: Arc<StepContext>,
++    client_session: &mut ModelClientSession,
+     initial_context_injection: InitialContextInjection,
+     reason: CompactionReason,
+     phase: CompactionPhase,
+ ) -> CodexResult<()> {
++    let turn_context = Arc::clone(&step_context.turn);
+     let prompt = turn_context
+         .config
+         .compact_prompt
+@@ -132,6 +135,8 @@ pub(crate) async fn run_inline_auto_compact_task(
+     run_compact_task_inner(
+         sess,
+         turn_context,
++        client_session,
++        Some(step_context),
+         input,
+         initial_context_injection,
+         CompactionTrigger::Auto,
+@@ -148,9 +153,15 @@ pub(crate) async fn run_compact_task(
+     input: Vec<UserInput>,
+ ) -> CodexResult<()> {
+     sess.emit_turn_started(&turn_context).await;
++    let mut client_session = sess
++        .services
++        .model_client
++        .new_session_for_provider(turn_context.model_provider());
+     run_compact_task_inner(
+         sess.clone(),
+         turn_context,
++        &mut client_session,
++        None,
+         input,
+         InitialContextInjection::DoNotInject,
+         CompactionTrigger::Manual,
+@@ -164,6 +175,8 @@ pub(crate) async fn run_compact_task(
+ async fn run_compact_task_inner(
+     sess: Arc<Session>,
+     turn_context: Arc<TurnContext>,
++    client_session: &mut ModelClientSession,
++    request_step_context: Option<Arc<StepContext>>,
+     input: Vec<UserInput>,
+     initial_context_injection: InitialContextInjection,
+     trigger: CompactionTrigger,
+@@ -200,6 +213,8 @@ async fn run_compact_task_inner(
+     let result = run_compact_task_inner_impl(
+         Arc::clone(&sess),
+         Arc::clone(&turn_context),
++        client_session,
++        request_step_context,
+         input,
+         initial_context_injection,
+         compaction_metadata,
+@@ -235,6 +250,8 @@ async fn run_compact_task_inner(
+ async fn run_compact_task_inner_impl(
+     sess: Arc<Session>,
+     turn_context: Arc<TurnContext>,
++    client_session: &mut ModelClientSession,
++    request_step_context: Option<Arc<StepContext>>,
+     input: Vec<UserInput>,
+     initial_context_injection: InitialContextInjection,
+     compaction_metadata: CompactionTurnMetadata,
+@@ -245,14 +262,17 @@ async fn run_compact_task_inner_impl(
+     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
+ 
+     let mut history = sess.clone_history().await;
++    let model_info = request_step_context
++        .as_ref()
++        .map(|step_context| &step_context.settings.model_info)
++        .unwrap_or_else(|| turn_context.model_info());
+     history.record_items(
+         &[initial_input_for_turn.into()],
+-        turn_context.model_info().truncation_policy.into(),
++        model_info.truncation_policy.into(),
      );
  
 -    let max_retries = turn_context.provider.info().stream_max_retries();
 +    let max_retries = turn_context.model_provider().info().stream_max_retries();
      let mut retries = 0;
-     let mut client_session = sess.services.model_client.new_session();
+-    let mut client_session = sess.services.model_client.new_session();
      // Reuse one client session so turn-scoped state (sticky routing, websocket incremental
+     // request tracking)
+     // survives retries within this compact turn.
+@@ -264,7 +284,7 @@ async fn run_compact_task_inner_impl(
+         // Clone is required because of the loop
+         let mut turn_input = history
+             .clone()
+-            .for_prompt(&turn_context.model_info().input_modalities);
++            .for_prompt(&model_info.input_modalities);
+         sess.services
+             .executed_tool_calls
+             .strip_disabled_direct_metadata(&mut turn_input);
+@@ -277,7 +297,8 @@ async fn run_compact_task_inner_impl(
+         let attempt_result = drain_to_completed(
+             &sess,
+             turn_context.as_ref(),
+-            &mut client_session,
++            client_session,
++            request_step_context.as_deref(),
+             &responses_metadata,
+             &prompt,
+         )
+@@ -387,7 +408,8 @@ async fn run_compact_task_inner_impl(
+             window_number,
+             window_ids,
+             compaction_response_id: Some(compaction_response_id),
+-            compaction_model_hash: turn_context.model_info().comp_hash.clone(),
++            compaction_model_hash: model_info.comp_hash.clone(),
++            model_provider_id: turn_context.model_provider_id(),
+         },
+     )
+     .await;
+@@ -757,21 +779,37 @@ async fn drain_to_completed(
+     sess: &Session,
+     turn_context: &TurnContext,
+     client_session: &mut ModelClientSession,
++    request_step_context: Option<&StepContext>,
+     responses_metadata: &CodexResponsesMetadata,
+     prompt: &Prompt,
+ ) -> CodexResult<String> {
++    let (model_info, session_telemetry, request_settings) = request_step_context
++        .map(|step_context| {
++            (
++                &step_context.settings.model_info,
++                &step_context.session_telemetry,
++                step_context.settings.as_ref(),
++            )
++        })
++        .unwrap_or_else(|| {
++            (
++                turn_context.model_info(),
++                &turn_context.session_telemetry,
++                turn_context.initial_settings.as_ref(),
++            )
++        });
+     let mut stream = client_session
+         .stream(
+             prompt,
+-            turn_context.model_info(),
+-            &turn_context.session_telemetry,
++            model_info,
++            session_telemetry,
+             sess.reasoning_effort_for_request(
+-                &turn_context.initial_settings,
++                request_settings,
+                 RequestEffortUsage::Compaction,
+             )
+             .await,
+-            turn_context.reasoning_summary(),
+-            turn_context.config.service_tier.clone(),
++            request_settings.reasoning_summary,
++            request_settings.service_tier.clone(),
+             responses_metadata,
+             // Rollout tracing currently models remote compaction only; local compaction streams
+             // are left untraced until the reducer has a first-class local compaction lifecycle.
+@@ -789,7 +827,7 @@ async fn drain_to_completed(
+             Ok(ResponseEvent::OutputItemDone(item)) => {
+                 sess.record_conversation_items(
+                     turn_context,
+-                    turn_context.model_info(),
++                    model_info,
+                     std::slice::from_ref(&item),
+                 )
+                 .await;
 diff --git a/codex-rs/core/src/compact_remote_v2.rs b/codex-rs/core/src/compact_remote_v2.rs
-index b367ba4bea..98d7a77d08 100644
+index b367ba4bea..ae219e3e1a 100644
 --- a/codex-rs/core/src/compact_remote_v2.rs
 +++ b/codex-rs/core/src/compact_remote_v2.rs
 @@ -230,7 +230,7 @@ async fn run_remote_compact_task_inner_impl(
@@ -409,7 +680,15 @@ index b367ba4bea..98d7a77d08 100644
                  );
              let fallback_result = run_remote_compact_v2_attempt(
                  sess,
-@@ -372,7 +372,7 @@ async fn run_remote_compaction_request_v2(
+@@ -347,6 +347,7 @@ async fn run_remote_compact_task_inner_impl(
+             window_ids: new_window_ids,
+             compaction_response_id: Some(compaction_response_id),
+             compaction_model_hash: compaction_turn_context.model_info().comp_hash.clone(),
++            model_provider_id: compaction_turn_context.model_provider_id(),
+         },
+     )
+     .await;
+@@ -372,7 +373,7 @@ async fn run_remote_compaction_request_v2(
  ) -> CodexResult<RemoteCompactionV2Output> {
      let turn_context = &step_context.turn;
      let max_retries = turn_context
@@ -419,7 +698,7 @@ index b367ba4bea..98d7a77d08 100644
          .stream_max_retries()
          .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
 diff --git a/codex-rs/core/src/guardian/review.rs b/codex-rs/core/src/guardian/review.rs
-index fc7960d547..78d1378410 100644
+index fc7960d547..78a1e33394 100644
 --- a/codex-rs/core/src/guardian/review.rs
 +++ b/codex-rs/core/src/guardian/review.rs
 @@ -225,7 +225,25 @@ pub(super) async fn guardian_review_session_config(
@@ -475,8 +754,40 @@ index fc7960d547..78d1378410 100644
          live_network_config,
          guardian_model.as_str(),
          guardian_reasoning_effort.clone(),
+@@ -266,6 +291,19 @@ pub(super) async fn guardian_review_session_config(
+         context.personality,
+         guardian_model_info.model_messages.as_ref(),
+     )?;
++    if provider.info().tool_compatibility.is_some() {
++        // Provider-compatible reviewers keep the same read-only Guardian authority, but expose
++        // those tools as ordinary functions. Do not let an inherited Code Mode feature rebuild
++        // the `exec` custom tool after startup model compatibility has selected direct mode.
++        for feature in [Feature::CodeMode, Feature::CodeModeOnly, Feature::CodeModeHost] {
++            spawn_config.features.disable(feature).map_err(|error| {
++                anyhow::anyhow!(
++                    "guardian review session could not disable incompatible `{}`: {error}",
++                    feature.key()
++                )
++            })?;
++        }
++    }
+     if context.model_info.computer_use_review_required() {
+         spawn_config
+             .features
+diff --git a/codex-rs/core/src/guardian/review_session_tests.rs b/codex-rs/core/src/guardian/review_session_tests.rs
+index 6616a291b3..20dfd8024e 100644
+--- a/codex-rs/core/src/guardian/review_session_tests.rs
++++ b/codex-rs/core/src/guardian/review_session_tests.rs
+@@ -91,6 +91,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
+                 window_ids,
+                 compaction_response_id: None,
+                 compaction_model_hash: Some("matching".to_owned()),
++                model_provider_id: turn.model_provider_id(),
+             },
+         )
+         .await;
 diff --git a/codex-rs/core/src/guardian/tests.rs b/codex-rs/core/src/guardian/tests.rs
-index cf191851bf..eefb392946 100644
+index cf191851bf..dede3d1c45 100644
 --- a/codex-rs/core/src/guardian/tests.rs
 +++ b/codex-rs/core/src/guardian/tests.rs
 @@ -181,8 +181,10 @@ async fn guardian_test_session_turn_and_rx(
@@ -541,7 +852,7 @@ index cf191851bf..eefb392946 100644
  
      seed_guardian_parent_history(&session, &turn).await;
  
-@@ -3917,6 +3930,46 @@ async fn guardian_review_session_config_preserves_context_overrides_for_same_eff
+@@ -3917,6 +3930,50 @@ async fn guardian_review_session_config_preserves_context_overrides_for_same_eff
      );
  }
  
@@ -554,6 +865,7 @@ index cf191851bf..eefb392946 100644
 +        base_url: Some("https://routed.example.invalid/v1".to_string()),
 +        approval_review_model: Some("routed-reviewer".to_string()),
 +        requires_openai_auth: false,
++        tool_compatibility: Some(codex_model_provider::ToolCompatibility::FunctionsAndApplyPatch),
 +        ..Default::default()
 +    };
 +    let auth_manager = turn.auth_manager.clone();
@@ -583,6 +895,9 @@ index cf191851bf..eefb392946 100644
 +        guardian_config.model_provider.base_url.as_deref(),
 +        Some("https://routed.example.invalid/v1")
 +    );
++    assert!(!guardian_config.features.enabled(Feature::CodeMode));
++    assert!(!guardian_config.features.enabled(Feature::CodeModeOnly));
++    assert!(!guardian_config.features.enabled(Feature::CodeModeHost));
 +}
 +
  #[tokio::test]
@@ -855,6 +1170,60 @@ index 462bb95ba8..611aaa91e9 100644
      {
          let retry_delay = retry_state.connection_retry_delay;
          warn!(
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index affecf42d5..209e23e8d6 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -697,9 +697,16 @@ impl Session {
+         // 1. config.base_instructions override
+         // 2. conversation history => session_meta.base_instructions
+         // 3. rendered instructions_template for current model
+-        let model_info = models_manager
++        let mut model_info = models_manager
+             .get_model_info(model.as_str(), &config.to_models_manager_config())
+             .await;
++        if let Some(tool_compatibility) = config.model_provider.tool_compatibility {
++            model_info = step_activation::model_info_for_provider_compatibility(
++                &model_info,
++                &model_info,
++                tool_compatibility,
++            );
++        }
+         let auth = auth_manager.auth_cached();
+         // Forked subagents keep their parent's activation with the copied history.
+         // Fresh children restore configured preferences before applying startup defaults.
+@@ -3591,6 +3598,11 @@ impl Session {
+         let policy: codex_utils_output_truncation::TruncationPolicy =
+             model_info.truncation_policy.into();
+         for envelope in &mut items {
++            envelope
++                .metadata
++                .get_or_insert_default()
++                .model_provider_id
++                .get_or_insert_with(|| turn_context.model_provider_id());
+             if matches!(
+                 envelope.item,
+                 ResponseItem::FunctionCallOutput { .. } | ResponseItem::CustomToolCallOutput { .. }
+@@ -3986,6 +3998,11 @@ impl Session {
+     ) {
+         for envelope in &mut items {
+             Self::assign_missing_response_item_id(&mut envelope.item);
++            envelope
++                .metadata
++                .get_or_insert_default()
++                .model_provider_id
++                .get_or_insert_with(|| metadata.model_provider_id.clone());
+         }
+         if self.guardian_context_mode == GuardianContextMode::ThreadOwned
+             && let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
+@@ -4488,6 +4505,7 @@ impl Session {
+                 window_ids,
+                 compaction_response_id: None,
+                 compaction_model_hash: None,
++                model_provider_id: turn_context.model_provider_id(),
+             },
+         )
+         .await;
 diff --git a/codex-rs/core/src/session/review.rs b/codex-rs/core/src/session/review.rs
 index ea078a451e..cfee96aca7 100644
 --- a/codex-rs/core/src/session/review.rs
@@ -879,7 +1248,7 @@ index ea078a451e..cfee96aca7 100644
          history_mode: parent_turn_context.history_mode,
          parent_thread_id: parent_turn_context.parent_thread_id,
 diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
-index 8dc090315a..cacea25632 100644
+index 8dc090315a..da690a19d2 100644
 --- a/codex-rs/core/src/session/step_activation.rs
 +++ b/codex-rs/core/src/session/step_activation.rs
 @@ -12,10 +12,14 @@ use crate::context::GuardianNodeReplPolicy;
@@ -1002,7 +1371,7 @@ index 8dc090315a..cacea25632 100644
      }
  }
  
-+fn model_info_for_provider_compatibility(
++pub(crate) fn model_info_for_provider_compatibility(
 +    admitted: &ModelInfo,
 +    destination: &ModelInfo,
 +    compatibility: ToolCompatibility,
@@ -1115,6 +1484,27 @@ index dcaa598eb6..d68d31d556 100644
  }
  
  #[test_case(None, None, false; "both catalog policies")]
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index f2d047d0ea..341b7d6577 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -5353,7 +5353,7 @@ async fn session_configuration_apply_preserves_absolute_cwd_write_root_on_cwd_up
+ 
+ #[tokio::test]
+ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
+-    let (mut session, _turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
++    let (mut session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
+         CodexAuth::from_api_key("Test API Key"),
+         Vec::new(),
+         |config| {
+@@ -5399,6 +5399,7 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
+                 window_ids,
+                 compaction_response_id: None,
+                 compaction_model_hash: None,
++                model_provider_id: turn_context.model_provider_id(),
+             },
+         ),
+     ));
 diff --git a/codex-rs/core/src/session/tests/guardian_tests.rs b/codex-rs/core/src/session/tests/guardian_tests.rs
 index 72ae069562..b36296aaf7 100644
 --- a/codex-rs/core/src/session/tests/guardian_tests.rs
@@ -1184,7 +1574,7 @@ index 72ae069562..b36296aaf7 100644
      let session = Arc::new(session);
      let turn_context = Arc::new(turn_context_raw);
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 8ab44553be..c835752a68 100644
+index 8ab44553be..afafadabf5 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -15,6 +15,7 @@ use crate::context::ContextualUserFragment;
@@ -1204,7 +1594,7 @@ index 8ab44553be..c835752a68 100644
  use codex_protocol::ResponseItemId;
  use codex_protocol::config_types::AutoCompactTokenLimitScope;
  use codex_protocol::config_types::ModeKind;
-@@ -174,8 +177,11 @@ pub(crate) async fn run_turn(
+@@ -174,8 +177,65 @@ pub(crate) async fn run_turn(
      // Record results from hooks that finished after the previous turn before this turn's user prompt.
      drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ true).await;
  
@@ -1215,10 +1605,84 @@ index 8ab44553be..c835752a68 100644
 +            .model_client
 +            .new_session_for_provider(turn_context.model_provider())
 +    });
++    // Route the turn before pre-sampling compaction. A resumed mixed-provider thread may contain
++    // encrypted reasoning owned by the previous provider, and compaction is itself a model request.
++    // Waiting until after compaction to install the mixed-provider client session can therefore
++    // fail before the routed turn gets its first ordinary sample.
++    let hook_outcomes = inspect_input_hooks(&sess, &turn_context, &input).await;
++    let active_provider_id = turn_context.model_provider_id();
++    let history = sess.clone_history().await;
++    let foreign_provider_state_ids = history
++        .annotated_items()
++        .iter()
++        .filter(|envelope| {
++            envelope
++                .metadata
++                .as_ref()
++                .and_then(|metadata| metadata.model_provider_id.as_deref())
++                != Some(active_provider_id.as_str())
++        })
++        .filter_map(|envelope| envelope.item.id().cloned())
++        .collect::<HashSet<_>>();
++    let history_has_foreign_provider_state = history.annotated_items().iter().any(|envelope| {
++        envelope
++            .metadata
++            .as_ref()
++            .and_then(|metadata| metadata.model_provider_id.as_deref())
++            != Some(active_provider_id.as_str())
++            && matches!(
++                &envelope.item,
++                ResponseItem::Reasoning { .. }
++                    | ResponseItem::Compaction { .. }
++                    | ResponseItem::ContextCompaction { .. }
++                    | ResponseItem::FunctionCall {
++                        encrypted_function_args: Some(_),
++                        ..
++                    }
++            )
++    });
++    let strip_provider_state = history_has_foreign_provider_state
++        || hook_outcomes
++        .iter()
++        .any(|outcome| outcome.strip_provider_state);
++    if hook_outcomes.iter().any(|outcome| outcome.settings_updated) || strip_provider_state {
++        client_session = if strip_provider_state {
++            sess.services
++                .model_client
++                .new_session_for_mixed_provider_history(
++                    turn_context.model_provider(),
++                    foreign_provider_state_ids,
++                )
++        } else {
++            sess.services
++                .model_client
++                .new_session_for_provider(turn_context.model_provider())
++        };
++    }
      // TODO(ccunningham): Pre-turn compaction runs before context updates and the
      // new user message are recorded. Estimate pending incoming items (context
      // diffs/full reinjection + user input) and trigger compaction preemptively
-@@ -208,7 +214,11 @@ pub(crate) async fn run_turn(
+@@ -184,16 +244,18 @@ pub(crate) async fn run_turn(
+         &sess,
+         &turn_context,
+         &mut client_session,
++        strip_provider_state,
+         &cancellation_token,
+     )
+     .await
+     {
+         // Compaction runs before the new input is recorded, so preserve it on every failure.
+-        run_hooks_and_record_inputs(
++        record_inputs_with_hook_outcomes(
+             &sess,
+             &turn_context,
+             &turn_context.capture_current_model_info(),
+             &input,
++            hook_outcomes,
+             PersistContext::Standard,
+         )
+         .await;
+@@ -208,7 +270,11 @@ pub(crate) async fn run_turn(
              .await;
          // Publish the failure only after prompt hooks finish, so clients cannot react to
          // an error by steering follow-up input into a turn still preserving its prompt.
@@ -1231,101 +1695,39 @@ index 8ab44553be..c835752a68 100644
              RemoteCompactionSupport::V2 => Some("Error running remote compact task".to_string()),
              RemoteCompactionSupport::Unsupported => None,
          };
-@@ -255,7 +265,7 @@ pub(crate) async fn run_turn(
-     required_servers.dedup();
- 
-     // run_turn owns the step used to seed context and make the first sampling request.
--    let first_step_context = match sess
-+    let mut first_step_context = match sess
-         .capture_step_context_with_required_mcp_servers(
-             Arc::clone(&turn_context),
-             &cancellation_token,
-@@ -279,7 +289,7 @@ pub(crate) async fn run_turn(
-         Err(err) => return Err(err),
-     };
-     // Keep the exact model-visible state used by this turn and its inline compactions.
--    let (world_state, display_roots) = tokio::join!(
-+    let (world_state, mut display_roots) = tokio::join!(
-         sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref()),
-         async {
-             if first_step_context
-@@ -305,7 +315,7 @@ pub(crate) async fn run_turn(
-     );
-     let mut world_state = world_state?;
- 
--    let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
-+    let Some((mut injection_items, mut explicitly_enabled_connectors)) = build_skills_and_plugins(
-         &sess,
-         first_step_context.as_ref(),
-         &user_input,
-@@ -363,11 +373,75 @@ pub(crate) async fn run_turn(
+@@ -238,11 +304,12 @@ pub(crate) async fn run_turn(
+         {
+             Ok(requirements) => requirements,
+             Err(err) => {
+-                run_hooks_and_record_inputs(
++                record_inputs_with_hook_outcomes(
+                     &sess,
+                     &turn_context,
+                     &turn_context.capture_current_model_info(),
+                     &input,
++                    hook_outcomes,
+                     PersistContext::Standard,
+                 )
+                 .await;
+@@ -266,11 +333,12 @@ pub(crate) async fn run_turn(
+     {
+         Ok(step_context) => step_context,
+         Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
+-            run_hooks_and_record_inputs(
++            record_inputs_with_hook_outcomes(
+                 &sess,
+                 &turn_context,
+                 &turn_context.capture_current_model_info(),
+                 &input,
++                hook_outcomes,
+                 PersistContext::Standard,
+             )
+             .await;
+@@ -363,11 +431,12 @@ pub(crate) async fn run_turn(
          .await?;
      }
      let mut can_drain_pending_input = input.is_empty();
 -    if run_hooks_and_record_inputs(
-+    let hook_outcomes = inspect_input_hooks(&sess, &turn_context, &input).await;
-+    let strip_provider_state = hook_outcomes
-+        .iter()
-+        .any(|outcome| outcome.strip_provider_state);
-+    if hook_outcomes.iter().any(|outcome| outcome.settings_updated) {
-+        client_session = if strip_provider_state {
-+            sess.services
-+                .model_client
-+                .new_session_for_mixed_provider_history(turn_context.model_provider())
-+        } else {
-+            sess.services
-+                .model_client
-+                .new_session_for_provider(turn_context.model_provider())
-+        };
-+        first_step_context = sess
-+            .capture_step_context_with_required_mcp_servers(
-+                Arc::clone(&turn_context),
-+                &cancellation_token,
-+                required_servers,
-+                required_plugins,
-+            )
-+            .await?;
-+        let (refreshed_world_state, refreshed_display_roots) = tokio::join!(
-+            sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref()),
-+            async {
-+                if first_step_context
-+                    .turn
-+                    .config
-+                    .features
-+                    .enabled(Feature::CwdRelativeTurnDiffs)
-+                {
-+                    first_step_context
-+                        .environments
-+                        .turn_environments()
-+                        .map(|environment| {
-+                            (
-+                                environment.selection().environment_id,
-+                                environment.cwd().clone(),
-+                            )
-+                        })
-+                        .collect()
-+                } else {
-+                    turn_diff_display_roots(first_step_context.as_ref()).await
-+                }
-+            },
-+        );
-+        world_state = refreshed_world_state?;
-+        display_roots = refreshed_display_roots;
-+        let Some((refreshed_injection_items, refreshed_enabled_connectors)) =
-+            build_skills_and_plugins(
-+                &sess,
-+                first_step_context.as_ref(),
-+                &user_input,
-+                &mentioned_plugins,
-+                &cancellation_token,
-+            )
-+            .await
-+        else {
-+            return Ok(None);
-+        };
-+        injection_items = refreshed_injection_items;
-+        explicitly_enabled_connectors = refreshed_enabled_connectors;
-+    }
 +    if record_inputs_with_hook_outcomes(
          &sess,
          &turn_context,
@@ -1335,7 +1737,7 @@ index 8ab44553be..c835752a68 100644
          PersistContext::TurnStart,
      )
      .await
-@@ -387,8 +461,8 @@ pub(crate) async fn run_turn(
+@@ -387,8 +456,8 @@ pub(crate) async fn run_turn(
      sess.merge_connector_selection(explicitly_enabled_connectors.clone())
          .await;
      sess.set_previous_turn_settings(Some(PreviousTurnSettings {
@@ -1346,7 +1748,7 @@ index 8ab44553be..c835752a68 100644
          realtime_active: Some(turn_context.realtime_active),
      }))
      .await;
-@@ -508,13 +582,17 @@ pub(crate) async fn run_turn(
+@@ -508,13 +577,17 @@ pub(crate) async fn run_turn(
                  .await;
  
              // Construct the input that we will send to the model.
@@ -1365,7 +1767,7 @@ index 8ab44553be..c835752a68 100644
  
              let responses_metadata = sess
                  .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
-@@ -812,6 +890,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -812,6 +885,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
      model_info: &ModelInfo,
      input: &[TurnInput],
      persist_context: PersistContext,
@@ -1404,7 +1806,7 @@ index 8ab44553be..c835752a68 100644
  ) -> bool {
      // Cancellation can reach this path before Guardian's tools and context are
      // resolved. Only finalized evidence may enter reusable reviewer history.
-@@ -825,8 +935,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -825,8 +930,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
      }
      let mut blocked_input = false;
      let mut accepted_user_input = false;
@@ -1414,7 +1816,7 @@ index 8ab44553be..c835752a68 100644
          if hook_outcome.should_stop {
              blocked_input = true;
              record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
-@@ -842,11 +951,15 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -842,11 +946,15 @@ pub(crate) async fn run_hooks_and_record_inputs(
              } else {
                  persist_context
              };
@@ -1431,7 +1833,7 @@ index 8ab44553be..c835752a68 100644
                  hook_outcome.additional_contexts,
                  input_persist_context,
              )
-@@ -856,6 +969,48 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -856,6 +964,48 @@ pub(crate) async fn run_hooks_and_record_inputs(
      blocked_input && !accepted_user_input
  }
  
@@ -1480,7 +1882,30 @@ index 8ab44553be..c835752a68 100644
  fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
      input
          .iter()
-@@ -1290,7 +1445,7 @@ async fn capture_current_model_fallback_step_context(
+@@ -1240,10 +1390,21 @@ async fn run_pre_sampling_compact(
+     sess: &Arc<Session>,
+     turn_context: &Arc<TurnContext>,
+     client_session: &mut ModelClientSession,
++    skip_previous_model_compact: bool,
+     cancellation_token: &CancellationToken,
+ ) -> CodexResult<()> {
+-    maybe_run_previous_model_inline_compact(sess, turn_context, client_session, cancellation_token)
++    // A provider switch deliberately drops provider-owned opaque state. Compacting with the
++    // previous model would pair that model name with the newly selected provider (and can also
++    // reintroduce the provider boundary we just removed), so compact only with the routed model.
++    if !skip_previous_model_compact {
++        maybe_run_previous_model_inline_compact(
++            sess,
++            turn_context,
++            client_session,
++            cancellation_token,
++        )
+         .await?;
++    }
+     let token_status =
+         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
+             .await;
+@@ -1290,7 +1451,7 @@ async fn capture_current_model_fallback_step_context(
          .as_deref()
          .is_some_and(codex_login::AuthManager::current_auth_uses_codex_backend);
      if !uses_codex_backend
@@ -1489,7 +1914,7 @@ index 8ab44553be..c835752a68 100644
          || previous_model == turn_context.model_info().slug
      {
          return Ok(None);
-@@ -1425,7 +1580,11 @@ async fn run_auto_compact(
+@@ -1425,7 +1586,11 @@ async fn run_auto_compact(
          return Ok(());
      }
  
@@ -1502,7 +1927,17 @@ index 8ab44553be..c835752a68 100644
          RemoteCompactionSupport::V2 => {
              emit_compact_metric(
                  &sess.services.session_telemetry,
-@@ -1533,6 +1692,86 @@ pub(crate) fn build_prompt(
+@@ -1451,7 +1616,8 @@ async fn run_auto_compact(
+             );
+             run_inline_auto_compact_task(
+                 Arc::clone(sess),
+-                Arc::clone(turn_context),
++                step_context,
++                client_session,
+                 initial_context_injection,
+                 reason,
+                 phase,
+@@ -1533,6 +1699,86 @@ pub(crate) fn build_prompt(
      }
  }
  
@@ -1589,7 +2024,7 @@ index 8ab44553be..c835752a68 100644
  #[allow(clippy::too_many_arguments)]
  #[allow(deprecated)]
  #[instrument(level = "trace",
-@@ -1566,7 +1805,7 @@ async fn run_sampling_request(
+@@ -1566,7 +1812,7 @@ async fn run_sampling_request(
          Arc::clone(&step_context),
          Arc::clone(&turn_diff_tracker),
      );
@@ -1598,7 +2033,7 @@ index 8ab44553be..c835752a68 100644
      let mut retry_state = ResponsesStreamRetryState::default();
      let mut initial_input = Some(input);
      let mut original_input = None;
-@@ -1582,6 +1821,7 @@ async fn run_sampling_request(
+@@ -1582,6 +1828,7 @@ async fn run_sampling_request(
                  .for_prompt(&step_context.settings.model_info.input_modalities)
          };
          let mut prompt_input = prompt_input;
@@ -1606,7 +2041,7 @@ index 8ab44553be..c835752a68 100644
          sess.services
              .executed_tool_calls
              .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
-@@ -2435,14 +2675,14 @@ async fn try_run_sampling_request(
+@@ -2435,14 +2682,14 @@ async fn try_run_sampling_request(
      let inference_trace = sess.services.rollout_thread_trace.inference_trace_context(
          turn_context.sub_id.as_str(),
          step_context.settings.model_info.slug.as_str(),
@@ -1971,105 +2406,131 @@ index c0125ad996..645cbc5859 100644
  
  struct TestNamespaceExtensionTool {
 diff --git a/codex-rs/core/tests/responses_headers.rs b/codex-rs/core/tests/responses_headers.rs
-index be184753e7..469c852bce 100644
+index be184753e7..0cf2ca3343 100644
 --- a/codex-rs/core/tests/responses_headers.rs
 +++ b/codex-rs/core/tests/responses_headers.rs
-@@ -90,6 +90,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
+@@ -90,6 +90,8 @@ async fn responses_stream_includes_subagent_header_on_review() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
 +        tool_compatibility: None,
++        approval_review_model: None,
      };
  
      let codex_home = TempDir::new().expect("failed to create TempDir");
-@@ -227,6 +228,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
+@@ -227,6 +229,8 @@ async fn responses_stream_includes_subagent_header_on_other() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
 +        tool_compatibility: None,
++        approval_review_model: None,
      };
  
      let codex_home = TempDir::new().expect("failed to create TempDir");
-@@ -345,6 +347,7 @@ async fn responses_respects_model_info_overrides_from_config() {
+@@ -345,6 +349,8 @@ async fn responses_respects_model_info_overrides_from_config() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
 +        tool_compatibility: None,
++        approval_review_model: None,
      };
  
      let codex_home = TempDir::new().expect("failed to create TempDir");
 diff --git a/codex-rs/core/tests/suite/client.rs b/codex-rs/core/tests/suite/client.rs
-index 79d0eb4f6d..215df1b13d 100644
+index 79d0eb4f6d..517b13b4ae 100644
 --- a/codex-rs/core/tests/suite/client.rs
 +++ b/codex-rs/core/tests/suite/client.rs
-@@ -1528,6 +1528,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
+@@ -1528,6 +1528,8 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
 +        tool_compatibility: None,
++        approval_review_model: None,
      };
  
      send_request_with_provider(provider).await;
-@@ -3026,6 +3027,7 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
+@@ -3026,6 +3028,8 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
 +        tool_compatibility: None,
++        approval_review_model: None,
      };
  
      let codex_home = TempDir::new().unwrap();
-@@ -3658,6 +3660,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
+@@ -3658,6 +3662,8 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
 +        tool_compatibility: None,
++        approval_review_model: None,
      };
  
      // Init session
-@@ -3742,6 +3745,7 @@ async fn env_var_overrides_loaded_auth() {
+@@ -3742,6 +3748,8 @@ async fn env_var_overrides_loaded_auth() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
 +        tool_compatibility: None,
++        approval_review_model: None,
      };
  
      // Init session
 diff --git a/codex-rs/core/tests/suite/client_websockets.rs b/codex-rs/core/tests/suite/client_websockets.rs
-index 4d2ba3c926..c00dca4e2f 100755
+index 4d2ba3c926..901516dc25 100755
 --- a/codex-rs/core/tests/suite/client_websockets.rs
 +++ b/codex-rs/core/tests/suite/client_websockets.rs
-@@ -2691,6 +2691,7 @@ fn websocket_provider_with_connect_timeout(
+@@ -2691,6 +2691,8 @@ fn websocket_provider_with_connect_timeout(
          requires_openai_auth: false,
          supports_websockets: true,
          supports_standalone_web_search: false,
 +        tool_compatibility: None,
++        approval_review_model: None,
      }
  }
  
 diff --git a/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs b/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs
-index 32ebbf2979..3a90d17009 100644
+index 32ebbf2979..ad1e943bae 100644
 --- a/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs
 +++ b/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs
-@@ -82,6 +82,7 @@ async fn continue_after_stream_error() {
+@@ -82,6 +82,8 @@ async fn continue_after_stream_error() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
 +        tool_compatibility: None,
++        approval_review_model: None,
      };
  
      let TestCodex { codex, .. } = test_codex()
 diff --git a/codex-rs/core/tests/suite/stream_no_completed.rs b/codex-rs/core/tests/suite/stream_no_completed.rs
-index d9741d0381..578dfa4ebd 100644
+index d9741d0381..136d616c43 100644
 --- a/codex-rs/core/tests/suite/stream_no_completed.rs
 +++ b/codex-rs/core/tests/suite/stream_no_completed.rs
-@@ -68,6 +68,7 @@ async fn retries_on_early_close() {
+@@ -68,6 +68,8 @@ async fn retries_on_early_close() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
 +        tool_compatibility: None,
++        approval_review_model: None,
      };
  
      let TestCodex { codex, .. } = test_codex()
+diff --git a/codex-rs/history/src/lib.rs b/codex-rs/history/src/lib.rs
+index 2be359013b..92281c7c48 100644
+--- a/codex-rs/history/src/lib.rs
++++ b/codex-rs/history/src/lib.rs
+@@ -67,6 +67,11 @@ pub struct CodexHarnessMetadata {
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub compaction_model_hash: Option<String>,
+ 
++    /// Model provider that produced this item. This is harness-owned provenance used to avoid
++    /// replaying opaque reasoning and response IDs to a different provider after live routing.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub model_provider_id: Option<String>,
++
+     /// Thread acceptance order, independent of when queued user input reaches model history.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub user_input_order: Option<u64>,
 diff --git a/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json b/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json
 index 6a10a9f75c..4835b0faf7 100644
 --- a/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json

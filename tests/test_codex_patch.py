@@ -18,20 +18,30 @@ def test_native_patch_is_packaged():
     assert "TurnInput::InterAgentCommunication" in content
     assert "ToolCompatibility::FunctionsAndApplyPatch" in content
     assert "provider_tool_compatibility_preserves_admitted_safety_authority" in content
+    assert "guardian review session could not disable incompatible" in content
     assert "normalize_prompt_for_provider" in content
     assert "openai_prompt_drops_third_party_plaintext_reasoning" in content
     assert "compatible_third_party_provider_drops_encrypted_provider_state" in content
     assert "final_request_boundary_drops_third_party_encrypted_state" in content
     assert "normalize_response_items_for_provider(" in content
-    assert "self.strip_provider_state" in content
+    assert "self.strip_unattributed_provider_state" in content
     assert "guardian_review_session_config_uses_routed_turn_provider" in content
     assert "routed_parent_config.model_provider = provider.info().clone()" in content
     assert "approval_review_model" in content
+    assert "config.model_provider.tool_compatibility" in content
     assert "stripPromptPrefixBytes" in content
     assert "stripProviderState" in content
     assert "new_session_for_mixed_provider_history" in content
+    assert "Route the turn before pre-sampling compaction" in content
+    assert "inspect_input_hooks(&sess, &turn_context, &input).await" in content
+    assert "model_info_for_provider_compatibility" in content
+    assert "client_session: &mut ModelClientSession" in content
+    assert "run_inline_auto_compact_task" in content
+    assert "request_step_context" in content
+    assert "skip_previous_model_compact" in content
     assert "model_provider_id" in content
     assert "foreign_provider_state_ids" in content
+    assert "history_has_foreign_provider_state" in content
     continuation_test = (
         "mixed_provider_history_preserves_destination_reasoning_across_tool_continuations"
     )
@@ -54,8 +64,8 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "classifier-refresh" in installer
     assert "codesign --force --sign -" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
-    assert "codex-provider-provenance.patch" in installer
-    assert "provider-routing-v14" in installer
+    assert "codex-provider-provenance.patch" not in installer
+    assert "provider-routing-v20" in installer
     same_host_guard = (
         'AGENTROUTE_SOURCE_CODE_MODE_HOST" != "$AGENTROUTE_BIN_DIR/codex-code-mode-host'
     )
