@@ -9,9 +9,12 @@ AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-"$AGENTROUTE_HOME_DIR/build/c
 AGENTROUTE_BUILD_PROFILE=${AGENTROUTE_BUILD_PROFILE:-dev-small}
 AGENTROUTE_CODEX_COMMIT=b0af519c39766c173191fc39b341808619b51c74
 AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.155.0-alpha.10}
-AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v13"
+AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v14"
 AGENTROUTE_BUILD_ID_FILE="$AGENTROUTE_HOME_DIR/build-id"
-AGENTROUTE_PATCH="$AGENTROUTE_PROJECT_ROOT/patches/codex-user-prompt-model-override.patch"
+AGENTROUTE_PATCHES="
+$AGENTROUTE_PROJECT_ROOT/patches/codex-user-prompt-model-override.patch
+$AGENTROUTE_PROJECT_ROOT/patches/codex-provider-provenance.patch
+"
 
 for command_name in git cargo uv npm; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -60,7 +63,14 @@ fi
 
 git -C "$AGENTROUTE_CODEX_SOURCE" fetch origin "$AGENTROUTE_CODEX_COMMIT"
 git -C "$AGENTROUTE_CODEX_SOURCE" checkout --detach "$AGENTROUTE_CODEX_COMMIT"
-if git -C "$AGENTROUTE_CODEX_SOURCE" apply --reverse --check "$AGENTROUTE_PATCH" >/dev/null 2>&1; then
+AGENTROUTE_PATCHES_APPLIED=0
+if grep -F 'foreign_provider_state_ids' \
+    "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/client.rs" >/dev/null 2>&1 \
+    && grep -F 'routed_turn_model' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/turn.rs" >/dev/null 2>&1; then
+    AGENTROUTE_PATCHES_APPLIED=1
+fi
+if [ "$AGENTROUTE_PATCHES_APPLIED" = 1 ]; then
     printf 'Codex patch is already applied.\n'
 else
     if ! git -C "$AGENTROUTE_CODEX_SOURCE" diff --quiet; then
@@ -72,8 +82,10 @@ else
         printf 'Backed up the previous managed Codex patch to %s\n' "$AGENTROUTE_SOURCE_BACKUP"
         git -C "$AGENTROUTE_CODEX_SOURCE" reset --hard "$AGENTROUTE_CODEX_COMMIT"
     fi
-    git -C "$AGENTROUTE_CODEX_SOURCE" apply --check "$AGENTROUTE_PATCH"
-    git -C "$AGENTROUTE_CODEX_SOURCE" apply "$AGENTROUTE_PATCH"
+    for AGENTROUTE_PATCH in $AGENTROUTE_PATCHES; do
+        git -C "$AGENTROUTE_CODEX_SOURCE" apply --check "$AGENTROUTE_PATCH"
+        git -C "$AGENTROUTE_CODEX_SOURCE" apply "$AGENTROUTE_PATCH"
+    done
 fi
 
 if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
@@ -119,7 +131,9 @@ if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
         -p codex-cli --bin codex
 
     cp "$AGENTROUTE_CODEX_TARGET/$AGENTROUTE_BUILD_PROFILE/codex" "$AGENTROUTE_BIN_DIR/codex-bin"
-    cp "$AGENTROUTE_SOURCE_CODE_MODE_HOST" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
+    if [ "$AGENTROUTE_SOURCE_CODE_MODE_HOST" != "$AGENTROUTE_BIN_DIR/codex-code-mode-host" ]; then
+        cp "$AGENTROUTE_SOURCE_CODE_MODE_HOST" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
+    fi
     if [ "$(uname -s)" = Darwin ]; then
         codesign --force --sign - "$AGENTROUTE_BIN_DIR/codex-bin"
         codesign --force --sign - "$AGENTROUTE_BIN_DIR/codex-code-mode-host"

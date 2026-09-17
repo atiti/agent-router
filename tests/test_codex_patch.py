@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from agentroute.codex_patch import patch_path
+from agentroute.codex_patch import patch_path, patch_paths
 
 
 def test_native_patch_is_packaged():
-    content = patch_path().read_text()
+    content = "\n".join(path.read_text() for path in patch_paths())
 
     assert "reasoningEffort" in content
     assert "settings_updated" in content
@@ -30,6 +30,16 @@ def test_native_patch_is_packaged():
     assert "stripPromptPrefixBytes" in content
     assert "stripProviderState" in content
     assert "new_session_for_mixed_provider_history" in content
+    assert "model_provider_id" in content
+    assert "foreign_provider_state_ids" in content
+    continuation_test = (
+        "mixed_provider_history_preserves_destination_reasoning_across_tool_continuations"
+    )
+    assert continuation_test in content
+
+
+def test_primary_patch_path_is_backwards_compatible():
+    assert patch_path() == patch_paths()[0]
 
 
 def test_installer_enables_code_mode_and_signs_macos_binary():
@@ -44,3 +54,9 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "classifier-refresh" in installer
     assert "codesign --force --sign -" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
+    assert "codex-provider-provenance.patch" in installer
+    assert "provider-routing-v14" in installer
+    same_host_guard = (
+        'AGENTROUTE_SOURCE_CODE_MODE_HOST" != "$AGENTROUTE_BIN_DIR/codex-code-mode-host'
+    )
+    assert same_host_guard in installer

@@ -7,8 +7,17 @@ from pathlib import Path
 PINNED_CODEX_COMMIT = "b0af519c39766c173191fc39b341808619b51c74"
 
 
+def patch_paths() -> tuple[Path, ...]:
+    patch_dir = Path(__file__).with_name("patches")
+    return (
+        patch_dir / "codex-user-prompt-model-override.patch",
+        patch_dir / "codex-provider-provenance.patch",
+    )
+
+
 def patch_path() -> Path:
-    return Path(__file__).with_name("patches") / "codex-user-prompt-model-override.patch"
+    """Return the primary patch path for backwards compatibility."""
+    return patch_paths()[0]
 
 
 def validate_codex_source(source: Path) -> None:
@@ -18,11 +27,12 @@ def validate_codex_source(source: Path) -> None:
 
 def apply_patch(source: Path, *, check: bool = False) -> None:
     validate_codex_source(source)
-    command = ["git", "apply"]
-    if check:
-        command.append("--check")
-    command.append(str(patch_path()))
-    subprocess.run(command, cwd=source, check=True)
+    for codex_patch in patch_paths():
+        command = ["git", "apply"]
+        if check:
+            command.append("--check")
+        command.append(str(codex_patch))
+        subprocess.run(command, cwd=source, check=True)
 
 
 def build_codex(source: Path, *, release: bool = True) -> Path:

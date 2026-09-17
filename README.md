@@ -284,12 +284,30 @@ The patch extends synchronous `UserPromptSubmit` hook output with optional `mode
 applies them through Codex's existing
 turn-settings machinery before the first step begins. Triggering subagent communications pass
 through the same hook. A provider switch creates a fresh provider-specific client session so
-websocket, authentication fallback, and sticky-routing state cannot leak across backends. Async
-hooks cannot change execution settings.
+websocket, authentication fallback, and sticky-routing state cannot leak across backends. Every
+provider-owned history item is tagged with its producer provider. At a provider boundary, Codex
+removes only opaque reasoning/compaction state produced by another provider; portable messages and
+tool results remain, while reasoning produced by the active provider survives later tool-call
+continuations and turns. Legacy untagged opaque state is removed on the first mixed-provider turn.
+Async hooks cannot change execution settings.
+
+For a load-balanced Responses API backend, the proxy must also keep encrypted reasoning on the
+deployment that created it. LiteLLM supports this with:
+
+```yaml
+router_settings:
+  enable_pre_call_checks: true
+  optional_pre_call_checks:
+    - encrypted_content_affinity
+```
+
+AgentRoute deliberately leaves same-provider encrypted item identifiers intact so that affinity
+can work. This preserves reasoning continuity without attempting to decrypt or copy provider-private
+state across trust boundaries.
 
 The installer pins OpenAI Codex commit `b0af519c39766c173191fc39b341808619b51c74`. The maintained
-patch is in `patches/codex-user-prompt-model-override.patch`. AgentRoute is not affiliated with or
-endorsed by OpenAI.
+patches are in `patches/codex-user-prompt-model-override.patch` and
+`patches/codex-provider-provenance.patch`. AgentRoute is not affiliated with or endorsed by OpenAI.
 
 ## Development
 
