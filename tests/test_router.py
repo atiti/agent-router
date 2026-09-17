@@ -331,7 +331,7 @@ def test_explicit_deepseek_backend_selects_its_model_and_provider(monkeypatch):
 
     assert decision.backend == "deepseek"
     assert decision.model_provider == "agentroute-deepseek"
-    assert decision.model == "deepseek-v4-pro"
+    assert decision.model == "deepseek-flash"
     assert ReasonCode.BACKEND_OVERRIDE in decision.reason_codes
 
 

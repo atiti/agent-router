@@ -234,7 +234,8 @@ cache-write input, output, and reasoning-output tokens. It estimates routed answ
 of running the same observed token counts on a fixed baseline model, classifier overhead, and net
 savings. Reasoning tokens are already included in output tokens and are not charged twice. Prices
 and aliases are editable under `pricing` in `~/.agentroute/config.yaml`; the bundled defaults were
-checked on 2026-09-16 against the official OpenAI and DeepSeek model pages. Azure deployment prices
+checked on 2026-09-17 against the official OpenAI and DeepSeek model pages. DeepSeek's bundled Flash
+rate uses its conservative peak price; actual off-peak charges are lower. Azure deployment prices
 vary, so add their rates or aliases explicitly; unpriced models are named and excluded instead of
 silently presented as free. This is an API-equivalent estimate, not a Codex subscription invoice,
 and a different model may produce a different number of tokens.
@@ -242,10 +243,12 @@ and a different model may produce a different number of tokens.
 When a route is applied, Codex prints a highlighted line before the response, for example:
 
 ```text
-◆ MODEL ROUTE · SMART → deepseek-v4-pro · high reasoning · backend deepseek/agentroute-deepseek · scope subagent · source LLM/private · classifier confidence 84% · rule score 2.5 · implementation
+◆ MODEL ROUTE · SMART → deepseek-flash · high reasoning · backend deepseek/agentroute-deepseek · scope subagent · source LLM/private · classifier confidence 84% · rule score 2.5 · implementation
 ```
 
-The status bar also reflects the active model and effort. Code Mode remains enabled by installing
+DeepSeek documents `deepseek-flash` as the API model ID for the current DeepSeek-V4.1-Flash release.
+AgentRoute uses it for every DeepSeek intelligence tier and varies reasoning effort by tier. The
+status bar also reflects the active model and effort. Code Mode remains enabled by installing
 the companion host already distributed with stock Codex. Set `AGENTROUTE_CODE_MODE_HOST` if your
 Codex package keeps it in a non-standard location.
 

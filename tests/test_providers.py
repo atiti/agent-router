@@ -60,6 +60,46 @@ def test_effective_review_model_uses_managed_gpt_and_fast_api_defaults():
     assert effective_review_model(config, "deepseek") == "deepseek-flash"
 
 
+def test_previous_bundled_deepseek_mapping_migrates_to_v41_flash(tmp_path):
+    path = tmp_path / "config.yaml"
+    payload = default_config().model_dump(mode="json", exclude_none=True)
+    payload["backends"]["deepseek"]["tiers"] = {
+        "fast": {"model": "deepseek-flash", "reasoning_effort": "low"},
+        "normal": {"model": "deepseek-flash", "reasoning_effort": "low"},
+        "smart": {"model": "deepseek-v4-pro", "reasoning_effort": "high"},
+        "max": {"model": "deepseek-v4-pro", "reasoning_effort": "max"},
+    }
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    loaded = load_config(path)
+
+    assert {
+        tier: target.model
+        for tier, target in loaded.backends["deepseek"].tiers.items()
+    } == {
+        "fast": "deepseek-flash",
+        "normal": "deepseek-flash",
+        "smart": "deepseek-flash",
+        "max": "deepseek-flash",
+    }
+    assert loaded.backends["deepseek"].tiers["normal"].reasoning_effort == "medium"
+    assert loaded.pricing.models["deepseek-flash"].input_per_million == 0.30
+    assert loaded.pricing.models["deepseek-flash"].output_per_million == 1.20
+    assert loaded.pricing.models["deepseek-v4-pro"].input_per_million == 1.32
+    assert loaded.pricing.models["deepseek-v4-pro"].output_per_million == 3.96
+
+
+def test_custom_deepseek_mapping_is_not_migrated(tmp_path):
+    path = tmp_path / "config.yaml"
+    payload = default_config().model_dump(mode="json", exclude_none=True)
+    payload["backends"]["deepseek"]["tiers"]["smart"]["model"] = "custom-smart"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    loaded = load_config(path)
+
+    assert loaded.backends["deepseek"].tiers["smart"].model == "custom-smart"
+
+
 def test_legacy_deepseek_backend_gains_safe_tool_compatibility(tmp_path):
     path = tmp_path / "config.yaml"
     payload = default_config().model_dump(mode="json", exclude_none=True)

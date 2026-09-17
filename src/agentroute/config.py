@@ -119,7 +119,7 @@ class ModelPrice(BaseModel):
 class PricingConfig(BaseModel):
     currency: str = "USD"
     baseline_model: str = "gpt-6-astra"
-    source_checked_at: str = "2026-09-16"
+    source_checked_at: str = "2026-09-17"
     models: dict[str, ModelPrice] = Field(
         default_factory=lambda: {
             "gpt-5.6-luna": ModelPrice(
@@ -144,14 +144,14 @@ class PricingConfig(BaseModel):
                 output_per_million=50.00,
             ),
             "deepseek-flash": ModelPrice(
-                input_per_million=0.14,
-                cached_input_per_million=0.0028,
-                output_per_million=0.28,
+                input_per_million=0.30,
+                cached_input_per_million=0.006,
+                output_per_million=1.20,
             ),
             "deepseek-v4-pro": ModelPrice(
-                input_per_million=0.435,
-                cached_input_per_million=0.003625,
-                output_per_million=0.87,
+                input_per_million=1.32,
+                cached_input_per_million=0.044,
+                output_per_million=3.96,
             ),
         }
     )
@@ -219,9 +219,9 @@ def default_config() -> AppConfig:
                 tool_compatibility="functions_and_apply_patch",
                 tiers={
                     "fast": ModelTarget(model="deepseek-flash", reasoning_effort="low"),
-                    "normal": ModelTarget(model="deepseek-flash", reasoning_effort="low"),
-                    "smart": ModelTarget(model="deepseek-v4-pro", reasoning_effort="high"),
-                    "max": ModelTarget(model="deepseek-v4-pro", reasoning_effort="max"),
+                    "normal": ModelTarget(model="deepseek-flash", reasoning_effort="medium"),
+                    "smart": ModelTarget(model="deepseek-flash", reasoning_effort="high"),
+                    "max": ModelTarget(model="deepseek-flash", reasoning_effort="max"),
                 },
             ),
         },
@@ -243,7 +243,21 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
     deepseek = config.backends.get("deepseek")
     if deepseek:
         legacy_models = {"deepseek-chat", "deepseek-reasoner"}
-        if any(target.model in legacy_models for target in deepseek.tiers.values()):
+        previous_bundled_models = {
+            "fast": "deepseek-flash",
+            "normal": "deepseek-flash",
+            "smart": "deepseek-v4-pro",
+            "max": "deepseek-v4-pro",
+        }
+        uses_previous_bundled_defaults = all(
+            deepseek.tiers.get(tier)
+            and deepseek.tiers[tier].model == model
+            for tier, model in previous_bundled_models.items()
+        )
+        if (
+            any(target.model in legacy_models for target in deepseek.tiers.values())
+            or uses_previous_bundled_defaults
+        ):
             deepseek.tiers = defaults.backends["deepseek"].tiers
         fast_target = deepseek.tiers.get("fast")
         if (
@@ -254,6 +268,26 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
             fast_target.reasoning_effort = "low"
     for model, price in defaults.pricing.models.items():
         config.pricing.models.setdefault(model, price)
+    previous_flash_price = ModelPrice(
+        input_per_million=0.14,
+        cached_input_per_million=0.0028,
+        output_per_million=0.28,
+    )
+    if config.pricing.models.get("deepseek-flash") == previous_flash_price:
+        config.pricing.models["deepseek-flash"] = defaults.pricing.models[
+            "deepseek-flash"
+        ]
+        config.pricing.source_checked_at = defaults.pricing.source_checked_at
+    previous_pro_price = ModelPrice(
+        input_per_million=0.435,
+        cached_input_per_million=0.003625,
+        output_per_million=0.87,
+    )
+    if config.pricing.models.get("deepseek-v4-pro") == previous_pro_price:
+        config.pricing.models["deepseek-v4-pro"] = defaults.pricing.models[
+            "deepseek-v4-pro"
+        ]
+        config.pricing.source_checked_at = defaults.pricing.source_checked_at
     return config
 
 
