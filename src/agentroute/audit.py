@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     provider TEXT NOT NULL,
     backend TEXT NOT NULL DEFAULT 'gpt',
     model_provider TEXT NOT NULL DEFAULT 'openai',
+    sticky_backend TEXT,
+    strip_provider_state INTEGER NOT NULL DEFAULT 0,
     route_scope TEXT NOT NULL DEFAULT 'root',
     agent_id TEXT,
     current_tier TEXT NOT NULL,
@@ -71,6 +73,8 @@ MIGRATIONS = {
     "turn_id": "TEXT",
     "backend": "TEXT NOT NULL DEFAULT 'gpt'",
     "model_provider": "TEXT NOT NULL DEFAULT 'openai'",
+    "sticky_backend": "TEXT",
+    "strip_provider_state": "INTEGER NOT NULL DEFAULT 0",
     "route_scope": "TEXT NOT NULL DEFAULT 'root'",
     "agent_id": "TEXT",
     "classifier_version": "TEXT NOT NULL DEFAULT 'legacy'",
@@ -164,7 +168,8 @@ class AuditStore:
                 """
                 INSERT INTO routing_decisions (
                     created_at, session_id, turn_id, provider, backend, model_provider,
-                    route_scope, agent_id, current_tier, selected_tier,
+                    route_scope, agent_id, sticky_backend, strip_provider_state,
+                    current_tier, selected_tier,
                     model, reasoning_effort, confidence, raw_score, reason_codes,
                     contributions, prompt_hash, prompt, manual_override, inherited, switched,
                     classifier_version, proposed_tier, comparison_tier, task_context_used,
@@ -174,7 +179,7 @@ class AuditStore:
                     classification_source, classifier_confidence, classifier_task_type,
                     classifier_reason_hash, selection_receipt, selection_receipt_hash
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
@@ -187,6 +192,8 @@ class AuditStore:
                     decision.model_provider,
                     decision.route_scope,
                     decision.agent_id,
+                    decision.sticky_backend,
+                    int(decision.strip_provider_state),
                     str(current_tier),
                     str(decision.tier),
                     decision.model,
@@ -282,6 +289,39 @@ class AuditStore:
     def previous_tier(self, session_id: str) -> Tier | None:
         row = self.latest(session_id)
         return Tier.parse(row["selected_tier"]) if row else None
+
+    def route_preference(
+        self, session_id: str, route_scope: str = "root", agent_id: str | None = None
+    ) -> str | None:
+        """Return the active explicit backend preference for this routing scope."""
+        predicate = "agent_id IS NULL" if agent_id is None else "agent_id = ?"
+        params: tuple[object, ...] = (session_id, route_scope)
+        if agent_id is not None:
+            params += (agent_id,)
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT sticky_backend FROM routing_decisions "
+                f"WHERE session_id = ? AND route_scope = ? AND {predicate} "
+                "ORDER BY id DESC LIMIT 1",
+                params,
+            ).fetchone()
+        return str(row["sticky_backend"]) if row and row["sticky_backend"] else None
+
+    def provider_state_is_mixed(
+        self, session_id: str, route_scope: str = "root", agent_id: str | None = None
+    ) -> bool:
+        predicate = "agent_id IS NULL" if agent_id is None else "agent_id = ?"
+        params: tuple[object, ...] = (session_id, route_scope)
+        if agent_id is not None:
+            params += (agent_id,)
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT strip_provider_state FROM routing_decisions "
+                f"WHERE session_id = ? AND route_scope = ? AND {predicate} "
+                "ORDER BY id DESC LIMIT 1",
+                params,
+            ).fetchone()
+        return bool(row and row["strip_provider_state"])
 
     def label(self, decision_id: int, outcome: str, notes: str | None = None) -> bool:
         with self.connection() as connection:

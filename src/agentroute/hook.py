@@ -10,7 +10,7 @@ from .audit import AuditStore
 from .config import AppConfig, load_config
 from .models import ReasonCode, RouteContext, Tier
 from .router import Router
-from .signals import continues_previous_task, is_confirmation
+from .signals import continues_previous_task, is_confirmation, route_overrides
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
 
 
@@ -47,6 +47,13 @@ def codex_user_prompt_submit(
         prompt = str(payload.get("prompt", ""))
         subagent = payload.get("subagent") or {}
         route_scope = "subagent" if subagent else "root"
+        tier_override, backend_override, routed_prompt = route_overrides(prompt)
+        agent_id = str(subagent.get("agent_id")) if subagent.get("agent_id") else None
+        sticky_backend = store.route_preference(session_id, route_scope, agent_id)
+        if tier_override == "auto":
+            sticky_backend = None
+        elif backend_override:
+            sticky_backend = backend_override
         continuation = continues_previous_task(prompt)
         classifier_needs_context = (
             config.routing.classifier.enabled
@@ -67,8 +74,9 @@ def codex_user_prompt_submit(
             provider="codex",
             current_model_provider=str(payload.get("model_provider", "openai")),
             route_scope=route_scope,
-            agent_id=(str(subagent.get("agent_id")) if subagent.get("agent_id") else None),
+            agent_id=agent_id,
             latest_prompt=prompt,
+            sticky_backend=sticky_backend,
             current_model=current_model,
             current_tier=current_tier,
             previous_task_tier=previous_tier,
@@ -81,6 +89,12 @@ def codex_user_prompt_submit(
             ),
         )
         decision = Router(config).route(context)
+        decision.strip_provider_state = store.provider_state_is_mixed(
+            session_id, route_scope, agent_id
+        ) or decision.model_provider != context.current_model_provider
+        # @auto clears affinity even though the router's ordinary backend choice may be GPT.
+        if tier_override == "auto":
+            decision.sticky_backend = None
         store.record(
             decision,
             current_tier,
@@ -115,10 +129,16 @@ def codex_user_prompt_submit(
                 ),
             },
         }
+        if routed_prompt != prompt and routed_prompt:
+            output["hookSpecificOutput"]["stripPromptPrefixBytes"] = len(
+                prompt.encode("utf-8")
+            ) - len(routed_prompt.encode("utf-8"))
         if config.enabled:
             specific = output["hookSpecificOutput"]
             specific["model"] = decision.model
             specific["modelProvider"] = decision.model_provider
+            if decision.strip_provider_state:
+                specific["stripProviderState"] = True
             if decision.reasoning_effort:
                 specific["reasoningEffort"] = decision.reasoning_effort
             effort = (

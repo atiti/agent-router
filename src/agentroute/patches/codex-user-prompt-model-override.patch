@@ -1,5 +1,5 @@
 diff --git a/codex-rs/config/src/thread_config/remote.rs b/codex-rs/config/src/thread_config/remote.rs
-index 8d5b8febe4..addba288a7 100644
+index 8d5b8febe4..6718019d03 100644
 --- a/codex-rs/config/src/thread_config/remote.rs
 +++ b/codex-rs/config/src/thread_config/remote.rs
 @@ -192,6 +192,8 @@ fn model_provider_from_proto(
@@ -11,7 +11,7 @@ index 8d5b8febe4..addba288a7 100644
      };
      Ok((id, info))
  }
-@@ -220,6 +221,8 @@ fn model_provider_to_proto(
+@@ -220,6 +222,8 @@ fn model_provider_to_proto(
          requires_openai_auth,
          supports_websockets,
          supports_standalone_web_search,
@@ -20,7 +20,7 @@ index 8d5b8febe4..addba288a7 100644
      } = provider;
  
      proto::ModelProvider {
-@@ -568,6 +570,8 @@ mod tests {
+@@ -568,6 +572,8 @@ mod tests {
              requires_openai_auth: false,
              supports_websockets: true,
              supports_standalone_web_search: true,
@@ -43,7 +43,7 @@ index 2981b13b0a..5631a5072b 100644
                  .clone(),
          ),
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 9e4cf7df6f..06350c63f3 100644
+index 9e4cf7df6f..254a2ba554 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -26,6 +26,7 @@
@@ -62,7 +62,15 @@ index 9e4cf7df6f..06350c63f3 100644
  use codex_model_provider_info::WireApi;
  use codex_protocol::error::CodexErr;
  use codex_protocol::error::Result;
-@@ -301,6 +303,83 @@ struct WebsocketSession {
+@@ -281,6 +283,7 @@ pub struct ModelClientSession {
+     /// appends, or continuation requests), and must not send it between different turns.
+     /// An auth ownership change clears it so the new owner gets fresh routing state.
+     turn_state: Arc<OnceLock<String>>,
++    strip_provider_state: bool,
+ }
+ 
+ #[derive(Debug, Clone)]
+@@ -301,6 +304,104 @@ struct WebsocketSession {
      connection_reused: StdMutex<bool>,
  }
  
@@ -74,7 +82,28 @@ index 9e4cf7df6f..06350c63f3 100644
 +pub(crate) fn normalize_response_items_for_provider(
 +    input: &mut Vec<ResponseItem>,
 +    provider: &ModelProviderInfo,
++    strip_provider_state: bool,
 +) {
++    if strip_provider_state {
++        input.retain(|item| {
++            !matches!(
++                item,
++                ResponseItem::Reasoning { .. }
++                    | ResponseItem::Compaction { .. }
++                    | ResponseItem::ContextCompaction { .. }
++            )
++        });
++        for item in input.iter_mut() {
++            if let ResponseItem::FunctionCall {
++                encrypted_function_args,
++                ..
++            } = item
++            {
++                *encrypted_function_args = None;
++            }
++            item.set_id(None);
++        }
++    }
 +    match provider.tool_compatibility {
 +        Some(ToolCompatibility::FunctionsAndApplyPatch) => {
 +            let unsupported_custom_calls = input
@@ -146,7 +175,11 @@ index 9e4cf7df6f..06350c63f3 100644
  // This is intentionally not a `PartialEq` implementation: request equality includes `input` and
  // `client_metadata`, while websocket reuse compares the input separately and ignores metadata.
  // Access programs are authorized per response, including continuations, without replaying input.
-@@ -539,6 +618,47 @@ impl ModelClient {
+@@ -536,9 +637,60 @@ impl ModelClient {
+             client: self.clone(),
+             websocket_session,
+             turn_state: Arc::new(OnceLock::new()),
++            strip_provider_state: false,
          }
      }
  
@@ -191,21 +224,73 @@ index 9e4cf7df6f..06350c63f3 100644
 +        client.new_session()
 +    }
 +
++    pub fn new_session_for_mixed_provider_history(
++        &self,
++        provider: SharedModelProvider,
++    ) -> ModelClientSession {
++        let mut session = self.new_session_for_provider(provider);
++        session.strip_provider_state = true;
++        session
++    }
++
      pub(crate) fn auth_manager(&self) -> Option<Arc<AuthManager>> {
          self.state.provider.auth_manager()
      }
-@@ -919,7 +1039,8 @@ impl ModelClient {
+@@ -919,7 +1071,16 @@ impl ModelClient {
          }
      }
  
 -    fn prepare_response_items_for_request(&self, input: &mut [ResponseItem]) {
-+    fn prepare_response_items_for_request(&self, input: &mut Vec<ResponseItem>) {
-+        normalize_response_items_for_provider(input, self.state.provider.info());
++    fn prepare_response_items_for_request(
++        &self,
++        input: &mut Vec<ResponseItem>,
++        strip_provider_state: bool,
++    ) {
++        normalize_response_items_for_provider(
++            input,
++            self.state.provider.info(),
++            strip_provider_state,
++        );
          for item in input {
              if item.id().is_some_and(|id| !id.is_prefixed()) {
                  item.set_id(/*new_id*/ None);
+@@ -1569,7 +1730,7 @@ impl ModelClientSession {
+                 prompt.cyber_access_program,
+             );
+             self.client
+-                .prepare_response_items_for_request(&mut request.input);
++                .prepare_response_items_for_request(&mut request.input, self.strip_provider_state);
+             if crate::guardian::is_basic_session_source(&self.client.state.session_source) {
+                 crate::guardian::observe_guardian_request(session_telemetry, &request);
+             }
+@@ -1795,8 +1956,10 @@ impl ModelClientSession {
+                 None => (None, None),
+             };
+             let original_item_ids = if let Some(incremental_items) = &mut incremental_items {
+-                self.client
+-                    .prepare_response_items_for_request(incremental_items);
++                self.client.prepare_response_items_for_request(
++                    incremental_items,
++                    self.strip_provider_state,
++                );
+                 None
+             } else {
+                 let original_item_ids = request
+@@ -1804,8 +1967,10 @@ impl ModelClientSession {
+                     .iter()
+                     .map(|item| item.id().cloned())
+                     .collect::<Vec<_>>();
+-                self.client
+-                    .prepare_response_items_for_request(&mut request.input);
++                self.client.prepare_response_items_for_request(
++                    &mut request.input,
++                    self.strip_provider_state,
++                );
+                 Some(original_item_ids)
+             };
+             let mut ws_payload = ResponseCreateWsRequest {
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index 8936f5afab..a1c83b0cac 100644
+index 8936f5afab..629f65045d 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
 @@ -8,6 +8,7 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
@@ -224,7 +309,7 @@ index 8936f5afab..a1c83b0cac 100644
  use codex_protocol::ThreadId;
  use codex_protocol::auth::AuthMode;
  use codex_protocol::error::CodexErr;
-@@ -78,6 +80,47 @@ use std::sync::atomic::AtomicUsize;
+@@ -78,6 +80,64 @@ use std::sync::atomic::AtomicUsize;
  use std::sync::atomic::Ordering;
  use std::task::Context;
  use std::task::Poll;
@@ -256,7 +341,7 @@ index 8936f5afab..a1c83b0cac 100644
 +        function_call.clone(),
 +    ];
 +
-+    normalize_response_items_for_provider(&mut input, &provider);
++    normalize_response_items_for_provider(&mut input, &provider, false);
 +
 +    let mut expected = function_call;
 +    expected.set_id(None);
@@ -268,6 +353,23 @@ index 8936f5afab..a1c83b0cac 100644
 +        *encrypted_function_args = None;
 +    }
 +    assert_eq!(input, vec![expected]);
++}
++
++#[test]
++fn mixed_provider_history_drops_encrypted_state_even_for_openai_destination() {
++    let provider =
++        ModelProviderInfo::create_openai_provider(Some("https://api.openai.com/v1".to_string()));
++    let mut input = vec![ResponseItem::Reasoning {
++        id: Some(ResponseItemId::with_suffix("rs", "foreign")),
++        summary: Vec::new(),
++        content: None,
++        encrypted_content: Some("provider-bound".to_string()),
++        internal_chat_message_metadata_passthrough: None,
++    }];
++
++    normalize_response_items_for_provider(&mut input, &provider, true);
++
++    assert!(input.is_empty());
 +}
  use std::time::Duration;
  use tempfile::TempDir;
@@ -317,7 +419,7 @@ index b367ba4bea..98d7a77d08 100644
          .stream_max_retries()
          .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
 diff --git a/codex-rs/core/src/guardian/review.rs b/codex-rs/core/src/guardian/review.rs
-index fc7960d547..a9bda4837d 100644
+index fc7960d547..78d1378410 100644
 --- a/codex-rs/core/src/guardian/review.rs
 +++ b/codex-rs/core/src/guardian/review.rs
 @@ -225,7 +225,25 @@ pub(super) async fn guardian_review_session_config(
@@ -374,7 +476,7 @@ index fc7960d547..a9bda4837d 100644
          guardian_model.as_str(),
          guardian_reasoning_effort.clone(),
 diff --git a/codex-rs/core/src/guardian/tests.rs b/codex-rs/core/src/guardian/tests.rs
-index cf191851bf..4a26e81238 100644
+index cf191851bf..eefb392946 100644
 --- a/codex-rs/core/src/guardian/tests.rs
 +++ b/codex-rs/core/src/guardian/tests.rs
 @@ -181,8 +181,10 @@ async fn guardian_test_session_turn_and_rx(
@@ -486,9 +588,8 @@ index cf191851bf..4a26e81238 100644
  #[tokio::test]
  async fn guardian_review_session_config_clears_parent_developer_instructions() {
      let mut parent_config = test_config().await;
- 
 diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
-index 4e276868ce..15db1a7484 100644
+index 4e276868ce..5d1128f970 100644
 --- a/codex-rs/core/src/hook_runtime.rs
 +++ b/codex-rs/core/src/hook_runtime.rs
 @@ -49,6 +49,8 @@ use codex_protocol::protocol::HookStartedEvent;
@@ -500,7 +601,7 @@ index 4e276868ce..15db1a7484 100644
  use codex_protocol::protocol::WarningEvent;
  use codex_rollout::state_db;
  use codex_thread_store::PersistContext;
-@@ -74,6 +76,11 @@ use crate::turn_metadata::ExecutionMetadata;
+@@ -74,6 +76,13 @@ use crate::turn_metadata::ExecutionMetadata;
  pub(crate) struct HookRuntimeOutcome {
      pub should_stop: bool,
      pub additional_contexts: Vec<String>,
@@ -508,11 +609,13 @@ index 4e276868ce..15db1a7484 100644
 +    pub model_provider: Option<String>,
 +    pub reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
 +    pub route_message: Option<String>,
++    pub strip_prompt_prefix_bytes: Option<usize>,
++    pub strip_provider_state: bool,
 +    pub settings_updated: bool,
  }
  
  pub(crate) enum PreToolUseHookResult {
-@@ -99,6 +106,11 @@ impl From<SessionStartOutcome> for ContextInjectingHookOutcome {
+@@ -99,6 +108,13 @@ impl From<SessionStartOutcome> for ContextInjectingHookOutcome {
              outcome: HookRuntimeOutcome {
                  should_stop,
                  additional_contexts,
@@ -520,11 +623,13 @@ index 4e276868ce..15db1a7484 100644
 +                model_provider: None,
 +                reasoning_effort: None,
 +                route_message: None,
++                strip_prompt_prefix_bytes: None,
++                strip_provider_state: false,
 +                settings_updated: false,
              },
          }
      }
-@@ -111,12 +123,21 @@ impl From<UserPromptSubmitOutcome> for ContextInjectingHookOutcome {
+@@ -111,12 +127,25 @@ impl From<UserPromptSubmitOutcome> for ContextInjectingHookOutcome {
              should_stop,
              stop_reason: _,
              additional_contexts,
@@ -532,6 +637,8 @@ index 4e276868ce..15db1a7484 100644
 +            model_provider,
 +            reasoning_effort,
 +            route_message,
++            strip_prompt_prefix_bytes,
++            strip_provider_state,
          } = value;
          Self {
              hook_events,
@@ -542,11 +649,13 @@ index 4e276868ce..15db1a7484 100644
 +                model_provider,
 +                reasoning_effort,
 +                route_message,
++                strip_prompt_prefix_bytes,
++                strip_provider_state,
 +                settings_updated: false,
              },
          }
      }
-@@ -672,38 +693,104 @@ pub(crate) async fn inspect_pending_input(
+@@ -672,38 +701,106 @@ pub(crate) async fn inspect_pending_input(
      turn_context: &Arc<TurnContext>,
      pending_input_item: &TurnInput,
  ) -> HookRuntimeOutcome {
@@ -582,6 +691,8 @@ index 4e276868ce..15db1a7484 100644
 +                model_provider: None,
 +                reasoning_effort: None,
 +                route_message: None,
++                strip_prompt_prefix_bytes: None,
++                strip_provider_state: false,
 +                settings_updated: false,
              };
 -            let hooks = sess.hooks();
@@ -1073,7 +1184,7 @@ index 72ae069562..b36296aaf7 100644
      let session = Arc::new(session);
      let turn_context = Arc::new(turn_context_raw);
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 8ab44553be..2cf9d9dc4b 100644
+index 8ab44553be..c835752a68 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -15,6 +15,7 @@ use crate::context::ContextualUserFragment;
@@ -1147,17 +1258,25 @@ index 8ab44553be..2cf9d9dc4b 100644
          &sess,
          first_step_context.as_ref(),
          &user_input,
-@@ -363,11 +373,67 @@ pub(crate) async fn run_turn(
+@@ -363,11 +373,75 @@ pub(crate) async fn run_turn(
          .await?;
      }
      let mut can_drain_pending_input = input.is_empty();
 -    if run_hooks_and_record_inputs(
 +    let hook_outcomes = inspect_input_hooks(&sess, &turn_context, &input).await;
++    let strip_provider_state = hook_outcomes
++        .iter()
++        .any(|outcome| outcome.strip_provider_state);
 +    if hook_outcomes.iter().any(|outcome| outcome.settings_updated) {
-+        client_session = sess
-+            .services
-+            .model_client
-+            .new_session_for_provider(turn_context.model_provider());
++        client_session = if strip_provider_state {
++            sess.services
++                .model_client
++                .new_session_for_mixed_provider_history(turn_context.model_provider())
++        } else {
++            sess.services
++                .model_client
++                .new_session_for_provider(turn_context.model_provider())
++        };
 +        first_step_context = sess
 +            .capture_step_context_with_required_mcp_servers(
 +                Arc::clone(&turn_context),
@@ -1216,7 +1335,7 @@ index 8ab44553be..2cf9d9dc4b 100644
          PersistContext::TurnStart,
      )
      .await
-@@ -387,8 +453,8 @@ pub(crate) async fn run_turn(
+@@ -387,8 +461,8 @@ pub(crate) async fn run_turn(
      sess.merge_connector_selection(explicitly_enabled_connectors.clone())
          .await;
      sess.set_previous_turn_settings(Some(PreviousTurnSettings {
@@ -1227,7 +1346,7 @@ index 8ab44553be..2cf9d9dc4b 100644
          realtime_active: Some(turn_context.realtime_active),
      }))
      .await;
-@@ -508,13 +574,17 @@ pub(crate) async fn run_turn(
+@@ -508,13 +582,17 @@ pub(crate) async fn run_turn(
                  .await;
  
              // Construct the input that we will send to the model.
@@ -1246,7 +1365,7 @@ index 8ab44553be..2cf9d9dc4b 100644
  
              let responses_metadata = sess
                  .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
-@@ -812,6 +882,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -812,6 +890,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
      model_info: &ModelInfo,
      input: &[TurnInput],
      persist_context: PersistContext,
@@ -1285,7 +1404,7 @@ index 8ab44553be..2cf9d9dc4b 100644
  ) -> bool {
      // Cancellation can reach this path before Guardian's tools and context are
      // resolved. Only finalized evidence may enter reusable reviewer history.
-@@ -825,8 +927,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -825,8 +935,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
      }
      let mut blocked_input = false;
      let mut accepted_user_input = false;
@@ -1295,7 +1414,73 @@ index 8ab44553be..2cf9d9dc4b 100644
          if hook_outcome.should_stop {
              blocked_input = true;
              record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
-@@ -1290,7 +1391,7 @@ async fn capture_current_model_fallback_step_context(
+@@ -842,11 +951,15 @@ pub(crate) async fn run_hooks_and_record_inputs(
+             } else {
+                 persist_context
+             };
++            let mut recorded_input = input_item.clone();
++            if let Some(prefix_bytes) = hook_outcome.strip_prompt_prefix_bytes {
++                strip_text_prefix(&mut recorded_input, prefix_bytes);
++            }
+             record_pending_input(
+                 sess,
+                 turn_context,
+                 model_info,
+-                input_item.clone(),
++                recorded_input,
+                 hook_outcome.additional_contexts,
+                 input_persist_context,
+             )
+@@ -856,6 +969,48 @@ pub(crate) async fn run_hooks_and_record_inputs(
+     blocked_input && !accepted_user_input
+ }
+ 
++fn strip_text_prefix(input: &mut TurnInput, prefix_bytes: usize) {
++    let TurnInput::UserInput { content, .. } = input else {
++        return;
++    };
++    let Some(UserInput::Text {
++        text,
++        text_elements,
++    }) = content
++        .iter_mut()
++        .find(|item| matches!(item, UserInput::Text { .. }))
++    else {
++        return;
++    };
++    if prefix_bytes <= text.len() && text.is_char_boundary(prefix_bytes) {
++        text.drain(..prefix_bytes);
++        // Rich spans refer to the original byte offsets. Routing directives are
++        // plain prefix text, so discarding stale spans is safer than misplacing them.
++        text_elements.clear();
++    }
++}
++
++#[cfg(test)]
++#[test]
++fn route_directive_prefix_is_not_recorded_as_user_task_text() {
++    let mut input = TurnInput::UserInput {
++        content: vec![UserInput::Text {
++            text: "@azure check CRM sync status".to_string(),
++            text_elements: Vec::new(),
++        }],
++        client_id: None,
++        acceptance_order: None,
++    };
++
++    strip_text_prefix(&mut input, "@azure ".len());
++
++    assert!(matches!(
++        input,
++        TurnInput::UserInput { content, .. }
++            if matches!(&content[0], UserInput::Text { text, .. } if text == "check CRM sync status")
++    ));
++}
++
+ fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
+     input
+         .iter()
+@@ -1290,7 +1445,7 @@ async fn capture_current_model_fallback_step_context(
          .as_deref()
          .is_some_and(codex_login::AuthManager::current_auth_uses_codex_backend);
      if !uses_codex_backend
@@ -1304,7 +1489,7 @@ index 8ab44553be..2cf9d9dc4b 100644
          || previous_model == turn_context.model_info().slug
      {
          return Ok(None);
-@@ -1425,7 +1526,11 @@ async fn run_auto_compact(
+@@ -1425,7 +1580,11 @@ async fn run_auto_compact(
          return Ok(());
      }
  
@@ -1317,7 +1502,7 @@ index 8ab44553be..2cf9d9dc4b 100644
          RemoteCompactionSupport::V2 => {
              emit_compact_metric(
                  &sess.services.session_telemetry,
-@@ -1533,6 +1638,88 @@ pub(crate) fn build_prompt(
+@@ -1533,6 +1692,86 @@ pub(crate) fn build_prompt(
      }
  }
  
@@ -1327,9 +1512,7 @@ index 8ab44553be..2cf9d9dc4b 100644
 +            let unsupported_custom_calls = input
 +                .iter()
 +                .filter_map(|item| match item {
-+                    ResponseItem::CustomToolCall { call_id, name, .. }
-+                        if name != "apply_patch" =>
-+                    {
++                    ResponseItem::CustomToolCall { call_id, name, .. } if name != "apply_patch" => {
 +                        Some(call_id.clone())
 +                    }
 +                    _ => None,
@@ -1406,7 +1589,7 @@ index 8ab44553be..2cf9d9dc4b 100644
  #[allow(clippy::too_many_arguments)]
  #[allow(deprecated)]
  #[instrument(level = "trace",
-@@ -1566,7 +1753,7 @@ async fn run_sampling_request(
+@@ -1566,7 +1805,7 @@ async fn run_sampling_request(
          Arc::clone(&step_context),
          Arc::clone(&turn_diff_tracker),
      );
@@ -1415,7 +1598,7 @@ index 8ab44553be..2cf9d9dc4b 100644
      let mut retry_state = ResponsesStreamRetryState::default();
      let mut initial_input = Some(input);
      let mut original_input = None;
-@@ -1582,6 +1769,7 @@ async fn run_sampling_request(
+@@ -1582,6 +1821,7 @@ async fn run_sampling_request(
                  .for_prompt(&step_context.settings.model_info.input_modalities)
          };
          let mut prompt_input = prompt_input;
@@ -1423,7 +1606,7 @@ index 8ab44553be..2cf9d9dc4b 100644
          sess.services
              .executed_tool_calls
              .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
-@@ -2435,14 +2623,14 @@ async fn try_run_sampling_request(
+@@ -2435,14 +2675,14 @@ async fn try_run_sampling_request(
      let inference_trace = sess.services.rollout_thread_trace.inference_trace_context(
          turn_context.sub_id.as_str(),
          step_context.settings.model_info.slug.as_str(),
@@ -1888,7 +2071,7 @@ index d9741d0381..578dfa4ebd 100644
  
      let TestCodex { codex, .. } = test_codex()
 diff --git a/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json b/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json
-index 6a10a9f75c..22858f6eda 100644
+index 6a10a9f75c..4835b0faf7 100644
 --- a/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json
 +++ b/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json
 @@ -26,6 +26,9 @@
@@ -1909,15 +2092,8 @@ index 6a10a9f75c..22858f6eda 100644
      "permission_mode",
      "prompt",
      "session_id",
-@@ -62,4 +66,4 @@
-   ],
-   "title": "user-prompt-submit.command.input",
-   "type": "object"
--}
-\ No newline at end of file
-+}
 diff --git a/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json b/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json
-index 97875c108b..0573d5948e 100644
+index 97875c108b..1640c491f6 100644
 --- a/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json
 +++ b/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json
 @@ -8,6 +8,11 @@
@@ -1932,7 +2108,7 @@ index 97875c108b..0573d5948e 100644
      "UserPromptSubmitHookSpecificOutputWire": {
        "additionalProperties": false,
        "properties": {
-@@ -18,6 +23,26 @@
+@@ -18,6 +23,36 @@
          "hookEventName": {
            "const": "UserPromptSubmit",
            "type": "string"
@@ -1956,16 +2132,19 @@ index 97875c108b..0573d5948e 100644
 +        "routeMessage": {
 +          "default": null,
 +          "type": "string"
++        },
++        "stripPromptPrefixBytes": {
++          "default": null,
++          "format": "uint",
++          "minimum": 0.0,
++          "type": "integer"
++        },
++        "stripProviderState": {
++          "default": false,
++          "type": "boolean"
          }
        },
        "required": [
-@@ -66,4 +91,4 @@
-   },
-   "title": "user-prompt-submit.command.output",
-   "type": "object"
--}
-\ No newline at end of file
-+}
 diff --git a/codex-rs/hooks/src/engine/command_runner_tests.rs b/codex-rs/hooks/src/engine/command_runner_tests.rs
 index d11da77656..561f5d0702 100644
 --- a/codex-rs/hooks/src/engine/command_runner_tests.rs
@@ -1979,10 +2158,10 @@ index d11da77656..561f5d0702 100644
              prompt: "test prompt".to_string(),
          })
 diff --git a/codex-rs/hooks/src/engine/output_parser.rs b/codex-rs/hooks/src/engine/output_parser.rs
-index aaefa46dc1..2f59f7b584 100644
+index aaefa46dc1..3b09cd4ba8 100644
 --- a/codex-rs/hooks/src/engine/output_parser.rs
 +++ b/codex-rs/hooks/src/engine/output_parser.rs
-@@ -51,6 +51,10 @@ pub(crate) struct UserPromptSubmitOutput {
+@@ -51,6 +51,12 @@ pub(crate) struct UserPromptSubmitOutput {
      pub reason: Option<String>,
      pub invalid_block_reason: Option<String>,
      pub additional_context: Option<String>,
@@ -1990,15 +2169,25 @@ index aaefa46dc1..2f59f7b584 100644
 +    pub model_provider: Option<String>,
 +    pub reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
 +    pub route_message: Option<String>,
++    pub strip_prompt_prefix_bytes: Option<usize>,
++    pub strip_provider_state: bool,
  }
  
  #[derive(Debug, Clone)]
-@@ -275,15 +279,28 @@ pub(crate) fn parse_user_prompt_submit(stdout: &str) -> Option<UserPromptSubmitO
+@@ -275,15 +281,40 @@ pub(crate) fn parse_user_prompt_submit(stdout: &str) -> Option<UserPromptSubmitO
      } else {
          None
      };
 -    let additional_context = wire
-+    let (additional_context, model, model_provider, reasoning_effort, route_message) = wire
++    let (
++        additional_context,
++        model,
++        model_provider,
++        reasoning_effort,
++        route_message,
++        strip_prompt_prefix_bytes,
++        strip_provider_state,
++    ) = wire
          .hook_specific_output
 -        .and_then(|output| output.additional_context);
 +        .map(|output| {
@@ -2008,9 +2197,11 @@ index aaefa46dc1..2f59f7b584 100644
 +                output.model_provider,
 +                output.reasoning_effort,
 +                output.route_message,
++                output.strip_prompt_prefix_bytes,
++                output.strip_provider_state,
 +            )
 +        })
-+        .unwrap_or_default();
++        .unwrap_or((None, None, None, None, None, None, false));
      Some(UserPromptSubmitOutput {
          universal: UniversalOutput::from(wire.universal),
          should_block: should_block && invalid_block_reason.is_none(),
@@ -2021,10 +2212,12 @@ index aaefa46dc1..2f59f7b584 100644
 +        model_provider,
 +        reasoning_effort,
 +        route_message,
++        strip_prompt_prefix_bytes,
++        strip_provider_state,
      })
  }
  
-@@ -546,6 +563,27 @@ mod tests {
+@@ -546,6 +577,27 @@ mod tests {
          }
      }
  
@@ -2053,7 +2246,7 @@ index aaefa46dc1..2f59f7b584 100644
      fn permission_request_rejects_reserved_updated_input_field() {
          let parsed = parse_permission_request(
 diff --git a/codex-rs/hooks/src/events/user_prompt_submit.rs b/codex-rs/hooks/src/events/user_prompt_submit.rs
-index 9124431bc1..9c15b2f752 100644
+index 9124431bc1..38e9a88612 100644
 --- a/codex-rs/hooks/src/events/user_prompt_submit.rs
 +++ b/codex-rs/hooks/src/events/user_prompt_submit.rs
 @@ -1,6 +1,7 @@
@@ -2072,7 +2265,7 @@ index 9124431bc1..9c15b2f752 100644
      pub permission_mode: String,
      pub prompt: String,
  }
-@@ -38,6 +40,10 @@ pub struct UserPromptSubmitOutcome {
+@@ -38,6 +40,12 @@ pub struct UserPromptSubmitOutcome {
      pub should_stop: bool,
      pub stop_reason: Option<String>,
      pub additional_contexts: Vec<String>,
@@ -2080,10 +2273,12 @@ index 9124431bc1..9c15b2f752 100644
 +    pub model_provider: Option<String>,
 +    pub reasoning_effort: Option<ReasoningEffort>,
 +    pub route_message: Option<String>,
++    pub strip_prompt_prefix_bytes: Option<usize>,
++    pub strip_provider_state: bool,
  }
  
  #[derive(Debug, PartialEq, Eq)]
-@@ -45,6 +51,10 @@ struct UserPromptSubmitHandlerData {
+@@ -45,6 +53,12 @@ struct UserPromptSubmitHandlerData {
      should_stop: bool,
      stop_reason: Option<String>,
      additional_contexts_for_model: Vec<AdditionalContext>,
@@ -2091,10 +2286,12 @@ index 9124431bc1..9c15b2f752 100644
 +    model_provider: Option<String>,
 +    reasoning_effort: Option<ReasoningEffort>,
 +    route_message: Option<String>,
++    strip_prompt_prefix_bytes: Option<usize>,
++    strip_provider_state: bool,
  }
  
  pub(crate) fn preview(
-@@ -76,6 +86,10 @@ pub(crate) async fn run(
+@@ -76,6 +90,12 @@ pub(crate) async fn run(
              should_stop: false,
              stop_reason: None,
              additional_contexts: Vec::new(),
@@ -2102,10 +2299,12 @@ index 9124431bc1..9c15b2f752 100644
 +            model_provider: None,
 +            reasoning_effort: None,
 +            route_message: None,
++            strip_prompt_prefix_bytes: None,
++            strip_provider_state: false,
          };
      }
  
-@@ -89,6 +103,7 @@ pub(crate) async fn run(
+@@ -89,6 +109,7 @@ pub(crate) async fn run(
          cwd: request.cwd.display().to_string(),
          hook_event_name: "UserPromptSubmit".to_string(),
          model: request.model.clone(),
@@ -2113,7 +2312,7 @@ index 9124431bc1..9c15b2f752 100644
          permission_mode: request.permission_mode.clone(),
          prompt: request.prompt.clone(),
      }) {
-@@ -126,12 +141,26 @@ pub(crate) async fn run(
+@@ -126,12 +147,34 @@ pub(crate) async fn run(
          .output_spiller()
          .maybe_spill_additional_contexts(additional_contexts)
          .await;
@@ -2127,6 +2326,12 @@ index 9124431bc1..9c15b2f752 100644
 +    let route_message = results
 +        .iter()
 +        .find_map(|result| result.data.route_message.clone());
++    let strip_prompt_prefix_bytes = results
++        .iter()
++        .find_map(|result| result.data.strip_prompt_prefix_bytes);
++    let strip_provider_state = results
++        .iter()
++        .any(|result| result.data.strip_provider_state);
  
      UserPromptSubmitOutcome {
          hook_events: results.into_iter().map(|result| result.completed).collect(),
@@ -2137,10 +2342,12 @@ index 9124431bc1..9c15b2f752 100644
 +        model_provider,
 +        reasoning_effort,
 +        route_message,
++        strip_prompt_prefix_bytes,
++        strip_provider_state,
      }
  }
  
-@@ -145,6 +174,10 @@ fn parse_completed(
+@@ -145,6 +188,12 @@ fn parse_completed(
      let mut should_stop = false;
      let mut stop_reason = None;
      let mut additional_contexts_for_model = Vec::new();
@@ -2148,10 +2355,12 @@ index 9124431bc1..9c15b2f752 100644
 +    let mut model_provider = None;
 +    let mut reasoning_effort = None;
 +    let mut route_message = None;
++    let mut strip_prompt_prefix_bytes = None;
++    let mut strip_provider_state = false;
  
      match run_result.error.as_deref() {
          Some(error) => {
-@@ -180,6 +213,10 @@ fn parse_completed(
+@@ -180,6 +229,12 @@ fn parse_completed(
                      }
                      let _ = parsed.universal.suppress_output;
                      if handler.can_apply_control_effects() {
@@ -2159,10 +2368,12 @@ index 9124431bc1..9c15b2f752 100644
 +                        model_provider = parsed.model_provider;
 +                        reasoning_effort = parsed.reasoning_effort;
 +                        route_message = parsed.route_message;
++                        strip_prompt_prefix_bytes = parsed.strip_prompt_prefix_bytes;
++                        strip_provider_state = parsed.strip_provider_state;
                          if !parsed.universal.continue_processing {
                              status = HookRunStatus::Stopped;
                              should_stop = true;
-@@ -269,6 +306,10 @@ fn parse_completed(
+@@ -269,6 +324,12 @@ fn parse_completed(
              should_stop,
              stop_reason,
              additional_contexts_for_model,
@@ -2170,10 +2381,12 @@ index 9124431bc1..9c15b2f752 100644
 +            model_provider,
 +            reasoning_effort,
 +            route_message,
++            strip_prompt_prefix_bytes,
++            strip_provider_state,
          },
          completion_order: 0,
      }
-@@ -280,11 +321,16 @@ fn serialization_failure_outcome(hook_events: Vec<HookCompletedEvent>) -> UserPr
+@@ -280,11 +341,18 @@ fn serialization_failure_outcome(hook_events: Vec<HookCompletedEvent>) -> UserPr
          should_stop: false,
          stop_reason: None,
          additional_contexts: Vec::new(),
@@ -2181,6 +2394,8 @@ index 9124431bc1..9c15b2f752 100644
 +        model_provider: None,
 +        reasoning_effort: None,
 +        route_message: None,
++        strip_prompt_prefix_bytes: None,
++        strip_provider_state: false,
      }
  }
  
@@ -2190,7 +2405,7 @@ index 9124431bc1..9c15b2f752 100644
      use codex_protocol::protocol::HookEventName;
      use codex_protocol::protocol::HookOutputEntry;
      use codex_protocol::protocol::HookOutputEntryKind;
-@@ -320,6 +366,10 @@ mod tests {
+@@ -320,6 +388,12 @@ mod tests {
                      text: "do not inject".to_string(),
                      limit: Default::default(),
                  }],
@@ -2198,10 +2413,12 @@ index 9124431bc1..9c15b2f752 100644
 +                model_provider: None,
 +                reasoning_effort: None,
 +                route_message: None,
++                strip_prompt_prefix_bytes: None,
++                strip_provider_state: false,
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Stopped);
-@@ -359,6 +409,10 @@ mod tests {
+@@ -359,6 +433,12 @@ mod tests {
                      text: "do not inject".to_string(),
                      limit: Default::default(),
                  }],
@@ -2209,10 +2426,12 @@ index 9124431bc1..9c15b2f752 100644
 +                model_provider: None,
 +                reasoning_effort: None,
 +                route_message: None,
++                strip_prompt_prefix_bytes: None,
++                strip_provider_state: false,
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
-@@ -392,6 +446,10 @@ mod tests {
+@@ -392,6 +472,12 @@ mod tests {
                  should_stop: false,
                  stop_reason: None,
                  additional_contexts_for_model: Vec::new(),
@@ -2220,10 +2439,12 @@ index 9124431bc1..9c15b2f752 100644
 +                model_provider: None,
 +                reasoning_effort: None,
 +                route_message: None,
++                strip_prompt_prefix_bytes: None,
++                strip_provider_state: false,
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Failed);
-@@ -434,6 +492,10 @@ mod tests {
+@@ -434,6 +520,12 @@ mod tests {
                  should_stop: true,
                  stop_reason: Some("blocked by policy".to_string()),
                  additional_contexts_for_model: Vec::new(),
@@ -2231,10 +2452,12 @@ index 9124431bc1..9c15b2f752 100644
 +                model_provider: None,
 +                reasoning_effort: None,
 +                route_message: None,
++                strip_prompt_prefix_bytes: None,
++                strip_provider_state: false,
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
-@@ -455,6 +517,23 @@ mod tests {
+@@ -455,6 +547,25 @@ mod tests {
          assert!(!parsed.data.should_stop);
      }
  
@@ -2244,7 +2467,7 @@ index 9124431bc1..9c15b2f752 100644
 +            &handler(),
 +            run_result(
 +                Some(0),
-+                r#"{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","model":"gpt-5.6-sol","reasoningEffort":"high","routeMessage":"route details"}}"#,
++                r#"{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","model":"gpt-5.6-sol","reasoningEffort":"high","routeMessage":"route details","stripPromptPrefixBytes":7,"stripProviderState":true}}"#,
 +                "",
 +            ),
 +            Some("turn-1".to_string()),
@@ -2253,13 +2476,15 @@ index 9124431bc1..9c15b2f752 100644
 +        assert_eq!(parsed.data.model.as_deref(), Some("gpt-5.6-sol"));
 +        assert_eq!(parsed.data.reasoning_effort, Some(ReasoningEffort::High));
 +        assert_eq!(parsed.data.route_message.as_deref(), Some("route details"));
++        assert_eq!(parsed.data.strip_prompt_prefix_bytes, Some(7));
++        assert!(parsed.data.strip_provider_state);
 +    }
 +
      fn handler() -> ConfiguredHandler {
          handler_with_async(/*async*/ false)
      }
 diff --git a/codex-rs/hooks/src/schema.rs b/codex-rs/hooks/src/schema.rs
-index bb50807af5..7fef1196c6 100644
+index bb50807af5..b8175498fa 100644
 --- a/codex-rs/hooks/src/schema.rs
 +++ b/codex-rs/hooks/src/schema.rs
 @@ -12,6 +12,8 @@ use serde_json::Value;
@@ -2271,7 +2496,7 @@ index bb50807af5..7fef1196c6 100644
  use crate::events::common::SubagentHookContext;
  
  const GENERATED_DIR: &str = "generated";
-@@ -446,6 +448,14 @@ pub(crate) struct UserPromptSubmitHookSpecificOutputWire {
+@@ -446,6 +448,18 @@ pub(crate) struct UserPromptSubmitHookSpecificOutputWire {
      pub hook_event_name: HookEventNameWire,
      #[serde(default)]
      pub additional_context: Option<String>,
@@ -2283,10 +2508,14 @@ index bb50807af5..7fef1196c6 100644
 +    pub reasoning_effort: Option<ReasoningEffort>,
 +    #[serde(default)]
 +    pub route_message: Option<String>,
++    #[serde(default)]
++    pub strip_prompt_prefix_bytes: Option<usize>,
++    #[serde(default)]
++    pub strip_provider_state: bool,
  }
  
  #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-@@ -577,6 +587,7 @@ pub(crate) struct UserPromptSubmitCommandInput {
+@@ -577,6 +591,7 @@ pub(crate) struct UserPromptSubmitCommandInput {
      #[schemars(schema_with = "user_prompt_submit_hook_event_name_schema")]
      pub hook_event_name: String,
      pub model: String,
@@ -2295,7 +2524,7 @@ index bb50807af5..7fef1196c6 100644
      pub permission_mode: String,
      pub prompt: String,
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
-index 9c27b15cc4..a2d1685b40 100644
+index 9c27b15cc4..b86fc3764f 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
 +++ b/codex-rs/model-provider-info/src/lib.rs
 @@ -94,6 +94,14 @@ impl<'de> Deserialize<'de> for WireApi {
@@ -2335,7 +2564,7 @@ index 9c27b15cc4..a2d1685b40 100644
          }
      }
  
-@@ -531,6 +546,8 @@ other non-default provider fields are not supported"
+@@ -531,6 +547,8 @@ other non-default provider fields are not supported"
              requires_openai_auth: false,
              supports_websockets: false,
              supports_standalone_web_search: false,
@@ -2344,7 +2573,7 @@ index 9c27b15cc4..a2d1685b40 100644
          }
      }
  
-@@ -702,6 +718,8 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
+@@ -702,6 +720,8 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,

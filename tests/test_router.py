@@ -335,6 +335,27 @@ def test_explicit_deepseek_backend_selects_its_model_and_provider(monkeypatch):
     assert ReasonCode.BACKEND_OVERRIDE in decision.reason_codes
 
 
+def test_sticky_backend_keeps_provider_while_tier_can_change(monkeypatch):
+    config = default_config()
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    decision = Router(config).route(
+        RouteContext(
+            session_id="test-session",
+            latest_prompt="any outstanding commits?",
+            sticky_backend="azure",
+            current_tier=Tier.SMART,
+        )
+    )
+
+    assert decision.tier is Tier.FAST
+    assert decision.backend == "azure"
+    assert decision.model_provider == "agentroute-azure"
+    assert decision.sticky_backend == "azure"
+    assert ReasonCode.SESSION_AFFINITY in decision.reason_codes
+
+
 def test_disabled_backend_fails_visibly_to_gpt():
     decision = route("@azure rename the label", current_tier=Tier.NORMAL)
 

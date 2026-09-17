@@ -95,7 +95,18 @@ class Router:
             )
         elif continues_previous_task(context.latest_prompt):
             inherited = True
-            if context.task_definition:
+            if context.sticky_backend and context.previous_task_tier is not None:
+                proposed = context.previous_task_tier
+                confidence = 0.99
+                classification_source = "session_affinity"
+                contributions.append(
+                    ScoreContribution(
+                        code=ReasonCode.SESSION_AFFINITY,
+                        weight=0,
+                        detail="follow-up retained the explicit session route model",
+                    )
+                )
+            elif context.task_definition:
                 task_context = context.model_copy(
                     update={"latest_prompt": context.task_definition, "task_definition": None}
                 )
@@ -165,8 +176,10 @@ class Router:
                 ScoreContribution(code=ReasonCode.QUOTA_LIMIT, weight=0, detail="policy max tier")
             )
 
-        backend_name = backend_override or self.config.routing.backend_by_tier.get(
-            str(proposed), "gpt"
+        backend_name = (
+            backend_override
+            or context.sticky_backend
+            or self.config.routing.backend_by_tier.get(str(proposed), "gpt")
         )
         backend = self.config.backends.get(backend_name)
         if backend_override:
@@ -175,6 +188,14 @@ class Router:
                     code=ReasonCode.BACKEND_OVERRIDE,
                     weight=0,
                     detail=f"explicit @{backend_override} backend override",
+                )
+            )
+        elif context.sticky_backend:
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.SESSION_AFFINITY,
+                    weight=0,
+                    detail=f"continued explicit {context.sticky_backend} session route",
                 )
             )
         if (
@@ -199,8 +220,10 @@ class Router:
             and backend_name == "gpt"
         ):
             proposed = Tier.SMART
-            backend_name = backend_override or self.config.routing.backend_by_tier.get(
-                str(proposed), "gpt"
+            backend_name = (
+                backend_override
+                or context.sticky_backend
+                or self.config.routing.backend_by_tier.get(str(proposed), "gpt")
             )
             backend = self.config.backends.get(backend_name)
             if (
@@ -347,6 +370,7 @@ class Router:
             provider=context.provider,
             backend=backend_name,
             model_provider=backend.codex_provider,
+            sticky_backend=(backend_override or context.sticky_backend),
             route_scope=context.route_scope,
             agent_id=context.agent_id,
             session_id=context.session_id,

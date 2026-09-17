@@ -66,7 +66,8 @@ CONFIRMATION = re.compile(
 CONTEXT_FOLLOWUP = re.compile(
     r"^\s*(?:check|try|run|look|test)\s+(?:it\s+)?again[.!?]?\s*$"
     r"|^\s*so\s+how\s+(?:do\s+we\s+|to\s+)?fix(?:\s+(?:it|that|this))?[?]?\s*$"
-    r"|^\s*what\s+about\s+(?:it|that|this)[?]?\s*$",
+    r"|^\s*what\s+about\s+(?:it|that|this)[?]?\s*$"
+    r"|^\s*i\s+(?:meant|wanted)\s+(?:you\s+)?to\b",
     re.IGNORECASE,
 )
 MANUAL = re.compile(r"^\s*@(?P<tier>fast|normal|smart|max|auto)\b[: ]*", re.I)

@@ -106,11 +106,16 @@ unset DEEPSEEK_API_KEY
 Backend mappings are defaults, not lock-in. Prefix a prompt with `@gpt`, `@azure`, or
 `@deepseek`; combine it with a tier override in either order, such as
 `@deepseek @smart review this design`. Disabled or unavailable configured backends visibly fall
-back to `gpt`. Provider changes happen inside the active thread: Codex rebuilds only its
+back to `gpt`. An explicit backend becomes the root session preference, so contextual follow-ups
+stay on the same backend and selected tier by default; use another backend prefix to switch or
+`@auto` to return to automatic backend selection. Subagents keep independent preferences. Routing
+prefixes are removed before the task is recorded or sent to the model.
+
+Provider changes happen inside the active thread: Codex rebuilds only its
 provider-specific request session while retaining the local conversation, tools, and turn state.
-Before a third-party Responses backend receives that history, AgentRoute removes provider-bound
+Once a thread has mixed providers, AgentRoute removes provider-bound
 encrypted reasoning, compaction state, encrypted function arguments, and response item IDs while
-preserving ordinary messages and portable tool-call history.
+preserving ordinary messages and portable tool-call history on every later provider request.
 AgentRoute also applies a provider-declared tool compatibility profile. DeepSeek currently receives
 ordinary function tools plus the `apply_patch` custom tool because its Responses API rejects
 Codex's custom Code Mode `exec` tool. This changes only the wire format: the active Codex sandbox,
@@ -275,7 +280,8 @@ automatically label the previous automatic decision as overridden.
 ## Native Codex patch
 
 The patch extends synchronous `UserPromptSubmit` hook output with optional `model`,
-`modelProvider`, and `reasoningEffort` fields, then applies them through Codex's existing
+`modelProvider`, `reasoningEffort`, prompt-prefix stripping, and mixed-provider-state fields, then
+applies them through Codex's existing
 turn-settings machinery before the first step begins. Triggering subagent communications pass
 through the same hook. A provider switch creates a fresh provider-specific client session so
 websocket, authentication fallback, and sticky-routing state cannot leak across backends. Async

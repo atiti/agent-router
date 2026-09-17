@@ -91,6 +91,62 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path):
     assert len(store.history("same-thread")) == 2
 
 
+def test_explicit_backend_is_sticky_and_directive_is_hidden_from_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    store = AuditStore(tmp_path / "audit.db")
+
+    first = invoke(config, store, "@azure check status and eta")
+    second = invoke(config, store, "I wanted you to check the status of the CRM sync")
+
+    assert first["hookSpecificOutput"]["modelProvider"] == "agentroute-azure"
+    assert first["hookSpecificOutput"]["stripProviderState"] is True
+    assert first["hookSpecificOutput"]["stripPromptPrefixBytes"] == len("@azure ")
+    assert second["hookSpecificOutput"]["modelProvider"] == "agentroute-azure"
+    assert second["hookSpecificOutput"]["model"] == first["hookSpecificOutput"]["model"]
+    assert second["hookSpecificOutput"]["stripProviderState"] is True
+    assert "stripPromptPrefixBytes" not in second["hookSpecificOutput"]
+    assert "SESSION_AFFINITY" in store.latest("same-thread")["reason_codes"]
+
+
+def test_auto_clears_explicit_backend_affinity(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    store = AuditStore(tmp_path / "audit.db")
+
+    invoke(config, store, "@azure say hi")
+    cleared = invoke(config, store, "@auto say hi")
+    followup = invoke(config, store, "say hi again")
+
+    assert cleared["hookSpecificOutput"]["modelProvider"] == "openai"
+    assert followup["hookSpecificOutput"]["modelProvider"] == "openai"
+
+
+def test_backend_affinity_is_scoped_away_from_subagents(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    store = AuditStore(tmp_path / "audit.db")
+
+    invoke(config, store, "@azure say hi")
+    child = invoke(
+        config,
+        store,
+        "say hi",
+        subagent={"agent_id": "/root/worker", "agent_type": "worker"},
+    )
+
+    assert child["hookSpecificOutput"]["modelProvider"] == "openai"
+
+
 def test_route_message_identifies_managed_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "AGENTROUTE_RUNTIME_BUILD_ID",

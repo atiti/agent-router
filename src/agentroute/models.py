@@ -65,6 +65,7 @@ class RouteContext(BaseModel):
     turn_id: str | None = None
     provider: str = "codex"
     current_model_provider: str = "openai"
+    sticky_backend: str | None = None
     route_scope: str = "root"
     agent_id: str | None = None
     latest_prompt: str
@@ -93,6 +94,8 @@ class RouteDecision(BaseModel):
     provider: str
     backend: str = "gpt"
     model_provider: str = "openai"
+    sticky_backend: str | None = None
+    strip_provider_state: bool = False
     route_scope: str = "root"
     agent_id: str | None = None
     session_id: str

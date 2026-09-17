@@ -75,3 +75,5 @@ def test_audit_schema_has_calibration_columns(tmp_path):
     assert "turn_id" in columns
     assert "answer_input_tokens" in columns
     assert "usage_recorded_at" in columns
+    assert "sticky_backend" in columns
+    assert "strip_provider_state" in columns
