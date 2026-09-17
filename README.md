@@ -258,6 +258,28 @@ MAX→SMART safety fallback for automatic routes instead of claiming a rejected 
 `@max` remains the operator escape hatch and may be rejected by Codex when that incompatibility is
 present.
 
+## Experimental Codex Desktop build
+
+On macOS, a source checkout can create a separate routed copy of the installed Codex Desktop app:
+
+```sh
+scripts/build_desktop_app.sh /Applications/ChatGPT.app /Applications/ChatGPT-Routed.app
+open -a /Applications/ChatGPT-Routed.app
+```
+
+The builder does not modify the original app. It embeds the AgentRoute Codex binary, its matching
+Code Mode host, and a launcher that loads the owner-only backend credential file. It retains the
+original bundle identifier for frontend compatibility, changes the visible name, disables automatic
+updates, signs nested code inside the copied bundle, verifies the complete signature, and smoke-tests
+the embedded app-server before publishing the destination.
+
+The default `-` identity is an ad-hoc signature for local testing. To use an installed Apple signing
+identity instead, set `AGENTROUTE_DESKTOP_SIGNING_IDENTITY` to its exact Keychain name. The copied app
+cannot retain OpenAI-only application groups, push, or Keychain access groups under another identity,
+so those restricted entitlements are deliberately omitted. Close the stock app before normal use of
+the routed copy: both retain `com.openai.codex` and therefore share the normal Codex profile and
+single-instance identity. App updates do not update the routed copy; rebuild it from the new stock app.
+
 ## Privacy and failure behavior
 
 - Deterministic routing is local. The optional classifier makes inference requests only after
