@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     classifier_latency_ms REAL,
     classifier_request_hash TEXT,
     classifier_usage TEXT NOT NULL DEFAULT '{}',
+    classifier_status TEXT NOT NULL DEFAULT 'skipped',
+    classifier_error_type TEXT,
     risk_floor_applied INTEGER NOT NULL DEFAULT 0,
     agent_requested_tier TEXT,
     agent_request_reason_hash TEXT,
@@ -67,7 +69,10 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     reported_answer_model TEXT,
     answer_model_mismatch INTEGER NOT NULL DEFAULT 0,
     turn_completed_at TEXT,
-    turn_duration_ms REAL
+    turn_duration_ms REAL,
+    turn_outcome TEXT NOT NULL DEFAULT 'pending',
+    completion_source TEXT,
+    usage_status TEXT NOT NULL DEFAULT 'pending'
 );
 CREATE INDEX IF NOT EXISTS idx_routing_session
 ON routing_decisions(session_id, id DESC);
@@ -96,6 +101,8 @@ MIGRATIONS = {
     "classifier_latency_ms": "REAL",
     "classifier_request_hash": "TEXT",
     "classifier_usage": "TEXT NOT NULL DEFAULT '{}'",
+    "classifier_status": "TEXT NOT NULL DEFAULT 'skipped'",
+    "classifier_error_type": "TEXT",
     "risk_floor_applied": "INTEGER NOT NULL DEFAULT 0",
     "agent_requested_tier": "TEXT",
     "agent_request_reason_hash": "TEXT",
@@ -115,6 +122,9 @@ MIGRATIONS = {
     "answer_model_mismatch": "INTEGER NOT NULL DEFAULT 0",
     "turn_completed_at": "TEXT",
     "turn_duration_ms": "REAL",
+    "turn_outcome": "TEXT NOT NULL DEFAULT 'pending'",
+    "completion_source": "TEXT",
+    "usage_status": "TEXT NOT NULL DEFAULT 'pending'",
 }
 
 
@@ -155,6 +165,28 @@ class AuditStore:
                 "turn_duration_ms = MAX(0, "
                 "(julianday(usage_recorded_at) - julianday(created_at)) * 86400000.0) "
                 "WHERE usage_recorded_at IS NOT NULL AND turn_completed_at IS NULL"
+            )
+            connection.execute(
+                "UPDATE routing_decisions SET turn_outcome = 'completed', "
+                "completion_source = COALESCE(completion_source, 'legacy_usage'), "
+                "usage_status = 'recorded' WHERE usage_recorded_at IS NOT NULL "
+                "AND turn_outcome = 'pending'"
+            )
+            connection.execute(
+                "UPDATE routing_decisions SET turn_outcome = 'completed', "
+                "completion_source = COALESCE(completion_source, 'stop_hook'), "
+                "usage_status = 'missing' WHERE turn_completed_at IS NOT NULL "
+                "AND usage_recorded_at IS NULL AND turn_outcome = 'pending'"
+            )
+            connection.execute(
+                "UPDATE routing_decisions SET classifier_status = 'succeeded' "
+                "WHERE classification_source IN ('local_llm', 'private_llm', 'cloud_llm') "
+                "AND classifier_status = 'skipped'"
+            )
+            connection.execute(
+                "UPDATE routing_decisions SET classifier_status = 'fallback' "
+                "WHERE classification_source = 'heuristic_fallback' "
+                "AND classifier_status = 'skipped'"
             )
 
     @contextmanager
@@ -203,13 +235,14 @@ class AuditStore:
                     contributions, prompt_hash, prompt, manual_override, inherited, switched,
                     classifier_version, proposed_tier, comparison_tier, task_context_used,
                     previous_context_sent, resolved_task_inherited, classifier_latency_ms,
-                    classifier_request_hash, classifier_usage, risk_floor_applied,
+                    classifier_request_hash, classifier_usage, classifier_status,
+                    classifier_error_type, risk_floor_applied,
                     agent_requested_tier, agent_request_reason_hash,
                     classification_source, classifier_confidence, classifier_task_type,
                     classifier_reason_hash, selection_receipt, selection_receipt_hash
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -245,6 +278,8 @@ class AuditStore:
                     decision.classifier_latency_ms,
                     decision.classifier_request_hash,
                     json.dumps(decision.classifier_usage, sort_keys=True, separators=(",", ":")),
+                    decision.classifier_status,
+                    decision.classifier_error_type,
                     int(decision.risk_floor_applied),
                     (
                         str(decision.agent_requested_tier)
@@ -268,6 +303,8 @@ class AuditStore:
         turn_id: str,
         model: str,
         usage: dict[str, int] | None = None,
+        outcome: str = "completed",
+        completion_source: str = "stop_hook",
     ) -> bool:
         """Record first completion time and optional usage for one exact routed turn."""
         completed_at = datetime.now(timezone.utc)
@@ -297,7 +334,8 @@ class AuditStore:
                 UPDATE routing_decisions SET
                     answer_model = ?,
                     reported_answer_model = ?, answer_model_mismatch = ?,
-                    turn_completed_at = ?, turn_duration_ms = ?
+                    turn_completed_at = ?, turn_duration_ms = ?,
+                    turn_outcome = ?, completion_source = ?, usage_status = ?
                 WHERE id = ?
                 """,
                 (
@@ -306,6 +344,9 @@ class AuditStore:
                     int(mismatch),
                     first_completed_at,
                     duration_ms,
+                    outcome,
+                    completion_source,
+                    "recorded" if usage is not None else "missing",
                     row["id"],
                 ),
             )

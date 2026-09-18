@@ -30,17 +30,19 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -1)
           test "v$version" = "$GITHUB_REF_NAME"
-      - name: Import optional Apple Developer ID
+      - name: Import required Apple Developer ID
         if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
         run: |
-          if [ -z "$APPLE_CERTIFICATE_BASE64" ]; then
-            echo "No Apple signing certificate configured; publishing an ad-hoc-signed binary."
-            exit 0
-          fi
+          test -n "$APPLE_CERTIFICATE_BASE64" || {
+            echo "APPLE_CERTIFICATE_BASE64 is required for public macOS releases." >&2
+            exit 1
+          }
+          test -n "$APPLE_CERTIFICATE_PASSWORD"
+          test -n "$KEYCHAIN_PASSWORD"
           printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 -D > "$RUNNER_TEMP/certificate.p12"
           security create-keychain -p "$KEYCHAIN_PASSWORD" agentroute-build.keychain
           security default-keychain -s agentroute-build.keychain

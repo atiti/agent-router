@@ -210,11 +210,19 @@ def codex_stop(
     try:
         payload: dict[str, Any] = json.load(source)
         usage = turn_token_usage(payload.get("transcript_path"), payload.get("turn_id"))
+        reported_outcome = str(payload.get("turn_outcome") or payload.get("status") or "completed")
+        outcome = (
+            reported_outcome
+            if reported_outcome in {"completed", "failed", "interrupted"}
+            else "completed"
+        )
         (store or AuditStore()).record_completion(
             str(payload["session_id"]),
             str(payload["turn_id"]),
             str(payload.get("model", "")),
             usage,
+            outcome=outcome,
+            completion_source="stop_hook",
         )
         json.dump({"continue": True, "suppressOutput": True}, sink, separators=(",", ":"))
         sink.write("\n")

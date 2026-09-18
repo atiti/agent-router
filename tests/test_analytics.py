@@ -17,6 +17,7 @@ def _record_turn(store, config, *, session, turn, backend, answer_model, created
     decision.model = answer_model
     decision.classifier_usage = {"prompt_tokens": 100, "completion_tokens": 10}
     decision.classifier_latency_ms = 250
+    decision.classifier_status = "succeeded"
     decision.selection_receipt["classifier"]["model"] = "gpt-5.6-luna"
     identifier = store.record(decision, Tier.NORMAL)
     with store.connection() as connection:
@@ -66,7 +67,38 @@ def test_usage_analytics_groups_models_and_days(tmp_path):
     assert report.longest_turns[0].model == "gpt-5.6-sol"
     assert report.classifiers[0].model == "gpt-5.6-luna"
     assert report.classifiers[0].calls == 2
+    assert report.classifiers[0].successful_calls == 2
+    assert report.classifiers[0].fallback_calls == 0
+    assert report.classifiers[0].fallback_rate == 0.0
+    assert report.classifiers[0].failure_reasons == {}
     assert report.classifiers[0].total_tokens == 220
+    assert report.reconciliation.completed_metered == 2
+    assert report.reconciliation.completed_unmetered == 0
+
+
+def test_reconciliation_distinguishes_pending_stale_and_unmetered(tmp_path):
+    config = default_config()
+    store = AuditStore(tmp_path / "audit.db")
+    now = datetime.now(timezone.utc)
+    for turn in ("pending", "stale", "unmetered"):
+        decision = Router(config).route(
+            RouteContext(session_id="s", turn_id=turn, latest_prompt="show current status")
+        )
+        identifier = store.record(decision, Tier.NORMAL)
+        if turn == "stale":
+            with store.connection() as connection:
+                connection.execute(
+                    "UPDATE routing_decisions SET created_at = ? WHERE id = ?",
+                    ((now - timedelta(days=2)).isoformat(), identifier),
+                )
+        elif turn == "unmetered":
+            store.record_completion("s", turn, decision.model)
+
+    report = usage_analytics(store.rows_since(), config.pricing, "gpt-6-astra")
+
+    assert report.reconciliation.pending == 1
+    assert report.reconciliation.stale_unreconciled == 1
+    assert report.reconciliation.completed_unmetered == 1
 
 
 def test_usage_analytics_rejects_unknown_bucket(tmp_path):

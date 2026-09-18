@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import stat
 import time
 import urllib.parse
@@ -60,6 +61,8 @@ class ClassifierResult(BaseModel):
 
 class TierClassifier(Protocol):
     source: str
+    last_status: str
+    last_error_type: str | None
 
     def classify(self, context: RouteContext) -> ClassifierResult: ...
 
@@ -142,6 +145,8 @@ class OpenAICompatibleClassifier:
         self.last_latency_ms: float | None = None
         self.last_usage: dict[str, int | float] = {}
         self.last_previous_context_chars = 0
+        self.last_status = "idle"
+        self.last_error_type: str | None = None
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "User-Agent": "agentroute/0.4"}
@@ -175,6 +180,13 @@ class OpenAICompatibleClassifier:
         return models, digest, checked_at
 
     def classify(self, context: RouteContext) -> ClassifierResult:
+        self.last_response_metadata = {}
+        self.last_request_hash = None
+        self.last_latency_ms = None
+        self.last_usage = {}
+        self.last_previous_context_chars = 0
+        self.last_status = "started"
+        self.last_error_type = None
         if self.source != "local_llm" and not self.config.allow_remote:
             raise RuntimeError("remote classifier prompt egress is not enabled")
         catalog_age = catalog_age_seconds(self.config)
@@ -226,6 +238,13 @@ class OpenAICompatibleClassifier:
         try:
             with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
                 response_payload = json.loads(response.read())
+        except Exception as error:
+            timed_out = isinstance(error, (TimeoutError, socket.timeout)) or "timed out" in str(
+                error
+            ).lower()
+            self.last_status = "timeout" if timed_out else "error"
+            self.last_error_type = "timeout" if timed_out else type(error).__name__
+            raise
         finally:
             self.last_latency_ms = round((time.perf_counter() - started) * 1_000, 1)
         self.last_response_metadata = {
@@ -249,4 +268,11 @@ class OpenAICompatibleClassifier:
         match = JSON_FENCE.match(content)
         if match:
             content = match.group(1)
-        return ClassifierResult.from_payload(json.loads(content))
+        try:
+            result = ClassifierResult.from_payload(json.loads(content))
+        except Exception as error:
+            self.last_status = "error"
+            self.last_error_type = type(error).__name__
+            raise
+        self.last_status = "succeeded"
+        return result

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -22,7 +21,7 @@ from .classifier import (
     read_api_key,
 )
 from .codex_patch import apply_patch, build_codex, install_binary
-from .config import config_path, default_config, load_config, save_config
+from .config import config_path, default_config, load_config, model_capabilities, save_config
 from .desktop import (
     DEFAULT_DESTINATION_APP,
     DEFAULT_SOURCE_APP,
@@ -30,6 +29,7 @@ from .desktop import (
     desktop_status,
     rollback_desktop_app,
 )
+from .doctor import run_doctor
 from .hook import codex_stop, codex_user_prompt_submit
 from .install import hook_command as installed_hook_command
 from .install import merge_codex_hook, trust_agentroute_hooks
@@ -178,6 +178,78 @@ def test_command(
     for item in decision.contributions:
         sign = "+" if item.weight > 0 else ""
         console.print(f"  {sign}{item.weight:g} {item.code.value}: {item.detail}")
+
+
+@app.command("models")
+def models_command() -> None:
+    """Show configured answer models and their declared agent capabilities."""
+    config = load_config()
+    table = Table(
+        "Backend", "Tier", "Model", "Tools", "Reasoning", "Vision", "Context", "Price / 1M"
+    )
+    for backend_name, backend in sorted(config.backends.items()):
+        for tier, target in backend.tiers.items():
+            capabilities = model_capabilities(config, backend_name, target.model)
+            pricing_model = capabilities.pricing_model or target.model
+            resolved_price_model = config.pricing.aliases.get(pricing_model, pricing_model)
+            price = config.pricing.models.get(resolved_price_model)
+            table.add_row(
+                backend_name,
+                tier.upper(),
+                target.model,
+                capabilities.tool_calling,
+                "yes"
+                if capabilities.reasoning
+                else "no"
+                if capabilities.reasoning is False
+                else "unknown",
+                "yes"
+                if capabilities.vision
+                else "no"
+                if capabilities.vision is False
+                else "unknown",
+                f"{capabilities.context_window:,}" if capabilities.context_window else "unknown",
+                (
+                    f"{config.pricing.currency} {price.input_per_million:g} in / "
+                    f"{price.output_per_million:g} out"
+                    if price
+                    else "unpriced"
+                ),
+            )
+    console.print(table)
+
+
+@app.command("doctor")
+def doctor_command(
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable results."),
+) -> None:
+    """Validate the local runtime, hooks, providers, classifier, audit store, and capabilities."""
+    try:
+        checks = run_doctor(load_config())
+    except Exception as error:
+        console.print(
+            f"[red]Doctor could not load configuration: "
+            f"{type(error).__name__}: {error}[/red]"
+        )
+        raise typer.Exit(1) from error
+    if json_output:
+        console.print_json(json.dumps([asdict(check) for check in checks], sort_keys=True))
+    else:
+        table = Table("Status", "Check", "Detail")
+        labels = {
+            "pass": "[green]PASS[/green]",
+            "warn": "[yellow]WARN[/yellow]",
+            "fail": "[red]FAIL[/red]",
+        }
+        for check in checks:
+            table.add_row(labels[check.status], check.name, check.detail)
+        console.print(table)
+        passed = sum(check.status == "pass" for check in checks)
+        warnings = sum(check.status == "warn" for check in checks)
+        failures = sum(check.status == "fail" for check in checks)
+        console.print(f"{passed} passed; {warnings} warnings; {failures} failures")
+    if any(check.status == "fail" for check in checks):
+        raise typer.Exit(1)
 
 
 @app.command("hook")
@@ -402,6 +474,7 @@ def analytics_command(
             "over_time": [asdict(item) for item in report.over_time],
             "classifiers": [asdict(item) for item in report.classifiers],
             "duration": asdict(report.duration),
+            "reconciliation": asdict(report.reconciliation),
             "longest_turns": [asdict(item) for item in report.longest_turns],
         }
         console.print_json(json.dumps(payload, sort_keys=True))
@@ -424,6 +497,14 @@ def analytics_command(
         f"p50 {_format_duration(report.duration.p50_ms)}; "
         f"p95 {_format_duration(report.duration.p95_ms)}; "
         f"max {_format_duration(report.duration.maximum_ms)}"
+    )
+    reconciliation = report.reconciliation
+    console.print(
+        "Reconciliation: "
+        f"metered {reconciliation.completed_metered}; "
+        f"completed without receipt {reconciliation.completed_unmetered}; "
+        f"pending {reconciliation.pending}; stale {reconciliation.stale_unreconciled}; "
+        f"failed {reconciliation.failed}; interrupted {reconciliation.interrupted}"
     )
     console.print(
         f"Routed answer cost: {currency} {report.overall.actual_cost:.4f}; "
@@ -493,14 +574,25 @@ def analytics_command(
     console.print(timeline)
 
     if report.classifiers:
-        classifiers = Table("Classifier model", "Calls", "Tokens", "Avg latency", "Estimated cost")
+        classifiers = Table(
+            "Classifier model", "Calls", "OK", "Fallback", "Timeout", "Error", "Tokens",
+            "Avg", "P50", "P95", "Estimated cost", "Failure reasons"
+        )
         for item in report.classifiers:
             classifiers.add_row(
                 item.model,
                 str(item.calls),
+                f"{item.successful_calls} ({item.success_rate:.1%})",
+                f"{item.fallback_calls} ({item.fallback_rate:.1%})",
+                f"{item.timeout_calls} ({item.timeout_rate:.1%})",
+                str(item.error_calls),
                 f"{item.total_tokens:,}",
-                f"{item.average_latency_ms:.0f} ms" if item.average_latency_ms is not None else "—",
+                _format_duration(item.average_latency_ms),
+                _format_duration(item.p50_latency_ms),
+                _format_duration(item.p95_latency_ms),
                 f"{currency} {item.estimated_cost:.4f}",
+                ", ".join(f"{reason}={count}" for reason, count in item.failure_reasons.items())
+                or "—",
             )
         console.print(classifiers)
     if report.longest_turns:
@@ -833,28 +925,6 @@ def backend_sync_command() -> None:
     console.print(f"Synced {path}")
     if backup:
         console.print(f"Backup: {backup}")
-
-
-@app.command("doctor")
-def doctor_command() -> None:
-    """Check local prerequisites and configuration."""
-    home = Path(os.environ.get("AGENTROUTE_HOME", str(Path.home() / ".agentroute")))
-    checks = {
-        "Codex": shutil.which("codex") or "missing",
-        "Routed Codex": str(home / "bin/codex-bin")
-        if (home / "bin/codex-bin").exists()
-        else "missing",
-        "Code Mode host": str(home / "bin/codex-code-mode-host")
-        if (home / "bin/codex-code-mode-host").exists()
-        else "missing",
-        "Git": shutil.which("git") or "missing",
-        "Config": str(config_path()) if config_path().exists() else "not initialized",
-    }
-    for name, value in checks.items():
-        console.print(f"{'✓' if value != 'missing' else '✗'} {name}: {value}")
-    if shutil.which("codex"):
-        result = subprocess.run(["codex", "--version"], capture_output=True, text=True)
-        console.print(result.stdout.strip() or result.stderr.strip())
 
 
 @desktop_app.command("status")

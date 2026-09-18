@@ -87,6 +87,29 @@ def test_local_classifier_needs_no_api_key_and_parses_json(monkeypatch):
     assert classifier.last_latency_ms is not None
     assert classifier.last_usage == {"prompt_tokens": 42, "completion_tokens": 9}
     assert classifier.last_previous_context_chars == 8
+    assert classifier.last_status == "succeeded"
+    assert classifier.last_error_type is None
+
+
+def test_classifier_timeout_clears_stale_usage(monkeypatch):
+    def timed_out(request, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", timed_out)
+    classifier = OpenAICompatibleClassifier(
+        ClassifierConfig(
+            enabled=True,
+            endpoint="http://127.0.0.1:11434/v1/chat/completions",
+        )
+    )
+    classifier.last_usage = {"prompt_tokens": 999}
+
+    with pytest.raises(TimeoutError):
+        classifier.classify(RouteContext(session_id="s", latest_prompt="handle this"))
+
+    assert classifier.last_status == "timeout"
+    assert classifier.last_error_type == "timeout"
+    assert classifier.last_usage == {}
 
 
 def test_public_remote_http_endpoint_is_rejected():

@@ -201,8 +201,8 @@ codex
 
 For a review-before-running flow, download `scripts/bootstrap.sh`, inspect it, and execute it with
 `sh`. Every GitHub release includes per-platform checksums and GitHub build-provenance attestations.
-macOS release binaries are Developer ID signed when the project signing secrets are configured;
-the installer always verifies the published checksum before executing the bundled installer.
+Public macOS release jobs fail closed unless both binaries are Developer ID signed; the installer
+also verifies the published checksum and executes the new runtime before committing an update.
 Downloaded archives can also be independently checked with
 `gh attestation verify ARCHIVE --repo atiti/agent-router`.
 
@@ -257,6 +257,8 @@ agentroute why
 agentroute history
 agentroute audit-report
 agentroute stats --baseline gpt-6-astra
+agentroute models
+agentroute doctor
 agentroute label 42 correct --notes "appropriate model for the completed task"
 ```
 
@@ -285,13 +287,31 @@ agentroute analytics --days 7 --json
 ```
 
 `analytics` groups answer usage by backend and answer model, then repeats that breakdown over UTC
-day/week/month buckets. It also reports classifier calls, token usage, latency, and estimated
-overhead separately. Every completed turn records its first completion timestamp and duration,
+day/week/month buckets. It reports classifier success, timeout, error, and fallback counts, token
+usage, average/p50/p95 latency, and estimated overhead separately. Every completed turn records its
+first completion timestamp and duration,
 including turns for which the provider supplies no token receipt. Reports include average, p50,
 p95, and maximum duration by model, plus the longest completed turns; control the latter with
 `--longest`. `--session` limits the report to a single local Codex session. Like `stats`, it uses
 local audit metadata and observed token counters only; no prompts, tool arguments, or response text
 are emitted.
+
+Turn reconciliation separates completed turns with usage receipts from completed turns without
+receipts, pending turns, failed/interrupted turns when the runtime reports that outcome, and pending
+rows older than 24 hours (`stale_unreconciled`). Historical classifier fallbacks without an explicit
+failure receipt remain labeled as generic fallbacks; new attempts record timeout or error type.
+
+`agentroute models` displays the configured backend/tier matrix together with declared tool-calling,
+reasoning, vision, context-window, and pricing capabilities. These facts live under `capabilities`
+and `pricing` in `~/.agentroute/config.yaml`; unknown or unpriced custom deployments stay visibly
+unknown instead of inheriting an optimistic capability claim. Candidate capability facts are also
+included in each hashed selection receipt.
+
+Run `agentroute doctor` after installation, upgrades, or provider changes. It performs local checks
+of the routed binary and build revision, both Codex hooks, generated provider configuration, backend
+credential presence, classifier catalog freshness, SQLite integrity, model capability/pricing
+coverage, and the routed Desktop bundle when installed. It never prints credential values or makes
+network requests; `--json` is available for automation.
 
 Codex runtimes before AgentRoute runtime v23 supplied the frozen session-start model to Stop hooks.
 AgentRoute preserves that reported value for audit, attributes the receipt to the routed step model,

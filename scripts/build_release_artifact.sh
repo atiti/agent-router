@@ -42,13 +42,21 @@ cp "$PROJECT_ROOT/packaging/codex-launcher" "$PAYLOAD/codex-launcher"
 cp "$PROJECT_ROOT/packaging/install-release.sh" "$PAYLOAD/install.sh"
 chmod 755 "$PAYLOAD/install.sh" "$PAYLOAD/codex-launcher" "$PAYLOAD/codex-bin" \
     "$PAYLOAD/codex-code-mode-host"
-if [ "$PLATFORM" = darwin ] && [ -n "${AGENTROUTE_RELEASE_SIGNING_IDENTITY:-}" ]; then
+if [ "$PLATFORM" = darwin ]; then
+    if [ -z "${AGENTROUTE_RELEASE_SIGNING_IDENTITY:-}" ]; then
+        printf 'Refusing to build a public macOS release without a Developer ID identity.\n' >&2
+        exit 1
+    fi
     codesign --force --options runtime --timestamp \
         --sign "$AGENTROUTE_RELEASE_SIGNING_IDENTITY" "$PAYLOAD/codex-bin"
     codesign --force --options runtime --timestamp \
         --sign "$AGENTROUTE_RELEASE_SIGNING_IDENTITY" "$PAYLOAD/codex-code-mode-host"
     codesign --verify --strict --verbose=2 "$PAYLOAD/codex-bin"
     codesign --verify --strict --verbose=2 "$PAYLOAD/codex-code-mode-host"
+    codesign -dv --verbose=4 "$PAYLOAD/codex-bin" 2>&1 \
+        | grep -q 'Authority=Developer ID Application:'
+    codesign -dv --verbose=4 "$PAYLOAD/codex-code-mode-host" 2>&1 \
+        | grep -q 'Authority=Developer ID Application:'
 fi
 
 VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$PROJECT_ROOT/pyproject.toml" | head -1)

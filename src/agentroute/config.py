@@ -116,6 +116,20 @@ class ModelPrice(BaseModel):
     cache_write_per_million: float | None = Field(default=None, ge=0)
 
 
+class ModelCapabilities(BaseModel):
+    """Operator-maintained facts used to admit models into agent workflows."""
+
+    tool_calling: Literal["full", "apply_patch_only", "none", "unknown"] = "unknown"
+    reasoning: bool | None = None
+    vision: bool | None = None
+    context_window: int | None = Field(default=None, ge=1)
+    pricing_model: str | None = None
+
+
+class CapabilityConfig(BaseModel):
+    models: dict[str, ModelCapabilities] = Field(default_factory=dict)
+
+
 class PricingConfig(BaseModel):
     currency: str = "USD"
     baseline_model: str = "gpt-6-astra"
@@ -168,6 +182,7 @@ class AppConfig(BaseModel):
     audit: AuditConfig = Field(default_factory=AuditConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     pricing: PricingConfig = Field(default_factory=PricingConfig)
+    capabilities: CapabilityConfig = Field(default_factory=CapabilityConfig)
 
 
 def default_config() -> AppConfig:
@@ -177,7 +192,7 @@ def default_config() -> AppConfig:
         "smart": ModelTarget(model="gpt-5.6-sol", reasoning_effort="high"),
         "max": ModelTarget(model="gpt-6-astra", reasoning_effort="high"),
     }
-    return AppConfig(
+    config = AppConfig(
         providers={
             "codex": ProviderConfig(
                 tiers=gpt_tiers
@@ -226,6 +241,33 @@ def default_config() -> AppConfig:
             ),
         },
     )
+    config.capabilities.models = {
+        "gpt-5.6-luna": ModelCapabilities(
+            tool_calling="full", reasoning=True, vision=True,
+            pricing_model="gpt-5.6-luna",
+        ),
+        "gpt-5.6-terra": ModelCapabilities(
+            tool_calling="full", reasoning=True, vision=True,
+            pricing_model="gpt-5.6-terra",
+        ),
+        "gpt-5.6-sol": ModelCapabilities(
+            tool_calling="full", reasoning=True, vision=True,
+            pricing_model="gpt-5.6-sol",
+        ),
+        "gpt-6-astra": ModelCapabilities(
+            tool_calling="full", reasoning=True, vision=True,
+            pricing_model="gpt-6-astra",
+        ),
+        "deepseek-flash": ModelCapabilities(
+            tool_calling="apply_patch_only", reasoning=True, vision=False,
+            context_window=128_000, pricing_model="deepseek-flash",
+        ),
+        "deepseek-v4-pro": ModelCapabilities(
+            tool_calling="none", reasoning=True, vision=False,
+            pricing_model="deepseek-v4-pro",
+        ),
+    }
+    return config
 
 
 def _with_default_backends(config: AppConfig) -> AppConfig:
@@ -268,6 +310,13 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
             fast_target.reasoning_effort = "low"
     for model, price in defaults.pricing.models.items():
         config.pricing.models.setdefault(model, price)
+    for backend in config.backends.values():
+        for target in backend.tiers.values():
+            canonical = target.model.removeprefix("dev-")
+            if target.model not in config.pricing.models and canonical in config.pricing.models:
+                config.pricing.aliases.setdefault(target.model, canonical)
+    for model, capabilities in defaults.capabilities.models.items():
+        config.capabilities.models.setdefault(model, capabilities)
     previous_flash_price = ModelPrice(
         input_per_million=0.14,
         cached_input_per_million=0.0028,
@@ -289,6 +338,31 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
         ]
         config.pricing.source_checked_at = defaults.pricing.source_checked_at
     return config
+
+
+def model_capabilities(
+    config: AppConfig, backend_name: str, model: str
+) -> ModelCapabilities:
+    """Resolve configured model facts, falling back to conservative backend facts."""
+    configured = config.capabilities.models.get(model)
+    if configured is not None:
+        return configured
+    canonical = model.removeprefix("dev-")
+    configured = config.capabilities.models.get(canonical)
+    if configured is not None:
+        return configured.model_copy(update={"pricing_model": canonical})
+    backend = config.backends[backend_name]
+    tool_calling = (
+        "apply_patch_only"
+        if backend.tool_compatibility == "functions_and_apply_patch"
+        else "full"
+        if backend_name == "gpt" or backend.codex_provider.startswith("agentroute-azure")
+        else "unknown"
+    )
+    return ModelCapabilities(
+        tool_calling=tool_calling,
+        pricing_model=model if model in config.pricing.models else None,
+    )
 
 
 def config_path() -> Path:

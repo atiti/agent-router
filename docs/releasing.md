@@ -25,13 +25,16 @@ addition to the checksum enforced by the installer.
 
 ## Apple signing
 
-Without signing secrets, macOS binaries receive the local ad-hoc signature used by the source
-installer. For public signed binaries, configure these Actions secrets:
+Public macOS release builds fail closed without signing secrets. Configure these Actions secrets:
 
 - `APPLE_CERTIFICATE_BASE64`: base64-encoded Developer ID Application `.p12`
 - `APPLE_CERTIFICATE_PASSWORD`: `.p12` password
 - `APPLE_KEYCHAIN_PASSWORD`: temporary CI keychain password
 - `APPLE_SIGNING_IDENTITY`: exact Developer ID Application identity
+
+Do not tag a public release until all four are present. Ad-hoc signatures remain appropriate for
+local source builds, but are deliberately rejected by the release artifact builder because a
+downloaded ad-hoc binary can be blocked by macOS Gatekeeper.
 
 The Desktop app itself is always created locally from the user's official installation. Users may
 choose an ad-hoc signature or their own Apple identity with `agentroute desktop install

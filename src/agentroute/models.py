@@ -118,6 +118,8 @@ class RouteDecision(BaseModel):
     classifier_latency_ms: float | None = Field(default=None, ge=0)
     classifier_request_hash: str | None = None
     classifier_usage: dict[str, int | float] = Field(default_factory=dict)
+    classifier_status: str = "skipped"
+    classifier_error_type: str | None = None
     risk_floor_applied: bool = False
     agent_requested_tier: Tier | None = None
     agent_request_reason_hash: str | None = None

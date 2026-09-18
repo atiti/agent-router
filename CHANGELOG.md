@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.20 — 2026-09-18
+
+- Add classifier health telemetry with explicit success, timeout, error, and fallback counts/rates,
+  failure-reason breakdowns, and average/p50/p95 latency reporting; failed attempts no longer
+  inherit stale token usage.
+- Add a configurable model-capability registry for tool calling, reasoning, vision, context windows,
+  and pricing identities, exposed through `agentroute models` and selection receipts.
+- Reconcile routed turns as pending, completed-metered, completed-unmetered, failed, interrupted, or
+  stale-unreconciled instead of treating every missing token receipt as the same condition.
+- Replace the minimal prerequisite check with `agentroute doctor`, covering the routed runtime,
+  hooks, provider configuration, credentials, classifier catalog, audit database, pricing, model
+  capabilities, and routed Desktop installation.
+- Make release updates transactional: validate the downloaded Codex executable before setup and
+  restore the previous runtime files if execution or hook activation fails.
+- Fail public macOS release builds closed unless their native binaries carry a Developer ID
+  signature, preventing an ad-hoc-signed update from replacing a working local runtime.
+
 ## 0.5.19 — 2026-09-18
 
 - Fix Stop-hook attribution to report the routed step model instead of the frozen session-start

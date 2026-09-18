@@ -30,3 +30,19 @@ def test_release_archive_rejects_parent_traversal(tmp_path: Path):
         bundle.addfile(item, io.BytesIO(b"x"))
     with pytest.raises(RuntimeError, match="unsafe path"):
         release._safe_extract(archive, tmp_path / "payload")
+
+
+def test_release_installer_is_transactional_and_validates_runtime():
+    installer = (Path(__file__).parents[1] / "packaging" / "install-release.sh").read_text()
+
+    assert "agentroute-release-rollback" in installer
+    assert "restored the previous runtime files" in installer
+    assert 'codex-bin" --version' in installer
+    assert "valid Developer ID signature" in installer
+
+
+def test_macos_release_build_fails_closed_without_developer_id():
+    builder = (Path(__file__).parents[1] / "scripts" / "build_release_artifact.sh").read_text()
+
+    assert "Refusing to build a public macOS release without a Developer ID identity" in builder
+    assert "Authority=Developer ID Application:" in builder

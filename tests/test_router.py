@@ -93,12 +93,14 @@ def test_hybrid_never_sends_credential_from_assistant_context_to_llm():
 
 
 def test_hybrid_fails_back_to_heuristic():
-    decision = hybrid_route(
-        "Please handle this", BrokenClassifier(), current_tier=Tier.NORMAL
-    )
+    classifier = BrokenClassifier()
+    decision = hybrid_route("Please handle this", classifier, current_tier=Tier.NORMAL)
 
     assert decision.tier is Tier.NORMAL
     assert decision.classification_source == "heuristic_fallback"
+    assert decision.classifier_status == "error"
+    assert decision.classifier_error_type == "TimeoutError"
+    assert decision.selection_receipt["classifier"]["model"] == "gpt-5-mini"
     assert ReasonCode.CLASSIFIER_FALLBACK in decision.reason_codes
 
 

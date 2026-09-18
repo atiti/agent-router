@@ -72,6 +72,8 @@ def test_audit_schema_has_calibration_columns(tmp_path):
     assert "classifier_latency_ms" in columns
     assert "classifier_request_hash" in columns
     assert "classifier_usage" in columns
+    assert "classifier_status" in columns
+    assert "classifier_error_type" in columns
     assert "turn_id" in columns
     assert "answer_input_tokens" in columns
     assert "usage_recorded_at" in columns
@@ -79,6 +81,9 @@ def test_audit_schema_has_calibration_columns(tmp_path):
     assert "answer_model_mismatch" in columns
     assert "turn_completed_at" in columns
     assert "turn_duration_ms" in columns
+    assert "turn_outcome" in columns
+    assert "completion_source" in columns
+    assert "usage_status" in columns
     assert "sticky_backend" in columns
     assert "strip_provider_state" in columns
 
@@ -120,6 +125,8 @@ def test_completion_is_recorded_without_token_usage(tmp_path):
     assert row["turn_completed_at"] is not None
     assert row["turn_duration_ms"] >= 0
     assert row["usage_recorded_at"] is None
+    assert row["turn_outcome"] == "completed"
+    assert row["usage_status"] == "missing"
 
 
 def test_existing_stale_stop_receipt_is_normalized_on_open(tmp_path):

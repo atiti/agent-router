@@ -6,7 +6,7 @@ import json
 import math
 from collections import defaultdict
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from statistics import median
 from typing import Any
 
@@ -73,11 +73,21 @@ class PeriodUsage(ModelUsage):
 class ClassifierUsage:
     model: str
     calls: int
+    successful_calls: int
+    fallback_calls: int
+    timeout_calls: int
+    error_calls: int
+    success_rate: float
+    fallback_rate: float
+    timeout_rate: float
+    failure_reasons: dict[str, int]
     prompt_tokens: int
     cached_input_tokens: int
     completion_tokens: int
     total_tokens: int
     average_latency_ms: float | None
+    p50_latency_ms: float | None
+    p95_latency_ms: float | None
     estimated_cost: float
 
 
@@ -88,6 +98,16 @@ class DurationSummary:
     p50_ms: float | None
     p95_ms: float | None
     maximum_ms: float | None
+
+
+@dataclass(frozen=True)
+class ReconciliationSummary:
+    completed_metered: int
+    completed_unmetered: int
+    pending: int
+    stale_unreconciled: int
+    failed: int
+    interrupted: int
 
 
 @dataclass(frozen=True)
@@ -110,6 +130,7 @@ class AnalyticsReport:
     over_time: tuple[PeriodUsage, ...]
     classifiers: tuple[ClassifierUsage, ...]
     duration: DurationSummary
+    reconciliation: ReconciliationSummary
     longest_turns: tuple[LongestTurn, ...]
 
 
@@ -139,6 +160,38 @@ def _duration_summary(rows: list[Any]) -> DurationSummary:
         p95_ms=values[p95_index],
         maximum_ms=values[-1],
     )
+
+
+def _reconciliation_summary(rows: list[Any], stale_after_hours: int = 24) -> ReconciliationSummary:
+    counts = {
+        "completed_metered": 0,
+        "completed_unmetered": 0,
+        "pending": 0,
+        "stale_unreconciled": 0,
+        "failed": 0,
+        "interrupted": 0,
+    }
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        outcome = str(row["turn_outcome"] or "pending")
+        if outcome in {"failed", "interrupted"}:
+            counts[outcome] += 1
+        elif row["turn_completed_at"] is not None:
+            key = (
+                "completed_metered"
+                if row["usage_recorded_at"] is not None
+                else "completed_unmetered"
+            )
+            counts[key] += 1
+        else:
+            created = datetime.fromisoformat(str(row["created_at"])).astimezone(timezone.utc)
+            key = (
+                "stale_unreconciled"
+                if (now - created).total_seconds() >= stale_after_hours * 3600
+                else "pending"
+            )
+            counts[key] += 1
+    return ReconciliationSummary(**counts)
 
 
 def _usage_summary(
@@ -225,6 +278,8 @@ def usage_analytics(
     for model, grouped_rows in classifier_rows.items():
         prompt = cached = completion = 0
         latencies: list[float] = []
+        statuses: list[str] = []
+        failure_reasons: dict[str, int] = defaultdict(int)
         for row in grouped_rows:
             usage = _classifier_usage(row)
             prompt += int(usage.get("prompt_tokens", 0) or 0)
@@ -233,15 +288,39 @@ def usage_analytics(
             completion += int(usage.get("completion_tokens", 0) or 0)
             if row["classifier_latency_ms"] is not None:
                 latencies.append(float(row["classifier_latency_ms"]))
+            status = str(row["classifier_status"] or "fallback")
+            statuses.append(status)
+            if status != "succeeded":
+                reason = str(
+                    row["classifier_error_type"]
+                    or ("historical_unknown" if status == "fallback" else status)
+                )
+                failure_reasons[reason] += 1
+        sorted_latencies = sorted(latencies)
+        p95_index = max(0, math.ceil(len(sorted_latencies) * 0.95) - 1)
+        calls = len(grouped_rows)
+        successful_calls = statuses.count("succeeded")
+        fallback_calls = calls - successful_calls
+        timeout_calls = statuses.count("timeout")
         classifiers.append(
             ClassifierUsage(
                 model=model,
-                calls=len(grouped_rows),
+                calls=calls,
+                successful_calls=successful_calls,
+                fallback_calls=fallback_calls,
+                timeout_calls=timeout_calls,
+                error_calls=statuses.count("error"),
+                success_rate=successful_calls / calls,
+                fallback_rate=fallback_calls / calls,
+                timeout_rate=timeout_calls / calls,
+                failure_reasons=dict(sorted(failure_reasons.items())),
                 prompt_tokens=prompt,
                 cached_input_tokens=cached,
                 completion_tokens=completion,
                 total_tokens=prompt + completion,
                 average_latency_ms=sum(latencies) / len(latencies) if latencies else None,
+                p50_latency_ms=float(median(sorted_latencies)) if sorted_latencies else None,
+                p95_latency_ms=sorted_latencies[p95_index] if sorted_latencies else None,
                 estimated_cost=token_cost(
                     model,
                     {
@@ -265,6 +344,7 @@ def usage_analytics(
         over_time=periods,
         classifiers=tuple(sorted(classifiers, key=lambda item: (-item.calls, item.model))),
         duration=_duration_summary(rows),
+        reconciliation=_reconciliation_summary(rows),
         longest_turns=tuple(
             LongestTurn(
                 decision_id=int(row["id"]),

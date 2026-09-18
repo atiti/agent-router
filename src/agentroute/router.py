@@ -5,7 +5,7 @@ import json
 import math
 
 from .classifier import OpenAICompatibleClassifier, TierClassifier, catalog_age_seconds
-from .config import AppConfig, load_config
+from .config import AppConfig, load_config, model_capabilities
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
 from .providers import backend_readiness
 from .signals import (
@@ -263,6 +263,21 @@ class Router:
         classifier_usage = (
             getattr(self.classifier, "last_usage", {}) if classifier_attempted else {}
         )
+        default_classifier_status = (
+            "succeeded"
+            if classification_source in {"local_llm", "private_llm", "cloud_llm"}
+            else "error"
+        )
+        classifier_status = (
+            getattr(self.classifier, "last_status", default_classifier_status)
+            if classifier_attempted
+            else "skipped"
+        )
+        if classifier_status == "started":
+            classifier_status = "error"
+        classifier_error_type = (
+            getattr(self.classifier, "last_error_type", None) if classifier_attempted else None
+        )
         previous_context_sent = bool(
             classifier_request_hash
             and classifier_config.include_previous_assistant
@@ -290,6 +305,9 @@ class Router:
                 candidate_backend_name = "gpt"
                 candidate_backend = self.config.backends[candidate_backend_name]
             candidate_target = candidate_backend.target(candidate_tier)
+            candidate_capabilities = model_capabilities(
+                self.config, candidate_backend_name, candidate_target.model
+            )
             exclusions: list[str] = []
             if candidate_tier > max_tier:
                 exclusions.append("policy_max_tier")
@@ -306,6 +324,9 @@ class Router:
                     "backend": candidate_backend_name,
                     "model_provider": candidate_backend.codex_provider,
                     "reasoning_effort": candidate_target.reasoning_effort,
+                    "capabilities": candidate_capabilities.model_dump(
+                        mode="json", exclude_none=True
+                    ),
                     "eligible": not exclusions,
                     "exclusions": exclusions,
                 }
@@ -320,11 +341,9 @@ class Router:
             "classifier": {
                 "policy_version": CLASSIFIER_VERSION,
                 "source": classification_source,
-                "model": (
-                    classifier_config.model
-                    if classification_source in {"local_llm", "private_llm", "cloud_llm"}
-                    else None
-                ),
+                "model": classifier_config.model if classifier_attempted else None,
+                "status": classifier_status,
+                "error_type": classifier_error_type,
                 "catalog_hash": classifier_config.catalog_hash,
                 "catalog_checked_at": classifier_config.catalog_checked_at,
                 "catalog_status": catalog_status,
@@ -395,6 +414,8 @@ class Router:
             classifier_latency_ms=classifier_latency_ms,
             classifier_request_hash=classifier_request_hash,
             classifier_usage=classifier_usage,
+            classifier_status=classifier_status,
+            classifier_error_type=classifier_error_type,
             risk_floor_applied=risk_floor_applied,
             agent_requested_tier=context.agent_requested_tier,
             agent_request_reason_hash=context.agent_request_reason_hash,
@@ -422,6 +443,10 @@ class Router:
         try:
             result = self.classifier.classify(context)
         except Exception as error:
+            if getattr(self.classifier, "last_status", None) in {None, "started"}:
+                self.classifier.last_status = "error"
+            if getattr(self.classifier, "last_error_type", None) is None:
+                self.classifier.last_error_type = type(error).__name__
             contributions.append(
                 ScoreContribution(
                     code=ReasonCode.CLASSIFIER_FALLBACK,
