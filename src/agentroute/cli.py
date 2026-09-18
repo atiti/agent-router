@@ -890,6 +890,29 @@ def backend_route_command(
     console.print(f"{parsed_tier.upper()} now routes through {backend}.")
 
 
+@app.command("backend-default")
+def backend_default_command(
+    backend: str = typer.Argument(..., help="Enabled backend: gpt, azure, or deepseek"),
+) -> None:
+    """Route every intelligence tier through one ready backend by default."""
+    config = load_config()
+    backend = backend.lower()
+    if backend not in config.backends or not config.backends[backend].enabled:
+        raise typer.BadParameter(f"backend is not enabled: {backend}")
+    ready, problems = backend_readiness(config, backend)
+    if not ready:
+        raise typer.BadParameter(
+            f"backend is not ready: {backend} ({', '.join(problems)})"
+        )
+    for tier in ("fast", "normal", "smart", "max"):
+        config.routing.backend_by_tier[tier] = backend
+    save_config(config)
+    console.print(f"All tiers now default to {backend}.")
+    console.print(
+        f"Start Codex with `codex`; inside Codex, `@{backend} PROMPT` is an explicit override."
+    )
+
+
 @app.command("backend-status")
 def backend_status_command() -> None:
     """Show execution-provider mappings without printing credentials."""
@@ -915,6 +938,10 @@ def backend_status_command() -> None:
         + ", ".join(
             f"{tier}={backend}" for tier, backend in config.routing.backend_by_tier.items()
         )
+    )
+    console.print(
+        "Change every tier with `agentroute backend-default BACKEND`; "
+        "provider prefixes such as `@azure` belong inside a Codex prompt, not the shell."
     )
 
 

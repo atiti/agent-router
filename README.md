@@ -92,6 +92,9 @@ agentroute backend-enable deepseek
 
 agentroute backend-route fast deepseek
 agentroute backend-route normal azure
+# Or make one ready backend the default for every tier (for example, when a
+# ChatGPT subscription has exhausted its current usage allowance):
+agentroute backend-default azure
 agentroute backend-status
 ```
 
@@ -113,6 +116,13 @@ back to `gpt`. An explicit backend becomes the root session preference, so conte
 stay on the same backend and selected tier by default; use another backend prefix to switch or
 `@auto` to return to automatic backend selection. Subagents keep independent preferences. Routing
 prefixes are removed before the task is recorded or sent to the model.
+
+`agentroute backend-default BACKEND` is the quota/failover control for future turns: it changes all
+four tier defaults after verifying that the destination backend is enabled and credential-ready.
+Run `codex` normally afterward. Provider prefixes are prompt syntax inside Codex—for example,
+`@azure hello`—not shell commands such as `azure hello`. AgentRoute does not automatically replay a
+failed provider request against a different provider because that could repeat a side effect or move
+provider-bound state across a trust boundary.
 
 Provider changes happen inside the active thread: Codex rebuilds only its
 provider-specific request session while retaining the local conversation, tools, and turn state.

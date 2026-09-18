@@ -16,6 +16,8 @@
   restore the previous runtime files if execution or hook activation fails.
 - Fail public macOS release builds closed unless their native binaries carry a Developer ID
   signature, preventing an ad-hoc-signed update from replacing a working local runtime.
+- Add `agentroute backend-default BACKEND` as a credential-aware one-command way to move all
+  intelligence tiers away from an exhausted subscription, with clearer prompt-vs-shell guidance.
 
 ## 0.5.19 — 2026-09-18
 
