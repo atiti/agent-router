@@ -18,6 +18,8 @@
   signature, preventing an ad-hoc-signed update from replacing a working local runtime.
 - Add `agentroute backend-default BACKEND` as a credential-aware one-command way to move all
   intelligence tiers away from an exhausted subscription, with clearer prompt-vs-shell guidance.
+- Deep-sign nested Codex executables on macOS during local, Desktop, and release builds so
+  taskgated does not terminate them with `CODESIGNING / Taskgated Invalid Signature`.
 
 ## 0.5.19 — 2026-09-18
 

@@ -65,8 +65,8 @@ plutil -replace SUEnableAutomaticChecks -bool false "$INFO_PLIST"
 plutil -replace SUAutomaticallyUpdate -bool false "$INFO_PLIST"
 plutil -insert AgentRouteDesktopBuild -string "$(sed -n '1p' "$AGENTROUTE_HOME_DIR/build-id")" "$INFO_PLIST"
 
-codesign --force --sign "$SIGNING_IDENTITY" "$RESOURCES/codex-bin"
-codesign --force --sign "$SIGNING_IDENTITY" "$RESOURCES/codex-code-mode-host"
+codesign --force --deep --sign "$SIGNING_IDENTITY" "$RESOURCES/codex-bin"
+codesign --force --deep --sign "$SIGNING_IDENTITY" "$RESOURCES/codex-code-mode-host"
 
 codesign --force --deep --sign "$SIGNING_IDENTITY" --options runtime \
     --entitlements "$ADHOC_ENTITLEMENTS" "$STAGING_APP"

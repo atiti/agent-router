@@ -47,9 +47,9 @@ if [ "$PLATFORM" = darwin ]; then
         printf 'Refusing to build a public macOS release without a Developer ID identity.\n' >&2
         exit 1
     fi
-    codesign --force --options runtime --timestamp \
+    codesign --force --deep --options runtime --timestamp \
         --sign "$AGENTROUTE_RELEASE_SIGNING_IDENTITY" "$PAYLOAD/codex-bin"
-    codesign --force --options runtime --timestamp \
+    codesign --force --deep --options runtime --timestamp \
         --sign "$AGENTROUTE_RELEASE_SIGNING_IDENTITY" "$PAYLOAD/codex-code-mode-host"
     codesign --verify --strict --verbose=2 "$PAYLOAD/codex-bin"
     codesign --verify --strict --verbose=2 "$PAYLOAD/codex-code-mode-host"

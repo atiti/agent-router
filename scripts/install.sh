@@ -144,8 +144,10 @@ if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
         cp "$AGENTROUTE_SOURCE_CODE_MODE_HOST" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
     fi
     if [ "$(uname -s)" = Darwin ]; then
-        codesign --force --sign - "$AGENTROUTE_BIN_DIR/codex-bin"
-        codesign --force --sign - "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
+        # Codex can contain nested executable code. Deep-sign both local
+        # binaries so macOS taskgated validates the complete code hierarchy.
+        codesign --force --deep --sign - "$AGENTROUTE_BIN_DIR/codex-bin"
+        codesign --force --deep --sign - "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
     fi
     chmod 755 "$AGENTROUTE_BIN_DIR/codex-bin" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
     printf '%s\n' "$AGENTROUTE_BUILD_ID" >"$AGENTROUTE_BUILD_ID_FILE"

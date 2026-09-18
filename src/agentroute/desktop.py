@@ -136,10 +136,11 @@ def build_desktop_app(
         with info_path.open("wb") as handle:
             plistlib.dump(info, handle, sort_keys=False)
 
-        _run("codesign", "--force", "--sign", signing_identity, resources / "codex-bin")
+        _run("codesign", "--force", "--deep", "--sign", signing_identity, resources / "codex-bin")
         _run(
             "codesign",
             "--force",
+            "--deep",
             "--sign",
             signing_identity,
             resources / "codex-code-mode-host",

@@ -66,7 +66,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert 'npm pack \\' in installer
     assert "-p codex-code-mode-host --bin codex-code-mode-host" not in installer
     assert "classifier-refresh" in installer
-    assert "codesign --force --sign -" in installer
+    assert "codesign --force --deep --sign -" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
     assert "provider-routing-v23" in installer
