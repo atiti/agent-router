@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from agentroute.install import merge_codex_hook, trust_agentroute_hooks
 
 
@@ -129,3 +131,27 @@ def test_trust_agentroute_hooks_fails_if_an_expected_hook_is_missing(tmp_path, m
         assert "did not discover" in str(error)
     else:
         raise AssertionError("expected missing hooks to fail closed")
+
+
+def test_app_server_reports_exit_when_stdin_is_broken(tmp_path):
+    from agentroute.install import _CodexAppServer
+
+    class ClosedPipe:
+        def write(self, _value):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            return None
+
+    class FakeProcess:
+        stdin = ClosedPipe()
+        stderr = None
+
+        def poll(self):
+            return -9
+
+    client = object.__new__(_CodexAppServer)
+    client.process = FakeProcess()
+
+    with pytest.raises(RuntimeError, match="exited before receiving hooks/list.*-9"):
+        client._send({"method": "hooks/list"})

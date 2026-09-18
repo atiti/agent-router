@@ -44,8 +44,19 @@ class _CodexAppServer:
     def _send(self, payload: dict[str, Any]) -> None:
         if self.process.stdin is None:
             raise RuntimeError("Codex app-server stdin is unavailable")
-        self.process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
-        self.process.stdin.flush()
+        try:
+            self.process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+            self.process.stdin.flush()
+        except BrokenPipeError as error:
+            detail = ""
+            return_code = self.process.poll()
+            if self.process.stderr is not None and return_code is not None:
+                detail = self.process.stderr.read().strip()
+            suffix = f"; stderr: {detail}" if detail else ""
+            raise RuntimeError(
+                f"Codex app-server exited before receiving {payload.get('method', 'request')}"
+                f" (exit code {return_code}){suffix}"
+            ) from error
 
     def notify(self, method: str, params: dict[str, Any]) -> None:
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
