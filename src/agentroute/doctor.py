@@ -13,7 +13,7 @@ from .config import AppConfig, agentroute_home, config_path, model_capabilities
 from .install import hook_command
 from .providers import END_MARKER, START_MARKER, backend_readiness
 
-EXPECTED_RUNTIME_REVISION = "provider-routing-v23"
+EXPECTED_RUNTIME_REVISION = "provider-routing-v26"
 
 
 @dataclass(frozen=True)
@@ -31,21 +31,29 @@ def _hooks_check() -> DoctorCheck:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         return DoctorCheck("hooks", "fail", f"unreadable hooks config: {type(error).__name__}")
-    installed = {
-        str(item.get("command", ""))
-        for groups in payload.get("hooks", {}).values()
-        for group in groups
-        for item in group.get("hooks", [])
-        if isinstance(item, dict)
+    hooks = payload.get("hooks", {})
+    expected = {
+        "UserPromptSubmit": hook_command("user-prompt-submit"),
+        "Stop": hook_command("stop"),
+        "SubagentStop": hook_command("stop"),
     }
-    missing = [
-        event
-        for event in ("user-prompt-submit", "stop")
-        if hook_command(event) not in installed
-    ]
+    missing = []
+    for event, command in expected.items():
+        groups = hooks.get(event, []) if isinstance(hooks, dict) else []
+        installed = {
+            str(item.get("command", ""))
+            for group in groups
+            if isinstance(group, dict)
+            for item in group.get("hooks", [])
+            if isinstance(item, dict)
+        }
+        if command not in installed:
+            missing.append(event)
     if missing:
         return DoctorCheck("hooks", "fail", "missing events: " + ", ".join(missing))
-    return DoctorCheck("hooks", "pass", "UserPromptSubmit and Stop are installed")
+    return DoctorCheck(
+        "hooks", "pass", "UserPromptSubmit, Stop, and SubagentStop are installed"
+    )
 
 
 def _desktop_check(destination: Path, build_id: str) -> DoctorCheck:

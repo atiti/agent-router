@@ -27,6 +27,15 @@ def _runtime_label() -> str | None:
     return "managed"
 
 
+def _subagent_identity(payload: dict[str, Any]) -> tuple[str, str | None]:
+    """Read Codex-native flat child fields, retaining nested compatibility."""
+    nested = payload.get("subagent")
+    subagent = nested if isinstance(nested, dict) else {}
+    raw_agent_id = payload.get("agent_id") or subagent.get("agent_id")
+    agent_id = str(raw_agent_id) if raw_agent_id else None
+    return ("subagent" if agent_id else "root", agent_id)
+
+
 def codex_user_prompt_submit(
     source: TextIO = sys.stdin,
     sink: TextIO = sys.stdout,
@@ -43,18 +52,22 @@ def codex_user_prompt_submit(
         current_tier = provider.tier_for_model(current_model)
         store = store or AuditStore()
         session_id = str(payload["session_id"])
-        previous_tier = store.previous_tier(session_id)
         prompt = str(payload.get("prompt", ""))
-        subagent = payload.get("subagent") or {}
-        route_scope = "subagent" if subagent else "root"
+        route_scope, agent_id = _subagent_identity(payload)
+        previous_tier = store.previous_tier(session_id, route_scope, agent_id)
         tier_override, backend_override, routed_prompt = route_overrides(prompt)
-        agent_id = str(subagent.get("agent_id")) if subagent.get("agent_id") else None
         sticky_backend = store.route_preference(session_id, route_scope, agent_id)
+        opaque_subagent_followup = (
+            route_scope == "subagent" and not routed_prompt.strip() and previous_tier is not None
+        )
+        if opaque_subagent_followup and sticky_backend is None:
+            sticky_backend = store.previous_backend(session_id, route_scope, agent_id)
         if tier_override == "auto":
             sticky_backend = None
         elif backend_override:
             sticky_backend = backend_override
-        continuation = continues_previous_task(prompt)
+        routing_input = "continue" if opaque_subagent_followup else prompt
+        continuation = continues_previous_task(routing_input)
         classifier_needs_context = (
             config.routing.classifier.enabled
             and config.routing.classifier.include_previous_assistant
@@ -66,7 +79,7 @@ def codex_user_prompt_submit(
             else None
         )
         agent_request = (
-            parse_agent_model_request(task_definition) if is_confirmation(prompt) else None
+            parse_agent_model_request(task_definition) if is_confirmation(routing_input) else None
         )
         context = RouteContext(
             session_id=session_id,
@@ -75,7 +88,7 @@ def codex_user_prompt_submit(
             current_model_provider=str(payload.get("model_provider", "openai")),
             route_scope=route_scope,
             agent_id=agent_id,
-            latest_prompt=prompt,
+            latest_prompt=routing_input,
             sticky_backend=sticky_backend,
             current_model=current_model,
             current_tier=current_tier,
@@ -209,7 +222,13 @@ def codex_stop(
     """Attach Codex's final per-turn token counters to the matching route decision."""
     try:
         payload: dict[str, Any] = json.load(source)
-        usage = turn_token_usage(payload.get("transcript_path"), payload.get("turn_id"))
+        route_scope, agent_id = _subagent_identity(payload)
+        transcript_path = (
+            payload.get("agent_transcript_path")
+            if route_scope == "subagent"
+            else payload.get("transcript_path")
+        )
+        usage = turn_token_usage(transcript_path, payload.get("turn_id"))
         reported_outcome = str(payload.get("turn_outcome") or payload.get("status") or "completed")
         outcome = (
             reported_outcome
@@ -223,6 +242,8 @@ def codex_stop(
             usage,
             outcome=outcome,
             completion_source="stop_hook",
+            route_scope=route_scope,
+            agent_id=agent_id,
         )
         json.dump({"continue": True, "suppressOutput": True}, sink, separators=(",", ":"))
         sink.write("\n")

@@ -305,15 +305,25 @@ class AuditStore:
         usage: dict[str, int] | None = None,
         outcome: str = "completed",
         completion_source: str = "stop_hook",
+        route_scope: str | None = None,
+        agent_id: str | None = None,
     ) -> bool:
         """Record first completion time and optional usage for one exact routed turn."""
         completed_at = datetime.now(timezone.utc)
+        scope_clause = ""
+        params: list[object] = [session_id, turn_id]
+        if route_scope is not None:
+            scope_clause += " AND route_scope = ?"
+            params.append(route_scope)
+        if agent_id is not None:
+            scope_clause += " AND agent_id = ?"
+            params.append(agent_id)
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT id, created_at, model, turn_completed_at, turn_duration_ms "
                 "FROM routing_decisions WHERE session_id = ? AND turn_id = ? "
-                "ORDER BY id DESC LIMIT 1",
-                (session_id, turn_id),
+                f"{scope_clause} ORDER BY id DESC LIMIT 1",
+                tuple(params),
             ).fetchone()
             if row is None:
                 return False
@@ -424,9 +434,32 @@ class AuditStore:
         with self.connection() as connection:
             return list(connection.execute(query, tuple(params)).fetchall())
 
-    def previous_tier(self, session_id: str) -> Tier | None:
-        row = self.latest(session_id)
+    def _latest_for_route(
+        self, session_id: str, route_scope: str = "root", agent_id: str | None = None
+    ) -> sqlite3.Row | None:
+        predicate = "agent_id IS NULL" if agent_id is None else "agent_id = ?"
+        params: tuple[object, ...] = (session_id, route_scope)
+        if agent_id is not None:
+            params += (agent_id,)
+        with self.connection() as connection:
+            return connection.execute(
+                "SELECT * FROM routing_decisions "
+                f"WHERE session_id = ? AND route_scope = ? AND {predicate} "
+                "ORDER BY id DESC LIMIT 1",
+                params,
+            ).fetchone()
+
+    def previous_tier(
+        self, session_id: str, route_scope: str = "root", agent_id: str | None = None
+    ) -> Tier | None:
+        row = self._latest_for_route(session_id, route_scope, agent_id)
         return Tier.parse(row["selected_tier"]) if row else None
+
+    def previous_backend(
+        self, session_id: str, route_scope: str = "root", agent_id: str | None = None
+    ) -> str | None:
+        row = self._latest_for_route(session_id, route_scope, agent_id)
+        return str(row["backend"]) if row and row["backend"] else None
 
     def route_preference(
         self, session_id: str, route_scope: str = "root", agent_id: str | None = None

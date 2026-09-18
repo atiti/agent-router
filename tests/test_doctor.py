@@ -27,6 +27,7 @@ def test_doctor_validates_local_runtime_hooks_and_audit(tmp_path, monkeypatch):
                 {"hooks": [{"command": hook_command("user-prompt-submit")}]}
             ],
             "Stop": [{"hooks": [{"command": hook_command("stop")}]}],
+            "SubagentStop": [{"hooks": [{"command": hook_command("stop")}]}],
         }
     }
     (codex_home / "hooks.json").write_text(json.dumps(hooks), encoding="utf-8")
@@ -40,6 +41,33 @@ def test_doctor_validates_local_runtime_hooks_and_audit(tmp_path, monkeypatch):
     assert not [check for check in checks if check.status == "fail"]
 
 
+def test_doctor_requires_commands_under_each_exact_hook_event(tmp_path, monkeypatch):
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    monkeypatch.setattr("agentroute.doctor.Path.home", classmethod(lambda cls: tmp_path))
+    hooks = {
+        "hooks": {
+            "UserPromptSubmit": [
+                {
+                    "hooks": [
+                        {"command": hook_command("user-prompt-submit")},
+                        {"command": hook_command("stop")},
+                    ]
+                }
+            ],
+            "Stop": [{"hooks": [{"command": hook_command("stop")}]}],
+        }
+    }
+    (codex_home / "hooks.json").write_text(json.dumps(hooks), encoding="utf-8")
+
+    from agentroute.doctor import _hooks_check
+
+    check = _hooks_check()
+
+    assert check.status == "fail"
+    assert check.detail == "missing events: SubagentStop"
+
+
 def test_doctor_warns_when_desktop_embeds_an_old_runtime(tmp_path, monkeypatch):
     destination = tmp_path / "ChatGPT-Routed.app"
     resources = destination / "Contents" / "Resources"
@@ -48,8 +76,8 @@ def test_doctor_warns_when_desktop_embeds_an_old_runtime(tmp_path, monkeypatch):
     with (destination / "Contents" / "Info.plist").open("wb") as handle:
         plistlib.dump({"AgentRouteDesktopBuild": "provider-routing-v21"}, handle)
 
-    check = _desktop_check(destination, "provider-routing-v23")
+    check = _desktop_check(destination, "provider-routing-v26")
 
     assert check.status == "warn"
     assert "provider-routing-v21" in check.detail
-    assert "provider-routing-v23" in check.detail
+    assert "provider-routing-v26" in check.detail

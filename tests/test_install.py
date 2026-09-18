@@ -25,6 +25,15 @@ def test_hook_install_preserves_existing_hooks_and_is_idempotent(tmp_path, monke
         for item in group["hooks"]
     ]
     assert sum(command.endswith("agentroute hook codex stop") for command in stop_commands) == 1
+    subagent_stop_commands = [
+        item["command"]
+        for group in payload["hooks"]["SubagentStop"]
+        for item in group["hooks"]
+    ]
+    assert sum(
+        command.endswith("agentroute hook codex stop")
+        for command in subagent_stop_commands
+    ) == 1
     groups = payload["hooks"]["UserPromptSubmit"]
     commands = [item["command"] for group in groups for item in group["hooks"]]
     assert len(commands) == 1
@@ -75,6 +84,14 @@ def test_trust_agentroute_hooks_only_writes_exact_installed_commands(tmp_path, m
                                     "currentHash": "sha256:stop",
                                 },
                                 {
+                                    "key": f"{hooks_path}:subagent_stop:0:0",
+                                    "eventName": "subagentStop",
+                                    "handlerType": "command",
+                                    "command": stop_command,
+                                    "sourcePath": str(hooks_path),
+                                    "currentHash": "sha256:subagent-stop",
+                                },
+                                {
                                     "key": f"{hooks_path}:stop:1:0",
                                     "eventName": "preToolUse",
                                     "handlerType": "command",
@@ -94,12 +111,15 @@ def test_trust_agentroute_hooks_only_writes_exact_installed_commands(tmp_path, m
         tmp_path / "codex-bin", hooks_path=hooks_path, cwd=tmp_path
     )
 
-    assert count == 2
+    assert count == 3
     assert requests[0] == ("hooks/list", {"cwds": [str(tmp_path)]})
     assert requests[1][0] == "config/batchWrite"
     assert requests[1][1]["edits"][0]["value"] == {
         f"{hooks_path}:user_prompt_submit:0:0": {"trusted_hash": "sha256:prompt"},
         f"{hooks_path}:stop:0:0": {"trusted_hash": "sha256:stop"},
+        f"{hooks_path}:subagent_stop:0:0": {
+            "trusted_hash": "sha256:subagent-stop"
+        },
     }
 
 

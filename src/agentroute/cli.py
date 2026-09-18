@@ -1099,6 +1099,17 @@ def hook_json_command() -> None:
                     ]
                 }
             ],
+            "SubagentStop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": installed_hook_command("stop"),
+                            "statusMessage": "AgentRoute is recording subagent token usage",
+                        }
+                    ]
+                }
+            ],
         }
     }
     console.print_json(data=payload)

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.23 — 2026-09-18
+
+- Route spawned subagents from Codex's existing non-secret `task_name` while preserving the stock
+  provider-facing collaboration schema and keeping the delegated task provider-encrypted; the
+  internal ephemeral hint is excluded from rollout history and model-visible child input.
+- Keep opaque follow-up turns on the exact child's prior tier and backend without leaking affinity
+  between the root agent or sibling children.
+- Attribute native flat `agent_id` / `agent_type` hook events to distinct subagent audit rows instead
+  of collapsing them into the root session, while retaining compatibility with legacy nested fields.
+- Install, trust, validate, and process Codex's `SubagentStop` hook so child completion, duration, and
+  token usage come from the child transcript rather than the parent transcript.
+
 ## 0.5.22 — 2026-09-18
 
 - Validate raw macOS CLI executables with strict Developer ID signature checks and Apple's accepted

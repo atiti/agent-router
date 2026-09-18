@@ -43,6 +43,8 @@ def invoke(
     transcript_path=None,
     subagent=None,
     model_provider="openai",
+    flat_agent_id=None,
+    flat_agent_type=None,
 ):
     source = io.StringIO(
         json.dumps(
@@ -53,6 +55,8 @@ def invoke(
                 "model_provider": model_provider,
                 "prompt": prompt,
                 "subagent": subagent,
+                "agent_id": flat_agent_id,
+                "agent_type": flat_agent_type,
                 "transcript_path": str(transcript_path) if transcript_path else None,
             }
         )
@@ -179,6 +183,56 @@ def test_subagent_task_is_independently_routed_and_audited(tmp_path):
     assert "scope subagent" in output["hookSpecificOutput"]["routeMessage"]
     assert row["route_scope"] == "subagent"
     assert row["agent_id"] == "/root/mechanical"
+
+
+def test_flat_codex_subagent_fields_are_routed_and_audited(tmp_path):
+    config = default_config()
+    config.enabled = True
+    store = AuditStore(tmp_path / "audit.db")
+
+    output = invoke(
+        config,
+        store,
+        "Design a zero-downtime database migration",
+        flat_agent_id="0199-child",
+        flat_agent_type="worker",
+    )
+    row = store.latest("same-thread")
+
+    assert "scope subagent" in output["hookSpecificOutput"]["routeMessage"]
+    assert row["route_scope"] == "subagent"
+    assert row["agent_id"] == "0199-child"
+
+
+def test_opaque_subagent_followup_inherits_its_own_route(tmp_path):
+    config = default_config()
+    config.enabled = True
+    store = AuditStore(tmp_path / "audit.db")
+
+    invoke(config, store, "@smart architecture review", flat_agent_id="child-a")
+    invoke(config, store, "@fast rename a label", flat_agent_id="child-b")
+    child_a_followup = invoke(
+        config,
+        store,
+        "",
+        model="gpt-5.6-sol",
+        flat_agent_id="child-a",
+    )
+    child_b_followup = invoke(
+        config,
+        store,
+        "",
+        model="gpt-5.6-luna",
+        flat_agent_id="child-b",
+    )
+
+    assert child_a_followup["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert child_b_followup["hookSpecificOutput"]["model"] == "gpt-5.6-luna"
+    child_rows = [row for row in store.history("same-thread") if row["agent_id"]]
+    assert child_rows[0]["classification_source"] == "session_affinity"
+    assert child_rows[1]["classification_source"] == "session_affinity"
+    assert child_rows[0]["agent_id"] == "child-b"
+    assert child_rows[1]["agent_id"] == "child-a"
 
 
 def test_confirmation_uses_previous_assistant_task_definition(tmp_path):
@@ -424,3 +478,97 @@ def test_stop_hook_records_completion_when_usage_is_missing(tmp_path):
     assert row["turn_completed_at"] is not None
     assert row["turn_duration_ms"] >= 0
     assert row["usage_recorded_at"] is None
+
+
+def test_subagent_stop_records_completion_for_flat_codex_fields(tmp_path):
+    config = default_config()
+    store = AuditStore(tmp_path / "audit.db")
+    invoke(
+        config,
+        store,
+        "Design a zero-downtime database migration",
+        flat_agent_id="0199-child",
+        flat_agent_type="worker",
+    )
+    sink = io.StringIO()
+    payload = {
+        "session_id": "same-thread",
+        "turn_id": "turn-1",
+        "model": "gpt-5.6-luna",
+        "agent_id": "0199-child",
+        "agent_type": "worker",
+        "agent_transcript_path": str(tmp_path / "missing-child.jsonl"),
+    }
+
+    assert codex_stop(io.StringIO(json.dumps(payload)), sink, store=store) == 0
+    row = store.latest("same-thread")
+
+    assert row["route_scope"] == "subagent"
+    assert row["agent_id"] == "0199-child"
+    assert row["turn_outcome"] == "completed"
+    assert row["usage_status"] == "missing"
+
+
+def test_subagent_stop_reads_usage_from_child_transcript(tmp_path):
+    parent_transcript = tmp_path / "parent.jsonl"
+    child_transcript = tmp_path / "child.jsonl"
+    parent_transcript.write_text(
+        json.dumps(
+            {
+                "type": "token_usage_record",
+                "payload": {
+                    "turn_id": "turn-1",
+                    "turn_token_usage": {"input_tokens": 9999, "total_tokens": 9999},
+                },
+            }
+        )
+        + "\n"
+    )
+    child_transcript.write_text(
+        json.dumps(
+            {
+                "type": "token_usage_record",
+                "payload": {
+                    "turn_id": "turn-1",
+                    "turn_token_usage": {
+                        "input_tokens": 321,
+                        "cached_input_tokens": 123,
+                        "output_tokens": 45,
+                        "reasoning_output_tokens": 6,
+                        "total_tokens": 366,
+                    },
+                },
+            }
+        )
+        + "\n"
+    )
+    config = default_config()
+    store = AuditStore(tmp_path / "audit.db")
+    invoke(
+        config,
+        store,
+        "Investigate the distributed-system failure",
+        flat_agent_id="0199-child",
+        flat_agent_type="worker",
+    )
+    sink = io.StringIO()
+    payload = {
+        "session_id": "same-thread",
+        "turn_id": "turn-1",
+        "model": "gpt-5.6-sol",
+        "agent_id": "0199-child",
+        "agent_type": "worker",
+        "transcript_path": str(parent_transcript),
+        "agent_transcript_path": str(child_transcript),
+    }
+
+    assert codex_stop(io.StringIO(json.dumps(payload)), sink, store=store) == 0
+    row = store.latest("same-thread")
+
+    assert row["route_scope"] == "subagent"
+    assert row["agent_id"] == "0199-child"
+    assert row["answer_input_tokens"] == 321
+    assert row["answer_cached_input_tokens"] == 123
+    assert row["answer_output_tokens"] == 45
+    assert row["answer_reasoning_output_tokens"] == 6
+    assert row["usage_status"] == "recorded"

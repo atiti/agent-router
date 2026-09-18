@@ -40,7 +40,13 @@ Spawned subagents are routed independently. Their triggering task is classified 
 before the child's first model call, and each audit row and route banner identifies whether the
 decision belongs to the root agent or a subagent. A child starts with the parent's full or bounded
 context according to Codex's spawn request, but it does not have to keep the parent's model or
-backend.
+backend. For the initial child decision, AgentRoute reuses Codex's existing non-secret `task_name`
+as an internal routing hint; the provider-facing collaboration tool schema is unchanged. The actual
+delegated task remains provider-encrypted, and the internal hint is ephemeral: it is stripped before
+rollout serialization and never appears in the child model's visible input. An opaque follow-up
+inherits the exact child's most recent tier and backend, without borrowing state from the root or a
+sibling. Child completion and token accounting use Codex's `SubagentStop` event and the child's own
+transcript.
 
 The classifier is a second-stage judge, not the primary router. Explicit overrides, approved agent
 requests, high-confidence rules, and credential-shaped prompts never reach it. It returns the

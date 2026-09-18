@@ -28,6 +28,36 @@ def test_audit_defaults_to_prompt_hash_only(tmp_path):
     assert receipt["version"] == "selection-v1"
 
 
+def test_previous_route_is_scoped_per_child(tmp_path):
+    store = AuditStore(tmp_path / "audit.db")
+    router = Router(default_config())
+    root = router.route(RouteContext(session_id="session-1", latest_prompt="@normal root"))
+    child_a = router.route(
+        RouteContext(
+            session_id="session-1",
+            route_scope="subagent",
+            agent_id="/root/a",
+            latest_prompt="@smart child a",
+        )
+    )
+    child_b = router.route(
+        RouteContext(
+            session_id="session-1",
+            route_scope="subagent",
+            agent_id="/root/b",
+            latest_prompt="@fast child b",
+        )
+    )
+    store.record(root, Tier.NORMAL)
+    store.record(child_a, Tier.NORMAL)
+    store.record(child_b, Tier.NORMAL)
+
+    assert store.previous_tier("session-1") is Tier.NORMAL
+    assert store.previous_tier("session-1", "subagent", "/root/a") is Tier.SMART
+    assert store.previous_tier("session-1", "subagent", "/root/b") is Tier.FAST
+    assert store.previous_backend("session-1", "subagent", "/root/a") == "gpt"
+
+
 def test_manual_override_labels_previous_automatic_decision(tmp_path):
     store = AuditStore(tmp_path / "audit.db")
     router = Router(default_config())

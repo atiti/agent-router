@@ -1,8 +1,8 @@
 diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
-index 5d1128f970..4497aeb1f3 100644
+index 03fb1bfcda..989a31f285 100644
 --- a/codex-rs/core/src/hook_runtime.rs
 +++ b/codex-rs/core/src/hook_runtime.rs
-@@ -29,12 +29,16 @@ use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+@@ -29,11 +29,15 @@ use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
  use codex_otel::HOOK_RUN_DURATION_METRIC;
  use codex_otel::HOOK_RUN_METRIC;
  use codex_plugin::ExecutorPluginHookSource;
@@ -18,8 +18,7 @@ index 5d1128f970..4497aeb1f3 100644
  use codex_protocol::protocol::AskForApproval;
  use codex_protocol::protocol::CodexErrorInfo;
  use codex_protocol::protocol::EventMsg;
- use codex_protocol::protocol::HookCompletedEvent;
-@@ -774,7 +778,45 @@ pub(crate) async fn inspect_pending_input(
+@@ -787,7 +791,46 @@ pub(crate) async fn inspect_pending_input(
          {
              TurnSettingsUpdateOutcome::Applied => {
                  outcome.settings_updated = true;

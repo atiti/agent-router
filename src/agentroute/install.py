@@ -152,6 +152,12 @@ def merge_codex_hook(path: Path | None = None) -> tuple[Path, Path | None]:
         "AgentRoute is selecting a model",
     )
     _merge_command(hooks, "Stop", hook_command("stop"), "AgentRoute is recording token usage")
+    _merge_command(
+        hooks,
+        "SubagentStop",
+        hook_command("stop"),
+        "AgentRoute is recording subagent token usage",
+    )
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path, backup
 
@@ -168,6 +174,7 @@ def trust_agentroute_hooks(
     expected_hooks = {
         "userPromptSubmit": hook_command("user-prompt-submit"),
         "stop": hook_command("stop"),
+        "subagentStop": hook_command("stop"),
     }
     with _CodexAppServer(codex_binary) as client:
         response = client.request("hooks/list", {"cwds": [str(cwd)]})

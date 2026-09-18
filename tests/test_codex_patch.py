@@ -46,6 +46,12 @@ def test_native_patch_is_packaged():
     assert "MessagePhase::Commentary" in content
     assert "emit_turn_item_completed" in content
     assert "not added to the model's input history" in content
+    assert "routing_prompt" in content
+    assert "Some(args.task_name.clone())" in content
+    assert '!properties.contains_key("routing_prompt")' in content
+    assert "response_input_serialization_excludes_ephemeral_routing_prompt" in content
+    assert "encrypted_subagent_input_uses_ephemeral_routing_prompt" in content
+    assert "encrypted_communication_keeps_ephemeral_routing_prompt_in_memory" in content
     continuation_test = (
         "mixed_provider_history_preserves_destination_reasoning_across_tool_continuations"
     )
@@ -74,15 +80,17 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "codesign --force --deep --sign -" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v23" in installer
+    assert "provider-routing-v26" in installer
     assert "codex-desktop-route-notice.patch" in installer
     assert "codex-package-version.patch" in installer
-    assert "0.155.0-alpha.2.6" in "\n".join(
+    assert "0.155.0-alpha.2.7" in "\n".join(
         path.read_text() for path in patch_paths()
     )
     assert "apply --recount" in installer
     assert "MessagePhase::Commentary" in installer
-    assert 'version = "0.155.0-alpha.2.6"' in installer
+    assert 'version = "0.155.0-alpha.2.7"' in installer
+    assert "Some(args.task_name.clone())" in installer
+    assert '\"routing_prompt\".to_string()' in installer
     same_host_guard = (
         'AGENTROUTE_SOURCE_CODE_MODE_HOST" != "$AGENTROUTE_BIN_DIR/codex-code-mode-host'
     )

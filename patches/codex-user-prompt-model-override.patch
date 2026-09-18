@@ -43,7 +43,7 @@ index 2981b13b0a..5631a5072b 100644
                  .clone(),
          ),
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 9e4cf7df6f..78e9e199a9 100644
+index 9e4cf7df6f..2de9dbafc2 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -26,6 +26,7 @@
@@ -71,7 +71,7 @@ index 9e4cf7df6f..78e9e199a9 100644
  }
  
  #[derive(Debug, Clone)]
-@@ -301,6 +305,124 @@ struct WebsocketSession {
+@@ -301,6 +305,123 @@ struct WebsocketSession {
      connection_reused: StdMutex<bool>,
  }
  
@@ -150,9 +150,8 @@ index 9e4cf7df6f..78e9e199a9 100644
 +        None if provider.is_openai() => {
 +            input.retain(|item| match item {
 +                ResponseItem::Reasoning { id, content, .. } => {
-+                    id.as_ref().is_some_and(|id| {
-+                        id.starts_with("rs_") || id.starts_with("encitem_")
-+                    })
++                    id.as_ref()
++                        .is_some_and(|id| id.starts_with("rs_") || id.starts_with("encitem_"))
 +                        && content.as_ref().is_none_or(Vec::is_empty)
 +                }
 +                _ => true,
@@ -196,7 +195,7 @@ index 9e4cf7df6f..78e9e199a9 100644
  // This is intentionally not a `PartialEq` implementation: request equality includes `input` and
  // `client_metadata`, while websocket reuse compares the input separately and ignores metadata.
  // Access programs are authorized per response, including continuations, without replaying input.
-@@ -536,9 +658,63 @@ impl ModelClient {
+@@ -536,9 +657,63 @@ impl ModelClient {
              client: self.clone(),
              websocket_session,
              turn_state: Arc::new(OnceLock::new()),
@@ -260,7 +259,7 @@ index 9e4cf7df6f..78e9e199a9 100644
      pub(crate) fn auth_manager(&self) -> Option<Arc<AuthManager>> {
          self.state.provider.auth_manager()
      }
-@@ -919,7 +1095,18 @@ impl ModelClient {
+@@ -919,7 +1094,18 @@ impl ModelClient {
          }
      }
  
@@ -280,7 +279,7 @@ index 9e4cf7df6f..78e9e199a9 100644
          for item in input {
              if item.id().is_some_and(|id| !id.is_prefixed()) {
                  item.set_id(/*new_id*/ None);
-@@ -1568,8 +1755,11 @@ impl ModelClientSession {
+@@ -1568,8 +1754,11 @@ impl ModelClientSession {
                  client_setup.auth.as_ref(),
                  prompt.cyber_access_program,
              );
@@ -294,7 +293,7 @@ index 9e4cf7df6f..78e9e199a9 100644
              if crate::guardian::is_basic_session_source(&self.client.state.session_source) {
                  crate::guardian::observe_guardian_request(session_telemetry, &request);
              }
-@@ -1774,6 +1964,11 @@ impl ModelClientSession {
+@@ -1774,6 +1963,11 @@ impl ModelClientSession {
              if let Some(turn_state) = self.turn_state.get() {
                  client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
              }
@@ -306,7 +305,7 @@ index 9e4cf7df6f..78e9e199a9 100644
              let (incremental_request, previous_response_id_from_untraced_warmup) =
                  self.prepare_websocket_request(&request);
              let inference_trace_attempt = if warmup {
-@@ -1794,20 +1989,13 @@ impl ModelClientSession {
+@@ -1794,20 +1988,13 @@ impl ModelClientSession {
                  Some((response_id, items)) => (Some(response_id), Some(items)),
                  None => (None, None),
              };
@@ -334,7 +333,7 @@ index 9e4cf7df6f..78e9e199a9 100644
              let mut ws_payload = ResponseCreateWsRequest {
                  previous_response_id,
                  input: incremental_items.as_deref().unwrap_or(&request.input),
-@@ -1843,11 +2031,6 @@ impl ModelClientSession {
+@@ -1843,11 +2030,6 @@ impl ModelClientSession {
                      Some(Arc::clone(&self.turn_state)),
                  )
                  .await;
@@ -478,7 +477,7 @@ index 8936f5afab..c678bfed12 100644
  use tempfile::TempDir;
  use tokio::sync::Notify;
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 77e28b85e5..45d5382ba8 100644
+index 77e28b85e5..a86d344377 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
 @@ -86,6 +86,7 @@ pub(crate) struct CompactedHistoryMetadata {
@@ -577,16 +576,18 @@ index 77e28b85e5..45d5382ba8 100644
      // Reuse one client session so turn-scoped state (sticky routing, websocket incremental
      // request tracking)
      // survives retries within this compact turn.
-@@ -264,7 +284,7 @@ async fn run_compact_task_inner_impl(
+@@ -262,9 +282,7 @@ async fn run_compact_task_inner_impl(
+ 
+     let compaction_response_id = loop {
          // Clone is required because of the loop
-         let mut turn_input = history
-             .clone()
+-        let mut turn_input = history
+-            .clone()
 -            .for_prompt(&turn_context.model_info().input_modalities);
-+            .for_prompt(&model_info.input_modalities);
++        let mut turn_input = history.clone().for_prompt(&model_info.input_modalities);
          sess.services
              .executed_tool_calls
              .strip_disabled_direct_metadata(&mut turn_input);
-@@ -277,7 +297,8 @@ async fn run_compact_task_inner_impl(
+@@ -277,7 +295,8 @@ async fn run_compact_task_inner_impl(
          let attempt_result = drain_to_completed(
              &sess,
              turn_context.as_ref(),
@@ -596,7 +597,7 @@ index 77e28b85e5..45d5382ba8 100644
              &responses_metadata,
              &prompt,
          )
-@@ -387,7 +408,8 @@ async fn run_compact_task_inner_impl(
+@@ -387,7 +406,8 @@ async fn run_compact_task_inner_impl(
              window_number,
              window_ids,
              compaction_response_id: Some(compaction_response_id),
@@ -606,7 +607,7 @@ index 77e28b85e5..45d5382ba8 100644
          },
      )
      .await;
-@@ -757,21 +779,37 @@ async fn drain_to_completed(
+@@ -757,21 +777,34 @@ async fn drain_to_completed(
      sess: &Session,
      turn_context: &TurnContext,
      client_session: &mut ModelClientSession,
@@ -634,22 +635,23 @@ index 77e28b85e5..45d5382ba8 100644
              prompt,
 -            turn_context.model_info(),
 -            &turn_context.session_telemetry,
-+            model_info,
-+            session_telemetry,
-             sess.reasoning_effort_for_request(
+-            sess.reasoning_effort_for_request(
 -                &turn_context.initial_settings,
-+                request_settings,
-                 RequestEffortUsage::Compaction,
-             )
-             .await,
+-                RequestEffortUsage::Compaction,
+-            )
+-            .await,
 -            turn_context.reasoning_summary(),
 -            turn_context.config.service_tier.clone(),
++            model_info,
++            session_telemetry,
++            sess.reasoning_effort_for_request(request_settings, RequestEffortUsage::Compaction)
++                .await,
 +            request_settings.reasoning_summary,
 +            request_settings.service_tier.clone(),
              responses_metadata,
              // Rollout tracing currently models remote compaction only; local compaction streams
              // are left untraced until the reducer has a first-class local compaction lifecycle.
-@@ -789,7 +827,7 @@ async fn drain_to_completed(
+@@ -789,7 +822,7 @@ async fn drain_to_completed(
              Ok(ResponseEvent::OutputItemDone(item)) => {
                  sess.record_conversation_items(
                      turn_context,
@@ -698,7 +700,7 @@ index b367ba4bea..ae219e3e1a 100644
          .stream_max_retries()
          .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
 diff --git a/codex-rs/core/src/guardian/review.rs b/codex-rs/core/src/guardian/review.rs
-index fc7960d547..78a1e33394 100644
+index fc7960d547..27e494f651 100644
 --- a/codex-rs/core/src/guardian/review.rs
 +++ b/codex-rs/core/src/guardian/review.rs
 @@ -225,7 +225,25 @@ pub(super) async fn guardian_review_session_config(
@@ -754,7 +756,7 @@ index fc7960d547..78a1e33394 100644
          live_network_config,
          guardian_model.as_str(),
          guardian_reasoning_effort.clone(),
-@@ -266,6 +291,19 @@ pub(super) async fn guardian_review_session_config(
+@@ -266,6 +291,23 @@ pub(super) async fn guardian_review_session_config(
          context.personality,
          guardian_model_info.model_messages.as_ref(),
      )?;
@@ -762,7 +764,11 @@ index fc7960d547..78a1e33394 100644
 +        // Provider-compatible reviewers keep the same read-only Guardian authority, but expose
 +        // those tools as ordinary functions. Do not let an inherited Code Mode feature rebuild
 +        // the `exec` custom tool after startup model compatibility has selected direct mode.
-+        for feature in [Feature::CodeMode, Feature::CodeModeOnly, Feature::CodeModeHost] {
++        for feature in [
++            Feature::CodeMode,
++            Feature::CodeModeOnly,
++            Feature::CodeModeHost,
++        ] {
 +            spawn_config.features.disable(feature).map_err(|error| {
 +                anyhow::anyhow!(
 +                    "guardian review session could not disable incompatible `{}`: {error}",
@@ -787,7 +793,7 @@ index 6616a291b3..20dfd8024e 100644
          )
          .await;
 diff --git a/codex-rs/core/src/guardian/tests.rs b/codex-rs/core/src/guardian/tests.rs
-index cf191851bf..dede3d1c45 100644
+index cf191851bf..6c0f97c900 100644
 --- a/codex-rs/core/src/guardian/tests.rs
 +++ b/codex-rs/core/src/guardian/tests.rs
 @@ -181,8 +181,10 @@ async fn guardian_test_session_turn_and_rx(
@@ -852,7 +858,7 @@ index cf191851bf..dede3d1c45 100644
  
      seed_guardian_parent_history(&session, &turn).await;
  
-@@ -3917,6 +3930,50 @@ async fn guardian_review_session_config_preserves_context_overrides_for_same_eff
+@@ -3917,6 +3930,52 @@ async fn guardian_review_session_config_preserves_context_overrides_for_same_eff
      );
  }
  
@@ -865,7 +871,9 @@ index cf191851bf..dede3d1c45 100644
 +        base_url: Some("https://routed.example.invalid/v1".to_string()),
 +        approval_review_model: Some("routed-reviewer".to_string()),
 +        requires_openai_auth: false,
-+        tool_compatibility: Some(codex_model_provider::ToolCompatibility::FunctionsAndApplyPatch),
++        tool_compatibility: Some(
++            codex_model_provider_info::ToolCompatibility::FunctionsAndApplyPatch,
++        ),
 +        ..Default::default()
 +    };
 +    let auth_manager = turn.auth_manager.clone();
@@ -904,7 +912,7 @@ index cf191851bf..dede3d1c45 100644
  async fn guardian_review_session_config_clears_parent_developer_instructions() {
      let mut parent_config = test_config().await;
 diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
-index 4e276868ce..5d1128f970 100644
+index 4e276868ce..03fb1bfcda 100644
 --- a/codex-rs/core/src/hook_runtime.rs
 +++ b/codex-rs/core/src/hook_runtime.rs
 @@ -49,6 +49,8 @@ use codex_protocol::protocol::HookStartedEvent;
@@ -970,7 +978,47 @@ index 4e276868ce..5d1128f970 100644
              },
          }
      }
-@@ -672,38 +701,106 @@ pub(crate) async fn inspect_pending_input(
+@@ -444,7 +473,7 @@ pub(crate) async fn run_turn_stop_hooks(
+         #[allow(deprecated)]
+         cwd: turn_context.cwd.clone(),
+         transcript_path,
+-        model: turn_context.model_info().slug.clone(),
++        model: step_context.settings.model_info.slug.clone(),
+         permission_mode: hook_permission_mode(turn_context.approval_policy()),
+         request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),
+         stop_hook_active,
+@@ -667,43 +696,124 @@ pub(crate) async fn run_legacy_after_agent_hook(
+     true
+ }
+ 
++fn routing_prompt_for_pending_input(
++    turn_context: &TurnContext,
++    pending_input_item: &TurnInput,
++) -> Option<String> {
++    match pending_input_item {
++        TurnInput::UserInput { content, .. } => UserMessageItem::new(content).message(),
++        TurnInput::InterAgentCommunication(communication)
++            if matches!(
++                turn_context.session_source,
++                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
++            ) && communication.trigger_turn =>
++        {
++            communication
++                .routing_prompt
++                .clone()
++                .unwrap_or_else(|| communication.content.clone())
++        }
++        TurnInput::ResponseItem(_)
++        | TurnInput::FunctionCallOutput(_)
++        | TurnInput::InterAgentCommunication(_) => {
++            return None;
++        }
++    }
++    .into()
++}
++
+ pub(crate) async fn inspect_pending_input(
+     sess: &Arc<Session>,
      turn_context: &Arc<TurnContext>,
      pending_input_item: &TurnInput,
  ) -> HookRuntimeOutcome {
@@ -986,30 +1034,7 @@ index 4e276868ce..5d1128f970 100644
 -                model: turn_context.model_info().slug.clone(),
 -                permission_mode: hook_permission_mode(turn_context.approval_policy()),
 -                prompt: UserMessageItem::new(content).message(),
-+    let prompt = match pending_input_item {
-+        TurnInput::UserInput { content, .. } => UserMessageItem::new(content).message(),
-+        TurnInput::InterAgentCommunication(communication)
-+            if matches!(
-+                turn_context.session_source,
-+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-+            ) && communication.trigger_turn =>
-+        {
-+            communication.content.clone()
-+        }
-+        TurnInput::ResponseItem(_)
-+        | TurnInput::FunctionCallOutput(_)
-+        | TurnInput::InterAgentCommunication(_) => {
-+            return HookRuntimeOutcome {
-+                should_stop: false,
-+                additional_contexts: Vec::new(),
-+                model: None,
-+                model_provider: None,
-+                reasoning_effort: None,
-+                route_message: None,
-+                strip_prompt_prefix_bytes: None,
-+                strip_provider_state: false,
-+                settings_updated: false,
-             };
+-            };
 -            let hooks = sess.hooks();
 -            let preview_runs = hooks.preview_user_prompt_submit(&request);
 -            run_context_injecting_hook(
@@ -1018,7 +1043,26 @@ index 4e276868ce..5d1128f970 100644
 -                preview_runs,
 -                hooks.run_user_prompt_submit(request),
 -            )
-+        }
+-            .await
+-        }
+-        TurnInput::ResponseItem(_) | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {
+-            should_stop: false,
+-            additional_contexts: Vec::new(),
+-        },
+-        TurnInput::InterAgentCommunication(_) => HookRuntimeOutcome {
++    let Some(prompt) = routing_prompt_for_pending_input(turn_context, pending_input_item) else {
++        return HookRuntimeOutcome {
+             should_stop: false,
+             additional_contexts: Vec::new(),
+-        },
++            model: None,
++            model_provider: None,
++            reasoning_effort: None,
++            route_message: None,
++            strip_prompt_prefix_bytes: None,
++            strip_provider_state: false,
++            settings_updated: false,
++        };
 +    };
 +    let request = UserPromptSubmitRequest {
 +        session_id: sess.session_id().into(),
@@ -1063,7 +1107,7 @@ index 4e276868ce..5d1128f970 100644
 +        };
 +        match sess
 +            .apply_routed_turn_settings(&turn_context.sub_id, update, outcome.model_provider.take())
-             .await
++            .await
 +        {
 +            TurnSettingsUpdateOutcome::Applied => {
 +                outcome.settings_updated = true;
@@ -1091,20 +1135,108 @@ index 4e276868ce..5d1128f970 100644
 +                )
 +                .await;
 +            }
-         }
--        TurnInput::ResponseItem(_) | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {
--            should_stop: false,
--            additional_contexts: Vec::new(),
--        },
--        TurnInput::InterAgentCommunication(_) => HookRuntimeOutcome {
--            should_stop: false,
--            additional_contexts: Vec::new(),
--        },
++        }
      }
 +    outcome
  }
  
  pub(crate) async fn record_pending_input(
+@@ -1066,6 +1176,7 @@ mod tests {
+     use codex_otel::HOOK_RUN_METRIC;
+     use codex_otel::MetricsClient;
+     use codex_otel::MetricsConfig;
++    use codex_protocol::ThreadId;
+     use codex_protocol::models::ContentItem;
+     use codex_protocol::protocol::HookEventName;
+     use codex_protocol::protocol::HookExecutionMode;
+@@ -1073,6 +1184,9 @@ mod tests {
+     use codex_protocol::protocol::HookRunStatus;
+     use codex_protocol::protocol::HookScope;
+     use codex_protocol::protocol::HookSource;
++    use codex_protocol::protocol::InterAgentCommunication;
++    use codex_protocol::protocol::SessionSource;
++    use codex_protocol::protocol::SubAgentSource;
+     use opentelemetry_sdk::metrics::InMemoryMetricExporter;
+     use opentelemetry_sdk::metrics::data::AggregatedMetrics;
+     use opentelemetry_sdk::metrics::data::HistogramDataPoint;
+@@ -1085,6 +1199,7 @@ mod tests {
+     use super::emit_hook_started_events;
+     use super::hook_run_analytics_payload;
+     use super::hook_run_metric_tags;
++    use super::routing_prompt_for_pending_input;
+     use crate::session::tests::make_session_and_context;
+     use crate::session::tests::make_session_and_context_with_rx;
+     use codex_protocol::protocol::HookCompletedEvent;
+@@ -1128,6 +1243,69 @@ mod tests {
+         );
+     }
+ 
++    #[tokio::test]
++    async fn encrypted_subagent_input_uses_ephemeral_routing_prompt() {
++        let (_session, mut turn_context) = make_session_and_context().await;
++        turn_context.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++            parent_thread_id: ThreadId::default(),
++            depth: 1,
++            agent_path: None,
++            agent_nickname: None,
++            agent_role: None,
++        });
++        let communication = InterAgentCommunication::new_encrypted(
++            codex_protocol::AgentPath::root(),
++            codex_protocol::AgentPath::root()
++                .join("worker")
++                .expect("recipient path"),
++            Vec::new(),
++            "encrypted payload".to_string(),
++            /*trigger_turn*/ true,
++        )
++        .with_routing_prompt(Some(
++            "Design a zero-downtime database migration".to_string(),
++        ));
++
++        assert_eq!(
++            routing_prompt_for_pending_input(
++                &turn_context,
++                &crate::session::TurnInput::InterAgentCommunication(communication),
++            )
++            .as_deref(),
++            Some("Design a zero-downtime database migration")
++        );
++    }
++
++    #[tokio::test]
++    async fn legacy_plaintext_subagent_input_remains_routable() {
++        let (_session, mut turn_context) = make_session_and_context().await;
++        turn_context.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++            parent_thread_id: ThreadId::default(),
++            depth: 1,
++            agent_path: None,
++            agent_nickname: None,
++            agent_role: None,
++        });
++        let communication = InterAgentCommunication::new(
++            codex_protocol::AgentPath::root(),
++            codex_protocol::AgentPath::root()
++                .join("worker")
++                .expect("recipient path"),
++            Vec::new(),
++            "legacy plaintext task".to_string(),
++            /*trigger_turn*/ true,
++        );
++
++        assert_eq!(
++            routing_prompt_for_pending_input(
++                &turn_context,
++                &crate::session::TurnInput::InterAgentCommunication(communication),
++            )
++            .as_deref(),
++            Some("legacy plaintext task")
++        );
++    }
++
+     #[tokio::test]
+     async fn hook_lifecycle_notifications_hide_builtin_and_async_runs_but_preserve_metrics() {
+         let metrics = MetricsClient::new(
 diff --git a/codex-rs/core/src/mcp_tool_call_tests.rs b/codex-rs/core/src/mcp_tool_call_tests.rs
 index 2e7fee3950..701c6a4453 100644
 --- a/codex-rs/core/src/mcp_tool_call_tests.rs
@@ -1248,15 +1380,15 @@ index ea078a451e..cfee96aca7 100644
          history_mode: parent_turn_context.history_mode,
          parent_thread_id: parent_turn_context.parent_thread_id,
 diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
-index 8dc090315a..da690a19d2 100644
+index 8dc090315a..417a1db4b6 100644
 --- a/codex-rs/core/src/session/step_activation.rs
 +++ b/codex-rs/core/src/session/step_activation.rs
 @@ -12,10 +12,14 @@ use crate::context::GuardianNodeReplPolicy;
  use crate::exec_policy::AllowPrefixRules;
  use crate::guardian::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
  use codex_features::Feature;
-+use codex_model_provider_info::ToolCompatibility;
 +use codex_model_provider::create_model_provider;
++use codex_model_provider_info::ToolCompatibility;
 +use codex_protocol::openai_models::ApplyPatchToolType;
  use codex_protocol::openai_models::GuardianV2ModelConfig;
  use codex_protocol::openai_models::GuardianV2TranscriptModelConfig;
@@ -1367,7 +1499,7 @@ index 8dc090315a..da690a19d2 100644
          TurnSettingsUpdateOutcome::Applied
      }
  
-@@ -405,6 +456,31 @@ impl Session {
+@@ -405,6 +456,33 @@ impl Session {
      }
  }
  
@@ -1381,7 +1513,9 @@ index 8dc090315a..da690a19d2 100644
 +    // and wire-level tool capabilities are provider-specific here.
 +    let mut model_info = admitted.clone();
 +    model_info.slug.clone_from(&destination.slug);
-+    model_info.display_name.clone_from(&destination.display_name);
++    model_info
++        .display_name
++        .clone_from(&destination.display_name);
 +    model_info.description.clone_from(&destination.description);
 +    match compatibility {
 +        ToolCompatibility::FunctionsAndApplyPatch => {
@@ -1400,7 +1534,7 @@ index 8dc090315a..da690a19d2 100644
  #[path = "step_activation_tests.rs"]
  mod tests;
 diff --git a/codex-rs/core/src/session/step_activation_tests.rs b/codex-rs/core/src/session/step_activation_tests.rs
-index dcaa598eb6..d68d31d556 100644
+index dcaa598eb6..cff97b807f 100644
 --- a/codex-rs/core/src/session/step_activation_tests.rs
 +++ b/codex-rs/core/src/session/step_activation_tests.rs
 @@ -1137,6 +1137,41 @@ fn parent_review_messages(model: &mut ModelInfo) -> &mut AutoReviewMessages {
@@ -1454,7 +1588,7 @@ index dcaa598eb6..d68d31d556 100644
      let (_, turn) = make_session_and_context().await;
      let (admitted, destination) = safety_models();
      let mut fallback = admitted.clone();
-@@ -1193,18 +1228,23 @@ async fn model_safety_rejects_fallback_metadata() {
+@@ -1193,18 +1228,17 @@ async fn model_safety_rejects_fallback_metadata() {
              &destination,
              "the active model has only fallback metadata",
          ),
@@ -1472,13 +1606,7 @@ index dcaa598eb6..d68d31d556 100644
      }
 +
 +    assert_eq!(
-+        check_legacy_model_safety(
-+            &admitted,
-+            &admitted,
-+            &fallback,
-+            &turn.config,
-+            &turn.config,
-+        ),
++        check_legacy_model_safety(&admitted, &admitted, &fallback, &turn.config, &turn.config,),
 +        Ok(())
 +    );
  }
@@ -1574,7 +1702,7 @@ index 72ae069562..b36296aaf7 100644
      let session = Arc::new(session);
      let turn_context = Arc::new(turn_context_raw);
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 8ab44553be..afafadabf5 100644
+index 8ab44553be..b194ed6296 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -15,6 +15,7 @@ use crate::context::ContextualUserFragment;
@@ -1643,8 +1771,8 @@ index 8ab44553be..afafadabf5 100644
 +    });
 +    let strip_provider_state = history_has_foreign_provider_state
 +        || hook_outcomes
-+        .iter()
-+        .any(|outcome| outcome.strip_provider_state);
++            .iter()
++            .any(|outcome| outcome.strip_provider_state);
 +    if hook_outcomes.iter().any(|outcome| outcome.settings_updated) || strip_provider_state {
 +        client_session = if strip_provider_state {
 +            sess.services
@@ -2285,6 +2413,51 @@ index 9cbe72df88..8a1cbee8ae 100644
      config.model_reasoning_effort = turn
          .reasoning_effort()
          .or(turn.model_info().default_reasoning_level.as_ref())
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
+index 2e11d899b7..6716a296dc 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
+@@ -119,7 +119,6 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
+                 .to_string(),
+         )),
+     );
+-
+     ToolSpec::Function(ResponsesApiTool {
+         name: "spawn_agent".to_string(),
+         description: spawn_agent_tool_description_v2(
+@@ -234,7 +233,11 @@ pub fn create_followup_task_tool() -> ToolSpec {
+             .to_string(),
+         strict: false,
+         defer_loading: None,
+-        parameters: JsonSchema::object(properties, Some(vec!["target".to_string(), "message".to_string()]), Some(false.into())),
++        parameters: JsonSchema::object(
++            properties,
++            Some(vec!["target".to_string(), "message".to_string()]),
++            Some(false.into()),
++        ),
+         output_schema: None,
+     })
+ }
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
+index 888a11376a..e0f367680b 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
+@@ -95,6 +95,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
+     assert!(!description.contains("disabled-model"));
+     assert!(properties.contains_key("task_name"));
+     assert!(properties.contains_key("message"));
++    assert!(!properties.contains_key("routing_prompt"));
+     assert_eq!(
+         properties
+             .get("message")
+@@ -366,6 +367,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
+         .expect("followup_task should use object params");
+     assert!(properties.contains_key("target"));
+     assert!(properties.contains_key("message"));
++    assert!(!properties.contains_key("routing_prompt"));
+     assert_eq!(
+         properties
+             .get("message")
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
 index 1f34d69085..221a4d5e06 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
@@ -2319,6 +2492,125 @@ index 1f34d69085..221a4d5e06 100644
      expected.model_reasoning_effort = turn.reasoning_effort().cloned();
      expected.model_reasoning_summary = Some(turn.reasoning_summary());
      expected.developer_instructions = turn.developer_instructions.clone();
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
+index b82bdd6a0b..d510cac246 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
+@@ -59,6 +59,7 @@ fn communication_from_tool_message(
+     author: AgentPath,
+     recipient: AgentPath,
+     message: String,
++    routing_prompt: Option<String>,
+     source: &crate::tools::context::ToolCallSource,
+     trigger_turn: bool,
+ ) -> InterAgentCommunication {
+@@ -72,7 +73,8 @@ fn communication_from_tool_message(
+             Vec::new(),
+             message,
+             trigger_turn,
+-        );
++        )
++        .with_routing_prompt(routing_prompt);
+     }
+     let message_type = if trigger_turn {
+         InterAgentMessageType::NewTask
+@@ -82,4 +84,32 @@ fn communication_from_tool_message(
+     let content =
+         InterAgentMessage::new(message_type, recipient.clone(), author.clone(), message).render();
+     InterAgentCommunication::new(author, recipient, Vec::new(), content, trigger_turn)
++        .with_routing_prompt(routing_prompt)
++}
++
++#[cfg(test)]
++mod routing_prompt_tests {
++    use super::*;
++
++    #[test]
++    fn encrypted_communication_keeps_ephemeral_routing_prompt_in_memory() {
++        let communication = communication_from_tool_message(
++            AgentPath::root(),
++            AgentPath::root().join("worker").expect("recipient path"),
++            "encrypted payload".to_string(),
++            Some("Analyze a high-risk database migration".to_string()),
++            &crate::tools::context::ToolCallSource::Direct,
++            true,
++        );
++
++        assert_eq!(communication.content, "");
++        assert_eq!(
++            communication.encrypted_content.as_deref(),
++            Some("encrypted payload")
++        );
++        assert_eq!(
++            communication.routing_prompt.as_deref(),
++            Some("Analyze a high-risk database migration")
++        );
++    }
+ }
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs
+index 19de4d842f..48515b9d37 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs
+@@ -43,6 +43,7 @@ impl Handler {
+             MessageDeliveryMode::TriggerTurn,
+             args.target,
+             args.message,
++            None,
+             analytics,
+         )
+         .await
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs
+index a88c765125..1f0c67bdb7 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs
+@@ -55,6 +55,7 @@ pub(super) async fn handle_message_string_tool(
+     mode: MessageDeliveryMode,
+     target: String,
+     message: String,
++    routing_prompt: Option<String>,
+     analytics: &mut ToolCallAnalytics,
+ ) -> Result<FunctionToolOutput, FunctionCallError> {
+     let message = message_content(message)?;
+@@ -100,6 +101,7 @@ pub(super) async fn handle_message_string_tool(
+         author,
+         receiver_agent_path.clone(),
+         message,
++        routing_prompt,
+         &source,
+         mode.trigger_turn(),
+     );
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs
+index 70fc7d4350..59bdd1442f 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs
+@@ -43,6 +43,7 @@ impl Handler {
+             MessageDeliveryMode::QueueOnly,
+             args.target,
+             args.message,
++            None,
+             analytics,
+         )
+         .await
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
+index 41d394243f..362ceeb76c 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
+@@ -114,6 +114,7 @@ async fn handle_spawn_agent(
+     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
+     let fork_mode = args.fork_mode()?;
+     let message = message_content(args.message)?;
++    let routing_prompt = Some(args.task_name.clone());
+     let role_name = args
+         .agent_type
+         .as_deref()
+@@ -173,6 +174,7 @@ async fn handle_spawn_agent(
+         author,
+         new_agent_path.clone(),
+         message,
++        routing_prompt,
+         &source,
+         /*trigger_turn*/ true,
+     );
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
 index 1f308ab5f3..17c9d7920e 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
@@ -3044,7 +3336,7 @@ index 9c27b15cc4..b86fc3764f 100644
  }
  
 diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
-index ceeaa80e31..b38fb3f28a 100644
+index ceeaa80e31..6f547b3fda 100644
 --- a/codex-rs/protocol/src/protocol.rs
 +++ b/codex-rs/protocol/src/protocol.rs
 @@ -495,6 +495,7 @@ pub struct TurnSettingsUpdate {
@@ -3055,6 +3347,109 @@ index ceeaa80e31..b38fb3f28a 100644
      /// `None` preserves the selection; `Some(None)` clears it.
      pub effort: Option<Option<ReasoningEffortConfig>>,
      pub summary: Option<ReasoningSummaryConfig>,
+@@ -815,6 +816,13 @@ pub struct InterAgentCommunication {
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     #[ts(optional)]
+     pub encrypted_content: Option<String>,
++    /// Ephemeral plaintext used by local pre-turn routing hooks when the actual
++    /// delegated message is provider-encrypted. It must never cross a
++    /// serialization boundary or enter model-visible history.
++    #[serde(skip)]
++    #[schemars(skip)]
++    #[ts(skip)]
++    pub routing_prompt: Option<String>,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     #[ts(optional)]
+     pub internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
+@@ -836,6 +844,7 @@ impl InterAgentCommunication {
+             other_recipients,
+             content,
+             encrypted_content: None,
++            routing_prompt: None,
+             internal_chat_message_metadata_passthrough: None,
+             trigger_turn,
+         }
+@@ -855,11 +864,17 @@ impl InterAgentCommunication {
+             other_recipients,
+             content: String::new(),
+             encrypted_content: Some(encrypted_content),
++            routing_prompt: None,
+             internal_chat_message_metadata_passthrough: None,
+             trigger_turn,
+         }
+     }
+ 
++    pub fn with_routing_prompt(mut self, routing_prompt: Option<String>) -> Self {
++        self.routing_prompt = routing_prompt.filter(|prompt| !prompt.trim().is_empty());
++        self
++    }
++
+     pub fn set_turn_id_if_missing(&mut self, turn_id: &str) {
+         InternalChatMessageMetadataPassthrough::set_turn_id_if_missing(
+             &mut self.internal_chat_message_metadata_passthrough,
+@@ -870,6 +885,7 @@ impl InterAgentCommunication {
+     pub fn to_response_input_item(&self) -> ResponseInputItem {
+         let mut communication = self.clone();
+         communication.id = None;
++        communication.routing_prompt = None;
+         communication.internal_chat_message_metadata_passthrough = None;
+         ResponseInputItem::Message {
+             role: "assistant".to_string(),
+@@ -4650,6 +4666,7 @@ mod tests {
+             other_recipients: vec![AgentPath::root().join("worker").expect("recipient path")],
+             content: "review the diff".to_string(),
+             encrypted_content: None,
++            routing_prompt: None,
+             internal_chat_message_metadata_passthrough: None,
+             trigger_turn: true,
+         };
+@@ -4679,6 +4696,15 @@ mod tests {
+             Vec::new(),
+             "encrypted payload".to_string(),
+             /*trigger_turn*/ false,
++        )
++        .with_routing_prompt(Some("classify this task".to_string()));
++
++        let serialized = serde_json::to_value(&communication).expect("serialize communication");
++        assert!(
++            !serialized
++                .as_object()
++                .expect("object")
++                .contains_key("routing_prompt")
+         );
+ 
+         assert_eq!(
+@@ -4701,6 +4727,30 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn response_input_serialization_excludes_ephemeral_routing_prompt() {
++        let communication = InterAgentCommunication::new_encrypted(
++            AgentPath::root(),
++            AgentPath::root().join("worker").expect("recipient path"),
++            Vec::new(),
++            "encrypted payload".to_string(),
++            /*trigger_turn*/ true,
++        )
++        .with_routing_prompt(Some("private local routing summary".to_string()));
++
++        let ResponseInputItem::Message { content, .. } = communication.to_response_input_item()
++        else {
++            panic!("communication should serialize as a response message");
++        };
++        let serialized = match content.as_slice() {
++            [ContentItem::OutputText { text }] => text,
++            other => panic!("unexpected response content: {other:?}"),
++        };
++
++        assert!(!serialized.contains("routing_prompt"));
++        assert!(!serialized.contains("private local routing summary"));
++    }
++
+     #[test]
+     fn session_source_from_startup_arg_normalizes_custom_values() {
+         assert_eq!(
 diff --git a/codex-rs/tui/src/chatwidget.rs b/codex-rs/tui/src/chatwidget.rs
 index 3cbe36586e..62594821e3 100644
 --- a/codex-rs/tui/src/chatwidget.rs
@@ -3190,15 +3585,3 @@ index 6d7c32cecc..f8c5e94008 100644
 +        );
 +    }
 +}
-diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
---- a/codex-rs/core/src/hook_runtime.rs
-+++ b/codex-rs/core/src/hook_runtime.rs
-@@ -444,7 +444,7 @@ pub(crate) async fn run_turn_stop_hooks(
-         #[allow(deprecated)]
-         cwd: turn_context.cwd.clone(),
-         transcript_path,
--        model: turn_context.model_info().slug.clone(),
-+        model: step_context.settings.model_info.slug.clone(),
-         permission_mode: hook_permission_mode(turn_context.approval_policy()),
-         request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),
-         stop_hook_active,
