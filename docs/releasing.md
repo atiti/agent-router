@@ -27,12 +27,17 @@ addition to the checksum enforced by the installer.
 
 Public macOS release builds fail closed without signing secrets. Configure these Actions secrets:
 
-- `APPLE_CERTIFICATE_BASE64`: base64-encoded Developer ID Application `.p12`
-- `APPLE_CERTIFICATE_PASSWORD`: `.p12` password
-- `APPLE_KEYCHAIN_PASSWORD`: temporary CI keychain password
-- `APPLE_SIGNING_IDENTITY`: exact Developer ID Application identity
+- `MACOS_CERTIFICATE_P12_BASE64`: base64-encoded Developer ID Application `.p12`
+- `MACOS_CERTIFICATE_PASSWORD`: `.p12` password
+- `MACOS_CODESIGN_IDENTITY`: exact Developer ID Application identity
+- `APPLE_ID`: Apple developer account email
+- `APPLE_TEAM_ID`: Apple Developer team identifier
+- `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password used by `notarytool`
 
-Do not tag a public release until all four are present. Ad-hoc signatures remain appropriate for
+These names intentionally match Overwatchr's signing setup. Do not tag a public release until all
+six are present. Each macOS matrix job imports the certificate into an ephemeral keychain, signs
+both native binaries with hardened runtime and a secure timestamp, submits their CDHashes for Apple
+notarization, and requires Gatekeeper assessment to pass. Ad-hoc signatures remain appropriate for
 local source builds, but are deliberately rejected by the release artifact builder because a
 downloaded ad-hoc binary can be blocked by macOS Gatekeeper.
 

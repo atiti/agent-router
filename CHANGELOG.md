@@ -7,6 +7,8 @@
 - Start the routed CLI, exec, resume, app-server, and Desktop runtime on the configured NORMAL-tier
   backend before the first provider request, so an exhausted ChatGPT subscription cannot reject a
   turn before AgentRoute's prompt hook switches it to an API backend.
+- Sign public macOS CLI binaries with the same Developer ID secret contract as Overwatchr, submit
+  both native executables for Apple notarization, and require Gatekeeper assessment before release.
 
 ## 0.5.20 — 2026-09-18
 

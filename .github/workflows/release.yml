@@ -33,27 +33,40 @@ jobs:
       - name: Import required Apple Developer ID
         if: runner.os == 'macOS'
         env:
-          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ runner.temp }}-${{ github.run_id }}
         run: |
-          test -n "$APPLE_CERTIFICATE_BASE64" || {
-            echo "APPLE_CERTIFICATE_BASE64 is required for public macOS releases." >&2
-            exit 1
-          }
-          test -n "$APPLE_CERTIFICATE_PASSWORD"
-          test -n "$KEYCHAIN_PASSWORD"
-          printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 -D > "$RUNNER_TEMP/certificate.p12"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" agentroute-build.keychain
-          security default-keychain -s agentroute-build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" agentroute-build.keychain
-          security import "$RUNNER_TEMP/certificate.p12" -k agentroute-build.keychain \
-            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s \
-            -k "$KEYCHAIN_PASSWORD" agentroute-build.keychain
+          missing=0
+          for name in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD MACOS_CODESIGN_IDENTITY; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required release signing secret: ${name}"
+              missing=1
+            fi
+          done
+          test "$missing" = 0
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/agentroute-signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/agentroute-signing.keychain-db"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep -F "$MACOS_CODESIGN_IDENTITY"
       - name: Build release payload
         env:
-          AGENTROUTE_RELEASE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          AGENTROUTE_RELEASE_SIGNING_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          AGENTROUTE_REQUIRE_NOTARIZATION: ${{ runner.os == 'macOS' && '1' || '0' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: ./scripts/build_release_artifact.sh dist
       - uses: actions/attest@v4
         with:

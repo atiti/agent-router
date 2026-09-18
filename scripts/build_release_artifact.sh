@@ -57,6 +57,27 @@ if [ "$PLATFORM" = darwin ]; then
         | grep -q 'Authority=Developer ID Application:'
     codesign -dv --verbose=4 "$PAYLOAD/codex-code-mode-host" 2>&1 \
         | grep -q 'Authority=Developer ID Application:'
+    if [ "${AGENTROUTE_REQUIRE_NOTARIZATION:-0}" = 1 ]; then
+        if [ -z "${APPLE_ID:-}" ] \
+            || [ -z "${APPLE_TEAM_ID:-}" ] \
+            || [ -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]; then
+            printf 'APPLE_ID, APPLE_TEAM_ID, and APPLE_APP_SPECIFIC_PASSWORD are required for notarization.\n' >&2
+            exit 1
+        fi
+        NOTARY_PAYLOAD="$BUILD_ROOT/notary-payload"
+        NOTARY_ARCHIVE="$BUILD_ROOT/agentroute-notarization.zip"
+        mkdir -p "$NOTARY_PAYLOAD"
+        cp "$PAYLOAD/codex-bin" "$NOTARY_PAYLOAD/codex-bin"
+        cp "$PAYLOAD/codex-code-mode-host" "$NOTARY_PAYLOAD/codex-code-mode-host"
+        ditto -c -k --sequesterRsrc --keepParent "$NOTARY_PAYLOAD" "$NOTARY_ARCHIVE"
+        xcrun notarytool submit "$NOTARY_ARCHIVE" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+        spctl --assess --type execute --verbose=2 "$PAYLOAD/codex-bin"
+        spctl --assess --type execute --verbose=2 "$PAYLOAD/codex-code-mode-host"
+    fi
 fi
 
 VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$PROJECT_ROOT/pyproject.toml" | head -1)
