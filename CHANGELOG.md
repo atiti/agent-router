@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.21 — 2026-09-18
+
+- Refuse to let `agentroute update` silently replace a newer source installation with an older
+  published release; intentional rollback now requires `--allow-downgrade`.
+
 ## 0.5.20 — 2026-09-18
 
 - Add classifier health telemetry with explicit success, timeout, error, and fallback counts/rates,
@@ -20,7 +25,6 @@
   intelligence tiers away from an exhausted subscription, with clearer prompt-vs-shell guidance.
 - Deep-sign nested Codex executables on macOS during local, Desktop, and release builds so
   taskgated does not terminate them with `CODESIGNING / Taskgated Invalid Signature`.
-
 ## 0.5.19 — 2026-09-18
 
 - Fix Stop-hook attribution to report the routed step model instead of the frozen session-start

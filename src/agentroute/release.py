@@ -3,13 +3,46 @@ from __future__ import annotations
 import hashlib
 import os
 import platform
+import re
 import subprocess
 import tarfile
 import tempfile
 import urllib.request
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as installed_package_version
 from pathlib import Path
 
 DEFAULT_REPOSITORY = "atiti/agent-router"
+SEMVER_RELEASE = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
+
+
+def _release_tuple(value: str) -> tuple[int, int, int] | None:
+    match = SEMVER_RELEASE.match(value.strip())
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _installed_version() -> str | None:
+    try:
+        return installed_package_version("agentroute")
+    except PackageNotFoundError:
+        return None
+
+
+def _ensure_not_downgrade(candidate: str, current: str | None) -> None:
+    candidate_release = _release_tuple(candidate)
+    current_release = _release_tuple(current) if current is not None else None
+    if (
+        current is not None
+        and candidate_release is not None
+        and current_release is not None
+        and candidate_release < current_release
+    ):
+        raise RuntimeError(
+            f"latest release {candidate} is older than installed AgentRoute {current}; "
+            "refusing to downgrade"
+        )
 
 
 def release_asset_name() -> str:
@@ -41,7 +74,9 @@ def _safe_extract(archive: Path, destination: Path) -> None:
         bundle.extractall(destination)
 
 
-def install_latest_release(repository: str | None = None) -> str:
+def install_latest_release(
+    repository: str | None = None, *, allow_downgrade: bool = False
+) -> str:
     """Download, verify, and install the latest binary release for this platform."""
     repository = repository or os.environ.get("AGENTROUTE_REPOSITORY", DEFAULT_REPOSITORY)
     root = os.environ.get(
@@ -69,10 +104,17 @@ def install_latest_release(repository: str | None = None) -> str:
         payload = download / "payload"
         payload.mkdir()
         _safe_extract(archive, payload)
+        version_path = payload / "VERSION"
+        candidate_version = (
+            version_path.read_text(encoding="utf-8").strip()
+            if version_path.exists()
+            else "unknown"
+        )
+        if not allow_downgrade:
+            _ensure_not_downgrade(candidate_version, _installed_version())
         installer = payload / "install.sh"
         if not installer.is_file():
             raise RuntimeError("verified release has no installer")
         installer.chmod(0o755)
         subprocess.run([str(installer)], check=True)
-        version = payload / "VERSION"
-        return version.read_text(encoding="utf-8").strip() if version.exists() else "unknown"
+        return candidate_version

@@ -46,3 +46,13 @@ def test_macos_release_build_fails_closed_without_developer_id():
 
     assert "Refusing to build a public macOS release without a Developer ID identity" in builder
     assert "Authority=Developer ID Application:" in builder
+
+
+def test_update_refuses_to_downgrade_newer_source_install():
+    with pytest.raises(RuntimeError, match="refusing to downgrade"):
+        release._ensure_not_downgrade("0.5.19", "0.5.20")
+
+
+def test_update_allows_same_or_newer_release():
+    release._ensure_not_downgrade("0.5.20", "0.5.20")
+    release._ensure_not_downgrade("0.5.21", "0.5.20")

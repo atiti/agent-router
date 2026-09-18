@@ -133,11 +133,16 @@ def update_command(
     repository: str | None = typer.Option(
         None, help="GitHub owner/repository; defaults to the official AgentRoute repository."
     ),
+    allow_downgrade: bool = typer.Option(
+        False,
+        "--allow-downgrade",
+        help="Explicitly permit installing an older published version.",
+    ),
 ) -> None:
     """Download, checksum, and install the latest prebuilt AgentRoute release."""
     console.print("Downloading the latest release for this platform...")
     try:
-        version = install_latest_release(repository)
+        version = install_latest_release(repository, allow_downgrade=allow_downgrade)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         console.print(f"[red]Update failed: {error}[/red]")
         raise typer.Exit(1) from error
