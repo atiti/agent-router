@@ -75,7 +75,7 @@ DeepSeek use API credentials from environment variables; AgentRoute never writes
 configuration or audit storage. Enable and map them with:
 
 ```sh
-# Azure's URL includes /openai/v1; model names are your deployment names.
+# Azure's URL includes /openai/v1; both Azure hostname forms are supported.
 export AZURE_OPENAI_API_KEY="..."
 agentroute backend-enable azure \
   --base-url https://YOUR-RESOURCE.openai.azure.com/openai/v1 \
@@ -83,6 +83,9 @@ agentroute backend-enable azure \
   --normal-model YOUR_NORMAL_DEPLOYMENT \
   --smart-model YOUR_SMART_DEPLOYMENT \
   --max-model YOUR_MAX_DEPLOYMENT
+
+# Some resources expose the equivalent hostname:
+# https://YOUR-RESOURCE.cognitiveservices.azure.com/openai/v1
 
 export DEEPSEEK_API_KEY="..."
 agentroute backend-enable deepseek
@@ -224,7 +227,7 @@ codex
 ```
 
 Both installers place everything under `~/.agentroute/`, add `~/.agentroute/bin` to PATH, merge a
-hook into `~/.codex/hooks.json` after making a backup, and exposes:
+hook into `~/.codex/hooks.json` after making a backup, and expose:
 
 - `codex`: patched Codex with native step model switching and Code Mode enabled
 - `codex-code-mode-host`: a pinned official Codex package host from the same release lineage as the
@@ -234,6 +237,10 @@ hook into `~/.codex/hooks.json` after making a backup, and exposes:
 
 It never replaces the original Codex binary. Set `AGENTROUTE_HOME` to choose another installation
 root. `AGENTROUTE_CONFIG` and `AGENTROUTE_DATA_DIR` can override individual state paths.
+During setup, AgentRoute asks the installed Codex app-server to calculate canonical hashes for the
+two exact AgentRoute hook commands and records trust only for those entries. This makes the same
+routing lifecycle work in the interactive TUI, Desktop, and headless `codex exec`; no global hook
+trust bypass is enabled, and unrelated hooks retain their existing trust state.
 The default local build uses Codex's stripped `dev-small` profile to limit disk use; set
 `AGENTROUTE_BUILD_PROFILE=release` if you prefer an optimized build and have ample free space.
 The installer pins the official Code Mode host package alongside the Codex source commit. Advanced
@@ -245,6 +252,7 @@ installations can provide a preverified executable with `AGENTROUTE_CODE_MODE_HO
 agentroute test "Rename the account label"
 agentroute test "Redesign authentication for a zero-downtime migration"
 agentroute test "@deepseek @smart audit this concurrency design"
+codex exec '@azure summarize the latest test result'
 agentroute why
 agentroute history
 agentroute audit-report

@@ -29,7 +29,7 @@ from .desktop import (
 )
 from .hook import codex_stop, codex_user_prompt_submit
 from .install import hook_command as installed_hook_command
-from .install import merge_codex_hook
+from .install import merge_codex_hook, trust_agentroute_hooks
 from .models import RouteContext, Tier
 from .pricing import cost_report
 from .providers import (
@@ -102,6 +102,14 @@ def setup_command() -> None:
         )
     else:
         console.print("✓ Routed Codex runtime is installed")
+        try:
+            trusted_count = trust_agentroute_hooks(routed, hooks_path=hooks_path)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            console.print(f"[red]Could not trust AgentRoute hooks: {error}[/red]")
+            raise typer.Exit(1) from error
+        console.print(
+            f"✓ Trusted {trusted_count} exact AgentRoute hooks for interactive and exec use"
+        )
 
 
 @app.command("update")

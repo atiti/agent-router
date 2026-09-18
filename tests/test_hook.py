@@ -72,7 +72,8 @@ def test_observe_mode_does_not_emit_override(tmp_path):
     assert "reasoningEffort" not in specific
 
 
-def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path):
+def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENTROUTE_RUNTIME_BUILD_ID", raising=False)
     config = default_config()
     config.enabled = True
     store = AuditStore(tmp_path / "audit.db")
