@@ -274,6 +274,22 @@ vary, so add their rates or aliases explicitly; unpriced models are named and ex
 silently presented as free. This is an API-equivalent estimate, not a Codex subscription invoice,
 and a different model may produce a different number of tokens.
 
+For a local model mix and timeline, use:
+
+```sh
+agentroute analytics --days 30 --bucket day
+# Longer rollup:
+agentroute analytics --all --bucket month
+# Private, scriptable output (contains no prompt text):
+agentroute analytics --days 7 --json
+```
+
+`analytics` groups answer usage by backend and answer model, then repeats that breakdown over UTC
+day/week/month buckets. It also reports classifier calls, token usage, latency, and estimated
+overhead separately. `--session` limits the report to a single local Codex session. Like `stats`,
+it uses local audit metadata and observed token counters only; no prompts, tool arguments, or
+response text are emitted.
+
 When a route is applied, Codex prints a highlighted line before the response, for example:
 
 ```text

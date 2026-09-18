@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
 );
 CREATE INDEX IF NOT EXISTS idx_routing_session
 ON routing_decisions(session_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_routing_created_at
+ON routing_decisions(created_at, id ASC);
 """
 
 MIGRATIONS = {
@@ -126,6 +128,10 @@ class AuditStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_routing_turn "
                 "ON routing_decisions(session_id, turn_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_routing_created_at "
+                "ON routing_decisions(created_at, id ASC)"
             )
 
     @contextmanager
@@ -285,6 +291,29 @@ class AuditStore:
         query += " ORDER BY id DESC LIMIT ?"
         with self.connection() as connection:
             return list(connection.execute(query, params).fetchall())
+
+    def rows_since(
+        self, since: datetime | None = None, session_id: str | None = None
+    ) -> list[sqlite3.Row]:
+        """Return audit rows in chronological order for local reporting.
+
+        Analytics deliberately queries only route metadata and token counters. Prompt text is not
+        selected or emitted by the reporting commands.
+        """
+        clauses: list[str] = []
+        params: list[object] = []
+        if since is not None:
+            clauses.append("created_at >= ?")
+            params.append(since.astimezone(timezone.utc).isoformat())
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        query = "SELECT * FROM routing_decisions"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at ASC, id ASC"
+        with self.connection() as connection:
+            return list(connection.execute(query, tuple(params)).fetchall())
 
     def previous_tier(self, session_id: str) -> Tier | None:
         row = self.latest(session_id)

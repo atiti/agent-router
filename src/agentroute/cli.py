@@ -4,12 +4,15 @@ import json
 import os
 import shutil
 import subprocess
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from .analytics import usage_analytics
 from .audit import AuditStore
 from .classifier import (
     OpenAICompatibleClassifier,
@@ -341,6 +344,115 @@ def stats_command(
     console.print(
         "Estimate uses observed routed-turn token counts at configured API rates; "
         "it is not a Codex subscription invoice or a prediction of another model's token count."
+    )
+
+
+@app.command("analytics")
+def analytics_command(
+    days: int = typer.Option(30, min=1, help="Rolling UTC window to include."),
+    all_time: bool = typer.Option(False, "--all", help="Include all local audit history."),
+    bucket: str = typer.Option("day", help="Timeline bucket: day, week, or month."),
+    baseline: str | None = typer.Option(None, help="Fixed model used for comparison."),
+    session: str | None = typer.Option(None, help="Restrict to one local session ID."),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit machine-readable local analytics."
+    ),
+) -> None:
+    """Break down local model and classifier usage, including a UTC timeline."""
+    if bucket not in {"day", "week", "month"}:
+        raise typer.BadParameter("bucket must be one of: day, week, month")
+    config = load_config()
+    baseline = baseline or config.pricing.baseline_model
+    if baseline not in config.pricing.models and baseline not in config.pricing.aliases:
+        raise typer.BadParameter(f"no configured price for baseline model: {baseline}")
+    since = None if all_time else datetime.now(timezone.utc) - timedelta(days=days)
+    rows = AuditStore().rows_since(since=since, session_id=session)
+    report = usage_analytics(rows, config.pricing, baseline, bucket=bucket)
+    currency = config.pricing.currency
+    if json_output:
+        payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "since": since.isoformat() if since else None,
+            "bucket": bucket,
+            "baseline": baseline,
+            "currency": currency,
+            "rows": report.rows,
+            "overall": asdict(report.overall)
+            | {
+                "gross_savings": report.overall.gross_savings,
+                "net_savings": report.overall.net_savings,
+                "savings_percent": report.overall.savings_percent,
+            },
+            "by_model": [asdict(item) for item in report.by_model],
+            "over_time": [asdict(item) for item in report.over_time],
+            "classifiers": [asdict(item) for item in report.classifiers],
+        }
+        console.print_json(json.dumps(payload, sort_keys=True))
+        return
+    if not rows:
+        window = "all time" if all_time else f"the last {days} day(s)"
+        console.print(f"No local routing decisions in {window}.")
+        return
+
+    console.print(
+        f"[bold]Local usage ({'all time' if all_time else f'last {days} day(s)'}, UTC)[/bold]"
+    )
+    console.print(
+        f"Turns: {report.rows}; measured: {report.overall.measured_turns}; "
+        f"awaiting/unmeasured: {report.overall.unmeasured_turns}"
+    )
+    console.print(
+        f"Routed answer cost: {currency} {report.overall.actual_cost:.4f}; "
+        f"fixed {baseline}: {currency} {report.overall.baseline_cost:.4f}; "
+        f"classifier overhead: {currency} {report.overall.classifier_cost:.4f}; "
+        f"net savings: {currency} {report.overall.net_savings:.4f} "
+        f"({report.overall.savings_percent:.1f}%)"
+    )
+
+    models = Table("Backend", "Answer model", "Turns", "Measured", "Tokens", "Answer cost")
+    for item in report.by_model:
+        models.add_row(
+            item.backend,
+            item.model,
+            str(item.turns),
+            str(item.measured_turns),
+            f"{item.total_tokens:,}",
+            f"{currency} {item.answer_cost:.4f}",
+        )
+    console.print(models)
+
+    timeline = Table("Period (UTC)", "Backend", "Answer model", "Turns", "Tokens", "Answer cost")
+    for item in report.over_time:
+        timeline.add_row(
+            item.period,
+            item.backend,
+            item.model,
+            str(item.turns),
+            f"{item.total_tokens:,}",
+            f"{currency} {item.answer_cost:.4f}",
+        )
+    console.print(timeline)
+
+    if report.classifiers:
+        classifiers = Table("Classifier model", "Calls", "Tokens", "Avg latency", "Estimated cost")
+        for item in report.classifiers:
+            classifiers.add_row(
+                item.model,
+                str(item.calls),
+                f"{item.total_tokens:,}",
+                f"{item.average_latency_ms:.0f} ms" if item.average_latency_ms is not None else "—",
+                f"{currency} {item.estimated_cost:.4f}",
+            )
+        console.print(classifiers)
+    if report.overall.unpriced_models:
+        console.print(
+            "[yellow]Unpriced models excluded from cost estimates: "
+            + ", ".join(report.overall.unpriced_models)
+            + ". Add rates or aliases under pricing.models/pricing.aliases.[/yellow]"
+        )
+    console.print(
+        "Costs are API-equivalent estimates from observed token counters, "
+        "not a subscription invoice."
     )
 
 

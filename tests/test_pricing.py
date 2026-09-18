@@ -79,3 +79,20 @@ def test_report_names_unpriced_backend_models(tmp_path):
     report = cost_report(store.history(limit=10), config.pricing, "gpt-6-astra")
 
     assert report.unpriced_models == ("my-azure-deployment",)
+
+
+def test_report_counts_classifier_cost_before_answer_usage_arrives(tmp_path):
+    config = default_config()
+    store = AuditStore(tmp_path / "audit.db")
+    decision = Router(config).route(
+        RouteContext(session_id="s", turn_id="t", latest_prompt="show status")
+    )
+    decision.classifier_usage = {"prompt_tokens": 100, "completion_tokens": 10}
+    decision.selection_receipt["classifier"]["model"] = "gpt-5.6-luna"
+    store.record(decision, Tier.NORMAL)
+
+    report = cost_report(store.history(limit=10), config.pricing, "gpt-6-astra")
+
+    assert report.measured_turns == 0
+    assert report.unmeasured_turns == 1
+    assert report.classifier_cost == pytest.approx(0.000032)

@@ -72,9 +72,6 @@ def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) 
         "reasoning_output_tokens": 0,
     }
     for row in rows:
-        if row["usage_recorded_at"] is None:
-            continue
-        measured += 1
         classifier_usage = json.loads(row["classifier_usage"] or "{}")
         receipt = json.loads(row["selection_receipt"] or "{}")
         classifier = receipt.get("classifier", {}) if isinstance(receipt, dict) else {}
@@ -97,6 +94,9 @@ def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) 
             },
             pricing,
         )
+        if row["usage_recorded_at"] is None:
+            continue
+        measured += 1
         usage = {
             "input_tokens": row["answer_input_tokens"] or 0,
             "cached_input_tokens": row["answer_cached_input_tokens"] or 0,

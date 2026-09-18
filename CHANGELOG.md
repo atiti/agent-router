@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.18 — 2026-09-18
+
+- Add `agentroute analytics` for privacy-safe local model-usage reporting by backend, answer model,
+  and UTC day/week/month buckets.
+- Include observed answer tokens/costs, fixed-model savings estimates, and separate classifier
+  token, latency, and cost breakdowns; support JSON and per-session reporting.
+
 ## 0.5.17 — 2026-09-18
 
 - Make routing work in non-interactive `codex exec` sessions by registering the exact AgentRoute
