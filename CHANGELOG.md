@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.22 — 2026-09-18
+
+- Validate raw macOS CLI executables with strict Developer ID signature checks and Apple's accepted
+  notarization result without passing them to `spctl`'s app-bundle assessor, which rejects valid
+  standalone command-line tools with "does not seem to be an app."
+
 ## 0.5.21 — 2026-09-18
 
 - Refuse to let `agentroute update` silently replace a newer source installation with an older

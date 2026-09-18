@@ -75,8 +75,6 @@ if [ "$PLATFORM" = darwin ]; then
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --wait
-        spctl --assess --type execute --verbose=2 "$PAYLOAD/codex-bin"
-        spctl --assess --type execute --verbose=2 "$PAYLOAD/codex-code-mode-host"
     fi
 fi
 

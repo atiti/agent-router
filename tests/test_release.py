@@ -47,7 +47,8 @@ def test_macos_release_build_fails_closed_without_developer_id():
     assert "Refusing to build a public macOS release without a Developer ID identity" in builder
     assert "Authority=Developer ID Application:" in builder
     assert "xcrun notarytool submit" in builder
-    assert "spctl --assess --type execute" in builder
+    assert "--wait" in builder
+    assert "spctl --assess" not in builder
 
 
 def test_release_workflow_uses_overwatchr_signing_secret_names():
