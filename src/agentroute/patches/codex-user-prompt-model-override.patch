@@ -3190,3 +3190,15 @@ index 6d7c32cecc..f8c5e94008 100644
 +        );
 +    }
 +}
+diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
+--- a/codex-rs/core/src/hook_runtime.rs
++++ b/codex-rs/core/src/hook_runtime.rs
+@@ -444,7 +444,7 @@ pub(crate) async fn run_turn_stop_hooks(
+         #[allow(deprecated)]
+         cwd: turn_context.cwd.clone(),
+         transcript_path,
+-        model: turn_context.model_info().slug.clone(),
++        model: step_context.settings.model_info.slug.clone(),
+         permission_mode: hook_permission_mode(turn_context.approval_policy()),
+         request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),
+         stop_hook_active,

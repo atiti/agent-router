@@ -50,6 +50,19 @@ app.add_typer(desktop_app, name="desktop")
 console = Console()
 
 
+def _format_duration(milliseconds: float | None) -> str:
+    if milliseconds is None:
+        return "—"
+    seconds = milliseconds / 1000
+    if seconds >= 3600:
+        return f"{seconds / 3600:.1f} h"
+    if seconds >= 60:
+        return f"{seconds / 60:.1f} min"
+    if seconds >= 1:
+        return f"{seconds:.1f} s"
+    return f"{milliseconds:.0f} ms"
+
+
 @app.command("init")
 def init_command(
     enable: bool = typer.Option(False, help="Enable native switching; requires patched Codex."),
@@ -354,6 +367,7 @@ def analytics_command(
     bucket: str = typer.Option("day", help="Timeline bucket: day, week, or month."),
     baseline: str | None = typer.Option(None, help="Fixed model used for comparison."),
     session: str | None = typer.Option(None, help="Restrict to one local session ID."),
+    longest: int = typer.Option(10, min=0, help="Number of longest completed turns to show."),
     json_output: bool = typer.Option(
         False, "--json", help="Emit machine-readable local analytics."
     ),
@@ -367,7 +381,7 @@ def analytics_command(
         raise typer.BadParameter(f"no configured price for baseline model: {baseline}")
     since = None if all_time else datetime.now(timezone.utc) - timedelta(days=days)
     rows = AuditStore().rows_since(since=since, session_id=session)
-    report = usage_analytics(rows, config.pricing, baseline, bucket=bucket)
+    report = usage_analytics(rows, config.pricing, baseline, bucket=bucket, longest=longest)
     currency = config.pricing.currency
     if json_output:
         payload = {
@@ -377,6 +391,7 @@ def analytics_command(
             "baseline": baseline,
             "currency": currency,
             "rows": report.rows,
+            "model_mismatch_turns": report.model_mismatch_turns,
             "overall": asdict(report.overall)
             | {
                 "gross_savings": report.overall.gross_savings,
@@ -386,6 +401,8 @@ def analytics_command(
             "by_model": [asdict(item) for item in report.by_model],
             "over_time": [asdict(item) for item in report.over_time],
             "classifiers": [asdict(item) for item in report.classifiers],
+            "duration": asdict(report.duration),
+            "longest_turns": [asdict(item) for item in report.longest_turns],
         }
         console.print_json(json.dumps(payload, sort_keys=True))
         return
@@ -398,8 +415,15 @@ def analytics_command(
         f"[bold]Local usage ({'all time' if all_time else f'last {days} day(s)'}, UTC)[/bold]"
     )
     console.print(
-        f"Turns: {report.rows}; measured: {report.overall.measured_turns}; "
-        f"awaiting/unmeasured: {report.overall.unmeasured_turns}"
+        f"Turns: {report.rows}; token receipts: {report.overall.measured_turns}; "
+        f"without token receipt: {report.overall.unmeasured_turns}"
+    )
+    console.print(
+        f"Completed: {report.duration.completed_turns}; "
+        f"duration avg {_format_duration(report.duration.average_ms)}; "
+        f"p50 {_format_duration(report.duration.p50_ms)}; "
+        f"p95 {_format_duration(report.duration.p95_ms)}; "
+        f"max {_format_duration(report.duration.maximum_ms)}"
     )
     console.print(
         f"Routed answer cost: {currency} {report.overall.actual_cost:.4f}; "
@@ -409,25 +433,60 @@ def analytics_command(
         f"({report.overall.savings_percent:.1f}%)"
     )
 
-    models = Table("Backend", "Answer model", "Turns", "Measured", "Tokens", "Answer cost")
+    models = Table(
+        "Backend",
+        "Answer model",
+        "Turns",
+        "Completed",
+        "Token receipts",
+        "Tokens",
+        "Answer cost",
+    )
     for item in report.by_model:
         models.add_row(
             item.backend,
             item.model,
             str(item.turns),
+            str(item.completed_turns),
             str(item.measured_turns),
             f"{item.total_tokens:,}",
             f"{currency} {item.answer_cost:.4f}",
         )
     console.print(models)
 
-    timeline = Table("Period (UTC)", "Backend", "Answer model", "Turns", "Tokens", "Answer cost")
+    durations = Table(
+        "Backend", "Answer model", "Completed", "Avg", "P50", "P95", "Max"
+    )
+    for item in report.by_model:
+        if not item.completed_turns:
+            continue
+        durations.add_row(
+            item.backend,
+            item.model,
+            str(item.completed_turns),
+            _format_duration(item.average_duration_ms),
+            _format_duration(item.p50_duration_ms),
+            _format_duration(item.p95_duration_ms),
+            _format_duration(item.maximum_duration_ms),
+        )
+    console.print(durations)
+
+    timeline = Table(
+        "Period (UTC)",
+        "Backend",
+        "Answer model",
+        "Turns",
+        "Avg time",
+        "Tokens",
+        "Answer cost",
+    )
     for item in report.over_time:
         timeline.add_row(
             item.period,
             item.backend,
             item.model,
             str(item.turns),
+            _format_duration(item.average_duration_ms),
             f"{item.total_tokens:,}",
             f"{currency} {item.answer_cost:.4f}",
         )
@@ -444,6 +503,24 @@ def analytics_command(
                 f"{currency} {item.estimated_cost:.4f}",
             )
         console.print(classifiers)
+    if report.longest_turns:
+        longest_table = Table("ID", "Started (UTC)", "Route", "Tier", "Duration", "Tokens")
+        for item in report.longest_turns:
+            longest_table.add_row(
+                str(item.decision_id),
+                item.created_at[:19].replace("T", " "),
+                f"{item.backend}/{item.model}",
+                item.tier,
+                _format_duration(item.duration_ms),
+                f"{item.total_tokens:,}",
+            )
+        console.print(longest_table)
+    if report.model_mismatch_turns:
+        console.print(
+            f"[yellow]Normalized {report.model_mismatch_turns} historical Stop-hook model "
+            "receipts that reported the frozen session-start model instead of the routed model."
+            "[/yellow]"
+        )
     if report.overall.unpriced_models:
         console.print(
             "[yellow]Unpriced models excluded from cost estimates: "

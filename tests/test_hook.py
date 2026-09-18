@@ -404,3 +404,23 @@ def test_stop_hook_records_exact_turn_usage(tmp_path):
     assert row["answer_input_tokens"] == 1000
     assert row["answer_cached_input_tokens"] == 800
     assert row["answer_output_tokens"] == 50
+
+
+def test_stop_hook_records_completion_when_usage_is_missing(tmp_path):
+    config = default_config()
+    store = AuditStore(tmp_path / "audit.db")
+    invoke(config, store, "show status")
+    sink = io.StringIO()
+    payload = {
+        "session_id": "same-thread",
+        "turn_id": "turn-1",
+        "model": "gpt-5.6-luna",
+        "transcript_path": str(tmp_path / "missing.jsonl"),
+    }
+
+    assert codex_stop(io.StringIO(json.dumps(payload)), sink, store=store) == 0
+    row = store.latest("same-thread")
+
+    assert row["turn_completed_at"] is not None
+    assert row["turn_duration_ms"] >= 0
+    assert row["usage_recorded_at"] is None

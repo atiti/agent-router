@@ -75,5 +75,74 @@ def test_audit_schema_has_calibration_columns(tmp_path):
     assert "turn_id" in columns
     assert "answer_input_tokens" in columns
     assert "usage_recorded_at" in columns
+    assert "reported_answer_model" in columns
+    assert "answer_model_mismatch" in columns
+    assert "turn_completed_at" in columns
+    assert "turn_duration_ms" in columns
     assert "sticky_backend" in columns
     assert "strip_provider_state" in columns
+
+
+def test_completion_normalizes_legacy_stop_model_and_records_duration(tmp_path):
+    store = AuditStore(tmp_path / "audit.db")
+    decision = Router(default_config()).route(
+        RouteContext(session_id="session-1", turn_id="turn-1", latest_prompt="show status")
+    )
+    decision.backend = "deepseek"
+    decision.model = "deepseek-flash"
+    store.record(decision, Tier.NORMAL)
+
+    assert store.record_completion(
+        "session-1",
+        "turn-1",
+        "gpt-5.6-terra",
+        {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110},
+    )
+    row = store.latest("session-1")
+
+    assert row["answer_model"] == "deepseek-flash"
+    assert row["reported_answer_model"] == "gpt-5.6-terra"
+    assert row["answer_model_mismatch"] == 1
+    assert row["turn_completed_at"] is not None
+    assert row["turn_duration_ms"] >= 0
+
+
+def test_completion_is_recorded_without_token_usage(tmp_path):
+    store = AuditStore(tmp_path / "audit.db")
+    decision = Router(default_config()).route(
+        RouteContext(session_id="session-1", turn_id="turn-1", latest_prompt="show status")
+    )
+    store.record(decision, Tier.NORMAL)
+
+    assert store.record_completion("session-1", "turn-1", decision.model)
+    row = store.latest("session-1")
+
+    assert row["turn_completed_at"] is not None
+    assert row["turn_duration_ms"] >= 0
+    assert row["usage_recorded_at"] is None
+
+
+def test_existing_stale_stop_receipt_is_normalized_on_open(tmp_path):
+    path = tmp_path / "audit.db"
+    store = AuditStore(path)
+    decision = Router(default_config()).route(
+        RouteContext(session_id="session-1", turn_id="turn-1", latest_prompt="show status")
+    )
+    decision.backend = "deepseek"
+    decision.model = "deepseek-flash"
+    identifier = store.record(decision, Tier.NORMAL)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE routing_decisions SET answer_model = ?, answer_total_tokens = ?, "
+            "usage_recorded_at = created_at WHERE id = ?",
+            ("gpt-5.6-terra", 110, identifier),
+        )
+
+    reopened = AuditStore(path)
+    row = reopened.latest("session-1")
+
+    assert row["answer_model"] == "deepseek-flash"
+    assert row["reported_answer_model"] == "gpt-5.6-terra"
+    assert row["answer_model_mismatch"] == 1
+    assert row["turn_completed_at"] == row["usage_recorded_at"]
+    assert row["turn_duration_ms"] == 0

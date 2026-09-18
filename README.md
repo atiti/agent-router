@@ -286,9 +286,17 @@ agentroute analytics --days 7 --json
 
 `analytics` groups answer usage by backend and answer model, then repeats that breakdown over UTC
 day/week/month buckets. It also reports classifier calls, token usage, latency, and estimated
-overhead separately. `--session` limits the report to a single local Codex session. Like `stats`,
-it uses local audit metadata and observed token counters only; no prompts, tool arguments, or
-response text are emitted.
+overhead separately. Every completed turn records its first completion timestamp and duration,
+including turns for which the provider supplies no token receipt. Reports include average, p50,
+p95, and maximum duration by model, plus the longest completed turns; control the latter with
+`--longest`. `--session` limits the report to a single local Codex session. Like `stats`, it uses
+local audit metadata and observed token counters only; no prompts, tool arguments, or response text
+are emitted.
+
+Codex runtimes before AgentRoute runtime v23 supplied the frozen session-start model to Stop hooks.
+AgentRoute preserves that reported value for audit, attributes the receipt to the routed step model,
+and labels the mismatch in analytics. Runtime v23 reports the routed step model directly. A zero-token
+or zero-cost row means no token receipt was captured, not that the provider necessarily ran for free.
 
 When a route is applied, Codex prints a highlighted line before the response, for example:
 

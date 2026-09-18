@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.19 — 2026-09-18
+
+- Fix Stop-hook attribution to report the routed step model instead of the frozen session-start
+  model, and normalize affected historical receipts while preserving the reported value for audit.
+- Record first completion time and duration for every stopped turn, including turns without token
+  receipts; add average, p50, p95, maximum, and longest-turn duration analytics.
+- Correct historical DeepSeek and Azure model-cost attribution and visibly report normalized model
+  mismatches rather than silently mixing backend and answer-model identities.
+
 ## 0.5.18 — 2026-09-18
 
 - Add `agentroute analytics` for privacy-safe local model-usage reporting by backend, answer model,

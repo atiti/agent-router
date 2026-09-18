@@ -63,7 +63,11 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     answer_output_tokens INTEGER,
     answer_reasoning_output_tokens INTEGER,
     answer_total_tokens INTEGER,
-    usage_recorded_at TEXT
+    usage_recorded_at TEXT,
+    reported_answer_model TEXT,
+    answer_model_mismatch INTEGER NOT NULL DEFAULT 0,
+    turn_completed_at TEXT,
+    turn_duration_ms REAL
 );
 CREATE INDEX IF NOT EXISTS idx_routing_session
 ON routing_decisions(session_id, id DESC);
@@ -107,6 +111,10 @@ MIGRATIONS = {
     "answer_reasoning_output_tokens": "INTEGER",
     "answer_total_tokens": "INTEGER",
     "usage_recorded_at": "TEXT",
+    "reported_answer_model": "TEXT",
+    "answer_model_mismatch": "INTEGER NOT NULL DEFAULT 0",
+    "turn_completed_at": "TEXT",
+    "turn_duration_ms": "REAL",
 }
 
 
@@ -132,6 +140,21 @@ class AuditStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_routing_created_at "
                 "ON routing_decisions(created_at, id ASC)"
+            )
+            # Runtime releases before v23 sent the frozen session-start model to Stop hooks.
+            # Preserve that observed value for diagnostics, but attribute usage to the routed
+            # model that actually produced the step. This repair is idempotent.
+            connection.execute(
+                "UPDATE routing_decisions SET reported_answer_model = answer_model, "
+                "answer_model_mismatch = 1, answer_model = model "
+                "WHERE usage_recorded_at IS NOT NULL AND answer_model IS NOT NULL "
+                "AND answer_model != model AND reported_answer_model IS NULL"
+            )
+            connection.execute(
+                "UPDATE routing_decisions SET turn_completed_at = usage_recorded_at, "
+                "turn_duration_ms = MAX(0, "
+                "(julianday(usage_recorded_at) - julianday(created_at)) * 86400000.0) "
+                "WHERE usage_recorded_at IS NOT NULL AND turn_completed_at IS NULL"
             )
 
     @contextmanager
@@ -239,36 +262,81 @@ class AuditStore:
             )
             return int(cursor.lastrowid)
 
-    def record_usage(
-        self, session_id: str, turn_id: str, model: str, usage: dict[str, int]
+    def record_completion(
+        self,
+        session_id: str,
+        turn_id: str,
+        model: str,
+        usage: dict[str, int] | None = None,
     ) -> bool:
+        """Record first completion time and optional usage for one exact routed turn."""
+        completed_at = datetime.now(timezone.utc)
         with self.connection() as connection:
+            row = connection.execute(
+                "SELECT id, created_at, model, turn_completed_at, turn_duration_ms "
+                "FROM routing_decisions WHERE session_id = ? AND turn_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (session_id, turn_id),
+            ).fetchone()
+            if row is None:
+                return False
+            routed_model = str(row["model"])
+            reported_model = model or None
+            mismatch = bool(reported_model and reported_model != routed_model)
+            first_completed_at = row["turn_completed_at"] or completed_at.isoformat()
+            if row["turn_duration_ms"] is not None:
+                duration_ms = float(row["turn_duration_ms"])
+            else:
+                started_at = datetime.fromisoformat(str(row["created_at"]))
+                duration_ms = max(
+                    0.0,
+                    (completed_at - started_at.astimezone(timezone.utc)).total_seconds() * 1000,
+                )
             cursor = connection.execute(
                 """
                 UPDATE routing_decisions SET
-                    answer_model = ?, answer_input_tokens = ?,
-                    answer_cached_input_tokens = ?, answer_cache_write_input_tokens = ?,
-                    answer_output_tokens = ?, answer_reasoning_output_tokens = ?,
-                    answer_total_tokens = ?, usage_recorded_at = ?
-                WHERE id = (
-                    SELECT id FROM routing_decisions
-                    WHERE session_id = ? AND turn_id = ? ORDER BY id DESC LIMIT 1
-                )
+                    answer_model = ?,
+                    reported_answer_model = ?, answer_model_mismatch = ?,
+                    turn_completed_at = ?, turn_duration_ms = ?
+                WHERE id = ?
                 """,
                 (
-                    model,
-                    usage.get("input_tokens", 0),
-                    usage.get("cached_input_tokens", 0),
-                    usage.get("cache_write_input_tokens", 0),
-                    usage.get("output_tokens", 0),
-                    usage.get("reasoning_output_tokens", 0),
-                    usage.get("total_tokens", 0),
-                    datetime.now(timezone.utc).isoformat(),
-                    session_id,
-                    turn_id,
+                    routed_model,
+                    reported_model,
+                    int(mismatch),
+                    first_completed_at,
+                    duration_ms,
+                    row["id"],
                 ),
             )
+            if usage is not None:
+                connection.execute(
+                    """
+                    UPDATE routing_decisions SET
+                        answer_input_tokens = ?, answer_cached_input_tokens = ?,
+                        answer_cache_write_input_tokens = ?, answer_output_tokens = ?,
+                        answer_reasoning_output_tokens = ?, answer_total_tokens = ?,
+                        usage_recorded_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        usage.get("input_tokens", 0),
+                        usage.get("cached_input_tokens", 0),
+                        usage.get("cache_write_input_tokens", 0),
+                        usage.get("output_tokens", 0),
+                        usage.get("reasoning_output_tokens", 0),
+                        usage.get("total_tokens", 0),
+                        completed_at.isoformat(),
+                        row["id"],
+                    ),
+                )
             return cursor.rowcount == 1
+
+    def record_usage(
+        self, session_id: str, turn_id: str, model: str, usage: dict[str, int]
+    ) -> bool:
+        """Backward-compatible wrapper for callers that have an answer usage receipt."""
+        return self.record_completion(session_id, turn_id, model, usage)
 
     def latest(self, session_id: str | None = None) -> sqlite3.Row | None:
         query = "SELECT * FROM routing_decisions"

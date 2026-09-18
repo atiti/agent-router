@@ -210,13 +210,12 @@ def codex_stop(
     try:
         payload: dict[str, Any] = json.load(source)
         usage = turn_token_usage(payload.get("transcript_path"), payload.get("turn_id"))
-        if usage:
-            (store or AuditStore()).record_usage(
-                str(payload["session_id"]),
-                str(payload["turn_id"]),
-                str(payload.get("model", "")),
-                usage,
-            )
+        (store or AuditStore()).record_completion(
+            str(payload["session_id"]),
+            str(payload["turn_id"]),
+            str(payload.get("model", "")),
+            usage,
+        )
         json.dump({"continue": True, "suppressOutput": True}, sink, separators=(",", ":"))
         sink.write("\n")
         return 0

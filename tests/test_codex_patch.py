@@ -69,7 +69,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "codesign --force --sign -" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v22" in installer
+    assert "provider-routing-v23" in installer
     assert "codex-desktop-route-notice.patch" in installer
     assert "codex-package-version.patch" in installer
     assert "0.155.0-alpha.2.6" in "\n".join(

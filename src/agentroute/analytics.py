@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from statistics import median
 from typing import Any
 
 from .config import PricingConfig
@@ -47,7 +49,12 @@ class ModelUsage:
     backend: str
     model: str
     turns: int
+    completed_turns: int
     measured_turns: int
+    average_duration_ms: float | None
+    p50_duration_ms: float | None
+    p95_duration_ms: float | None
+    maximum_duration_ms: float | None
     input_tokens: int
     cached_input_tokens: int
     cache_write_input_tokens: int
@@ -75,21 +82,78 @@ class ClassifierUsage:
 
 
 @dataclass(frozen=True)
+class DurationSummary:
+    completed_turns: int
+    average_ms: float | None
+    p50_ms: float | None
+    p95_ms: float | None
+    maximum_ms: float | None
+
+
+@dataclass(frozen=True)
+class LongestTurn:
+    decision_id: int
+    created_at: str
+    backend: str
+    model: str
+    tier: str
+    duration_ms: float
+    total_tokens: int
+
+
+@dataclass(frozen=True)
 class AnalyticsReport:
     rows: int
+    model_mismatch_turns: int
     overall: CostReport
     by_model: tuple[ModelUsage, ...]
     over_time: tuple[PeriodUsage, ...]
     classifiers: tuple[ClassifierUsage, ...]
+    duration: DurationSummary
+    longest_turns: tuple[LongestTurn, ...]
+
+
+def _duration_ms(row: Any) -> float | None:
+    if row["turn_duration_ms"] is not None:
+        return max(0.0, float(row["turn_duration_ms"]))
+    completed_at = row["turn_completed_at"] or row["usage_recorded_at"]
+    if not completed_at:
+        return None
+    try:
+        started = datetime.fromisoformat(str(row["created_at"]))
+        completed = datetime.fromisoformat(str(completed_at))
+    except ValueError:
+        return None
+    return max(0.0, (completed - started).total_seconds() * 1000)
+
+
+def _duration_summary(rows: list[Any]) -> DurationSummary:
+    values = sorted(value for row in rows if (value := _duration_ms(row)) is not None)
+    if not values:
+        return DurationSummary(0, None, None, None, None)
+    p95_index = max(0, math.ceil(len(values) * 0.95) - 1)
+    return DurationSummary(
+        completed_turns=len(values),
+        average_ms=sum(values) / len(values),
+        p50_ms=float(median(values)),
+        p95_ms=values[p95_index],
+        maximum_ms=values[-1],
+    )
 
 
 def _usage_summary(
     rows: list[Any], pricing: PricingConfig, baseline: str
-) -> dict[str, int | float]:
+) -> dict[str, int | float | None]:
     report = cost_report(rows, pricing, baseline)
+    duration = _duration_summary(rows)
     return {
         "turns": len(rows),
+        "completed_turns": duration.completed_turns,
         "measured_turns": report.measured_turns,
+        "average_duration_ms": duration.average_ms,
+        "p50_duration_ms": duration.p50_ms,
+        "p95_duration_ms": duration.p95_ms,
+        "maximum_duration_ms": duration.maximum_ms,
         "input_tokens": report.input_tokens,
         "cached_input_tokens": report.cached_input_tokens,
         "cache_write_input_tokens": report.cache_write_input_tokens,
@@ -106,7 +170,11 @@ def _usage_summary(
 
 
 def usage_analytics(
-    rows: list[Any], pricing: PricingConfig, baseline: str, bucket: str = "day"
+    rows: list[Any],
+    pricing: PricingConfig,
+    baseline: str,
+    bucket: str = "day",
+    longest: int = 10,
 ) -> AnalyticsReport:
     """Group answer and classifier token usage without retaining prompt contents."""
     if bucket not in {"day", "week", "month"}:
@@ -185,10 +253,28 @@ def usage_analytics(
                 ),
             )
         )
+    longest_rows = sorted(
+        ((row, duration) for row in rows if (duration := _duration_ms(row)) is not None),
+        key=lambda item: (-item[1], int(item[0]["id"])),
+    )[: max(0, longest)]
     return AnalyticsReport(
         rows=len(rows),
+        model_mismatch_turns=sum(bool(row["answer_model_mismatch"]) for row in rows),
         overall=cost_report(rows, pricing, baseline),
         by_model=models,
         over_time=periods,
         classifiers=tuple(sorted(classifiers, key=lambda item: (-item.calls, item.model))),
+        duration=_duration_summary(rows),
+        longest_turns=tuple(
+            LongestTurn(
+                decision_id=int(row["id"]),
+                created_at=str(row["created_at"]),
+                backend=str(row["backend"] or "unknown"),
+                model=str(row["answer_model"] or row["model"] or "unknown"),
+                tier=str(row["selected_tier"]),
+                duration_ms=duration,
+                total_tokens=int(row["answer_total_tokens"] or 0),
+            )
+            for row, duration in longest_rows
+        ),
     )

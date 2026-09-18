@@ -68,6 +68,7 @@ def test_report_names_unpriced_backend_models(tmp_path):
     decision = Router(config).route(
         RouteContext(session_id="s", turn_id="t", latest_prompt="show status")
     )
+    decision.model = "my-azure-deployment"
     store.record(decision, Tier.NORMAL)
     store.record_usage(
         "s",
