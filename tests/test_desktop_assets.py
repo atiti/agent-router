@@ -11,9 +11,11 @@ def test_desktop_launcher_uses_embedded_codex_and_external_credentials():
     ).read_text(encoding="utf-8")
 
     assert launcher == packaged_launcher
-    assert 'exec "$ROUTED_RESOURCES/codex-bin"' in launcher
+    assert 'exec "$AGENTROUTE_HOME_DIR/bin/agentroute" launch-codex' in launcher
+    assert '--binary "$ROUTED_RESOURCES/codex-bin"' in launcher
     assert '"$AGENTROUTE_HOME_DIR/backend-credentials.env"' in launcher
-    assert "--enable step_model_switching" in launcher
+    routed_launcher = (ROOT / "src/agentroute/launcher.py").read_text(encoding="utf-8")
+    assert '"step_model_switching"' in routed_launcher
     assert "DEEPSEEK_API_KEY=" not in launcher
     assert "AZURE_OPENAI_API_KEY=" not in launcher
 

@@ -4,6 +4,9 @@
 
 - Refuse to let `agentroute update` silently replace a newer source installation with an older
   published release; intentional rollback now requires `--allow-downgrade`.
+- Start the routed CLI, exec, resume, app-server, and Desktop runtime on the configured NORMAL-tier
+  backend before the first provider request, so an exhausted ChatGPT subscription cannot reject a
+  turn before AgentRoute's prompt hook switches it to an API backend.
 
 ## 0.5.20 — 2026-09-18
 

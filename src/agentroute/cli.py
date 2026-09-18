@@ -33,6 +33,7 @@ from .doctor import run_doctor
 from .hook import codex_stop, codex_user_prompt_submit
 from .install import hook_command as installed_hook_command
 from .install import merge_codex_hook, trust_agentroute_hooks
+from .launcher import launch_codex
 from .models import RouteContext, Tier
 from .pricing import cost_report
 from .providers import (
@@ -48,6 +49,19 @@ app = typer.Typer(no_args_is_help=True, help="Local, auditable model routing for
 desktop_app = typer.Typer(no_args_is_help=True, help="Build and manage Codex Desktop locally.")
 app.add_typer(desktop_app, name="desktop")
 console = Console()
+
+
+@app.command(
+    "launch-codex",
+    hidden=True,
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def launch_codex_command(
+    ctx: typer.Context,
+    binary: Path | None = typer.Option(None, help="Routed Codex executable."),
+) -> None:
+    """Start Codex on the configured default backend before the first turn."""
+    launch_codex(binary, ctx.args)
 
 
 def _format_duration(milliseconds: float | None) -> str:

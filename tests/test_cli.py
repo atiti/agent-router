@@ -1,9 +1,24 @@
+from unittest.mock import patch
+
 from typer.testing import CliRunner
 
 from agentroute.cli import app
 from agentroute.config import default_config, load_config, save_config
 
 runner = CliRunner()
+
+
+def test_launch_codex_forwards_subcommands_and_arguments():
+    with patch("agentroute.cli.launch_codex") as launch:
+        result = runner.invoke(
+            app,
+            ["launch-codex", "--binary", "/tmp/codex-bin", "--", "exec", "hello"],
+        )
+
+    assert result.exit_code == 0
+    launch.assert_called_once()
+    assert str(launch.call_args.args[0]) == "/tmp/codex-bin"
+    assert launch.call_args.args[1] == ["exec", "hello"]
 
 
 def test_backend_default_routes_every_tier_to_ready_backend(tmp_path, monkeypatch):

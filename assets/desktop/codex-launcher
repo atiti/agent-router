@@ -18,9 +18,5 @@ if [ -x "$AGENTROUTE_HOME_DIR/bin/agentroute" ]; then
     "$AGENTROUTE_HOME_DIR/bin/agentroute" classifier-refresh >/dev/null 2>&1 || true
 fi
 
-exec "$ROUTED_RESOURCES/codex-bin" \
-    --enable step_model_switching \
-    --enable code_mode \
-    --enable code_mode_host \
-    -c suppress_unstable_features_warning=true \
-    "$@"
+exec "$AGENTROUTE_HOME_DIR/bin/agentroute" launch-codex \
+    --binary "$ROUTED_RESOURCES/codex-bin" -- "$@"

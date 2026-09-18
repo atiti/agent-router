@@ -11,9 +11,5 @@ if [ -f "$AGENTROUTE_HOME_DIR/build-id" ]; then
     export AGENTROUTE_RUNTIME_BUILD_ID
 fi
 "$AGENTROUTE_HOME_DIR/bin/agentroute" classifier-refresh >/dev/null 2>&1 || true
-exec "$AGENTROUTE_HOME_DIR/bin/codex-bin" \
-    --enable step_model_switching \
-    --enable code_mode \
-    --enable code_mode_host \
-    -c suppress_unstable_features_warning=true \
-    "$@"
+exec "$AGENTROUTE_HOME_DIR/bin/agentroute" launch-codex \
+    --binary "$AGENTROUTE_HOME_DIR/bin/codex-bin" -- "$@"

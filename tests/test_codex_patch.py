@@ -58,14 +58,19 @@ def test_primary_patch_path_is_backwards_compatible():
 
 def test_installer_enables_code_mode_and_signs_macos_binary():
     installer = (Path(__file__).parents[1] / "scripts" / "install.sh").read_text()
+    launcher = (Path(__file__).parents[1] / "src/agentroute/launcher.py").read_text()
 
-    assert "--enable code_mode" in installer
-    assert "--enable code_mode_host" in installer
+    assert '"code_mode"' in launcher
+    assert '"code_mode_host"' in launcher
     assert "codex-code-mode-host" in installer
     assert "AGENTROUTE_CODE_MODE_HOST_VERSION" in installer
     assert 'npm pack \\' in installer
     assert "-p codex-code-mode-host --bin codex-code-mode-host" not in installer
-    assert "classifier-refresh" in installer
+    packaged_launcher = (
+        Path(__file__).parents[1] / "packaging" / "codex-launcher"
+    ).read_text()
+    assert "classifier-refresh" in packaged_launcher
+    assert 'cp "$AGENTROUTE_PROJECT_ROOT/packaging/codex-launcher"' in installer
     assert "codesign --force --deep --sign -" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
