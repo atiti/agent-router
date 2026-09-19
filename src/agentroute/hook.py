@@ -7,6 +7,7 @@ import sys
 from typing import Any, TextIO
 
 from .audit import AuditStore
+from .capacity import backend_spend
 from .config import AppConfig, load_config
 from .models import ReasonCode, RouteContext, Tier
 from .router import Router
@@ -57,6 +58,9 @@ def codex_user_prompt_submit(
         previous_tier = store.previous_tier(session_id, route_scope, agent_id)
         tier_override, backend_override, routed_prompt = route_overrides(prompt)
         sticky_backend = store.route_preference(session_id, route_scope, agent_id)
+        previous_capacity_status, previous_capacity_backend = store.previous_capacity(
+            session_id, route_scope, agent_id
+        )
         opaque_subagent_followup = (
             route_scope == "subagent" and not routed_prompt.strip() and previous_tier is not None
         )
@@ -81,6 +85,20 @@ def codex_user_prompt_submit(
         agent_request = (
             parse_agent_model_request(task_definition) if is_confirmation(routing_input) else None
         )
+        daily_spend, monthly_spend = backend_spend(store.rows_since(), config)
+        rate_limits = (
+            dict(payload.get("rate_limits"))
+            if isinstance(payload.get("rate_limits"), dict)
+            else dict(payload.get("rateLimits"))
+            if isinstance(payload.get("rateLimits"), dict)
+            else {}
+        )
+        # `false` is authoritative: never use truthiness here, and preserve the
+        # app-server's account-validated signal alongside sparse rolling windows.
+        if payload.get("ordinary_usage_allowed") is not None:
+            rate_limits["ordinary_usage_allowed"] = payload["ordinary_usage_allowed"]
+        elif payload.get("ordinaryUsageAllowed") is not None:
+            rate_limits["ordinary_usage_allowed"] = payload["ordinaryUsageAllowed"]
         context = RouteContext(
             session_id=session_id,
             turn_id=str(payload["turn_id"]) if payload.get("turn_id") else None,
@@ -100,6 +118,14 @@ def codex_user_prompt_submit(
                 if agent_request
                 else None
             ),
+            account_id=(
+                str(payload.get("account_id")) if payload.get("account_id") else None
+            ),
+            rate_limits=rate_limits,
+            backend_daily_spend=daily_spend,
+            backend_monthly_spend=monthly_spend,
+            previous_capacity_status=previous_capacity_status,
+            previous_capacity_backend=previous_capacity_backend,
         )
         decision = Router(config).route(context)
         decision.strip_provider_state = store.provider_state_is_mixed(
@@ -128,7 +154,7 @@ def codex_user_prompt_submit(
             else f"{decision.classification_source.upper()}"
         )
         output: dict[str, Any] = {
-            "continue": True,
+            "continue": not decision.capacity_blocked,
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": (
@@ -192,11 +218,25 @@ def codex_user_prompt_submit(
                     else ""
                 )
                 + (
+                    f" · CAPACITY {decision.capacity_status.upper()}: "
+                    f"{decision.capacity_detail}"
+                    if decision.capacity_status not in {"disabled", "healthy", "unknown"}
+                    else f" · capacity {decision.capacity_detail}"
+                    if decision.capacity_status == "healthy"
+                    else ""
+                )
+                + (
                     f" · runtime {runtime_label}"
                     if (runtime_label := _runtime_label())
                     else ""
                 )
             )
+            if decision.capacity_blocked:
+                output["stopReason"] = decision.capacity_detail
+                output["systemMessage"] = (
+                    "AgentRoute blocked this turn to avoid an unsafe or over-budget route. "
+                    + (decision.capacity_detail or "No backend has available capacity.")
+                )
         json.dump(output, sink, separators=(",", ":"))
         sink.write("\n")
         return 0

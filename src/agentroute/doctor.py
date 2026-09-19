@@ -13,7 +13,7 @@ from .config import AppConfig, agentroute_home, config_path, model_capabilities
 from .install import hook_command
 from .providers import END_MARKER, START_MARKER, backend_readiness
 
-EXPECTED_RUNTIME_REVISION = "provider-routing-v26"
+EXPECTED_RUNTIME_REVISION = "provider-routing-v27"
 
 
 @dataclass(frozen=True)
@@ -85,6 +85,64 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
             f"loaded {config_path()}" if config_path().exists() else "using bundled defaults",
         )
     )
+    if not config.capacity.enabled:
+        checks.append(DoctorCheck("capacity", "warn", "disabled; no quota or budget failover"))
+    else:
+        problems: list[str] = []
+        if config.capacity.warn_percent > config.capacity.switch_percent:
+            problems.append("warn threshold exceeds switch threshold")
+        for name, backend in config.backends.items():
+            if backend.fallback_backend and backend.fallback_backend not in config.backends:
+                problems.append(f"{name} fallback is unknown: {backend.fallback_backend}")
+            if backend.fallback_backend == name:
+                problems.append(f"{name} fallback points to itself")
+        checks.append(
+            DoctorCheck(
+                "capacity",
+                "fail" if problems else "pass",
+                "; ".join(dict.fromkeys(problems))
+                if problems
+                else (
+                    f"enabled; warn {config.capacity.warn_percent:g}%; switch "
+                    f"{config.capacity.switch_percent:g}%"
+                ),
+            )
+        )
+        if not config.capacity.profiles:
+            checks.append(
+                DoctorCheck(
+                    "capacity-profiles",
+                    "warn",
+                    "no isolated ChatGPT profiles; API backend failover remains available",
+                )
+            )
+        else:
+            active = config.capacity.active_profile
+            missing = [
+                name
+                for name, profile in config.capacity.profiles.items()
+                if profile.enabled and not Path(profile.codex_home).expanduser().is_dir()
+            ]
+            if active and active not in config.capacity.profiles:
+                checks.append(
+                    DoctorCheck("capacity-profiles", "fail", f"unknown active profile: {active}")
+                )
+            elif missing:
+                checks.append(
+                    DoctorCheck(
+                        "capacity-profiles",
+                        "warn",
+                        "missing CODEX_HOME directories: " + ", ".join(sorted(missing)),
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheck(
+                        "capacity-profiles",
+                        "pass",
+                        f"{len(config.capacity.profiles)} configured; active {active or 'auto'}",
+                    )
+                )
     checks.append(
         DoctorCheck(
             "routing",

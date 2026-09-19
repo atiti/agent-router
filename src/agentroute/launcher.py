@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from .config import AppConfig, agentroute_home, load_config
+from .profiles import select_launch_profile
 
 BASE_CODEX_ARGS = [
     "--enable",
@@ -61,7 +63,29 @@ def codex_argv(
     ]
 
 
-def launch_codex(binary: Path | None, user_args: Sequence[str]) -> None:
+def launch_codex(
+    binary: Path | None, user_args: Sequence[str], profile: str | None = None
+) -> None:
     binary = binary or agentroute_home() / "bin" / "codex-bin"
-    argv = codex_argv(binary, user_args)
-    os.execv(str(binary), argv)
+    config = load_config()
+    selected_name, selected, _ = select_launch_profile(
+        config, profile, codex_binary=binary
+    )
+    environment = os.environ.copy()
+    if selected_name:
+        selected_config = config.capacity.profiles[selected_name]
+        environment["CODEX_HOME"] = str(Path(selected_config.codex_home).expanduser())
+        state = selected.capacity.status if selected else "unknown"
+        detail = selected.capacity.detail if selected else "not probed"
+        print(
+            f"◆ CAPACITY PROFILE · {selected_name} · {state}: {detail}",
+            file=sys.stderr,
+        )
+        if profile is None and selected_name != config.capacity.active_profile:
+            print(
+                "◆ PROFILE FAILOVER · starting a new Codex process with this profile; "
+                "existing sessions are never switched in place",
+                file=sys.stderr,
+            )
+    argv = codex_argv(binary, user_args, config)
+    os.execve(str(binary), argv, environment)

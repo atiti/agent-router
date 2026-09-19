@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     turn_outcome TEXT NOT NULL DEFAULT 'pending',
     completion_source TEXT,
     usage_status TEXT NOT NULL DEFAULT 'pending'
+    ,capacity_status TEXT NOT NULL DEFAULT 'disabled'
+    ,capacity_detail TEXT
+    ,capacity_trigger TEXT
+    ,capacity_requested_backend TEXT
+    ,capacity_account_id TEXT
+    ,capacity_blocked INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_routing_session
 ON routing_decisions(session_id, id DESC);
@@ -125,6 +131,12 @@ MIGRATIONS = {
     "turn_outcome": "TEXT NOT NULL DEFAULT 'pending'",
     "completion_source": "TEXT",
     "usage_status": "TEXT NOT NULL DEFAULT 'pending'",
+    "capacity_status": "TEXT NOT NULL DEFAULT 'disabled'",
+    "capacity_detail": "TEXT",
+    "capacity_trigger": "TEXT",
+    "capacity_requested_backend": "TEXT",
+    "capacity_account_id": "TEXT",
+    "capacity_blocked": "INTEGER NOT NULL DEFAULT 0",
 }
 
 
@@ -240,9 +252,11 @@ class AuditStore:
                     agent_requested_tier, agent_request_reason_hash,
                     classification_source, classifier_confidence, classifier_task_type,
                     classifier_reason_hash, selection_receipt, selection_receipt_hash
+                    ,capacity_status, capacity_detail, capacity_trigger,
+                    capacity_requested_backend, capacity_account_id, capacity_blocked
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -293,6 +307,12 @@ class AuditStore:
                     decision.classifier_reason_hash,
                     json.dumps(decision.selection_receipt, sort_keys=True, separators=(",", ":")),
                     decision.selection_receipt_hash,
+                    decision.capacity_status,
+                    decision.capacity_detail,
+                    decision.capacity_trigger,
+                    decision.capacity_requested_backend,
+                    decision.capacity_account_id,
+                    int(decision.capacity_blocked),
                 ),
             )
             return int(cursor.lastrowid)
@@ -477,6 +497,19 @@ class AuditStore:
                 params,
             ).fetchone()
         return str(row["sticky_backend"]) if row and row["sticky_backend"] else None
+
+    def previous_capacity(
+        self, session_id: str, route_scope: str = "root", agent_id: str | None = None
+    ) -> tuple[str | None, str | None]:
+        row = self._latest_for_route(session_id, route_scope, agent_id)
+        if not row:
+            return None, None
+        return (
+            str(row["capacity_status"]) if row["capacity_status"] else None,
+            str(row["capacity_requested_backend"] or row["backend"])
+            if row["capacity_requested_backend"] or row["backend"]
+            else None,
+        )
 
     def provider_state_is_mixed(
         self, session_id: str, route_scope: str = "root", agent_id: str | None = None

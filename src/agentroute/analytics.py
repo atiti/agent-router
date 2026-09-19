@@ -122,6 +122,17 @@ class LongestTurn:
 
 
 @dataclass(frozen=True)
+class CapacityUsage:
+    warnings: int
+    fallbacks: int
+    blocked: int
+    fallback_completed_turns: int
+    fallback_duration_ms: float
+    by_route: dict[str, int]
+    by_trigger: dict[str, int]
+
+
+@dataclass(frozen=True)
 class AnalyticsReport:
     rows: int
     model_mismatch_turns: int
@@ -132,6 +143,7 @@ class AnalyticsReport:
     duration: DurationSummary
     reconciliation: ReconciliationSummary
     longest_turns: tuple[LongestTurn, ...]
+    capacity: CapacityUsage
 
 
 def _duration_ms(row: Any) -> float | None:
@@ -192,6 +204,39 @@ def _reconciliation_summary(rows: list[Any], stale_after_hours: int = 24) -> Rec
             )
             counts[key] += 1
     return ReconciliationSummary(**counts)
+
+
+def _capacity_summary(rows: list[Any]) -> CapacityUsage:
+    warnings = fallbacks = blocked = fallback_completed = 0
+    fallback_duration_ms = 0.0
+    by_route: dict[str, int] = defaultdict(int)
+    by_trigger: dict[str, int] = defaultdict(int)
+    for row in rows:
+        status = str(row["capacity_status"] or "disabled")
+        if status == "warning":
+            warnings += 1
+        elif status == "fallback":
+            fallbacks += 1
+            if (duration := _duration_ms(row)) is not None:
+                fallback_completed += 1
+                fallback_duration_ms += duration
+            requested = str(row["capacity_requested_backend"] or "unknown")
+            selected = str(row["backend"] or "unknown")
+            by_route[f"{requested}->{selected}"] += 1
+        elif status == "blocked" or bool(row["capacity_blocked"]):
+            blocked += 1
+        trigger = row["capacity_trigger"]
+        if trigger and status in {"warning", "fallback", "blocked"}:
+            by_trigger[str(trigger)] += 1
+    return CapacityUsage(
+        warnings=warnings,
+        fallbacks=fallbacks,
+        blocked=blocked,
+        fallback_completed_turns=fallback_completed,
+        fallback_duration_ms=fallback_duration_ms,
+        by_route=dict(sorted(by_route.items())),
+        by_trigger=dict(sorted(by_trigger.items())),
+    )
 
 
 def _usage_summary(
@@ -345,6 +390,7 @@ def usage_analytics(
         classifiers=tuple(sorted(classifiers, key=lambda item: (-item.calls, item.model))),
         duration=_duration_summary(rows),
         reconciliation=_reconciliation_summary(rows),
+        capacity=_capacity_summary(rows),
         longest_turns=tuple(
             LongestTurn(
                 decision_id=int(row["id"]),

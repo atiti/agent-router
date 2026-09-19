@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 
+from .capacity import backend_state, fallback_chain
 from .classifier import OpenAICompatibleClassifier, TierClassifier, catalog_age_seconds
 from .config import AppConfig, load_config, model_capabilities
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
@@ -198,19 +199,52 @@ class Router:
                     detail=f"continued explicit {context.sticky_backend} session route",
                 )
             )
-        if (
+        backend_unavailable = bool(
             backend is None
             or not backend.enabled
             or not backend_readiness(self.config, backend_name)[0]
-        ):
-            requested_backend = backend_name
-            backend_name = "gpt"
+        )
+        unavailable_requested_backend: str | None = None
+        unavailable_locked = False
+        if backend_unavailable:
+            unavailable_requested_backend = backend_name
+            unavailable_locked = bool(backend_override or context.sticky_backend)
+            selected_ready: str | None = None
+            if not unavailable_locked or not self.config.capacity.enabled:
+                candidates = (
+                    fallback_chain(self.config, backend_name)
+                    if self.config.capacity.enabled
+                    else ["gpt"]
+                )
+                for candidate in candidates:
+                    configured = self.config.backends.get(candidate)
+                    if (
+                        configured is not None
+                        and configured.enabled
+                        and backend_readiness(self.config, candidate)[0]
+                    ):
+                        selected_ready = candidate
+                        break
+            backend_name = selected_ready or (
+                unavailable_requested_backend
+                if unavailable_requested_backend in self.config.backends
+                else "gpt"
+            )
             backend = self.config.backends[backend_name]
             contributions.append(
                 ScoreContribution(
-                    code=ReasonCode.BACKEND_FALLBACK,
+                    code=(
+                        ReasonCode.CAPACITY_BLOCKED
+                        if unavailable_locked and self.config.capacity.enabled
+                        else ReasonCode.BACKEND_FALLBACK
+                    ),
                     weight=0,
-                    detail=f"backend {requested_backend} is unavailable; used gpt",
+                    detail=(
+                        f"explicit session route {unavailable_requested_backend} is unavailable"
+                        if unavailable_locked and self.config.capacity.enabled
+                        else f"backend {unavailable_requested_backend} is unavailable; "
+                        f"used {backend_name}"
+                    ),
                 )
             )
         if (
@@ -243,6 +277,116 @@ class Router:
                     ),
                 )
             )
+
+        capacity_requested_backend = backend_name
+        capacity = backend_state(
+            self.config,
+            backend_name,
+            rate_limits=context.rate_limits,
+            account_id=context.account_id,
+            daily_spend=context.backend_daily_spend.get(backend_name, 0.0),
+            monthly_spend=context.backend_monthly_spend.get(backend_name, 0.0),
+            recovery_hold=(
+                context.previous_capacity_backend == backend_name
+                and context.previous_capacity_status in {"fallback", "blocked", "exhausted"}
+            ),
+        )
+        capacity_blocked = False
+        capacity_detail = capacity.detail
+        capacity_trigger = capacity.trigger
+        capacity_status = capacity.status
+        capacity_locked = bool(backend_override or context.sticky_backend)
+        if unavailable_locked and self.config.capacity.enabled:
+            capacity_blocked = True
+            capacity_status = "blocked"
+            capacity_trigger = "backend_unavailable"
+            capacity_requested_backend = unavailable_requested_backend
+            capacity_detail = (
+                f"explicit session route {unavailable_requested_backend} is unavailable. "
+                "Use @auto to permit backend fallback. Switching subscription profiles "
+                "requires checkpointing and relaunching Codex."
+            )
+        elif capacity.status == "warning":
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.CAPACITY_WARNING,
+                    weight=0,
+                    detail=capacity.detail,
+                )
+            )
+        elif not capacity.available:
+            if capacity_locked:
+                capacity_blocked = True
+                capacity_status = "blocked"
+                capacity_detail = (
+                    f"{capacity.detail}; explicit session route {backend_name} is "
+                    "capacity-locked. Use @auto to permit backend fallback. Switching "
+                    "subscription profiles requires checkpointing and relaunching Codex."
+                )
+                contributions.append(
+                    ScoreContribution(
+                        code=ReasonCode.CAPACITY_BLOCKED,
+                        weight=0,
+                        detail=capacity_detail,
+                    )
+                )
+            else:
+                fallback_details: list[str] = []
+                selected_fallback: str | None = None
+                for candidate in fallback_chain(self.config, backend_name):
+                    candidate_backend = self.config.backends.get(candidate)
+                    ready = bool(
+                        candidate_backend
+                        and candidate_backend.enabled
+                        and backend_readiness(self.config, candidate)[0]
+                    )
+                    if not ready:
+                        fallback_details.append(f"{candidate}: unavailable")
+                        continue
+                    candidate_capacity = backend_state(
+                        self.config,
+                        candidate,
+                        rate_limits=context.rate_limits,
+                        account_id=context.account_id,
+                        daily_spend=context.backend_daily_spend.get(candidate, 0.0),
+                        monthly_spend=context.backend_monthly_spend.get(candidate, 0.0),
+                    )
+                    if not candidate_capacity.available:
+                        fallback_details.append(f"{candidate}: {candidate_capacity.detail}")
+                        continue
+                    selected_fallback = candidate
+                    break
+                if selected_fallback:
+                    previous_backend = backend_name
+                    backend_name = selected_fallback
+                    backend = self.config.backends[backend_name]
+                    capacity_status = "fallback"
+                    capacity_detail = (
+                        f"{previous_backend} capacity unavailable ({capacity.detail}); "
+                        f"using {backend_name}"
+                    )
+                    contributions.append(
+                        ScoreContribution(
+                            code=ReasonCode.CAPACITY_FALLBACK,
+                            weight=0,
+                            detail=capacity_detail,
+                        )
+                    )
+                else:
+                    capacity_blocked = True
+                    capacity_status = "blocked"
+                    attempted = "; ".join(fallback_details) or "no fallback configured"
+                    capacity_detail = (
+                        f"{backend_name} capacity unavailable ({capacity.detail}); "
+                        f"{attempted}. No safe backend has capacity."
+                    )
+                    contributions.append(
+                        ScoreContribution(
+                            code=ReasonCode.CAPACITY_BLOCKED,
+                            weight=0,
+                            detail=capacity_detail,
+                        )
+                    )
         target = backend.target(proposed)
         digest = hashlib.sha256(context.latest_prompt.encode("utf-8")).hexdigest()
         comparison_tier = context.previous_task_tier or context.current_tier
@@ -366,6 +510,14 @@ class Router:
                 "model_provider": backend.codex_provider,
                 "reasoning_effort": target.reasoning_effort,
             },
+            "capacity": {
+                "status": capacity_status,
+                "detail": capacity_detail,
+                "trigger": capacity_trigger,
+                "requested_backend": capacity_requested_backend,
+                "selected_backend": backend_name,
+                "blocked": capacity_blocked,
+            },
             "policy": {
                 "max_tier": str(max_tier),
                 "risk_floor_applied": risk_floor_applied,
@@ -421,6 +573,16 @@ class Router:
             agent_request_reason_hash=context.agent_request_reason_hash,
             selection_receipt=receipt,
             selection_receipt_hash=receipt_hash,
+            capacity_status=capacity_status,
+            capacity_detail=capacity_detail,
+            capacity_trigger=capacity_trigger,
+            capacity_requested_backend=capacity_requested_backend,
+            capacity_account_id=(
+                hashlib.sha256(context.account_id.encode("utf-8")).hexdigest()[:16]
+                if context.account_id
+                else None
+            ),
+            capacity_blocked=capacity_blocked,
         )
 
     def _maybe_classify(

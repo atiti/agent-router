@@ -52,6 +52,12 @@ def test_native_patch_is_packaged():
     assert "response_input_serialization_excludes_ephemeral_routing_prompt" in content
     assert "encrypted_subagent_input_uses_ephemeral_routing_prompt" in content
     assert "encrypted_communication_keeps_ephemeral_routing_prompt_in_memory" in content
+    # App-server quota polling is propagated into each live thread so the local hook
+    # makes a safe decision without a network call on every user turn.
+    assert "ordinary_usage_allowed" in content
+    assert "capacity_snapshot" in content
+    assert "record_ordinary_usage_allowed" in content
+    assert "account/rateLimits/read" in content
     continuation_test = (
         "mixed_provider_history_preserves_destination_reasoning_across_tool_continuations"
     )
@@ -82,7 +88,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v26" in installer
+    assert "provider-routing-v27" in installer
     assert "codex-desktop-route-notice.patch" in installer
     assert "codex-package-version.patch" in installer
     assert "0.155.0-alpha.2.7" in "\n".join(

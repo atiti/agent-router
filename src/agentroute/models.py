@@ -52,6 +52,9 @@ class ReasonCode(str, Enum):
     QUOTA_LIMIT = "QUOTA_LIMIT"
     BACKEND_OVERRIDE = "BACKEND_OVERRIDE"
     BACKEND_FALLBACK = "BACKEND_FALLBACK"
+    CAPACITY_WARNING = "CAPACITY_WARNING"
+    CAPACITY_FALLBACK = "CAPACITY_FALLBACK"
+    CAPACITY_BLOCKED = "CAPACITY_BLOCKED"
 
 
 class ScoreContribution(BaseModel):
@@ -81,6 +84,12 @@ class RouteContext(BaseModel):
     repeated_errors: int = 0
     failed_tests: int = 0
     task_risk_flags: set[str] = Field(default_factory=set)
+    account_id: str | None = None
+    rate_limits: dict[str, object] = Field(default_factory=dict)
+    backend_daily_spend: dict[str, float] = Field(default_factory=dict)
+    backend_monthly_spend: dict[str, float] = Field(default_factory=dict)
+    previous_capacity_status: str | None = None
+    previous_capacity_backend: str | None = None
 
 
 class RouteDecision(BaseModel):
@@ -125,3 +134,9 @@ class RouteDecision(BaseModel):
     agent_request_reason_hash: str | None = None
     selection_receipt: dict[str, object] = Field(default_factory=dict)
     selection_receipt_hash: str | None = None
+    capacity_status: str = "disabled"
+    capacity_detail: str | None = None
+    capacity_trigger: str | None = None
+    capacity_requested_backend: str | None = None
+    capacity_account_id: str | None = None
+    capacity_blocked: bool = False

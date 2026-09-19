@@ -1,3 +1,32 @@
+diff --git a/codex-rs/app-server/src/request_processors/account_processor.rs b/codex-rs/app-server/src/request_processors/account_processor.rs
+index 8327cdf7ce..dfad5256f5 100644
+--- a/codex-rs/app-server/src/request_processors/account_processor.rs
++++ b/codex-rs/app-server/src/request_processors/account_processor.rs
+@@ -1202,11 +1202,21 @@ impl AccountRequestProcessor {
+         let rate_limit_upsell = response
+             .rate_limit_upsell
+             .filter(|_| matches_active_account);
++        let ordinary_usage_allowed = response
++            .ordinary_usage_allowed
++            .filter(|_| matches_active_account);
++        if ordinary_usage_allowed.is_some() {
++            for thread_id in self.thread_manager.list_thread_ids().await {
++                if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
++                    thread
++                        .record_ordinary_usage_allowed(ordinary_usage_allowed)
++                        .await;
++                }
++            }
++        }
+ 
+         Ok(GetAccountRateLimitsResponse {
+-            ordinary_usage_allowed: response
+-                .ordinary_usage_allowed
+-                .filter(|_| matches_active_account),
++            ordinary_usage_allowed,
+             rate_limits: rate_limits.into(),
+             rate_limits_by_limit_id: Some(
+                 rate_limits_by_limit_id
 diff --git a/codex-rs/config/src/thread_config/remote.rs b/codex-rs/config/src/thread_config/remote.rs
 index 8d5b8febe4..6718019d03 100644
 --- a/codex-rs/config/src/thread_config/remote.rs
@@ -476,6 +505,23 @@ index 8936f5afab..c678bfed12 100644
  use std::time::Duration;
  use tempfile::TempDir;
  use tokio::sync::Notify;
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index 76c5ad7df9..80b8f0746b 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -228,6 +228,12 @@ impl CodexThread {
+         self.io.submit(op).await
+     }
+ 
++    /// Record authoritative subscription permission obtained by the hosting app-server.
++    /// This is consumed by pre-turn hooks without switching accounts inside a live thread.
++    pub async fn record_ordinary_usage_allowed(&self, allowed: Option<bool>) {
++        self.session.record_ordinary_usage_allowed(allowed).await;
++    }
++
+     /// Returns the session telemetry handle for thread-scoped production instrumentation.
+     pub fn session_telemetry(&self) -> SessionTelemetry {
+         self.session.services.session_telemetry.clone()
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
 index 77e28b85e5..a86d344377 100644
 --- a/codex-rs/core/src/compact.rs
@@ -912,7 +958,7 @@ index cf191851bf..6c0f97c900 100644
  async fn guardian_review_session_config_clears_parent_developer_instructions() {
      let mut parent_config = test_config().await;
 diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
-index 4e276868ce..03fb1bfcda 100644
+index 4e276868ce..d199d811b2 100644
 --- a/codex-rs/core/src/hook_runtime.rs
 +++ b/codex-rs/core/src/hook_runtime.rs
 @@ -49,6 +49,8 @@ use codex_protocol::protocol::HookStartedEvent;
@@ -987,7 +1033,7 @@ index 4e276868ce..03fb1bfcda 100644
          permission_mode: hook_permission_mode(turn_context.approval_policy()),
          request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),
          stop_hook_active,
-@@ -667,43 +696,124 @@ pub(crate) async fn run_legacy_after_agent_hook(
+@@ -667,43 +696,134 @@ pub(crate) async fn run_legacy_after_agent_hook(
      true
  }
  
@@ -1064,6 +1110,13 @@ index 4e276868ce..03fb1bfcda 100644
 +            settings_updated: false,
 +        };
 +    };
++    let account_id = sess
++        .services
++        .auth_manager
++        .auth()
++        .await
++        .and_then(|auth| auth.get_account_id());
++    let (rate_limits, ordinary_usage_allowed) = sess.capacity_snapshot().await;
 +    let request = UserPromptSubmitRequest {
 +        session_id: sess.session_id().into(),
 +        turn_id: turn_context.sub_id.clone(),
@@ -1073,6 +1126,9 @@ index 4e276868ce..03fb1bfcda 100644
 +        transcript_path: sess.hook_transcript_path().await,
 +        model: turn_context.model_info().slug.clone(),
 +        model_provider: turn_context.model_provider_id(),
++        account_id,
++        rate_limits,
++        ordinary_usage_allowed,
 +        permission_mode: hook_permission_mode(turn_context.approval_policy()),
 +        prompt,
 +    };
@@ -1141,7 +1197,7 @@ index 4e276868ce..03fb1bfcda 100644
  }
  
  pub(crate) async fn record_pending_input(
-@@ -1066,6 +1176,7 @@ mod tests {
+@@ -1066,6 +1186,7 @@ mod tests {
      use codex_otel::HOOK_RUN_METRIC;
      use codex_otel::MetricsClient;
      use codex_otel::MetricsConfig;
@@ -1149,7 +1205,7 @@ index 4e276868ce..03fb1bfcda 100644
      use codex_protocol::models::ContentItem;
      use codex_protocol::protocol::HookEventName;
      use codex_protocol::protocol::HookExecutionMode;
-@@ -1073,6 +1184,9 @@ mod tests {
+@@ -1073,6 +1194,9 @@ mod tests {
      use codex_protocol::protocol::HookRunStatus;
      use codex_protocol::protocol::HookScope;
      use codex_protocol::protocol::HookSource;
@@ -1159,7 +1215,7 @@ index 4e276868ce..03fb1bfcda 100644
      use opentelemetry_sdk::metrics::InMemoryMetricExporter;
      use opentelemetry_sdk::metrics::data::AggregatedMetrics;
      use opentelemetry_sdk::metrics::data::HistogramDataPoint;
-@@ -1085,6 +1199,7 @@ mod tests {
+@@ -1085,6 +1209,7 @@ mod tests {
      use super::emit_hook_started_events;
      use super::hook_run_analytics_payload;
      use super::hook_run_metric_tags;
@@ -1167,7 +1223,7 @@ index 4e276868ce..03fb1bfcda 100644
      use crate::session::tests::make_session_and_context;
      use crate::session::tests::make_session_and_context_with_rx;
      use codex_protocol::protocol::HookCompletedEvent;
-@@ -1128,6 +1243,69 @@ mod tests {
+@@ -1128,6 +1253,69 @@ mod tests {
          );
      }
  
@@ -1303,7 +1359,7 @@ index 462bb95ba8..611aaa91e9 100644
          let retry_delay = retry_state.connection_retry_delay;
          warn!(
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index affecf42d5..209e23e8d6 100644
+index affecf42d5..195ede61a9 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -697,9 +697,16 @@ impl Session {
@@ -1356,6 +1412,23 @@ index affecf42d5..209e23e8d6 100644
              },
          )
          .await;
+@@ -4744,6 +4762,16 @@ impl Session {
+         }
+     }
+ 
++    pub(crate) async fn record_ordinary_usage_allowed(&self, allowed: Option<bool>) {
++        let mut state = self.state.lock().await;
++        state.set_ordinary_usage_allowed(allowed);
++    }
++
++    pub(crate) async fn capacity_snapshot(&self) -> (Option<RateLimitSnapshot>, Option<bool>) {
++        let state = self.state.lock().await;
++        state.capacity_snapshot()
++    }
++
+     pub(crate) async fn mcp_dependency_prompted(&self) -> HashSet<String> {
+         let state = self.state.lock().await;
+         state.mcp_dependency_prompted()
 diff --git a/codex-rs/core/src/session/review.rs b/codex-rs/core/src/session/review.rs
 index ea078a451e..cfee96aca7 100644
 --- a/codex-rs/core/src/session/review.rs
@@ -2386,6 +2459,75 @@ index e43fb6a2ae..7c042ead8c 100644
 +    expected_message.set_id(None);
 +    assert_eq!(input, vec![expected_function_call, expected_message]);
 +}
+diff --git a/codex-rs/core/src/state/session.rs b/codex-rs/core/src/state/session.rs
+index b3ea977da0..201128b1d4 100644
+--- a/codex-rs/core/src/state/session.rs
++++ b/codex-rs/core/src/state/session.rs
+@@ -76,6 +76,9 @@ pub(crate) struct SessionState {
+     /// Cancels work bound to discarded history. Appends and compaction preserve it.
+     pub(crate) history_reset: CancellationToken,
+     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
++    /// Latest authoritative permission returned by `account/rateLimits/read` for this login.
++    /// Sparse response headers must not silently clear a known blocked state.
++    pub(crate) ordinary_usage_allowed: Option<bool>,
+     pub(crate) latest_token_usage_record: Option<TokenUsageRecord>,
+     pub(crate) server_reasoning_included: bool,
+     pub(crate) mcp_dependency_prompted: HashSet<String>,
+@@ -122,6 +125,7 @@ impl SessionState {
+             history,
+             history_reset: CancellationToken::new(),
+             latest_rate_limits: None,
++            ordinary_usage_allowed: None,
+             latest_token_usage_record: None,
+             server_reasoning_included: false,
+             mcp_dependency_prompted: HashSet::new(),
+@@ -331,12 +335,22 @@ impl SessionState {
+         ));
+     }
+ 
++    pub(crate) fn set_ordinary_usage_allowed(&mut self, allowed: Option<bool>) {
++        if allowed.is_some() {
++            self.ordinary_usage_allowed = allowed;
++        }
++    }
++
+     pub(crate) fn token_info_and_rate_limits(
+         &self,
+     ) -> (Option<TokenUsageInfo>, Option<RateLimitSnapshot>) {
+         (self.token_info(), self.latest_rate_limits.clone())
+     }
+ 
++    pub(crate) fn capacity_snapshot(&self) -> (Option<RateLimitSnapshot>, Option<bool>) {
++        (self.latest_rate_limits.clone(), self.ordinary_usage_allowed)
++    }
++
+     pub(crate) fn set_token_usage_full(&mut self, context_window: i64) {
+         self.history.set_token_usage_full(context_window);
+     }
+diff --git a/codex-rs/core/src/state/session_tests.rs b/codex-rs/core/src/state/session_tests.rs
+index 5d3defeefe..364ee17b80 100644
+--- a/codex-rs/core/src/state/session_tests.rs
++++ b/codex-rs/core/src/state/session_tests.rs
+@@ -112,6 +112,19 @@ async fn set_rate_limits_defaults_limit_id_to_codex_when_missing() {
+     );
+ }
+ 
++#[tokio::test]
++async fn capacity_snapshot_retains_authoritative_subscription_lock_across_sparse_updates() {
++    let session_configuration = make_session_configuration_for_tests().await;
++    let mut state = SessionState::new(session_configuration);
++
++    state.set_ordinary_usage_allowed(Some(false));
++    // A sparse subsequent poll must not turn a known blocked subscription into an
++    // implicit healthy state before the app-server reports an authoritative recovery.
++    state.set_ordinary_usage_allowed(None);
++
++    assert_eq!(state.capacity_snapshot().1, Some(false));
++}
++
+ #[tokio::test]
+ async fn replace_history_clears_auto_compact_window_prefill() {
+     let session_configuration = make_session_configuration_for_tests().await;
 diff --git a/codex-rs/core/src/tasks/compact.rs b/codex-rs/core/src/tasks/compact.rs
 index 14913d95c8..0f8f5f52b0 100644
 --- a/codex-rs/core/src/tasks/compact.rs
@@ -2824,20 +2966,193 @@ index 2be359013b..92281c7c48 100644
      #[serde(default, skip_serializing_if = "Option::is_none")]
      pub user_input_order: Option<u64>,
 diff --git a/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json b/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json
-index 6a10a9f75c..4835b0faf7 100644
+index 6a10a9f75c..9cc8e12ae0 100644
 --- a/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json
 +++ b/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json
-@@ -26,6 +26,9 @@
+@@ -2,14 +2,153 @@
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "additionalProperties": false,
+   "definitions": {
++    "CreditsSnapshot": {
++      "properties": {
++        "balance": {
++          "type": "string"
++        },
++        "has_credits": {
++          "type": "boolean"
++        },
++        "unlimited": {
++          "type": "boolean"
++        }
++      },
++      "required": [
++        "has_credits",
++        "unlimited"
++      ],
++      "type": "object"
++    },
+     "NullableString": {
+       "type": [
+         "string",
+         "null"
+       ]
++    },
++    "PlanType": {
++      "enum": [
++        "free",
++        "go",
++        "plus",
++        "pro",
++        "prolite",
++        "team",
++        "self_serve_business_prolite",
++        "self_serve_business_usage_based",
++        "business",
++        "ent26",
++        "enterprise_cbp_automation",
++        "enterprise_cbp_usage_based",
++        "enterprise",
++        "edu",
++        "edu_plus",
++        "edu_pro",
++        "unknown"
++      ],
++      "type": "string"
++    },
++    "RateLimitReachedType": {
++      "enum": [
++        "rate_limit_reached",
++        "workspace_owner_credits_depleted",
++        "workspace_member_credits_depleted",
++        "workspace_owner_usage_limit_reached",
++        "workspace_member_usage_limit_reached"
++      ],
++      "type": "string"
++    },
++    "RateLimitSnapshot": {
++      "properties": {
++        "credits": {
++          "$ref": "#/definitions/CreditsSnapshot"
++        },
++        "individual_limit": {
++          "$ref": "#/definitions/SpendControlLimitSnapshot"
++        },
++        "limit_id": {
++          "type": "string"
++        },
++        "limit_name": {
++          "type": "string"
++        },
++        "normal_model_slug": {
++          "description": "Normal model metadata for a quota alias; never a replacement for the request model.",
++          "type": "string"
++        },
++        "plan_type": {
++          "$ref": "#/definitions/PlanType"
++        },
++        "primary": {
++          "$ref": "#/definitions/RateLimitWindow"
++        },
++        "rate_limit_reached_type": {
++          "$ref": "#/definitions/RateLimitReachedType"
++        },
++        "secondary": {
++          "$ref": "#/definitions/RateLimitWindow"
++        },
++        "spend_control_reached": {
++          "description": "Backend-reported spend-control state. `None` is unavailable, not a sparse-update recovery.",
++          "type": "boolean"
++        }
++      },
++      "type": "object"
++    },
++    "RateLimitWindow": {
++      "properties": {
++        "resets_at": {
++          "description": "Unix timestamp (seconds since epoch) when the window resets.",
++          "format": "int64",
++          "type": "integer"
++        },
++        "used_percent": {
++          "description": "Percentage (0-100) of the window that has been consumed.",
++          "format": "double",
++          "type": "number"
++        },
++        "window_minutes": {
++          "description": "Rolling window duration, in minutes.",
++          "format": "int64",
++          "type": "integer"
++        }
++      },
++      "required": [
++        "used_percent"
++      ],
++      "type": "object"
++    },
++    "SpendControlLimitSnapshot": {
++      "properties": {
++        "limit": {
++          "type": "string"
++        },
++        "remaining_percent": {
++          "format": "int32",
++          "type": "integer"
++        },
++        "resets_at": {
++          "format": "int64",
++          "type": "integer"
++        },
++        "used": {
++          "type": "string"
++        }
++      },
++      "required": [
++        "limit",
++        "remaining_percent",
++        "resets_at",
++        "used"
++      ],
++      "type": "object"
+     }
+   },
+   "properties": {
++    "account_id": {
++      "description": "Opaque ChatGPT account identity for local capacity affinity. Consumers must not display it.",
++      "type": "string"
++    },
+     "agent_id": {
+       "type": "string"
+     },
+@@ -26,6 +165,13 @@
      "model": {
        "type": "string"
      },
 +    "model_provider": {
 +      "type": "string"
 +    },
++    "ordinary_usage_allowed": {
++      "description": "Authoritative ordinary subscription permission from account/rateLimits/read.",
++      "type": "boolean"
++    },
      "permission_mode": {
        "enum": [
          "default",
-@@ -54,6 +57,7 @@
+@@ -39,6 +185,14 @@
+     "prompt": {
+       "type": "string"
+     },
++    "rate_limits": {
++      "allOf": [
++        {
++          "$ref": "#/definitions/RateLimitSnapshot"
++        }
++      ],
++      "description": "Latest subscription rate-limit snapshot observed by the active Codex session."
++    },
+     "session_id": {
+       "type": "string"
+     },
+@@ -54,6 +208,7 @@
      "cwd",
      "hook_event_name",
      "model",
@@ -2899,14 +3214,17 @@ index 97875c108b..1640c491f6 100644
        },
        "required": [
 diff --git a/codex-rs/hooks/src/engine/command_runner_tests.rs b/codex-rs/hooks/src/engine/command_runner_tests.rs
-index d11da77656..561f5d0702 100644
+index d11da77656..ef3488a3ff 100644
 --- a/codex-rs/hooks/src/engine/command_runner_tests.rs
 +++ b/codex-rs/hooks/src/engine/command_runner_tests.rs
-@@ -495,6 +495,7 @@ async fn schedule(runtime: &CommandHookRuntime, handler: ConfiguredHandler, cwd:
+@@ -495,6 +495,10 @@ async fn schedule(runtime: &CommandHookRuntime, handler: ConfiguredHandler, cwd:
              cwd: AbsolutePathBuf::try_from(cwd.to_path_buf()).expect("absolute test hook cwd"),
              transcript_path: None,
              model: "test-model".to_string(),
 +            model_provider: "openai".to_string(),
++            account_id: None,
++            rate_limits: None,
++            ordinary_usage_allowed: None,
              permission_mode: "default".to_string(),
              prompt: "test prompt".to_string(),
          })
@@ -2999,10 +3317,10 @@ index aaefa46dc1..3b09cd4ba8 100644
      fn permission_request_rejects_reserved_updated_input_field() {
          let parsed = parse_permission_request(
 diff --git a/codex-rs/hooks/src/events/user_prompt_submit.rs b/codex-rs/hooks/src/events/user_prompt_submit.rs
-index 9124431bc1..38e9a88612 100644
+index 9124431bc1..06b388d271 100644
 --- a/codex-rs/hooks/src/events/user_prompt_submit.rs
 +++ b/codex-rs/hooks/src/events/user_prompt_submit.rs
-@@ -1,6 +1,7 @@
+@@ -1,12 +1,14 @@
  use std::path::PathBuf;
  
  use codex_protocol::ThreadId;
@@ -3010,15 +3328,25 @@ index 9124431bc1..38e9a88612 100644
  use codex_protocol::protocol::HookCompletedEvent;
  use codex_protocol::protocol::HookEventName;
  use codex_protocol::protocol::HookOutputEntry;
-@@ -28,6 +29,7 @@ pub struct UserPromptSubmitRequest {
+ use codex_protocol::protocol::HookOutputEntryKind;
+ use codex_protocol::protocol::HookRunStatus;
+ use codex_protocol::protocol::HookRunSummary;
++use codex_protocol::protocol::RateLimitSnapshot;
+ use codex_utils_absolute_path::AbsolutePathBuf;
+ 
+ use super::common;
+@@ -28,6 +30,10 @@ pub struct UserPromptSubmitRequest {
      pub cwd: AbsolutePathBuf,
      pub transcript_path: Option<PathBuf>,
      pub model: String,
 +    pub model_provider: String,
++    pub account_id: Option<String>,
++    pub rate_limits: Option<RateLimitSnapshot>,
++    pub ordinary_usage_allowed: Option<bool>,
      pub permission_mode: String,
      pub prompt: String,
  }
-@@ -38,6 +40,12 @@ pub struct UserPromptSubmitOutcome {
+@@ -38,6 +44,12 @@ pub struct UserPromptSubmitOutcome {
      pub should_stop: bool,
      pub stop_reason: Option<String>,
      pub additional_contexts: Vec<String>,
@@ -3031,7 +3359,7 @@ index 9124431bc1..38e9a88612 100644
  }
  
  #[derive(Debug, PartialEq, Eq)]
-@@ -45,6 +53,12 @@ struct UserPromptSubmitHandlerData {
+@@ -45,6 +57,12 @@ struct UserPromptSubmitHandlerData {
      should_stop: bool,
      stop_reason: Option<String>,
      additional_contexts_for_model: Vec<AdditionalContext>,
@@ -3044,7 +3372,7 @@ index 9124431bc1..38e9a88612 100644
  }
  
  pub(crate) fn preview(
-@@ -76,6 +90,12 @@ pub(crate) async fn run(
+@@ -76,6 +94,12 @@ pub(crate) async fn run(
              should_stop: false,
              stop_reason: None,
              additional_contexts: Vec::new(),
@@ -3057,15 +3385,18 @@ index 9124431bc1..38e9a88612 100644
          };
      }
  
-@@ -89,6 +109,7 @@ pub(crate) async fn run(
+@@ -89,6 +113,10 @@ pub(crate) async fn run(
          cwd: request.cwd.display().to_string(),
          hook_event_name: "UserPromptSubmit".to_string(),
          model: request.model.clone(),
 +        model_provider: request.model_provider.clone(),
++        account_id: request.account_id.clone(),
++        rate_limits: request.rate_limits.clone(),
++        ordinary_usage_allowed: request.ordinary_usage_allowed,
          permission_mode: request.permission_mode.clone(),
          prompt: request.prompt.clone(),
      }) {
-@@ -126,12 +147,34 @@ pub(crate) async fn run(
+@@ -126,12 +154,34 @@ pub(crate) async fn run(
          .output_spiller()
          .maybe_spill_additional_contexts(additional_contexts)
          .await;
@@ -3100,7 +3431,7 @@ index 9124431bc1..38e9a88612 100644
      }
  }
  
-@@ -145,6 +188,12 @@ fn parse_completed(
+@@ -145,6 +195,12 @@ fn parse_completed(
      let mut should_stop = false;
      let mut stop_reason = None;
      let mut additional_contexts_for_model = Vec::new();
@@ -3113,7 +3444,7 @@ index 9124431bc1..38e9a88612 100644
  
      match run_result.error.as_deref() {
          Some(error) => {
-@@ -180,6 +229,12 @@ fn parse_completed(
+@@ -180,6 +236,12 @@ fn parse_completed(
                      }
                      let _ = parsed.universal.suppress_output;
                      if handler.can_apply_control_effects() {
@@ -3126,7 +3457,7 @@ index 9124431bc1..38e9a88612 100644
                          if !parsed.universal.continue_processing {
                              status = HookRunStatus::Stopped;
                              should_stop = true;
-@@ -269,6 +324,12 @@ fn parse_completed(
+@@ -269,6 +331,12 @@ fn parse_completed(
              should_stop,
              stop_reason,
              additional_contexts_for_model,
@@ -3139,7 +3470,7 @@ index 9124431bc1..38e9a88612 100644
          },
          completion_order: 0,
      }
-@@ -280,11 +341,18 @@ fn serialization_failure_outcome(hook_events: Vec<HookCompletedEvent>) -> UserPr
+@@ -280,11 +348,18 @@ fn serialization_failure_outcome(hook_events: Vec<HookCompletedEvent>) -> UserPr
          should_stop: false,
          stop_reason: None,
          additional_contexts: Vec::new(),
@@ -3158,7 +3489,7 @@ index 9124431bc1..38e9a88612 100644
      use codex_protocol::protocol::HookEventName;
      use codex_protocol::protocol::HookOutputEntry;
      use codex_protocol::protocol::HookOutputEntryKind;
-@@ -320,6 +388,12 @@ mod tests {
+@@ -320,6 +395,12 @@ mod tests {
                      text: "do not inject".to_string(),
                      limit: Default::default(),
                  }],
@@ -3171,7 +3502,7 @@ index 9124431bc1..38e9a88612 100644
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Stopped);
-@@ -359,6 +433,12 @@ mod tests {
+@@ -359,6 +440,12 @@ mod tests {
                      text: "do not inject".to_string(),
                      limit: Default::default(),
                  }],
@@ -3184,7 +3515,7 @@ index 9124431bc1..38e9a88612 100644
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
-@@ -392,6 +472,12 @@ mod tests {
+@@ -392,6 +479,12 @@ mod tests {
                  should_stop: false,
                  stop_reason: None,
                  additional_contexts_for_model: Vec::new(),
@@ -3197,7 +3528,7 @@ index 9124431bc1..38e9a88612 100644
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Failed);
-@@ -434,6 +520,12 @@ mod tests {
+@@ -434,6 +527,12 @@ mod tests {
                  should_stop: true,
                  stop_reason: Some("blocked by policy".to_string()),
                  additional_contexts_for_model: Vec::new(),
@@ -3210,7 +3541,7 @@ index 9124431bc1..38e9a88612 100644
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
-@@ -455,6 +547,25 @@ mod tests {
+@@ -455,6 +554,25 @@ mod tests {
          assert!(!parsed.data.should_stop);
      }
  
@@ -3237,7 +3568,7 @@ index 9124431bc1..38e9a88612 100644
          handler_with_async(/*async*/ false)
      }
 diff --git a/codex-rs/hooks/src/schema.rs b/codex-rs/hooks/src/schema.rs
-index bb50807af5..b8175498fa 100644
+index bb50807af5..cbfdeceff8 100644
 --- a/codex-rs/hooks/src/schema.rs
 +++ b/codex-rs/hooks/src/schema.rs
 @@ -12,6 +12,8 @@ use serde_json::Value;
@@ -3268,11 +3599,20 @@ index bb50807af5..b8175498fa 100644
  }
  
  #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-@@ -577,6 +591,7 @@ pub(crate) struct UserPromptSubmitCommandInput {
+@@ -577,6 +591,16 @@ pub(crate) struct UserPromptSubmitCommandInput {
      #[schemars(schema_with = "user_prompt_submit_hook_event_name_schema")]
      pub hook_event_name: String,
      pub model: String,
 +    pub model_provider: String,
++    /// Opaque ChatGPT account identity for local capacity affinity. Consumers must not display it.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub account_id: Option<String>,
++    /// Latest subscription rate-limit snapshot observed by the active Codex session.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub rate_limits: Option<codex_protocol::protocol::RateLimitSnapshot>,
++    /// Authoritative ordinary subscription permission from account/rateLimits/read.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub ordinary_usage_allowed: Option<bool>,
      #[schemars(schema_with = "permission_mode_schema")]
      pub permission_mode: String,
      pub prompt: String,

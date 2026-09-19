@@ -13,6 +13,12 @@ from rich.table import Table
 
 from .analytics import usage_analytics
 from .audit import AuditStore
+from .capacity import (
+    backend_spend,
+    backend_state,
+    fallback_chain,
+    reset_description,
+)
 from .classifier import (
     OpenAICompatibleClassifier,
     catalog_age_seconds,
@@ -21,7 +27,14 @@ from .classifier import (
     read_api_key,
 )
 from .codex_patch import apply_patch, build_codex, install_binary
-from .config import config_path, default_config, load_config, model_capabilities, save_config
+from .config import (
+    SubscriptionProfileConfig,
+    config_path,
+    default_config,
+    load_config,
+    model_capabilities,
+    save_config,
+)
 from .desktop import (
     DEFAULT_DESTINATION_APP,
     DEFAULT_SOURCE_APP,
@@ -36,6 +49,7 @@ from .install import merge_codex_hook, trust_agentroute_hooks
 from .launcher import launch_codex
 from .models import RouteContext, Tier
 from .pricing import cost_report
+from .profiles import probe_profiles
 from .providers import (
     backend_readiness,
     effective_review_model,
@@ -47,7 +61,9 @@ from .router import Router
 
 app = typer.Typer(no_args_is_help=True, help="Local, auditable model routing for coding agents.")
 desktop_app = typer.Typer(no_args_is_help=True, help="Build and manage Codex Desktop locally.")
+capacity_app = typer.Typer(no_args_is_help=True, help="Manage quota, budgets, and profiles.")
 app.add_typer(desktop_app, name="desktop")
+app.add_typer(capacity_app, name="capacity")
 console = Console()
 
 
@@ -59,9 +75,10 @@ console = Console()
 def launch_codex_command(
     ctx: typer.Context,
     binary: Path | None = typer.Option(None, help="Routed Codex executable."),
+    profile: str | None = typer.Option(None, help="Named isolated ChatGPT profile."),
 ) -> None:
     """Start Codex on the configured default backend before the first turn."""
-    launch_codex(binary, ctx.args)
+    launch_codex(binary, ctx.args, profile)
 
 
 def _format_duration(milliseconds: float | None) -> str:
@@ -75,6 +92,229 @@ def _format_duration(milliseconds: float | None) -> str:
     if seconds >= 1:
         return f"{seconds:.1f} s"
     return f"{milliseconds:.0f} ms"
+
+
+@capacity_app.command("enable")
+def capacity_enable_command(
+    warn_percent: float = typer.Option(85, min=0, max=100),
+    switch_percent: float = typer.Option(95, min=0, max=100),
+    recovery_margin_percent: float = typer.Option(20, min=0, max=100),
+) -> None:
+    """Enable quota and API-budget routing guardrails."""
+    if warn_percent > switch_percent:
+        raise typer.BadParameter("--warn-percent cannot exceed --switch-percent")
+    config = load_config()
+    config.capacity.enabled = True
+    config.capacity.warn_percent = warn_percent
+    config.capacity.switch_percent = switch_percent
+    config.capacity.recovery_margin_percent = recovery_margin_percent
+    save_config(config)
+    console.print(
+        "Capacity management enabled. Automatic routes may fail over between ready "
+        "backends; explicit/sticky routes fail closed."
+    )
+
+
+@capacity_app.command("disable")
+def capacity_disable_command() -> None:
+    """Disable automatic quota and budget enforcement."""
+    config = load_config()
+    config.capacity.enabled = False
+    save_config(config)
+    console.print("Capacity management disabled; routing behavior is unchanged by quota state.")
+
+
+@capacity_app.command("budget")
+def capacity_budget_command(
+    backend: str,
+    daily: float | None = typer.Option(None, min=0.01, help="Daily USD limit."),
+    monthly: float | None = typer.Option(None, min=0.01, help="Monthly USD limit."),
+    clear_daily: bool = typer.Option(False, help="Remove the daily limit."),
+    clear_monthly: bool = typer.Option(False, help="Remove the monthly limit."),
+) -> None:
+    """Set audited API-equivalent spend limits for one backend."""
+    config = load_config()
+    backend = backend.lower()
+    if backend not in config.backends or backend == "gpt":
+        raise typer.BadParameter("budgets apply to configured API backends, not gpt")
+    target = config.backends[backend]
+    if daily is not None:
+        target.daily_budget_usd = daily
+    if monthly is not None:
+        target.monthly_budget_usd = monthly
+    if clear_daily:
+        target.daily_budget_usd = None
+    if clear_monthly:
+        target.monthly_budget_usd = None
+    save_config(config)
+    console.print(
+        f"{backend} budget: daily "
+        f"{target.daily_budget_usd if target.daily_budget_usd is not None else 'unlimited'}; "
+        "monthly "
+        f"{target.monthly_budget_usd if target.monthly_budget_usd is not None else 'unlimited'} "
+        "USD."
+    )
+
+
+@capacity_app.command("fallback")
+def capacity_fallback_command(
+    backend: str,
+    fallback: str | None = typer.Argument(None),
+) -> None:
+    """Set or clear a backend's next automatic fallback."""
+    config = load_config()
+    backend = backend.lower()
+    fallback = fallback.lower() if fallback else None
+    if backend not in config.backends:
+        raise typer.BadParameter(f"unknown backend: {backend}")
+    if fallback is not None and fallback not in config.backends:
+        raise typer.BadParameter(f"unknown fallback backend: {fallback}")
+    if fallback == backend:
+        raise typer.BadParameter("a backend cannot fall back to itself")
+    config.backends[backend].fallback_backend = fallback
+    save_config(config)
+    console.print(
+        f"{backend} fallback: {fallback or 'none'}. "
+        "Preference rings are supported; each backend is tried at most once per turn."
+    )
+
+
+@capacity_app.command("profile-add")
+def capacity_profile_add_command(
+    name: str,
+    codex_home: Path,
+    priority: int = typer.Option(100),
+    select: bool = typer.Option(False, "--select", help="Use for future launches."),
+) -> None:
+    """Register an isolated CODEX_HOME without reading or copying credentials."""
+    config = load_config()
+    name = name.strip().lower()
+    if not name:
+        raise typer.BadParameter("profile name cannot be empty")
+    config.capacity.profiles[name] = SubscriptionProfileConfig(
+        codex_home=str(codex_home.expanduser()), priority=priority
+    )
+    if select or config.capacity.active_profile is None:
+        config.capacity.active_profile = name
+    save_config(config)
+    console.print(
+        f"Added profile {name} → {codex_home.expanduser()}. "
+        "Sign in inside that CODEX_HOME, then relaunch Codex."
+    )
+
+
+@capacity_app.command("profile-remove")
+def capacity_profile_remove_command(name: str) -> None:
+    """Remove a profile reference; its CODEX_HOME and credentials are untouched."""
+    config = load_config()
+    name = name.lower()
+    if name not in config.capacity.profiles:
+        raise typer.BadParameter(f"unknown subscription profile: {name}")
+    del config.capacity.profiles[name]
+    if config.capacity.active_profile == name:
+        config.capacity.active_profile = None
+    save_config(config)
+    console.print(f"Removed profile {name}; its files were not deleted.")
+
+
+@capacity_app.command("profile-select")
+def capacity_profile_select_command(name: str) -> None:
+    """Select the profile used by future CLI and Desktop launches."""
+    config = load_config()
+    name = name.lower()
+    if name not in config.capacity.profiles:
+        raise typer.BadParameter(f"unknown subscription profile: {name}")
+    config.capacity.active_profile = name
+    save_config(config)
+    console.print(
+        f"Selected {name}. Existing sessions keep their current account; checkpoint and "
+        "relaunch Codex to apply the profile."
+    )
+
+
+@capacity_app.command("status")
+def capacity_status_command(
+    json_output: bool = typer.Option(False, "--json"),
+    no_probe: bool = typer.Option(False, help="Skip app-server profile quota reads."),
+) -> None:
+    """Show subscription quota, API budgets, fallbacks, and profile readiness."""
+    config = load_config()
+    rows = AuditStore().rows_since()
+    daily, monthly = backend_spend(rows, config)
+    profiles = () if no_probe else probe_profiles(config)
+    backend_rows = []
+    for name, backend in config.backends.items():
+        state = backend_state(
+            config,
+            name,
+            daily_spend=daily.get(name, 0.0),
+            monthly_spend=monthly.get(name, 0.0),
+        )
+        ready, problems = backend_readiness(config, name)
+        backend_rows.append(
+            {
+                "name": name,
+                "ready": ready,
+                "readiness_detail": ", ".join(problems) or "ready",
+                "status": state.status,
+                "detail": state.detail,
+                "daily_spend_usd": daily.get(name, 0.0),
+                "daily_budget_usd": backend.daily_budget_usd,
+                "monthly_spend_usd": monthly.get(name, 0.0),
+                "monthly_budget_usd": backend.monthly_budget_usd,
+                "fallback_chain": fallback_chain(config, name),
+            }
+        )
+    payload = {
+        "enabled": config.capacity.enabled,
+        "warn_percent": config.capacity.warn_percent,
+        "switch_percent": config.capacity.switch_percent,
+        "recovery_margin_percent": config.capacity.recovery_margin_percent,
+        "active_profile": config.capacity.active_profile,
+        "backends": backend_rows,
+        "profiles": [item.as_dict() for item in profiles],
+    }
+    if json_output:
+        console.print_json(json.dumps(payload, sort_keys=True))
+        return
+    mode = "enabled" if config.capacity.enabled else "disabled"
+    console.print(
+        f"[bold]Capacity management: {mode}[/bold] · warn {config.capacity.warn_percent:g}% "
+        f"· switch {config.capacity.switch_percent:g}% · recovery margin "
+        f"{config.capacity.recovery_margin_percent:g}%"
+    )
+    table = Table("Backend", "Ready", "Capacity", "Today", "Month", "Fallback")
+    for item in backend_rows:
+        table.add_row(
+            item["name"],
+            "yes" if item["ready"] else item["readiness_detail"],
+            f"{item['status']}: {item['detail']}",
+            f"${item['daily_spend_usd']:.2f} / "
+            f"{item['daily_budget_usd'] if item['daily_budget_usd'] else '∞'}",
+            f"${item['monthly_spend_usd']:.2f} / "
+            f"{item['monthly_budget_usd'] if item['monthly_budget_usd'] else '∞'}",
+            " → ".join(item["fallback_chain"]) or "—",
+        )
+    console.print(table)
+    if no_probe and config.capacity.profiles:
+        console.print("Profile probes skipped; run without --no-probe for live quota state.")
+    elif profiles:
+        profile_table = Table("Profile", "Active", "Signed in", "Account", "Capacity", "Reset")
+        for item in profiles:
+            profile_table.add_row(
+                item.name,
+                "yes" if item.name == config.capacity.active_profile else "",
+                "yes" if item.authenticated else "no",
+                item.account_hash or "—",
+                f"{item.capacity.status}: {item.capacity.detail}",
+                reset_description(item.capacity.resets_at) or "—",
+            )
+        console.print(profile_table)
+    if config.capacity.profiles:
+        console.print(
+            "Profile changes apply only at launch. Existing sessions keep their current account "
+            "to preserve provider state; checkpoint and relaunch to switch subscriptions."
+        )
 
 
 @app.command("init")
@@ -494,6 +734,7 @@ def analytics_command(
             "classifiers": [asdict(item) for item in report.classifiers],
             "duration": asdict(report.duration),
             "reconciliation": asdict(report.reconciliation),
+            "capacity": asdict(report.capacity),
             "longest_turns": [asdict(item) for item in report.longest_turns],
         }
         console.print_json(json.dumps(payload, sort_keys=True))
@@ -525,6 +766,18 @@ def analytics_command(
         f"pending {reconciliation.pending}; stale {reconciliation.stale_unreconciled}; "
         f"failed {reconciliation.failed}; interrupted {reconciliation.interrupted}"
     )
+    capacity = report.capacity
+    console.print(
+        "Capacity: "
+        f"warnings {capacity.warnings}; fallbacks {capacity.fallbacks}; "
+        f"blocked {capacity.blocked}; fallback runtime "
+        f"{_format_duration(capacity.fallback_duration_ms)}"
+    )
+    if capacity.by_route:
+        console.print(
+            "Fallback routes: "
+            + ", ".join(f"{route}={count}" for route, count in capacity.by_route.items())
+        )
     console.print(
         f"Routed answer cost: {currency} {report.overall.actual_cost:.4f}; "
         f"fixed {baseline}: {currency} {report.overall.baseline_cost:.4f}; "

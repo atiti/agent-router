@@ -45,6 +45,9 @@ def invoke(
     model_provider="openai",
     flat_agent_id=None,
     flat_agent_type=None,
+    account_id=None,
+    rate_limits=None,
+    ordinary_usage_allowed=None,
 ):
     source = io.StringIO(
         json.dumps(
@@ -57,6 +60,9 @@ def invoke(
                 "subagent": subagent,
                 "agent_id": flat_agent_id,
                 "agent_type": flat_agent_type,
+                "account_id": account_id,
+                "rate_limits": rate_limits,
+                "ordinary_usage_allowed": ordinary_usage_allowed,
                 "transcript_path": str(transcript_path) if transcript_path else None,
             }
         )
@@ -64,6 +70,47 @@ def invoke(
     sink = io.StringIO()
     assert codex_user_prompt_submit(source, sink, config=config, store=store) == 0
     return json.loads(sink.getvalue())
+
+
+def test_authoritative_subscription_lock_falls_back_with_visible_message(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "check status",
+        account_id="never-store-this-account-id",
+        ordinary_usage_allowed=False,
+    )
+
+    specific = output["hookSpecificOutput"]
+    assert output["continue"] is True
+    assert specific["modelProvider"] == "agentroute-azure"
+    assert specific["stripProviderState"] is True
+    assert "CAPACITY FALLBACK" in specific["routeMessage"]
+    assert "using azure" in specific["routeMessage"]
+
+
+def test_explicit_subscription_lock_fails_closed_with_auto_guidance(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "@gpt check status",
+        ordinary_usage_allowed=False,
+    )
+
+    assert output["continue"] is False
+    assert "@auto" in output["systemMessage"]
+    assert "checkpointing and relaunching" in output["systemMessage"]
 
 
 def test_observe_mode_does_not_emit_override(tmp_path):

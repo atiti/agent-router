@@ -51,3 +51,28 @@ def test_backend_default_rejects_unready_backend(tmp_path, monkeypatch):
     assert result.exit_code == 2
     assert "backend is not ready" in result.output
     assert set(load_config(path).routing.backend_by_tier.values()) == {"gpt"}
+
+
+def test_capacity_commands_persist_guardrails_and_keep_profiles_isolated(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    profile_home = tmp_path / "codex-personal"
+    profile_home.mkdir()
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
+    config = default_config()
+    save_config(config, path)
+
+    assert runner.invoke(app, ["capacity", "enable"]).exit_code == 0
+    assert runner.invoke(app, ["capacity", "budget", "azure", "--daily", "12"]).exit_code == 0
+    assert runner.invoke(app, ["capacity", "fallback", "gpt", "azure"]).exit_code == 0
+    added = runner.invoke(
+        app,
+        ["capacity", "profile-add", "personal", str(profile_home), "--select"],
+    )
+
+    updated = load_config(path)
+    assert added.exit_code == 0
+    assert updated.capacity.enabled is True
+    assert updated.backends["azure"].daily_budget_usd == 12
+    assert updated.backends["gpt"].fallback_backend == "azure"
+    assert updated.capacity.active_profile == "personal"
+    assert updated.capacity.profiles["personal"].codex_home == str(profile_home)

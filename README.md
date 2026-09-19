@@ -151,6 +151,69 @@ a backend with `--review-model MODEL`; `agentroute backend-status` shows the eff
 Guardian remains fail-closed and retains the same local policy, sandbox evidence, and authority
 regardless of reviewer model.
 
+## Capacity management and subscription failover
+
+Capacity management is opt-in. It reads the ordinary ChatGPT subscription allowance already
+polled by Codex's app-server, and uses locally audited token receipts to enforce optional
+daily/monthly USD ceilings for API backends. It makes no extra provider request when you submit a
+prompt. Account identifiers are reduced to a local 16-character hash in the audit database and are
+never shown in a banner, config file, or report.
+
+```sh
+# Warn at 85%, move automatic routes away at 95%, and require 20% headroom before recovery.
+agentroute capacity enable
+
+# API ceilings use actual local receipt-derived API-equivalent cost, not a subscription invoice.
+agentroute capacity budget azure --daily 20 --monthly 300
+agentroute capacity budget deepseek --daily 10
+
+# Choose the preference ring. A ring is allowed; each backend is tried once per turn.
+agentroute capacity fallback gpt azure
+agentroute capacity fallback azure deepseek
+agentroute capacity fallback deepseek gpt
+
+agentroute capacity status
+agentroute analytics --days 30
+```
+
+When capacity is healthy the route banner includes `capacity healthy · subscription 62% used`.
+At the warning threshold it says `CAPACITY WARNING` and includes the reset time when available.
+For an automatic route AgentRoute can safely move the *next* turn to the next ready backend:
+
+```text
+CAPACITY FALLBACK: gpt capacity unavailable (…) · using azure
+```
+
+Provider-specific encrypted state is stripped on that boundary, while ordinary conversation and
+portable tool history remain. AgentRoute never replays an in-flight provider request.
+
+An explicit `@gpt`, `@azure`, or sticky session route is intentionally fail-closed when that
+backend is exhausted or over budget. The banner and stop message explain the next action:
+
+```text
+CAPACITY BLOCKED: explicit session route gpt is capacity-locked. Use @auto to permit backend fallback.
+```
+
+### Multiple ChatGPT subscriptions
+
+Each subscription must have an isolated `CODEX_HOME`; AgentRoute never copies credentials or swaps
+accounts inside a running thread. Register profiles, sign into each one separately, and choose the
+profile for a future launch:
+
+```sh
+agentroute capacity profile-add personal ~/.codex-personal --priority 10 --select
+agentroute capacity profile-add work ~/.codex-work --priority 20
+
+# Launch-time selection probes app-server account and quota state.
+agentroute capacity status
+agentroute launch-codex --profile work
+```
+
+If automatic profile selection chooses a healthier profile, the launcher prints
+`PROFILE FAILOVER` before it starts a *new* Codex process. Existing CLI/Desktop sessions retain
+their account and provider state. Checkpoint the work and relaunch to switch profiles. Desktop uses
+the same launcher, so it follows the exact same boundary and message.
+
 ## Optional LLM classifier
 
 For best routing quality, use a small cloud model only for ambiguous turns. This avoids maintaining

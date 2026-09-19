@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import select
 import shutil
 import subprocess
@@ -19,9 +20,18 @@ def hook_command(event: str = "user-prompt-submit") -> str:
 class _CodexAppServer:
     """Minimal JSON-RPC client for scoped hook discovery and trust writes."""
 
-    def __init__(self, codex_binary: Path, timeout: float = 15.0) -> None:
+    def __init__(
+        self,
+        codex_binary: Path,
+        timeout: float = 15.0,
+        *,
+        codex_home: Path | None = None,
+    ) -> None:
         self.timeout = timeout
         self.next_request_id = 1
+        environment = os.environ.copy()
+        if codex_home is not None:
+            environment["CODEX_HOME"] = str(codex_home.expanduser())
         self.process = subprocess.Popen(
             [str(codex_binary), "app-server", "--stdio"],
             stdin=subprocess.PIPE,
@@ -29,6 +39,7 @@ class _CodexAppServer:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=environment,
         )
         self.request(
             "initialize",

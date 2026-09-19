@@ -26,6 +26,9 @@ class ExecutionBackendConfig(BaseModel):
     api_key_header: str = "authorization"
     tool_compatibility: Literal["full", "functions_and_apply_patch"] | None = None
     review_model: str | None = None
+    daily_budget_usd: float | None = Field(default=None, gt=0)
+    monthly_budget_usd: float | None = Field(default=None, gt=0)
+    fallback_backend: str | None = None
     tiers: dict[str, ModelTarget]
 
     def target(self, tier: Tier) -> ModelTarget:
@@ -109,6 +112,27 @@ class UIConfig(BaseModel):
     verbosity: Literal["silent", "compact", "verbose", "debug"] = "compact"
 
 
+class SubscriptionProfileConfig(BaseModel):
+    """An isolated Codex login. Credentials remain inside its CODEX_HOME."""
+
+    codex_home: str
+    enabled: bool = True
+    priority: int = 100
+
+
+class CapacityConfig(BaseModel):
+    """Opt-in subscription and API spend guardrails."""
+
+    enabled: bool = False
+    warn_percent: float = Field(default=85, ge=0, le=100)
+    switch_percent: float = Field(default=95, ge=0, le=100)
+    recovery_margin_percent: float = Field(default=20, ge=0, le=100)
+    default_fallback_backend: str | None = None
+    active_profile: str | None = None
+    auto_select_profile: bool = True
+    profiles: dict[str, SubscriptionProfileConfig] = Field(default_factory=dict)
+
+
 class ModelPrice(BaseModel):
     input_per_million: float = Field(ge=0)
     cached_input_per_million: float = Field(ge=0)
@@ -181,6 +205,7 @@ class AppConfig(BaseModel):
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
+    capacity: CapacityConfig = Field(default_factory=CapacityConfig)
     pricing: PricingConfig = Field(default_factory=PricingConfig)
     capabilities: CapabilityConfig = Field(default_factory=CapabilityConfig)
 
@@ -212,6 +237,7 @@ def default_config() -> AppConfig:
                 enabled=True,
                 codex_provider="openai",
                 display_name="ChatGPT subscription",
+                fallback_backend="azure",
                 tiers=gpt_tiers,
             ),
             "azure": ExecutionBackendConfig(
@@ -219,6 +245,7 @@ def default_config() -> AppConfig:
                 display_name="Azure OpenAI API",
                 api_key_env="AZURE_OPENAI_API_KEY",
                 api_key_header="api-key",
+                fallback_backend="deepseek",
                 tiers={
                     "fast": ModelTarget(model="gpt-5-mini", reasoning_effort="low"),
                     "normal": ModelTarget(model="gpt-5", reasoning_effort="medium"),
@@ -232,6 +259,7 @@ def default_config() -> AppConfig:
                 base_url="https://api.deepseek.com",
                 api_key_env="DEEPSEEK_API_KEY",
                 tool_compatibility="functions_and_apply_patch",
+                fallback_backend="gpt",
                 tiers={
                     "fast": ModelTarget(model="deepseek-flash", reasoning_effort="low"),
                     "normal": ModelTarget(model="deepseek-flash", reasoning_effort="medium"),
