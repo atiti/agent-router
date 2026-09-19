@@ -6,13 +6,24 @@ AGENTROUTE_HOME_DIR=${AGENTROUTE_HOME:-"$HOME/.agentroute"}
 AGENTROUTE_BIN_DIR="$AGENTROUTE_HOME_DIR/bin"
 ROLLBACK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/agentroute-release-rollback.XXXXXX")
 INSTALL_COMMITTED=0
+
+atomic_install_file() {
+    SOURCE=$1
+    DESTINATION=$2
+    DESTINATION_DIR=$(dirname "$DESTINATION")
+    DESTINATION_NAME=$(basename "$DESTINATION")
+    STAGED=$(mktemp "$DESTINATION_DIR/.${DESTINATION_NAME}.install.XXXXXX")
+    cp -p "$SOURCE" "$STAGED"
+    mv -f "$STAGED" "$DESTINATION"
+}
+
 rollback_or_cleanup() {
     if [ "$INSTALL_COMMITTED" != 1 ]; then
         for name in codex-bin codex-code-mode-host codex build-id; do
             if [ -f "$ROLLBACK_DIR/$name" ]; then
                 case "$name" in
-                    build-id) cp -p "$ROLLBACK_DIR/$name" "$AGENTROUTE_HOME_DIR/build-id" ;;
-                    *) cp -p "$ROLLBACK_DIR/$name" "$AGENTROUTE_BIN_DIR/$name" ;;
+                    build-id) atomic_install_file "$ROLLBACK_DIR/$name" "$AGENTROUTE_HOME_DIR/build-id" ;;
+                    *) atomic_install_file "$ROLLBACK_DIR/$name" "$AGENTROUTE_BIN_DIR/$name" ;;
                 esac
             elif [ -f "$ROLLBACK_DIR/$name.missing" ]; then
                 case "$name" in
@@ -72,10 +83,10 @@ if [ -z "$WHEEL" ]; then
 fi
 uv pip install --python "$AGENTROUTE_HOME_DIR/venv/bin/python" --upgrade "$WHEEL"
 
-cp "$PAYLOAD_ROOT/codex-bin" "$AGENTROUTE_BIN_DIR/codex-bin"
-cp "$PAYLOAD_ROOT/codex-code-mode-host" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
-cp "$PAYLOAD_ROOT/codex-launcher" "$AGENTROUTE_BIN_DIR/codex"
-cp "$PAYLOAD_ROOT/build-id" "$AGENTROUTE_HOME_DIR/build-id"
+atomic_install_file "$PAYLOAD_ROOT/codex-bin" "$AGENTROUTE_BIN_DIR/codex-bin"
+atomic_install_file "$PAYLOAD_ROOT/codex-code-mode-host" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
+atomic_install_file "$PAYLOAD_ROOT/codex-launcher" "$AGENTROUTE_BIN_DIR/codex"
+atomic_install_file "$PAYLOAD_ROOT/build-id" "$AGENTROUTE_HOME_DIR/build-id"
 ln -sf "$AGENTROUTE_HOME_DIR/venv/bin/agentroute" "$AGENTROUTE_BIN_DIR/agentroute"
 chmod 755 "$AGENTROUTE_BIN_DIR/codex" "$AGENTROUTE_BIN_DIR/codex-bin" \
     "$AGENTROUTE_BIN_DIR/codex-code-mode-host"

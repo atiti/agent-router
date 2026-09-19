@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.25 — 2026-09-19
+
+- Install and roll back signed macOS release executables with atomic same-directory replacement,
+  avoiding stale kernel code-signing state when a prior routed binary is overwritten in place.
+
 ## 0.5.24 — 2026-09-19
 
 - Preserve the minimal macOS JIT entitlement on `codex-code-mode-host` across source installs,

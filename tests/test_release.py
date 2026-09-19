@@ -36,6 +36,9 @@ def test_release_installer_is_transactional_and_validates_runtime():
     installer = (Path(__file__).parents[1] / "packaging" / "install-release.sh").read_text()
 
     assert "agentroute-release-rollback" in installer
+    assert "atomic_install_file" in installer
+    assert 'mv -f "$STAGED" "$DESTINATION"' in installer
+    assert 'cp "$PAYLOAD_ROOT/codex-bin" "$AGENTROUTE_BIN_DIR/codex-bin"' not in installer
     assert "restored the previous runtime files" in installer
     assert 'codex-bin" --version' in installer
     assert "code-mode-smoke.py" in installer
