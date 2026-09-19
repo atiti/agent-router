@@ -84,7 +84,7 @@ def launch_codex(
         if profile is None and selected_name != config.capacity.active_profile:
             print(
                 "◆ PROFILE FAILOVER · starting a new Codex process with this profile; "
-                "existing sessions are never switched in place",
+                "active sessions can also switch profiles at a turn boundary",
                 file=sys.stderr,
             )
     argv = codex_argv(binary, user_args, config)

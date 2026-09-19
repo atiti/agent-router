@@ -29,8 +29,16 @@ def test_warning_and_recovery_hysteresis_are_explicit():
     )
 
     assert warning.status == "warning"
+    assert warning.detail == "subscription 90% used / 10% remaining"
     assert held.status == "exhausted"
     assert held.trigger == "subscription_recovery"
+
+
+def test_subscription_usage_reports_used_and_remaining_percentages():
+    state = subscription_state(enabled_config(), {"primary": {"usedPercent": 62}})
+
+    assert state.status == "healthy"
+    assert state.detail == "subscription 62% used / 38% remaining"
 
 
 def test_fallback_ring_is_bounded_and_deduplicated():
