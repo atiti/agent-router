@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.24 — 2026-09-19
+
+- Preserve the minimal macOS JIT entitlement on `codex-code-mode-host` across source installs,
+  signed release artifacts, and routed Desktop builds so V8 can reserve its executable CodeRange.
+- Fail builds and release installation closed unless a framed Code Mode session can execute real
+  JavaScript, catching runtime-signing failures that `--help` and handshake-only checks miss.
+
 ## 0.5.23 — 2026-09-18
 
 - Route spawned subagents from Codex's existing non-secret `task_name` while preserving the stock

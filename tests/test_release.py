@@ -38,7 +38,10 @@ def test_release_installer_is_transactional_and_validates_runtime():
     assert "agentroute-release-rollback" in installer
     assert "restored the previous runtime files" in installer
     assert 'codex-bin" --version' in installer
+    assert "code-mode-smoke.py" in installer
+    assert "codex-code-mode-host" in installer
     assert "valid Developer ID signature" in installer
+    assert installer.index("code-mode-smoke.py") < installer.index("INSTALL_COMMITTED=1")
 
 
 def test_macos_release_build_fails_closed_without_developer_id():
@@ -49,6 +52,9 @@ def test_macos_release_build_fails_closed_without_developer_id():
     assert "xcrun notarytool submit" in builder
     assert "--wait" in builder
     assert "spctl --assess" not in builder
+    assert "codex-code-mode-host.entitlements.plist" in builder
+    assert "code-mode-smoke.py" in builder
+    assert 'cp "$PROJECT_ROOT/src/agentroute/code_mode_smoke.py"' in builder
 
 
 def test_release_workflow_uses_overwatchr_signing_secret_names():

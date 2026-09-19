@@ -8,6 +8,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .code_mode_smoke import smoke_code_mode_host
 from .config import agentroute_home
 
 DEFAULT_SOURCE_APP = Path("/Applications/ChatGPT.app")
@@ -82,10 +83,11 @@ def build_desktop_app(
     code_mode_host = home / "bin/codex-code-mode-host"
     launcher = _assets_dir() / "codex-launcher"
     entitlements = _assets_dir() / "ChatGPT-Routed.entitlements.plist"
+    code_mode_entitlements = _assets_dir() / "codex-code-mode-host.entitlements.plist"
 
     if not source.is_dir():
         raise FileNotFoundError(f"official source app does not exist: {source}")
-    for required in (codex, code_mode_host, launcher, entitlements):
+    for required in (codex, code_mode_host, launcher, entitlements, code_mode_entitlements):
         if not required.exists():
             raise FileNotFoundError(f"required AgentRoute asset does not exist: {required}")
     source_version = _codex_version(source / "Contents/Resources/codex")
@@ -143,6 +145,8 @@ def build_desktop_app(
             "--deep",
             "--sign",
             signing_identity,
+            "--entitlements",
+            code_mode_entitlements,
             resources / "codex-code-mode-host",
         )
         _run(
@@ -158,6 +162,7 @@ def build_desktop_app(
             staging_app,
         )
         _run("codesign", "--verify", "--deep", "--strict", "--verbose=2", staging_app)
+        smoke_code_mode_host(resources / "codex-code-mode-host")
         _run(resources / "codex", "app-server", "--help", capture=True)
         shutil.move(staging_app, destination)
     except Exception:

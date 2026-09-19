@@ -40,8 +40,9 @@ cp "$BUILD_HOME/bin/codex-code-mode-host" "$PAYLOAD/codex-code-mode-host"
 cp "$BUILD_HOME/build-id" "$PAYLOAD/build-id"
 cp "$PROJECT_ROOT/packaging/codex-launcher" "$PAYLOAD/codex-launcher"
 cp "$PROJECT_ROOT/packaging/install-release.sh" "$PAYLOAD/install.sh"
+cp "$PROJECT_ROOT/src/agentroute/code_mode_smoke.py" "$PAYLOAD/code-mode-smoke.py"
 chmod 755 "$PAYLOAD/install.sh" "$PAYLOAD/codex-launcher" "$PAYLOAD/codex-bin" \
-    "$PAYLOAD/codex-code-mode-host"
+    "$PAYLOAD/codex-code-mode-host" "$PAYLOAD/code-mode-smoke.py"
 if [ "$PLATFORM" = darwin ]; then
     if [ -z "${AGENTROUTE_RELEASE_SIGNING_IDENTITY:-}" ]; then
         printf 'Refusing to build a public macOS release without a Developer ID identity.\n' >&2
@@ -50,6 +51,7 @@ if [ "$PLATFORM" = darwin ]; then
     codesign --force --deep --options runtime --timestamp \
         --sign "$AGENTROUTE_RELEASE_SIGNING_IDENTITY" "$PAYLOAD/codex-bin"
     codesign --force --deep --options runtime --timestamp \
+        --entitlements "$PROJECT_ROOT/assets/desktop/codex-code-mode-host.entitlements.plist" \
         --sign "$AGENTROUTE_RELEASE_SIGNING_IDENTITY" "$PAYLOAD/codex-code-mode-host"
     codesign --verify --strict --verbose=2 "$PAYLOAD/codex-bin"
     codesign --verify --strict --verbose=2 "$PAYLOAD/codex-code-mode-host"
@@ -77,6 +79,7 @@ if [ "$PLATFORM" = darwin ]; then
             --wait
     fi
 fi
+python3 "$PROJECT_ROOT/src/agentroute/code_mode_smoke.py" "$PAYLOAD/codex-code-mode-host"
 
 VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$PROJECT_ROOT/pyproject.toml" | head -1)
 printf '%s\n' "$VERSION" >"$PAYLOAD/VERSION"

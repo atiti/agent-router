@@ -33,3 +33,15 @@ def test_adhoc_desktop_entitlements_exclude_openai_restricted_groups():
     assert "com.apple.developer.team-identifier" not in entitlements
     assert "com.apple.security.application-groups" not in entitlements
     assert "keychain-access-groups" not in entitlements
+
+
+def test_code_mode_host_entitlements_are_minimal_and_packaged():
+    path = ROOT / "assets/desktop/codex-code-mode-host.entitlements.plist"
+    packaged_path = (
+        ROOT / "src/agentroute/desktop_assets/codex-code-mode-host.entitlements.plist"
+    )
+    assert path.read_bytes() == packaged_path.read_bytes()
+    with path.open("rb") as handle:
+        entitlements = plistlib.load(handle)
+
+    assert entitlements == {"com.apple.security.cs.allow-jit": True}

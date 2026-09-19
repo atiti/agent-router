@@ -32,7 +32,7 @@ if ! command -v uv >/dev/null 2>&1; then
     printf 'Missing uv. Install it from https://docs.astral.sh/uv/ and retry.\n' >&2
     exit 1
 fi
-for required in codex-bin codex-code-mode-host codex-launcher; do
+for required in codex-bin codex-code-mode-host codex-launcher code-mode-smoke.py; do
     if [ ! -f "$PAYLOAD_ROOT/$required" ]; then
         printf 'Release payload is incomplete: missing %s\n' "$required" >&2
         exit 1
@@ -85,6 +85,8 @@ if ! "$AGENTROUTE_BIN_DIR/codex-bin" --version >/dev/null 2>&1; then
     printf 'macOS releases require a valid Developer ID signature; use a local source build if this release is ad-hoc signed.\n' >&2
     exit 1
 fi
+"$AGENTROUTE_HOME_DIR/venv/bin/python" "$PAYLOAD_ROOT/code-mode-smoke.py" \
+    "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
 
 "$AGENTROUTE_BIN_DIR/agentroute" setup
 case "${SHELL:-}" in

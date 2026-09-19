@@ -151,7 +151,6 @@ if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
         # Codex can contain nested executable code. Deep-sign both local
         # binaries so macOS taskgated validates the complete code hierarchy.
         codesign --force --deep --sign - "$AGENTROUTE_BIN_DIR/codex-bin"
-        codesign --force --deep --sign - "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
     fi
     chmod 755 "$AGENTROUTE_BIN_DIR/codex-bin" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
     printf '%s\n' "$AGENTROUTE_BUILD_ID" >"$AGENTROUTE_BUILD_ID_FILE"
@@ -162,6 +161,17 @@ if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
         rm -rf "$AGENTROUTE_CODE_MODE_HOST_TMP"
     fi
 fi
+
+if [ "$(uname -s)" = Darwin ]; then
+    # Re-sign even when the compiled build ID is unchanged so installer-only
+    # entitlement fixes repair an existing helper without rebuilding Codex.
+    codesign --force --deep --sign - \
+        --entitlements "$AGENTROUTE_PROJECT_ROOT/assets/desktop/codex-code-mode-host.entitlements.plist" \
+        "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
+fi
+"$AGENTROUTE_HOME_DIR/venv/bin/python" \
+    "$AGENTROUTE_PROJECT_ROOT/src/agentroute/code_mode_smoke.py" \
+    "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
 
 if [ -n "$AGENTROUTE_STOCK_CODEX" ] && [ "$AGENTROUTE_STOCK_CODEX" != "$AGENTROUTE_BIN_DIR/codex" ]; then
     ln -sf "$AGENTROUTE_STOCK_CODEX" "$AGENTROUTE_BIN_DIR/codex-stock"

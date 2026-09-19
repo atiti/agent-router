@@ -78,6 +78,8 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "classifier-refresh" in packaged_launcher
     assert 'cp "$AGENTROUTE_PROJECT_ROOT/packaging/codex-launcher"' in installer
     assert "codesign --force --deep --sign -" in installer
+    assert "codex-code-mode-host.entitlements.plist" in installer
+    assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
     assert "provider-routing-v26" in installer

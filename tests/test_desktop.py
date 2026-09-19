@@ -31,8 +31,12 @@ def test_desktop_build_is_local_reversible_and_preserves_bundle_id(tmp_path, mon
     (home / "build-id").write_text("test-build\n", encoding="utf-8")
     monkeypatch.setenv("AGENTROUTE_HOME", str(home))
     monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    smoke_calls = []
+    run_calls = []
+    monkeypatch.setattr(desktop, "smoke_code_mode_host", smoke_calls.append)
 
     def fake_run(*command, capture=False):
+        run_calls.append(command)
         if command[0] == "ditto":
             shutil.copytree(command[1], command[2])
         return subprocess.CompletedProcess(command, 0, stdout="codex-cli test\n", stderr="")
@@ -47,6 +51,16 @@ def test_desktop_build_is_local_reversible_and_preserves_bundle_id(tmp_path, mon
     assert info["CFBundleIdentifier"] == "com.openai.codex"
     assert info["CFBundleDisplayName"] == "ChatGPT-Routed"
     assert info["AgentRouteDesktopBuild"] == "test-build"
+    assert len(smoke_calls) == 1
+    assert smoke_calls[0].name == "codex-code-mode-host"
+    helper_signing = [
+        command
+        for command in run_calls
+        if command[0] == "codesign" and Path(command[-1]).name == "codex-code-mode-host"
+    ]
+    assert len(helper_signing) == 1
+    assert "--entitlements" in helper_signing[0]
+    assert Path(helper_signing[0][-2]).name == "codex-code-mode-host.entitlements.plist"
 
     _, backup = desktop.build_desktop_app(source, destination, replace=True)
     assert backup is not None and backup.exists()

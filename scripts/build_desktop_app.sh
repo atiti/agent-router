@@ -10,6 +10,7 @@ ROUTED_CODEX="$AGENTROUTE_HOME_DIR/bin/codex-bin"
 ROUTED_CODE_MODE_HOST="$AGENTROUTE_HOME_DIR/bin/codex-code-mode-host"
 LAUNCHER="$PROJECT_ROOT/assets/desktop/codex-launcher"
 ADHOC_ENTITLEMENTS="$PROJECT_ROOT/assets/desktop/ChatGPT-Routed.entitlements.plist"
+CODE_MODE_ENTITLEMENTS="$PROJECT_ROOT/assets/desktop/codex-code-mode-host.entitlements.plist"
 
 if [ ! -d "$SOURCE_APP" ]; then
     printf 'Source app does not exist: %s\n' "$SOURCE_APP" >&2
@@ -66,12 +67,15 @@ plutil -replace SUAutomaticallyUpdate -bool false "$INFO_PLIST"
 plutil -insert AgentRouteDesktopBuild -string "$(sed -n '1p' "$AGENTROUTE_HOME_DIR/build-id")" "$INFO_PLIST"
 
 codesign --force --deep --sign "$SIGNING_IDENTITY" "$RESOURCES/codex-bin"
-codesign --force --deep --sign "$SIGNING_IDENTITY" "$RESOURCES/codex-code-mode-host"
+codesign --force --deep --sign "$SIGNING_IDENTITY" \
+    --entitlements "$CODE_MODE_ENTITLEMENTS" "$RESOURCES/codex-code-mode-host"
 
 codesign --force --deep --sign "$SIGNING_IDENTITY" --options runtime \
     --entitlements "$ADHOC_ENTITLEMENTS" "$STAGING_APP"
 
 codesign --verify --deep --strict --verbose=4 "$STAGING_APP"
+"$AGENTROUTE_HOME_DIR/venv/bin/python" \
+    "$PROJECT_ROOT/src/agentroute/code_mode_smoke.py" "$RESOURCES/codex-code-mode-host"
 "$RESOURCES/codex" app-server --help >/dev/null
 mv "$STAGING_APP" "$DESTINATION_APP"
 
