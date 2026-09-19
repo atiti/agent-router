@@ -7,9 +7,10 @@ import sys
 from typing import Any, TextIO
 
 from .audit import AuditStore
-from .capacity import backend_spend
+from .capacity import backend_spend, subscription_state
 from .config import AppConfig, load_config
-from .models import ReasonCode, RouteContext, Tier
+from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
+from .profiles import TurnProfileSelection, select_turn_profile
 from .router import Router
 from .signals import continues_previous_task, is_confirmation, route_overrides
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
@@ -35,6 +36,58 @@ def _subagent_identity(payload: dict[str, Any]) -> tuple[str, str | None]:
     raw_agent_id = payload.get("agent_id") or subagent.get("agent_id")
     agent_id = str(raw_agent_id) if raw_agent_id else None
     return ("subagent" if agent_id else "root", agent_id)
+
+
+def _apply_profile_selection(
+    decision: RouteDecision,
+    selection: TurnProfileSelection,
+    config: AppConfig,
+) -> None:
+    """Keep a GPT route on the selected subscription profile."""
+    if selection.selected is None:
+        return
+    backend = config.backends["gpt"]
+    target = backend.target(decision.tier)
+    decision.backend = "gpt"
+    decision.model_provider = backend.codex_provider
+    decision.model = target.model
+    decision.reasoning_effort = target.reasoning_effort
+    decision.capacity_status = selection.selected.capacity.status
+    decision.capacity_detail = (
+        f"profile {selection.selected.name}: {selection.selected.capacity.detail}"
+    )
+    decision.capacity_trigger = selection.selected.capacity.trigger
+    decision.capacity_requested_backend = "gpt"
+    decision.capacity_account_id = selection.selected.account_hash
+    decision.capacity_blocked = False
+    decision.contributions = [
+        item
+        for item in decision.contributions
+        if item.code not in {ReasonCode.CAPACITY_FALLBACK, ReasonCode.CAPACITY_BLOCKED}
+    ]
+    if selection.switched:
+        decision.contributions.append(
+            ScoreContribution(
+                code=ReasonCode.PROFILE_FAILOVER,
+                weight=0,
+                detail=(
+                    f"ChatGPT profile {selection.current_name or 'current'} exhausted; "
+                    f"using {selection.selected.name}"
+                ),
+            )
+        )
+    decision.reason_codes = [item.code for item in decision.contributions]
+    decision.strip_provider_state = True
+    decision.selection_receipt["subscription_profile"] = {
+        "name": selection.selected.name,
+        "account_hash": selection.selected.account_hash,
+        "source": "failover" if selection.switched else "session_affinity",
+    }
+    decision.selection_receipt_hash = hashlib.sha256(
+        json.dumps(
+            decision.selection_receipt, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def codex_user_prompt_submit(
@@ -99,6 +152,15 @@ def codex_user_prompt_submit(
             rate_limits["ordinary_usage_allowed"] = payload["ordinary_usage_allowed"]
         elif payload.get("ordinaryUsageAllowed") is not None:
             rate_limits["ordinary_usage_allowed"] = payload["ordinaryUsageAllowed"]
+        current_account_id = (
+            str(payload.get("account_id")) if payload.get("account_id") else None
+        )
+        current_subscription = subscription_state(
+            config,
+            rate_limits,
+            current_account_id,
+        )
+        sticky_profile = store.subscription_profile_affinity(session_id)
         context = RouteContext(
             session_id=session_id,
             turn_id=str(payload["turn_id"]) if payload.get("turn_id") else None,
@@ -118,9 +180,7 @@ def codex_user_prompt_submit(
                 if agent_request
                 else None
             ),
-            account_id=(
-                str(payload.get("account_id")) if payload.get("account_id") else None
-            ),
+            account_id=current_account_id,
             rate_limits=rate_limits,
             backend_daily_spend=daily_spend,
             backend_monthly_spend=monthly_spend,
@@ -128,9 +188,29 @@ def codex_user_prompt_submit(
             previous_capacity_backend=previous_capacity_backend,
         )
         decision = Router(config).route(context)
+        profile_selection = (
+            select_turn_profile(
+                config,
+                current_subscription,
+                current_account_id=current_account_id,
+                sticky_profile=sticky_profile,
+            )
+            if decision.capacity_requested_backend == "gpt"
+            and backend_override in {None, "gpt"}
+            and sticky_backend in {None, "gpt"}
+            else None
+        )
+        if (
+            profile_selection is not None
+            and profile_selection.selected is not None
+            and (decision.capacity_requested_backend == "gpt" or decision.backend == "gpt")
+        ):
+            _apply_profile_selection(decision, profile_selection, config)
         decision.strip_provider_state = store.provider_state_is_mixed(
             session_id, route_scope, agent_id
-        ) or decision.model_provider != context.current_model_provider
+        ) or decision.model_provider != context.current_model_provider or (
+            profile_selection.switched if profile_selection is not None else False
+        )
         # @auto clears affinity even though the router's ordinary backend choice may be GPT.
         if tier_override == "auto":
             decision.sticky_backend = None
@@ -176,6 +256,8 @@ def codex_user_prompt_submit(
             specific = output["hookSpecificOutput"]
             specific["model"] = decision.model
             specific["modelProvider"] = decision.model_provider
+            if profile_selection is not None and profile_selection.selected is not None:
+                specific["chatgptProfileHome"] = profile_selection.selected.codex_home
             if decision.strip_provider_state:
                 specific["stripProviderState"] = True
             if decision.reasoning_effort:
@@ -185,7 +267,7 @@ def codex_user_prompt_submit(
                 if decision.reasoning_effort
                 else ""
             )
-            specific["routeMessage"] = (
+            model_route_message = (
                 f"◆ MODEL ROUTE · {decision.tier.name} → {decision.model}{effort}"
                 f" · backend {decision.backend}/{decision.model_provider}"
                 f" · scope {decision.route_scope}"
@@ -231,6 +313,26 @@ def codex_user_prompt_submit(
                     else ""
                 )
             )
+            if profile_selection is not None and profile_selection.selected is not None:
+                unavailable = (
+                    profile_selection.current is not None
+                    and profile_selection.current.capacity.status == "unavailable"
+                ) or (
+                    profile_selection.current is None
+                    and current_subscription.status == "unavailable"
+                )
+                failover_reason = "unavailable" if unavailable else "exhausted"
+                profile_message = (
+                    f"◆ PROFILE FAILOVER · {profile_selection.current_name or 'current'} "
+                    f"→ {profile_selection.selected.name} · current subscription "
+                    f"{failover_reason} "
+                    "· continuing this thread on the next turn"
+                    if profile_selection.switched
+                    else f"◆ PROFILE ROUTE · {profile_selection.selected.name} · session affinity"
+                )
+                specific["routeMessage"] = f"{profile_message}\n{model_route_message}"
+            else:
+                specific["routeMessage"] = model_route_message
             if decision.capacity_blocked:
                 output["stopReason"] = decision.capacity_detail
                 output["systemMessage"] = (

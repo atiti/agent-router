@@ -30,6 +30,13 @@ def _number(value: Any) -> float | None:
         return None
 
 
+def _subscription_usage_detail(used_percent: float) -> str:
+    return (
+        f"subscription {used_percent:g}% used / "
+        f"{max(0.0, 100.0 - used_percent):g}% remaining"
+    )
+
+
 def subscription_state(
     config: AppConfig,
     snapshot: dict[str, object] | None,
@@ -89,7 +96,7 @@ def subscription_state(
         )
     if used_percent is not None and used_percent >= config.capacity.warn_percent:
         return CapacityState(
-            "gpt", "warning", f"subscription {used_percent:g}% used",
+            "gpt", "warning", _subscription_usage_detail(used_percent),
             "subscription", used_percent, resets_at, account_id
         )
     if used_percent is None:
@@ -100,7 +107,7 @@ def subscription_state(
             account_id=account_id,
         )
     return CapacityState(
-        "gpt", "healthy", f"subscription {used_percent:g}% used",
+        "gpt", "healthy", _subscription_usage_detail(used_percent),
         "subscription", used_percent, resets_at, account_id
     )
 

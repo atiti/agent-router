@@ -1,9 +1,12 @@
 import io
 import json
+from unittest.mock import patch
 
 from agentroute.audit import AuditStore
-from agentroute.config import default_config
+from agentroute.capacity import CapacityState
+from agentroute.config import SubscriptionProfileConfig, default_config
 from agentroute.hook import codex_stop, codex_user_prompt_submit
+from agentroute.profiles import ProfileStatus
 
 
 class FakeClassifierResponse:
@@ -110,7 +113,252 @@ def test_explicit_subscription_lock_fails_closed_with_auto_guidance(tmp_path):
 
     assert output["continue"] is False
     assert "@auto" in output["systemMessage"]
-    assert "checkpointing and relaunching" in output["systemMessage"]
+    assert "Configure another signed-in ChatGPT profile" in output["systemMessage"]
+
+
+def test_exhausted_subscription_fails_over_to_another_profile_in_place(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.active_profile = "personal"
+    config.capacity.profiles = {
+        "personal": SubscriptionProfileConfig(
+            codex_home=str(tmp_path / "personal"), priority=10
+        ),
+        "work": SubscriptionProfileConfig(codex_home=str(tmp_path / "work"), priority=20),
+    }
+    statuses = (
+        ProfileStatus(
+            "personal",
+            str(tmp_path / "personal"),
+            10,
+            True,
+            True,
+            "personal-hash",
+            CapacityState("gpt", "exhausted", "subscription exhausted", "subscription"),
+        ),
+        ProfileStatus(
+            "work",
+            str(tmp_path / "work"),
+            20,
+            True,
+            True,
+            "work-hash",
+            CapacityState(
+                "gpt",
+                "healthy",
+                "subscription 20% used / 80% remaining",
+                "subscription",
+                20,
+            ),
+        ),
+    )
+    store = AuditStore(tmp_path / "audit.db")
+
+    with patch("agentroute.profiles.probe_profiles", return_value=statuses):
+        output = invoke(
+            config,
+            store,
+            "continue",
+            account_id="personal-account",
+            ordinary_usage_allowed=False,
+        )
+
+    specific = output["hookSpecificOutput"]
+    assert output["continue"] is True
+    assert specific["modelProvider"] == "openai"
+    assert specific["chatgptProfileHome"] == str(tmp_path / "work")
+    assert specific["stripProviderState"] is True
+    assert "◆ PROFILE FAILOVER · personal → work" in specific["routeMessage"]
+    row = store.latest("same-thread")
+    receipt = json.loads(row["selection_receipt"])
+    assert receipt["subscription_profile"] == {
+        "account_hash": "work-hash",
+        "name": "work",
+        "source": "failover",
+    }
+    assert "personal-account" not in json.dumps(dict(row))
+
+
+def test_selected_subscription_profile_stays_sticky_for_followup_turns(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.active_profile = "personal"
+    config.capacity.profiles = {
+        "personal": SubscriptionProfileConfig(
+            codex_home=str(tmp_path / "personal"), priority=10
+        ),
+        "work": SubscriptionProfileConfig(codex_home=str(tmp_path / "work"), priority=20),
+    }
+    exhausted = ProfileStatus(
+        "personal",
+        str(tmp_path / "personal"),
+        10,
+        True,
+        True,
+        "personal-hash",
+        CapacityState("gpt", "exhausted", "subscription exhausted", "subscription"),
+    )
+    work = ProfileStatus(
+        "work",
+        str(tmp_path / "work"),
+        20,
+        True,
+        True,
+        "work-hash",
+        CapacityState(
+            "gpt",
+            "healthy",
+            "subscription 20% used / 80% remaining",
+            "subscription",
+            20,
+        ),
+    )
+    store = AuditStore(tmp_path / "audit.db")
+
+    with patch("agentroute.profiles.probe_profiles", return_value=(exhausted, work)):
+        invoke(
+            config,
+            store,
+            "continue",
+            account_id="personal-account",
+            ordinary_usage_allowed=False,
+        )
+    with patch("agentroute.profiles.probe_profile", return_value=work):
+        followup = invoke(
+            config,
+            store,
+            "status?",
+            account_id="personal-account",
+            ordinary_usage_allowed=False,
+        )
+
+    specific = followup["hookSpecificOutput"]
+    assert followup["continue"] is True
+    assert specific["chatgptProfileHome"] == str(tmp_path / "work")
+    assert specific["stripProviderState"] is True
+    assert "◆ PROFILE ROUTE · work · session affinity" in specific["routeMessage"]
+
+
+def test_profile_failover_skips_another_home_for_the_same_account(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.active_profile = "personal"
+    config.capacity.profiles = {
+        "personal": SubscriptionProfileConfig(
+            codex_home=str(tmp_path / "personal"), priority=10
+        ),
+        "duplicate": SubscriptionProfileConfig(
+            codex_home=str(tmp_path / "duplicate"), priority=20
+        ),
+        "work": SubscriptionProfileConfig(codex_home=str(tmp_path / "work"), priority=30),
+    }
+    statuses = (
+        ProfileStatus(
+            "personal",
+            str(tmp_path / "personal"),
+            10,
+            True,
+            True,
+            "personal-hash",
+            CapacityState("gpt", "exhausted", "subscription exhausted", "subscription"),
+        ),
+        ProfileStatus(
+            "duplicate",
+            str(tmp_path / "duplicate"),
+            20,
+            True,
+            True,
+            "personal-hash",
+            CapacityState("gpt", "healthy", "subscription healthy", "subscription", 20),
+        ),
+        ProfileStatus(
+            "work",
+            str(tmp_path / "work"),
+            30,
+            True,
+            True,
+            "work-hash",
+            CapacityState("gpt", "healthy", "subscription healthy", "subscription", 30),
+        ),
+    )
+
+    with patch("agentroute.profiles.probe_profiles", return_value=statuses):
+        output = invoke(
+            config,
+            AuditStore(tmp_path / "audit.db"),
+            "continue",
+            account_id="personal-account",
+            ordinary_usage_allowed=False,
+        )
+
+    specific = output["hookSpecificOutput"]
+    assert specific["chatgptProfileHome"] == str(tmp_path / "work")
+    assert "◆ PROFILE FAILOVER · personal → work" in specific["routeMessage"]
+
+
+def test_profile_failover_reports_unavailable_current_profile(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.active_profile = "personal"
+    config.capacity.profiles = {
+        "personal": SubscriptionProfileConfig(
+            codex_home=str(tmp_path / "personal"), priority=10
+        ),
+        "work": SubscriptionProfileConfig(codex_home=str(tmp_path / "work"), priority=20),
+    }
+    statuses = (
+        ProfileStatus(
+            "personal",
+            str(tmp_path / "personal"),
+            10,
+            True,
+            False,
+            "personal-hash",
+            CapacityState("gpt", "unavailable", "profile is not signed in", "profile"),
+        ),
+        ProfileStatus(
+            "work",
+            str(tmp_path / "work"),
+            20,
+            True,
+            True,
+            "work-hash",
+            CapacityState("gpt", "healthy", "subscription healthy", "subscription", 20),
+        ),
+    )
+
+    with patch("agentroute.profiles.probe_profiles", return_value=statuses):
+        output = invoke(
+            config,
+            AuditStore(tmp_path / "audit.db"),
+            "continue",
+            ordinary_usage_allowed=False,
+        )
+
+    assert "current subscription unavailable" in output["hookSpecificOutput"]["routeMessage"]
+
+
+def test_unknown_subscription_telemetry_does_not_trigger_profile_switch(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.active_profile = "personal"
+    config.capacity.profiles = {
+        "personal": SubscriptionProfileConfig(
+            codex_home=str(tmp_path / "personal"), priority=10
+        ),
+        "work": SubscriptionProfileConfig(codex_home=str(tmp_path / "work"), priority=20),
+    }
+
+    with patch("agentroute.profiles.probe_profiles") as probe:
+        output = invoke(config, AuditStore(tmp_path / "audit.db"), "continue")
+
+    probe.assert_not_called()
+    assert "chatgptProfileHome" not in output["hookSpecificOutput"]
 
 
 def test_observe_mode_does_not_emit_override(tmp_path):

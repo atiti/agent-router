@@ -242,13 +242,25 @@ def capacity_status_command(
     rows = AuditStore().rows_since()
     daily, monthly = backend_spend(rows, config)
     profiles = () if no_probe else probe_profiles(config)
+    active_profile = next(
+        (
+            profile
+            for profile in profiles
+            if profile.name == config.capacity.active_profile
+        ),
+        None,
+    )
     backend_rows = []
     for name, backend in config.backends.items():
-        state = backend_state(
-            config,
-            name,
-            daily_spend=daily.get(name, 0.0),
-            monthly_spend=monthly.get(name, 0.0),
+        state = (
+            active_profile.capacity
+            if name == "gpt" and active_profile is not None
+            else backend_state(
+                config,
+                name,
+                daily_spend=daily.get(name, 0.0),
+                monthly_spend=monthly.get(name, 0.0),
+            )
         )
         ready, problems = backend_readiness(config, name)
         backend_rows.append(

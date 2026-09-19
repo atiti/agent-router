@@ -511,6 +511,24 @@ class AuditStore:
             else None,
         )
 
+    def subscription_profile_affinity(self, session_id: str) -> str | None:
+        """Return the most recently selected subscription profile for a session."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT selection_receipt FROM routing_decisions "
+                "WHERE session_id = ? ORDER BY id DESC LIMIT 100",
+                (session_id,),
+            ).fetchall()
+        for row in rows:
+            try:
+                receipt = json.loads(row["selection_receipt"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            profile = receipt.get("subscription_profile")
+            if isinstance(profile, dict) and profile.get("name"):
+                return str(profile["name"])
+        return None
+
     def provider_state_is_mixed(
         self, session_id: str, route_scope: str = "root", agent_id: str | None = None
     ) -> bool:

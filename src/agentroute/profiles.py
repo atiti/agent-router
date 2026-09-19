@@ -23,8 +23,20 @@ class ProfileStatus:
 
     def as_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        payload["capacity"] = asdict(self.capacity)
+        capacity = asdict(self.capacity)
+        capacity.pop("account_id", None)
+        payload["capacity"] = capacity
         return payload
+
+
+@dataclass(frozen=True)
+class TurnProfileSelection:
+    """A ChatGPT subscription profile selected for one routed turn."""
+
+    current_name: str | None
+    current: ProfileStatus | None
+    selected: ProfileStatus | None
+    switched: bool
 
 
 def account_hash(account_id: str | None) -> str | None:
@@ -144,3 +156,99 @@ def select_launch_profile(
         selected,
     )
     return (candidate.name if candidate else active), candidate, statuses
+
+
+def select_turn_profile(
+    config: AppConfig,
+    current_capacity: CapacityState,
+    *,
+    current_account_id: str | None = None,
+    sticky_profile: str | None = None,
+    codex_binary: Path | None = None,
+) -> TurnProfileSelection | None:
+    """Select an authenticated profile without switching on unknown telemetry.
+
+    A previously selected profile remains sticky while its telemetry is healthy,
+    warning, or unknown. A new failover only occurs when the current profile is
+    authoritatively exhausted or unavailable and another profile has known capacity.
+    """
+    profiles = config.capacity.profiles
+    if (
+        not config.capacity.enabled
+        or not config.capacity.auto_select_profile
+        or not profiles
+    ):
+        return None
+
+    if sticky_profile is None and current_capacity.status not in {
+        "exhausted",
+        "unavailable",
+    }:
+        return None
+
+    current_hash = account_hash(current_account_id)
+    current_name = sticky_profile
+
+    if sticky_profile is not None:
+        profile = profiles.get(sticky_profile)
+        current = (
+            probe_profile(
+                sticky_profile,
+                profile,
+                config,
+                codex_binary=codex_binary,
+            )
+            if profile is not None
+            else None
+        )
+        if (
+            current is not None
+            and current.enabled
+            and current.authenticated
+            and current.capacity.status not in {"exhausted", "unavailable"}
+        ):
+            return TurnProfileSelection(current_name, current, current, False)
+        needs_failover = True
+    else:
+        current = None
+        needs_failover = True
+
+    if not needs_failover:
+        return None
+
+    statuses = probe_profiles(config, codex_binary=codex_binary)
+    by_name = {item.name: item for item in statuses}
+    if current_name is None and current_hash is not None:
+        current_name = next(
+            (item.name for item in statuses if item.account_hash == current_hash),
+            None,
+        )
+    if current_name is None:
+        current_name = config.capacity.active_profile
+    current = current or by_name.get(current_name)
+    current_profile_hash = current.account_hash if current is not None else current_hash
+
+    candidate = next(
+        (
+            item
+            for item in statuses
+            if item.name != current_name
+            and (
+                current_profile_hash is None
+                or item.account_hash is None
+                or item.account_hash != current_profile_hash
+            )
+            and item.enabled
+            and item.authenticated
+            and item.capacity.status in {"healthy", "warning"}
+        ),
+        None,
+    )
+    if candidate is None:
+        return TurnProfileSelection(current_name, current, None, False)
+    return TurnProfileSelection(
+        current_name,
+        by_name.get(current_name),
+        candidate,
+        candidate.name != current_name,
+    )

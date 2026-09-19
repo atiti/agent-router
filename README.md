@@ -196,9 +196,8 @@ CAPACITY BLOCKED: explicit session route gpt is capacity-locked. Use @auto to pe
 
 ### Multiple ChatGPT subscriptions
 
-Each subscription must have an isolated `CODEX_HOME`; AgentRoute never copies credentials or swaps
-accounts inside a running thread. Register profiles, sign into each one separately, and choose the
-profile for a future launch:
+Each subscription must have an isolated `CODEX_HOME`; AgentRoute never copies credentials. Register
+profiles and sign into each one separately:
 
 ```sh
 agentroute capacity profile-add personal ~/.codex-personal --priority 10 --select
@@ -209,10 +208,20 @@ agentroute capacity status
 agentroute launch-codex --profile work
 ```
 
-If automatic profile selection chooses a healthier profile, the launcher prints
-`PROFILE FAILOVER` before it starts a *new* Codex process. Existing CLI/Desktop sessions retain
-their account and provider state. Checkpoint the work and relaunch to switch profiles. Desktop uses
-the same launcher, so it follows the exact same boundary and message.
+At launch, AgentRoute selects the highest-priority healthy profile. During an existing CLI or
+Desktop thread, it can also move the *next turn* to another signed-in profile when the active
+subscription is authoritatively exhausted or unavailable:
+
+```text
+◆ PROFILE FAILOVER · personal → work · current subscription exhausted · continuing this thread on the next turn
+```
+
+The transcript and thread continue, but provider-bound encrypted reasoning and cache state are
+discarded for turns using the alternate profile because those opaque values cannot be decrypted by
+another account. Ordinary conversation and portable tool history remain. AgentRoute does not
+interrupt or replay an in-flight request, and unknown quota telemetry never triggers a profile
+switch. The chosen profile stays sticky for later turns until it is authoritatively exhausted or
+unavailable; subsequent banners show `PROFILE ROUTE · <name> · session affinity`.
 
 ## Optional LLM classifier
 

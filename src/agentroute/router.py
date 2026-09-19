@@ -303,8 +303,7 @@ class Router:
             capacity_requested_backend = unavailable_requested_backend
             capacity_detail = (
                 f"explicit session route {unavailable_requested_backend} is unavailable. "
-                "Use @auto to permit backend fallback. Switching subscription profiles "
-                "requires checkpointing and relaunching Codex."
+                "Use @auto to permit backend fallback."
             )
         elif capacity.status == "warning":
             contributions.append(
@@ -320,8 +319,8 @@ class Router:
                 capacity_status = "blocked"
                 capacity_detail = (
                     f"{capacity.detail}; explicit session route {backend_name} is "
-                    "capacity-locked. Use @auto to permit backend fallback. Switching "
-                    "subscription profiles requires checkpointing and relaunching Codex."
+                    "capacity-locked. Configure another signed-in ChatGPT profile or use "
+                    "@auto to permit backend fallback."
                 )
                 contributions.append(
                     ScoreContribution(

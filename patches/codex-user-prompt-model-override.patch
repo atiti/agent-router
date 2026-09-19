@@ -958,7 +958,7 @@ index cf191851bf..6c0f97c900 100644
  async fn guardian_review_session_config_clears_parent_developer_instructions() {
      let mut parent_config = test_config().await;
 diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
-index 4e276868ce..d199d811b2 100644
+index 4e276868ce..ea2a5e2a20 100644
 --- a/codex-rs/core/src/hook_runtime.rs
 +++ b/codex-rs/core/src/hook_runtime.rs
 @@ -49,6 +49,8 @@ use codex_protocol::protocol::HookStartedEvent;
@@ -970,7 +970,7 @@ index 4e276868ce..d199d811b2 100644
  use codex_protocol::protocol::WarningEvent;
  use codex_rollout::state_db;
  use codex_thread_store::PersistContext;
-@@ -74,6 +76,13 @@ use crate::turn_metadata::ExecutionMetadata;
+@@ -74,6 +76,14 @@ use crate::turn_metadata::ExecutionMetadata;
  pub(crate) struct HookRuntimeOutcome {
      pub should_stop: bool,
      pub additional_contexts: Vec<String>,
@@ -980,11 +980,12 @@ index 4e276868ce..d199d811b2 100644
 +    pub route_message: Option<String>,
 +    pub strip_prompt_prefix_bytes: Option<usize>,
 +    pub strip_provider_state: bool,
++    pub chatgpt_profile_home: Option<String>,
 +    pub settings_updated: bool,
  }
  
  pub(crate) enum PreToolUseHookResult {
-@@ -99,6 +108,13 @@ impl From<SessionStartOutcome> for ContextInjectingHookOutcome {
+@@ -99,6 +109,14 @@ impl From<SessionStartOutcome> for ContextInjectingHookOutcome {
              outcome: HookRuntimeOutcome {
                  should_stop,
                  additional_contexts,
@@ -994,11 +995,12 @@ index 4e276868ce..d199d811b2 100644
 +                route_message: None,
 +                strip_prompt_prefix_bytes: None,
 +                strip_provider_state: false,
++                chatgpt_profile_home: None,
 +                settings_updated: false,
              },
          }
      }
-@@ -111,12 +127,25 @@ impl From<UserPromptSubmitOutcome> for ContextInjectingHookOutcome {
+@@ -111,12 +129,27 @@ impl From<UserPromptSubmitOutcome> for ContextInjectingHookOutcome {
              should_stop,
              stop_reason: _,
              additional_contexts,
@@ -1008,6 +1010,7 @@ index 4e276868ce..d199d811b2 100644
 +            route_message,
 +            strip_prompt_prefix_bytes,
 +            strip_provider_state,
++            chatgpt_profile_home,
          } = value;
          Self {
              hook_events,
@@ -1020,11 +1023,12 @@ index 4e276868ce..d199d811b2 100644
 +                route_message,
 +                strip_prompt_prefix_bytes,
 +                strip_provider_state,
++                chatgpt_profile_home,
 +                settings_updated: false,
              },
          }
      }
-@@ -444,7 +473,7 @@ pub(crate) async fn run_turn_stop_hooks(
+@@ -444,7 +477,7 @@ pub(crate) async fn run_turn_stop_hooks(
          #[allow(deprecated)]
          cwd: turn_context.cwd.clone(),
          transcript_path,
@@ -1033,7 +1037,7 @@ index 4e276868ce..d199d811b2 100644
          permission_mode: hook_permission_mode(turn_context.approval_policy()),
          request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),
          stop_hook_active,
-@@ -667,43 +696,134 @@ pub(crate) async fn run_legacy_after_agent_hook(
+@@ -667,43 +700,141 @@ pub(crate) async fn run_legacy_after_agent_hook(
      true
  }
  
@@ -1088,25 +1092,17 @@ index 4e276868ce..d199d811b2 100644
 -                turn_context,
 -                preview_runs,
 -                hooks.run_user_prompt_submit(request),
--            )
--            .await
--        }
--        TurnInput::ResponseItem(_) | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {
--            should_stop: false,
--            additional_contexts: Vec::new(),
--        },
--        TurnInput::InterAgentCommunication(_) => HookRuntimeOutcome {
 +    let Some(prompt) = routing_prompt_for_pending_input(turn_context, pending_input_item) else {
 +        return HookRuntimeOutcome {
-             should_stop: false,
-             additional_contexts: Vec::new(),
--        },
++            should_stop: false,
++            additional_contexts: Vec::new(),
 +            model: None,
 +            model_provider: None,
 +            reasoning_effort: None,
 +            route_message: None,
 +            strip_prompt_prefix_bytes: None,
 +            strip_provider_state: false,
++            chatgpt_profile_home: None,
 +            settings_updated: false,
 +        };
 +    };
@@ -1144,7 +1140,8 @@ index 4e276868ce..d199d811b2 100644
 +    if !outcome.should_stop
 +        && (outcome.model.is_some()
 +            || outcome.model_provider.is_some()
-+            || outcome.reasoning_effort.is_some())
++            || outcome.reasoning_effort.is_some()
++            || outcome.chatgpt_profile_home.is_some())
 +    {
 +        let route_notice = outcome.route_message.take().or_else(|| {
 +            outcome.model.as_ref().map(|model| {
@@ -1162,8 +1159,13 @@ index 4e276868ce..d199d811b2 100644
 +            ..Default::default()
 +        };
 +        match sess
-+            .apply_routed_turn_settings(&turn_context.sub_id, update, outcome.model_provider.take())
-+            .await
++            .apply_routed_turn_settings(
++                &turn_context.sub_id,
++                update,
++                outcome.model_provider.take(),
++                outcome.chatgpt_profile_home.take(),
+             )
+             .await
 +        {
 +            TurnSettingsUpdateOutcome::Applied => {
 +                outcome.settings_updated = true;
@@ -1191,13 +1193,21 @@ index 4e276868ce..d199d811b2 100644
 +                )
 +                .await;
 +            }
-+        }
+         }
+-        TurnInput::ResponseItem(_) | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {
+-            should_stop: false,
+-            additional_contexts: Vec::new(),
+-        },
+-        TurnInput::InterAgentCommunication(_) => HookRuntimeOutcome {
+-            should_stop: false,
+-            additional_contexts: Vec::new(),
+-        },
      }
 +    outcome
  }
  
  pub(crate) async fn record_pending_input(
-@@ -1066,6 +1186,7 @@ mod tests {
+@@ -1066,6 +1197,7 @@ mod tests {
      use codex_otel::HOOK_RUN_METRIC;
      use codex_otel::MetricsClient;
      use codex_otel::MetricsConfig;
@@ -1205,7 +1215,7 @@ index 4e276868ce..d199d811b2 100644
      use codex_protocol::models::ContentItem;
      use codex_protocol::protocol::HookEventName;
      use codex_protocol::protocol::HookExecutionMode;
-@@ -1073,6 +1194,9 @@ mod tests {
+@@ -1073,6 +1205,9 @@ mod tests {
      use codex_protocol::protocol::HookRunStatus;
      use codex_protocol::protocol::HookScope;
      use codex_protocol::protocol::HookSource;
@@ -1215,7 +1225,7 @@ index 4e276868ce..d199d811b2 100644
      use opentelemetry_sdk::metrics::InMemoryMetricExporter;
      use opentelemetry_sdk::metrics::data::AggregatedMetrics;
      use opentelemetry_sdk::metrics::data::HistogramDataPoint;
-@@ -1085,6 +1209,7 @@ mod tests {
+@@ -1085,6 +1220,7 @@ mod tests {
      use super::emit_hook_started_events;
      use super::hook_run_analytics_payload;
      use super::hook_run_metric_tags;
@@ -1223,7 +1233,7 @@ index 4e276868ce..d199d811b2 100644
      use crate::session::tests::make_session_and_context;
      use crate::session::tests::make_session_and_context_with_rx;
      use codex_protocol::protocol::HookCompletedEvent;
-@@ -1128,6 +1253,69 @@ mod tests {
+@@ -1128,6 +1264,69 @@ mod tests {
          );
      }
  
@@ -1453,13 +1463,14 @@ index ea078a451e..cfee96aca7 100644
          history_mode: parent_turn_context.history_mode,
          parent_thread_id: parent_turn_context.parent_thread_id,
 diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
-index 8dc090315a..417a1db4b6 100644
+index 8dc090315a..2708f3a865 100644
 --- a/codex-rs/core/src/session/step_activation.rs
 +++ b/codex-rs/core/src/session/step_activation.rs
-@@ -12,10 +12,14 @@ use crate::context::GuardianNodeReplPolicy;
+@@ -12,12 +12,18 @@ use crate::context::GuardianNodeReplPolicy;
  use crate::exec_policy::AllowPrefixRules;
  use crate::guardian::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
  use codex_features::Feature;
++use codex_login::AuthManager;
 +use codex_model_provider::create_model_provider;
 +use codex_model_provider_info::ToolCompatibility;
 +use codex_protocol::openai_models::ApplyPatchToolType;
@@ -1470,8 +1481,11 @@ index 8dc090315a..417a1db4b6 100644
 +use codex_protocol::openai_models::ToolMode;
  use codex_protocol::protocol::TurnSettingsUpdate;
  use codex_protocol::protocol::TurnSettingsUpdateOutcome;
++use std::path::PathBuf;
  use std::sync::Arc;
-@@ -91,9 +95,10 @@ fn check_legacy_model_safety(
+ 
+ /// Temporary restrictions while approvals and Guardian still read the admitted
+@@ -91,9 +97,10 @@ fn check_legacy_model_safety(
      if admitted.used_fallback_model_metadata || current.used_fallback_model_metadata {
          return Err("the active model has only fallback metadata".to_string());
      }
@@ -1485,36 +1499,46 @@ index 8dc090315a..417a1db4b6 100644
      let retained_models = [admitted, current];
      // guardian::review::record_guardian_denial still selects its circuit-breaker
      // policy from the admitted model's Cyber classification.
-@@ -233,13 +238,23 @@ impl Session {
+@@ -233,13 +240,28 @@ impl Session {
          clippy::await_holding_invalid_type,
          reason = "the final managed-policy check and active settings publication must remain atomic"
      )]
 -    pub(super) async fn apply_turn_settings(
 +    pub(crate) async fn apply_turn_settings(
-         &self,
-         turn_id: &str,
-         update: TurnSettingsUpdate,
-+    ) -> TurnSettingsUpdateOutcome {
-+        self.apply_routed_turn_settings(turn_id, update, None).await
-+    }
-+
-+    pub(crate) async fn apply_routed_turn_settings(
 +        &self,
 +        turn_id: &str,
 +        update: TurnSettingsUpdate,
++    ) -> TurnSettingsUpdateOutcome {
++        self.apply_routed_turn_settings(
++            turn_id, update, /*model_provider*/ None, /*chatgpt_profile_home*/ None,
++        )
++        .await
++    }
++
++    pub(crate) async fn apply_routed_turn_settings(
+         &self,
+         turn_id: &str,
+         update: TurnSettingsUpdate,
 +        model_provider: Option<String>,
++        chatgpt_profile_home: Option<String>,
      ) -> TurnSettingsUpdateOutcome {
          let reviewer_only = update.approvals_reviewer.is_some()
              && update.model.is_none()
 +            && model_provider.is_none()
++            && chatgpt_profile_home.is_none()
              && update.effort.is_none()
              && update.summary.is_none()
              && update.service_tier.is_none();
-@@ -277,6 +292,32 @@ impl Session {
+@@ -277,6 +299,77 @@ impl Session {
              summary,
              service_tier,
          } = update;
-+        let requested_provider = if let Some(provider_id) = model_provider {
++        let requested_provider_id = model_provider.or_else(|| {
++            chatgpt_profile_home
++                .as_ref()
++                .map(|_| turn_context.model_provider_id())
++        });
++        let requested_provider = if let Some(provider_id) = requested_provider_id {
 +            if let Some(required) = turn_context
 +                .config
 +                .config_layer_stack
@@ -1532,10 +1556,50 @@ index 8dc090315a..417a1db4b6 100644
 +                    reason: format!("model provider `{provider_id}` is not configured"),
 +                };
 +            };
++            let auth_manager = if let Some(profile_home) = chatgpt_profile_home {
++                if !provider_info.is_openai() || !provider_info.requires_openai_auth {
++                    return TurnSettingsUpdateOutcome::Rejected {
++                        reason: "ChatGPT profile routing requires the OpenAI provider".to_string(),
++                    };
++                }
++                let profile_home = PathBuf::from(profile_home);
++                if !profile_home.is_absolute() {
++                    return TurnSettingsUpdateOutcome::Rejected {
++                        reason: "ChatGPT profile home must be an absolute path".to_string(),
++                    };
++                }
++                let auth_manager = match AuthManager::shared_from_config_for_codex_home(
++                    turn_context.config.as_ref(),
++                    profile_home,
++                    /*enable_codex_api_key_env*/ false,
++                )
++                .await
++                {
++                    Ok(auth_manager) => auth_manager,
++                    Err(error) => {
++                        return TurnSettingsUpdateOutcome::Rejected {
++                            reason: format!("could not load ChatGPT profile: {error}"),
++                        };
++                    }
++                };
++                if auth_manager
++                    .auth()
++                    .await
++                    .is_none_or(|auth| !auth.is_chatgpt_auth())
++                {
++                    return TurnSettingsUpdateOutcome::Rejected {
++                        reason: "ChatGPT profile is not signed in or is disallowed by policy"
++                            .to_string(),
++                    };
++                }
++                Some(auth_manager)
++            } else {
++                turn_context.auth_manager.clone()
++            };
 +            Some((
 +                provider_id,
 +                provider_info.tool_compatibility,
-+                create_model_provider(provider_info.clone(), turn_context.auth_manager.clone()),
++                create_model_provider(provider_info.clone(), auth_manager),
 +            ))
 +        } else {
 +            None
@@ -1543,7 +1607,7 @@ index 8dc090315a..417a1db4b6 100644
          let update = StepSettingsUpdate {
              approvals_reviewer,
              model,
-@@ -305,10 +346,17 @@ impl Session {
+@@ -305,10 +398,17 @@ impl Session {
          {
              return TurnSettingsUpdateOutcome::TargetUnavailable;
          }
@@ -1562,7 +1626,7 @@ index 8dc090315a..417a1db4b6 100644
          // Managed requirements can change during resolution. Keep the live
          // authorization and safety checks atomic with publication under state
          // and active_turn; no asynchronous preparation runs under these locks.
-@@ -341,6 +389,9 @@ impl Session {
+@@ -341,6 +441,9 @@ impl Session {
          task.turn_context
              .current_settings
              .store(Arc::new(destination));
@@ -1572,7 +1636,7 @@ index 8dc090315a..417a1db4b6 100644
          TurnSettingsUpdateOutcome::Applied
      }
  
-@@ -405,6 +456,33 @@ impl Session {
+@@ -405,6 +508,33 @@ impl Session {
      }
  }
  
@@ -1607,10 +1671,104 @@ index 8dc090315a..417a1db4b6 100644
  #[path = "step_activation_tests.rs"]
  mod tests;
 diff --git a/codex-rs/core/src/session/step_activation_tests.rs b/codex-rs/core/src/session/step_activation_tests.rs
-index dcaa598eb6..cff97b807f 100644
+index dcaa598eb6..f8eb0b4018 100644
 --- a/codex-rs/core/src/session/step_activation_tests.rs
 +++ b/codex-rs/core/src/session/step_activation_tests.rs
-@@ -1137,6 +1137,41 @@ fn parent_review_messages(model: &mut ModelInfo) -> &mut AutoReviewMessages {
+@@ -24,6 +24,7 @@ use codex_extension_api::ThreadInstructionsProvider;
+ use codex_extension_api::UserInstructionsProvider;
+ use codex_http_client::HttpClientFactory;
+ use codex_login::AuthManager;
++use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
+ use codex_models_manager::ModelsManagerConfig;
+ use codex_models_manager::bundled_models_response;
+ use codex_models_manager::manager::ModelsManager;
+@@ -817,6 +818,85 @@ async fn delayed_activation_does_not_retarget_a_task(change: TaskChangeDuringLoo
+     session.abort_all_tasks(TurnAbortReason::Replaced).await;
+ }
+ 
++#[tokio::test]
++async fn chatgpt_profile_routing_rejects_relative_home() {
++    let ActivationFixture { session, turn, .. } = activation_fixture(activation_models()).await;
++
++    assert_eq!(
++        session
++            .apply_routed_turn_settings(
++                &turn.sub_id,
++                TurnSettingsUpdate::default(),
++                /*model_provider*/ None,
++                Some("relative-profile-home".to_string()),
++            )
++            .await,
++        TurnSettingsUpdateOutcome::Rejected {
++            reason: "ChatGPT profile home must be an absolute path".to_string(),
++        }
++    );
++}
++
++#[tokio::test]
++async fn chatgpt_profile_routing_rejects_provider_without_openai_auth() {
++    let ActivationFixture { session, turn, .. } = activation_fixture(activation_models()).await;
++    let profile_home = tempfile::tempdir().expect("create profile home");
++
++    assert_eq!(
++        session
++            .apply_routed_turn_settings(
++                &turn.sub_id,
++                TurnSettingsUpdate::default(),
++                Some(OLLAMA_OSS_PROVIDER_ID.to_string()),
++                Some(profile_home.path().display().to_string()),
++            )
++            .await,
++        TurnSettingsUpdateOutcome::Rejected {
++            reason: "ChatGPT profile routing requires the OpenAI provider".to_string(),
++        }
++    );
++}
++
++#[tokio::test]
++async fn chatgpt_profile_routing_rejects_signed_out_profile() {
++    let ActivationFixture { session, turn, .. } = activation_fixture(activation_models()).await;
++    let profile_home = tempfile::tempdir().expect("create profile home");
++
++    assert_eq!(
++        session
++            .apply_routed_turn_settings(
++                &turn.sub_id,
++                TurnSettingsUpdate::default(),
++                /*model_provider*/ None,
++                Some(profile_home.path().display().to_string()),
++            )
++            .await,
++        TurnSettingsUpdateOutcome::Rejected {
++            reason: "ChatGPT profile is not signed in or is disallowed by policy".to_string(),
++        }
++    );
++}
++
++#[tokio::test]
++async fn unavailable_turn_does_not_load_or_retarget_chatgpt_profile() {
++    let ActivationFixture { session, turn, .. } = activation_fixture(activation_models()).await;
++    let missing_profile = turn.config.codex_home.join("missing-profile");
++    let original_provider = turn.model_provider();
++
++    assert_eq!(
++        session
++            .apply_routed_turn_settings(
++                "not-the-active-turn",
++                TurnSettingsUpdate::default(),
++                /*model_provider*/ None,
++                Some(missing_profile.display().to_string()),
++            )
++            .await,
++        TurnSettingsUpdateOutcome::TargetUnavailable
++    );
++    assert!(Arc::ptr_eq(&original_provider, &turn.model_provider()));
++}
++
+ #[derive(Clone, Copy)]
+ enum ManagedAuthorizationChange {
+     ApprovalPolicy,
+@@ -1137,6 +1217,41 @@ fn parent_review_messages(model: &mut ModelInfo) -> &mut AutoReviewMessages {
          })
  }
  
@@ -1652,7 +1810,7 @@ index dcaa598eb6..cff97b807f 100644
  #[derive(Clone, Copy)]
  enum ModelSafetyChange {
      Cyber,
-@@ -1175,7 +1210,7 @@ async fn model_safety_changes_must_match_the_admitted_authority(
+@@ -1175,7 +1290,7 @@ async fn model_safety_changes_must_match_the_admitted_authority(
  }
  
  #[tokio::test]
@@ -1661,7 +1819,7 @@ index dcaa598eb6..cff97b807f 100644
      let (_, turn) = make_session_and_context().await;
      let (admitted, destination) = safety_models();
      let mut fallback = admitted.clone();
-@@ -1193,18 +1228,17 @@ async fn model_safety_rejects_fallback_metadata() {
+@@ -1193,18 +1308,17 @@ async fn model_safety_rejects_fallback_metadata() {
              &destination,
              "the active model has only fallback metadata",
          ),
@@ -1775,7 +1933,7 @@ index 72ae069562..b36296aaf7 100644
      let session = Arc::new(session);
      let turn_context = Arc::new(turn_context_raw);
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 8ab44553be..b194ed6296 100644
+index 8ab44553be..b24a2ffb98 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -15,6 +15,7 @@ use crate::context::ContextualUserFragment;
@@ -1795,7 +1953,7 @@ index 8ab44553be..b194ed6296 100644
  use codex_protocol::ResponseItemId;
  use codex_protocol::config_types::AutoCompactTokenLimitScope;
  use codex_protocol::config_types::ModeKind;
-@@ -174,8 +177,65 @@ pub(crate) async fn run_turn(
+@@ -174,8 +177,66 @@ pub(crate) async fn run_turn(
      // Record results from hooks that finished after the previous turn before this turn's user prompt.
      drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ true).await;
  
@@ -1813,15 +1971,19 @@ index 8ab44553be..b194ed6296 100644
 +    let hook_outcomes = inspect_input_hooks(&sess, &turn_context, &input).await;
 +    let active_provider_id = turn_context.model_provider_id();
 +    let history = sess.clone_history().await;
++    let explicit_strip_provider_state = hook_outcomes
++        .iter()
++        .any(|outcome| outcome.strip_provider_state);
 +    let foreign_provider_state_ids = history
 +        .annotated_items()
 +        .iter()
 +        .filter(|envelope| {
-+            envelope
-+                .metadata
-+                .as_ref()
-+                .and_then(|metadata| metadata.model_provider_id.as_deref())
-+                != Some(active_provider_id.as_str())
++            explicit_strip_provider_state
++                || envelope
++                    .metadata
++                    .as_ref()
++                    .and_then(|metadata| metadata.model_provider_id.as_deref())
++                    != Some(active_provider_id.as_str())
 +        })
 +        .filter_map(|envelope| envelope.item.id().cloned())
 +        .collect::<HashSet<_>>();
@@ -1842,10 +2004,7 @@ index 8ab44553be..b194ed6296 100644
 +                    }
 +            )
 +    });
-+    let strip_provider_state = history_has_foreign_provider_state
-+        || hook_outcomes
-+            .iter()
-+            .any(|outcome| outcome.strip_provider_state);
++    let strip_provider_state = history_has_foreign_provider_state || explicit_strip_provider_state;
 +    if hook_outcomes.iter().any(|outcome| outcome.settings_updated) || strip_provider_state {
 +        client_session = if strip_provider_state {
 +            sess.services
@@ -1863,7 +2022,7 @@ index 8ab44553be..b194ed6296 100644
      // TODO(ccunningham): Pre-turn compaction runs before context updates and the
      // new user message are recorded. Estimate pending incoming items (context
      // diffs/full reinjection + user input) and trigger compaction preemptively
-@@ -184,16 +244,18 @@ pub(crate) async fn run_turn(
+@@ -184,16 +245,18 @@ pub(crate) async fn run_turn(
          &sess,
          &turn_context,
          &mut client_session,
@@ -1883,7 +2042,7 @@ index 8ab44553be..b194ed6296 100644
              PersistContext::Standard,
          )
          .await;
-@@ -208,7 +270,11 @@ pub(crate) async fn run_turn(
+@@ -208,7 +271,11 @@ pub(crate) async fn run_turn(
              .await;
          // Publish the failure only after prompt hooks finish, so clients cannot react to
          // an error by steering follow-up input into a turn still preserving its prompt.
@@ -1896,7 +2055,7 @@ index 8ab44553be..b194ed6296 100644
              RemoteCompactionSupport::V2 => Some("Error running remote compact task".to_string()),
              RemoteCompactionSupport::Unsupported => None,
          };
-@@ -238,11 +304,12 @@ pub(crate) async fn run_turn(
+@@ -238,11 +305,12 @@ pub(crate) async fn run_turn(
          {
              Ok(requirements) => requirements,
              Err(err) => {
@@ -1910,7 +2069,7 @@ index 8ab44553be..b194ed6296 100644
                      PersistContext::Standard,
                  )
                  .await;
-@@ -266,11 +333,12 @@ pub(crate) async fn run_turn(
+@@ -266,11 +334,12 @@ pub(crate) async fn run_turn(
      {
          Ok(step_context) => step_context,
          Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
@@ -1924,7 +2083,7 @@ index 8ab44553be..b194ed6296 100644
                  PersistContext::Standard,
              )
              .await;
-@@ -363,11 +431,12 @@ pub(crate) async fn run_turn(
+@@ -363,11 +432,12 @@ pub(crate) async fn run_turn(
          .await?;
      }
      let mut can_drain_pending_input = input.is_empty();
@@ -1938,7 +2097,7 @@ index 8ab44553be..b194ed6296 100644
          PersistContext::TurnStart,
      )
      .await
-@@ -387,8 +456,8 @@ pub(crate) async fn run_turn(
+@@ -387,8 +457,8 @@ pub(crate) async fn run_turn(
      sess.merge_connector_selection(explicitly_enabled_connectors.clone())
          .await;
      sess.set_previous_turn_settings(Some(PreviousTurnSettings {
@@ -1949,7 +2108,7 @@ index 8ab44553be..b194ed6296 100644
          realtime_active: Some(turn_context.realtime_active),
      }))
      .await;
-@@ -508,13 +577,17 @@ pub(crate) async fn run_turn(
+@@ -508,13 +578,17 @@ pub(crate) async fn run_turn(
                  .await;
  
              // Construct the input that we will send to the model.
@@ -1968,7 +2127,7 @@ index 8ab44553be..b194ed6296 100644
  
              let responses_metadata = sess
                  .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
-@@ -812,6 +885,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -812,6 +886,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
      model_info: &ModelInfo,
      input: &[TurnInput],
      persist_context: PersistContext,
@@ -2007,7 +2166,7 @@ index 8ab44553be..b194ed6296 100644
  ) -> bool {
      // Cancellation can reach this path before Guardian's tools and context are
      // resolved. Only finalized evidence may enter reusable reviewer history.
-@@ -825,8 +930,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -825,8 +931,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
      }
      let mut blocked_input = false;
      let mut accepted_user_input = false;
@@ -2017,7 +2176,7 @@ index 8ab44553be..b194ed6296 100644
          if hook_outcome.should_stop {
              blocked_input = true;
              record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
-@@ -842,11 +946,15 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -842,11 +947,15 @@ pub(crate) async fn run_hooks_and_record_inputs(
              } else {
                  persist_context
              };
@@ -2034,7 +2193,7 @@ index 8ab44553be..b194ed6296 100644
                  hook_outcome.additional_contexts,
                  input_persist_context,
              )
-@@ -856,6 +964,48 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -856,6 +965,48 @@ pub(crate) async fn run_hooks_and_record_inputs(
      blocked_input && !accepted_user_input
  }
  
@@ -2083,7 +2242,7 @@ index 8ab44553be..b194ed6296 100644
  fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
      input
          .iter()
-@@ -1240,10 +1390,21 @@ async fn run_pre_sampling_compact(
+@@ -1240,10 +1391,21 @@ async fn run_pre_sampling_compact(
      sess: &Arc<Session>,
      turn_context: &Arc<TurnContext>,
      client_session: &mut ModelClientSession,
@@ -2106,7 +2265,7 @@ index 8ab44553be..b194ed6296 100644
      let token_status =
          super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
              .await;
-@@ -1290,7 +1451,7 @@ async fn capture_current_model_fallback_step_context(
+@@ -1290,7 +1452,7 @@ async fn capture_current_model_fallback_step_context(
          .as_deref()
          .is_some_and(codex_login::AuthManager::current_auth_uses_codex_backend);
      if !uses_codex_backend
@@ -2115,7 +2274,7 @@ index 8ab44553be..b194ed6296 100644
          || previous_model == turn_context.model_info().slug
      {
          return Ok(None);
-@@ -1425,7 +1586,11 @@ async fn run_auto_compact(
+@@ -1425,7 +1587,11 @@ async fn run_auto_compact(
          return Ok(());
      }
  
@@ -2128,7 +2287,7 @@ index 8ab44553be..b194ed6296 100644
          RemoteCompactionSupport::V2 => {
              emit_compact_metric(
                  &sess.services.session_telemetry,
-@@ -1451,7 +1616,8 @@ async fn run_auto_compact(
+@@ -1451,7 +1617,8 @@ async fn run_auto_compact(
              );
              run_inline_auto_compact_task(
                  Arc::clone(sess),
@@ -2138,7 +2297,7 @@ index 8ab44553be..b194ed6296 100644
                  initial_context_injection,
                  reason,
                  phase,
-@@ -1533,6 +1699,86 @@ pub(crate) fn build_prompt(
+@@ -1533,6 +1700,86 @@ pub(crate) fn build_prompt(
      }
  }
  
@@ -2225,7 +2384,7 @@ index 8ab44553be..b194ed6296 100644
  #[allow(clippy::too_many_arguments)]
  #[allow(deprecated)]
  #[instrument(level = "trace",
-@@ -1566,7 +1812,7 @@ async fn run_sampling_request(
+@@ -1566,7 +1813,7 @@ async fn run_sampling_request(
          Arc::clone(&step_context),
          Arc::clone(&turn_diff_tracker),
      );
@@ -2234,7 +2393,7 @@ index 8ab44553be..b194ed6296 100644
      let mut retry_state = ResponsesStreamRetryState::default();
      let mut initial_input = Some(input);
      let mut original_input = None;
-@@ -1582,6 +1828,7 @@ async fn run_sampling_request(
+@@ -1582,6 +1829,7 @@ async fn run_sampling_request(
                  .for_prompt(&step_context.settings.model_info.input_modalities)
          };
          let mut prompt_input = prompt_input;
@@ -2242,7 +2401,7 @@ index 8ab44553be..b194ed6296 100644
          sess.services
              .executed_tool_calls
              .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
-@@ -2435,14 +2682,14 @@ async fn try_run_sampling_request(
+@@ -2435,14 +2683,14 @@ async fn try_run_sampling_request(
      let inference_trace = sess.services.rollout_thread_trace.inference_trace_context(
          turn_context.sub_id.as_str(),
          step_context.settings.model_info.slug.as_str(),
@@ -3161,7 +3320,7 @@ index 6a10a9f75c..9cc8e12ae0 100644
      "prompt",
      "session_id",
 diff --git a/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json b/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json
-index 97875c108b..1640c491f6 100644
+index 97875c108b..b1170ae38c 100644
 --- a/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json
 +++ b/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json
 @@ -8,6 +8,11 @@
@@ -3176,7 +3335,14 @@ index 97875c108b..1640c491f6 100644
      "UserPromptSubmitHookSpecificOutputWire": {
        "additionalProperties": false,
        "properties": {
-@@ -18,6 +23,36 @@
+@@ -15,9 +20,43 @@
+           "default": null,
+           "type": "string"
+         },
++        "chatgptProfileHome": {
++          "default": null,
++          "type": "string"
++        },
          "hookEventName": {
            "const": "UserPromptSubmit",
            "type": "string"
@@ -3229,10 +3395,10 @@ index d11da77656..ef3488a3ff 100644
              prompt: "test prompt".to_string(),
          })
 diff --git a/codex-rs/hooks/src/engine/output_parser.rs b/codex-rs/hooks/src/engine/output_parser.rs
-index aaefa46dc1..3b09cd4ba8 100644
+index aaefa46dc1..04e067b66a 100644
 --- a/codex-rs/hooks/src/engine/output_parser.rs
 +++ b/codex-rs/hooks/src/engine/output_parser.rs
-@@ -51,6 +51,12 @@ pub(crate) struct UserPromptSubmitOutput {
+@@ -51,6 +51,13 @@ pub(crate) struct UserPromptSubmitOutput {
      pub reason: Option<String>,
      pub invalid_block_reason: Option<String>,
      pub additional_context: Option<String>,
@@ -3242,10 +3408,11 @@ index aaefa46dc1..3b09cd4ba8 100644
 +    pub route_message: Option<String>,
 +    pub strip_prompt_prefix_bytes: Option<usize>,
 +    pub strip_provider_state: bool,
++    pub chatgpt_profile_home: Option<String>,
  }
  
  #[derive(Debug, Clone)]
-@@ -275,15 +281,40 @@ pub(crate) fn parse_user_prompt_submit(stdout: &str) -> Option<UserPromptSubmitO
+@@ -275,15 +282,43 @@ pub(crate) fn parse_user_prompt_submit(stdout: &str) -> Option<UserPromptSubmitO
      } else {
          None
      };
@@ -3258,6 +3425,7 @@ index aaefa46dc1..3b09cd4ba8 100644
 +        route_message,
 +        strip_prompt_prefix_bytes,
 +        strip_provider_state,
++        chatgpt_profile_home,
 +    ) = wire
          .hook_specific_output
 -        .and_then(|output| output.additional_context);
@@ -3270,9 +3438,10 @@ index aaefa46dc1..3b09cd4ba8 100644
 +                output.route_message,
 +                output.strip_prompt_prefix_bytes,
 +                output.strip_provider_state,
++                output.chatgpt_profile_home,
 +            )
 +        })
-+        .unwrap_or((None, None, None, None, None, None, false));
++        .unwrap_or((None, None, None, None, None, None, false, None));
      Some(UserPromptSubmitOutput {
          universal: UniversalOutput::from(wire.universal),
          should_block: should_block && invalid_block_reason.is_none(),
@@ -3284,11 +3453,12 @@ index aaefa46dc1..3b09cd4ba8 100644
 +        reasoning_effort,
 +        route_message,
 +        strip_prompt_prefix_bytes,
-+        strip_provider_state,
++        strip_provider_state: strip_provider_state || chatgpt_profile_home.is_some(),
++        chatgpt_profile_home,
      })
  }
  
-@@ -546,6 +577,27 @@ mod tests {
+@@ -546,6 +581,27 @@ mod tests {
          }
      }
  
@@ -3317,7 +3487,7 @@ index aaefa46dc1..3b09cd4ba8 100644
      fn permission_request_rejects_reserved_updated_input_field() {
          let parsed = parse_permission_request(
 diff --git a/codex-rs/hooks/src/events/user_prompt_submit.rs b/codex-rs/hooks/src/events/user_prompt_submit.rs
-index 9124431bc1..06b388d271 100644
+index 9124431bc1..55d0e94c3a 100644
 --- a/codex-rs/hooks/src/events/user_prompt_submit.rs
 +++ b/codex-rs/hooks/src/events/user_prompt_submit.rs
 @@ -1,12 +1,14 @@
@@ -3346,7 +3516,7 @@ index 9124431bc1..06b388d271 100644
      pub permission_mode: String,
      pub prompt: String,
  }
-@@ -38,6 +44,12 @@ pub struct UserPromptSubmitOutcome {
+@@ -38,6 +44,13 @@ pub struct UserPromptSubmitOutcome {
      pub should_stop: bool,
      pub stop_reason: Option<String>,
      pub additional_contexts: Vec<String>,
@@ -3356,10 +3526,11 @@ index 9124431bc1..06b388d271 100644
 +    pub route_message: Option<String>,
 +    pub strip_prompt_prefix_bytes: Option<usize>,
 +    pub strip_provider_state: bool,
++    pub chatgpt_profile_home: Option<String>,
  }
  
  #[derive(Debug, PartialEq, Eq)]
-@@ -45,6 +57,12 @@ struct UserPromptSubmitHandlerData {
+@@ -45,6 +58,13 @@ struct UserPromptSubmitHandlerData {
      should_stop: bool,
      stop_reason: Option<String>,
      additional_contexts_for_model: Vec<AdditionalContext>,
@@ -3369,10 +3540,11 @@ index 9124431bc1..06b388d271 100644
 +    route_message: Option<String>,
 +    strip_prompt_prefix_bytes: Option<usize>,
 +    strip_provider_state: bool,
++    chatgpt_profile_home: Option<String>,
  }
  
  pub(crate) fn preview(
-@@ -76,6 +94,12 @@ pub(crate) async fn run(
+@@ -76,6 +96,13 @@ pub(crate) async fn run(
              should_stop: false,
              stop_reason: None,
              additional_contexts: Vec::new(),
@@ -3382,10 +3554,11 @@ index 9124431bc1..06b388d271 100644
 +            route_message: None,
 +            strip_prompt_prefix_bytes: None,
 +            strip_provider_state: false,
++            chatgpt_profile_home: None,
          };
      }
  
-@@ -89,6 +113,10 @@ pub(crate) async fn run(
+@@ -89,6 +116,10 @@ pub(crate) async fn run(
          cwd: request.cwd.display().to_string(),
          hook_event_name: "UserPromptSubmit".to_string(),
          model: request.model.clone(),
@@ -3396,7 +3569,7 @@ index 9124431bc1..06b388d271 100644
          permission_mode: request.permission_mode.clone(),
          prompt: request.prompt.clone(),
      }) {
-@@ -126,12 +154,34 @@ pub(crate) async fn run(
+@@ -126,12 +157,38 @@ pub(crate) async fn run(
          .output_spiller()
          .maybe_spill_additional_contexts(additional_contexts)
          .await;
@@ -3416,6 +3589,9 @@ index 9124431bc1..06b388d271 100644
 +    let strip_provider_state = results
 +        .iter()
 +        .any(|result| result.data.strip_provider_state);
++    let chatgpt_profile_home = results
++        .iter()
++        .find_map(|result| result.data.chatgpt_profile_home.clone());
  
      UserPromptSubmitOutcome {
          hook_events: results.into_iter().map(|result| result.completed).collect(),
@@ -3428,10 +3604,11 @@ index 9124431bc1..06b388d271 100644
 +        route_message,
 +        strip_prompt_prefix_bytes,
 +        strip_provider_state,
++        chatgpt_profile_home,
      }
  }
  
-@@ -145,6 +195,12 @@ fn parse_completed(
+@@ -145,6 +202,13 @@ fn parse_completed(
      let mut should_stop = false;
      let mut stop_reason = None;
      let mut additional_contexts_for_model = Vec::new();
@@ -3441,10 +3618,11 @@ index 9124431bc1..06b388d271 100644
 +    let mut route_message = None;
 +    let mut strip_prompt_prefix_bytes = None;
 +    let mut strip_provider_state = false;
++    let mut chatgpt_profile_home = None;
  
      match run_result.error.as_deref() {
          Some(error) => {
-@@ -180,6 +236,12 @@ fn parse_completed(
+@@ -180,6 +244,13 @@ fn parse_completed(
                      }
                      let _ = parsed.universal.suppress_output;
                      if handler.can_apply_control_effects() {
@@ -3454,10 +3632,11 @@ index 9124431bc1..06b388d271 100644
 +                        route_message = parsed.route_message;
 +                        strip_prompt_prefix_bytes = parsed.strip_prompt_prefix_bytes;
 +                        strip_provider_state = parsed.strip_provider_state;
++                        chatgpt_profile_home = parsed.chatgpt_profile_home;
                          if !parsed.universal.continue_processing {
                              status = HookRunStatus::Stopped;
                              should_stop = true;
-@@ -269,6 +331,12 @@ fn parse_completed(
+@@ -269,6 +340,13 @@ fn parse_completed(
              should_stop,
              stop_reason,
              additional_contexts_for_model,
@@ -3467,10 +3646,11 @@ index 9124431bc1..06b388d271 100644
 +            route_message,
 +            strip_prompt_prefix_bytes,
 +            strip_provider_state,
++            chatgpt_profile_home,
          },
          completion_order: 0,
      }
-@@ -280,11 +348,18 @@ fn serialization_failure_outcome(hook_events: Vec<HookCompletedEvent>) -> UserPr
+@@ -280,11 +358,19 @@ fn serialization_failure_outcome(hook_events: Vec<HookCompletedEvent>) -> UserPr
          should_stop: false,
          stop_reason: None,
          additional_contexts: Vec::new(),
@@ -3480,6 +3660,7 @@ index 9124431bc1..06b388d271 100644
 +        route_message: None,
 +        strip_prompt_prefix_bytes: None,
 +        strip_provider_state: false,
++        chatgpt_profile_home: None,
      }
  }
  
@@ -3489,7 +3670,7 @@ index 9124431bc1..06b388d271 100644
      use codex_protocol::protocol::HookEventName;
      use codex_protocol::protocol::HookOutputEntry;
      use codex_protocol::protocol::HookOutputEntryKind;
-@@ -320,6 +395,12 @@ mod tests {
+@@ -320,6 +406,13 @@ mod tests {
                      text: "do not inject".to_string(),
                      limit: Default::default(),
                  }],
@@ -3499,10 +3680,11 @@ index 9124431bc1..06b388d271 100644
 +                route_message: None,
 +                strip_prompt_prefix_bytes: None,
 +                strip_provider_state: false,
++                chatgpt_profile_home: None,
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Stopped);
-@@ -359,6 +440,12 @@ mod tests {
+@@ -359,6 +452,13 @@ mod tests {
                      text: "do not inject".to_string(),
                      limit: Default::default(),
                  }],
@@ -3512,10 +3694,11 @@ index 9124431bc1..06b388d271 100644
 +                route_message: None,
 +                strip_prompt_prefix_bytes: None,
 +                strip_provider_state: false,
++                chatgpt_profile_home: None,
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
-@@ -392,6 +479,12 @@ mod tests {
+@@ -392,6 +492,13 @@ mod tests {
                  should_stop: false,
                  stop_reason: None,
                  additional_contexts_for_model: Vec::new(),
@@ -3525,10 +3708,11 @@ index 9124431bc1..06b388d271 100644
 +                route_message: None,
 +                strip_prompt_prefix_bytes: None,
 +                strip_provider_state: false,
++                chatgpt_profile_home: None,
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Failed);
-@@ -434,6 +527,12 @@ mod tests {
+@@ -434,6 +541,13 @@ mod tests {
                  should_stop: true,
                  stop_reason: Some("blocked by policy".to_string()),
                  additional_contexts_for_model: Vec::new(),
@@ -3538,10 +3722,11 @@ index 9124431bc1..06b388d271 100644
 +                route_message: None,
 +                strip_prompt_prefix_bytes: None,
 +                strip_provider_state: false,
++                chatgpt_profile_home: None,
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
-@@ -455,6 +554,25 @@ mod tests {
+@@ -455,6 +569,29 @@ mod tests {
          assert!(!parsed.data.should_stop);
      }
  
@@ -3551,7 +3736,7 @@ index 9124431bc1..06b388d271 100644
 +            &handler(),
 +            run_result(
 +                Some(0),
-+                r#"{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","model":"gpt-5.6-sol","reasoningEffort":"high","routeMessage":"route details","stripPromptPrefixBytes":7,"stripProviderState":true}}"#,
++                r#"{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","model":"gpt-5.6-sol","reasoningEffort":"high","routeMessage":"route details","stripPromptPrefixBytes":7,"stripProviderState":true,"chatgptProfileHome":"/tmp/codex-work"}}"#,
 +                "",
 +            ),
 +            Some("turn-1".to_string()),
@@ -3562,13 +3747,17 @@ index 9124431bc1..06b388d271 100644
 +        assert_eq!(parsed.data.route_message.as_deref(), Some("route details"));
 +        assert_eq!(parsed.data.strip_prompt_prefix_bytes, Some(7));
 +        assert!(parsed.data.strip_provider_state);
++        assert_eq!(
++            parsed.data.chatgpt_profile_home.as_deref(),
++            Some("/tmp/codex-work")
++        );
 +    }
 +
      fn handler() -> ConfiguredHandler {
          handler_with_async(/*async*/ false)
      }
 diff --git a/codex-rs/hooks/src/schema.rs b/codex-rs/hooks/src/schema.rs
-index bb50807af5..cbfdeceff8 100644
+index bb50807af5..5ffa98060d 100644
 --- a/codex-rs/hooks/src/schema.rs
 +++ b/codex-rs/hooks/src/schema.rs
 @@ -12,6 +12,8 @@ use serde_json::Value;
@@ -3580,7 +3769,7 @@ index bb50807af5..cbfdeceff8 100644
  use crate::events::common::SubagentHookContext;
  
  const GENERATED_DIR: &str = "generated";
-@@ -446,6 +448,18 @@ pub(crate) struct UserPromptSubmitHookSpecificOutputWire {
+@@ -446,6 +448,20 @@ pub(crate) struct UserPromptSubmitHookSpecificOutputWire {
      pub hook_event_name: HookEventNameWire,
      #[serde(default)]
      pub additional_context: Option<String>,
@@ -3596,10 +3785,12 @@ index bb50807af5..cbfdeceff8 100644
 +    pub strip_prompt_prefix_bytes: Option<usize>,
 +    #[serde(default)]
 +    pub strip_provider_state: bool,
++    #[serde(default)]
++    pub chatgpt_profile_home: Option<String>,
  }
  
  #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-@@ -577,6 +591,16 @@ pub(crate) struct UserPromptSubmitCommandInput {
+@@ -577,6 +593,16 @@ pub(crate) struct UserPromptSubmitCommandInput {
      #[schemars(schema_with = "user_prompt_submit_hook_event_name_schema")]
      pub hook_event_name: String,
      pub model: String,
@@ -3616,6 +3807,94 @@ index bb50807af5..cbfdeceff8 100644
      #[schemars(schema_with = "permission_mode_schema")]
      pub permission_mode: String,
      pub prompt: String,
+diff --git a/codex-rs/login/src/auth/auth_tests.rs b/codex-rs/login/src/auth/auth_tests.rs
+index 9927a604a1..9a6d1f292c 100644
+--- a/codex-rs/login/src/auth/auth_tests.rs
++++ b/codex-rs/login/src/auth/auth_tests.rs
+@@ -1955,6 +1955,46 @@ fn auth_config_from_preserves_all_fields() {
+     assert_eq!(auth_config_from(&config), config.0);
+ }
+ 
++#[tokio::test]
++#[serial(codex_auth_env)]
++async fn shared_from_config_for_codex_home_loads_only_the_selected_profile() {
++    let primary_home = tempdir().expect("primary home");
++    let selected_home = tempdir().expect("selected profile home");
++    let _access_token_guard = remove_access_token_env_var();
++    write_auth_file(
++        AuthFileParams {
++            openai_api_key: None,
++            chatgpt_plan_type: Some("pro".to_string()),
++            chatgpt_account_id: Some("managed-workspace".to_string()),
++        },
++        selected_home.path(),
++    )
++    .expect("seed selected profile credentials");
++    let mut config = test_auth_manager_config(primary_home.path());
++    config.0.forced_chatgpt_workspace_id = Some(vec!["managed-workspace".to_string()]);
++
++    let manager = AuthManager::shared_from_config_for_codex_home(
++        &config,
++        selected_home.path().to_path_buf(),
++        /*enable_codex_api_key_env*/ false,
++    )
++    .await
++    .expect("selected profile auth manager");
++    let auth = manager.auth().await.expect("selected profile auth");
++
++    assert!(auth.is_chatgpt_auth());
++    assert_eq!(
++        auth.get_token_data()
++            .expect("selected profile token data")
++            .id_token
++            .chatgpt_account_id
++            .as_deref(),
++        Some("managed-workspace")
++    );
++    assert!(selected_home.path().join("auth.json").exists());
++    assert!(!primary_home.path().join("auth.json").exists());
++}
++
+ #[tokio::test]
+ #[serial(codex_auth_env)]
+ async fn shared_from_config_prefers_workload_identity_to_explicit_access_token() {
+diff --git a/codex-rs/login/src/auth/manager.rs b/codex-rs/login/src/auth/manager.rs
+index baf243faf6..4aa6142e33 100644
+--- a/codex-rs/login/src/auth/manager.rs
++++ b/codex-rs/login/src/auth/manager.rs
+@@ -2749,6 +2749,19 @@ impl AuthManager {
+         Self::shared_from_auth_config(auth_config_from(config), enable_codex_api_key_env).await
+     }
+ 
++    /// Builds a shared manager from the resolved auth policy while loading credentials from a
++    /// different Codex home. This is used for turn-boundary account routing without mutating the
++    /// thread's primary authentication manager.
++    pub async fn shared_from_config_for_codex_home(
++        config: &impl AuthManagerConfig,
++        codex_home: PathBuf,
++        enable_codex_api_key_env: bool,
++    ) -> Result<Arc<Self>, AuthManagerInitializationError> {
++        let mut auth_config = auth_config_from(config);
++        auth_config.codex_home = codex_home;
++        Self::shared_from_auth_config(auth_config, enable_codex_api_key_env).await
++    }
++
+     /// Activates workload identity against an auth config resolved before full runtime config.
+     pub async fn shared_from_auth_config(
+         auth_config: AuthConfig,
+diff --git a/codex-rs/login/src/auth_env_telemetry.rs b/codex-rs/login/src/auth_env_telemetry.rs
+index 86cbbfd8fe..030e1aea85 100644
+--- a/codex-rs/login/src/auth_env_telemetry.rs
++++ b/codex-rs/login/src/auth_env_telemetry.rs
+@@ -77,6 +77,8 @@ mod tests {
+             requires_openai_auth: false,
+             supports_websockets: false,
+             supports_standalone_web_search: false,
++            tool_compatibility: None,
++            approval_review_model: None,
+         };
+ 
+         let telemetry =
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
 index 9c27b15cc4..b86fc3764f 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
