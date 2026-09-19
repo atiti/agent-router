@@ -1,12 +1,23 @@
 # Changelog
 
+## 0.5.28 — 2026-09-19
+
+- Continue an existing Codex CLI or Desktop thread on another configured ChatGPT subscription
+  profile when the active profile is authoritatively exhausted or unavailable.
+- Keep profile selection, priority, capacity policy, session affinity, audit metadata, and visible
+  `PROFILE FAILOVER` / `PROFILE ROUTE` notices in AgentRoute; the maintained Codex patch only accepts
+  a turn-scoped profile home and constructs a turn-local authenticated provider.
+- Strip provider-bound encrypted reasoning and cache state on every alternate-profile turn while
+  preserving portable conversation and tool history; never replay an interrupted or failed turn.
+- Refuse to switch on unknown quota telemetry, skip signed-out/disabled/unavailable profiles, and
+  avoid treating two profile homes for the same ChatGPT account as independent capacity.
+
 ## 0.5.27 — 2026-09-19
 
 - Add opt-in capacity management: authoritative ChatGPT subscription telemetry, audited
   daily/monthly API-equivalent budgets, bounded backend preference-ring failover, recovery
   hysteresis, explicit-route fail-closed behavior, and visible warning/fallback/block messages.
-- Support named, isolated `CODEX_HOME` subscription profiles. Profile selection happens only when
-  a new CLI or Desktop process launches; AgentRoute never switches an account within a live thread.
+- Support named, isolated `CODEX_HOME` subscription profiles for launch-time selection.
 - Propagate app-server `ordinaryUsageAllowed` into active Codex hook sessions without a per-turn
   network request, and preserve a known exhausted state across sparse rate-limit updates.
 - Add capacity status, profile probing, budgets and fallback configuration, doctor checks, hashed
