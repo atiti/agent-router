@@ -88,7 +88,8 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v27" in installer
+    assert "provider-routing-v28" in installer
+    assert "ordinary_usage_allowed" in installer
     assert "codex-desktop-route-notice.patch" in installer
     assert "codex-package-version.patch" in installer
     assert "0.155.0-alpha.2.7" in "\n".join(

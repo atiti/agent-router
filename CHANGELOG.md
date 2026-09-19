@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.26 — 2026-09-19
+## 0.5.27 — 2026-09-19
 
 - Add opt-in capacity management: authoritative ChatGPT subscription telemetry, audited
   daily/monthly API-equivalent budgets, bounded backend preference-ring failover, recovery
@@ -11,6 +11,8 @@
   network request, and preserve a known exhausted state across sparse rate-limit updates.
 - Add capacity status, profile probing, budgets and fallback configuration, doctor checks, hashed
   account-safe audit metadata, and capacity/fallback analytics with turn-duration context.
+- Ensure source installs detect the new telemetry marker and reapply the maintained Codex patch
+  instead of compiling a previously patched but pre-capacity checkout.
 
 ## 0.5.25 — 2026-09-19
 
