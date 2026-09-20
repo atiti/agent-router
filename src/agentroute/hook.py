@@ -10,7 +10,11 @@ from .audit import AuditStore
 from .capacity import backend_spend, subscription_state
 from .config import AppConfig, load_config
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
-from .profiles import TurnProfileSelection, select_turn_profile
+from .profiles import (
+    TurnProfileSelection,
+    reviewer_fallback_profiles,
+    select_turn_profile,
+)
 from .router import Router
 from .signals import continues_previous_task, is_confirmation, route_overrides
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
@@ -270,6 +274,21 @@ def codex_user_prompt_submit(
                 and profile_selection.use_profile_home
             ):
                 specific["chatgptProfileHome"] = profile_selection.selected.codex_home
+            if (
+                profile_selection is not None
+                and profile_selection.selected is not None
+                and decision.backend == "gpt"
+                and decision.model_provider == "openai"
+            ):
+                reviewer_fallbacks = reviewer_fallback_profiles(
+                    config, profile_selection.selected
+                )
+                specific["reviewerProfileName"] = profile_selection.selected.name
+                if reviewer_fallbacks:
+                    specific["reviewerFallbackProfiles"] = [
+                        {"name": profile.name, "codexHome": profile.codex_home}
+                        for profile in reviewer_fallbacks
+                    ]
             if decision.strip_provider_state:
                 specific["stripProviderState"] = True
             if decision.reasoning_effort:

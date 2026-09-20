@@ -6,7 +6,7 @@ from agentroute.audit import AuditStore
 from agentroute.capacity import CapacityState
 from agentroute.config import SubscriptionProfileConfig, default_config
 from agentroute.hook import codex_stop, codex_user_prompt_submit
-from agentroute.profiles import ProfileStatus
+from agentroute.profiles import ProfileStatus, reviewer_fallback_profiles
 
 
 class FakeClassifierResponse:
@@ -499,6 +499,140 @@ def test_unknown_subscription_telemetry_does_not_trigger_profile_switch(tmp_path
 
     probe.assert_not_called()
     assert "chatgptProfileHome" not in output["hookSpecificOutput"]
+
+
+def test_reviewer_fallbacks_only_include_healthy_distinct_accounts(tmp_path):
+    config = default_config()
+    config.capacity.enabled = True
+    config.capacity.profiles = {
+        "current": SubscriptionProfileConfig(
+            codex_home=str(tmp_path / "current"), priority=10
+        ),
+        "duplicate": SubscriptionProfileConfig(
+            codex_home=str(tmp_path / "duplicate"), priority=20
+        ),
+        "healthy": SubscriptionProfileConfig(
+            codex_home=str(tmp_path / "healthy"), priority=30
+        ),
+        "exhausted": SubscriptionProfileConfig(
+            codex_home=str(tmp_path / "exhausted"), priority=40
+        ),
+    }
+    current = ProfileStatus(
+        "current",
+        str(tmp_path / "current"),
+        10,
+        True,
+        True,
+        "current-account",
+        CapacityState("gpt", "healthy", "healthy", "subscription", 10),
+    )
+    statuses = (
+        current,
+        ProfileStatus(
+            "duplicate",
+            str(tmp_path / "duplicate"),
+            20,
+            True,
+            True,
+            "current-account",
+            CapacityState("gpt", "healthy", "healthy", "subscription", 10),
+        ),
+        ProfileStatus(
+            "healthy",
+            str(tmp_path / "healthy"),
+            30,
+            True,
+            True,
+            "other-account",
+            CapacityState("gpt", "warning", "warning", "subscription", 90),
+        ),
+        ProfileStatus(
+            "exhausted",
+            str(tmp_path / "exhausted"),
+            40,
+            True,
+            True,
+            "third-account",
+            CapacityState("gpt", "exhausted", "exhausted", "subscription", 100),
+        ),
+    )
+
+    with patch("agentroute.profiles.probe_profiles", return_value=statuses):
+        fallbacks = reviewer_fallback_profiles(config, current)
+
+    assert [profile.name for profile in fallbacks] == ["healthy"]
+
+
+def test_gpt_turn_emits_safe_reviewer_profile_fallback_metadata(tmp_path, monkeypatch):
+    current_home = tmp_path / "current"
+    fallback_home = tmp_path / "fallback"
+    write_profile_auth(current_home, "current-account")
+    write_profile_auth(fallback_home, "fallback-account")
+    monkeypatch.setenv("CODEX_HOME", str(current_home))
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.profiles = {
+        "current": SubscriptionProfileConfig(codex_home=str(current_home), priority=10),
+        "fallback": SubscriptionProfileConfig(codex_home=str(fallback_home), priority=20),
+    }
+    statuses = (
+        ProfileStatus(
+            "current",
+            str(current_home),
+            10,
+            True,
+            True,
+            "current-hash",
+            CapacityState("gpt", "healthy", "healthy", "subscription", 10),
+        ),
+        ProfileStatus(
+            "fallback",
+            str(fallback_home),
+            20,
+            True,
+            True,
+            "fallback-hash",
+            CapacityState("gpt", "healthy", "healthy", "subscription", 20),
+        ),
+    )
+
+    with patch("agentroute.profiles.probe_profiles", return_value=statuses):
+        output = invoke(
+            config,
+            AuditStore(tmp_path / "audit.db"),
+            "check status",
+            account_id="current-account",
+            rate_limits={"primary": {"usedPercent": 10}},
+        )
+
+    specific = output["hookSpecificOutput"]
+    assert specific["reviewerProfileName"] == "current"
+    assert specific["reviewerFallbackProfiles"] == [
+        {"name": "fallback", "codexHome": str(fallback_home)}
+    ]
+    assert "current-account" not in json.dumps(specific)
+    assert "fallback-account" not in json.dumps(specific)
+
+
+def test_non_gpt_turn_does_not_emit_reviewer_profile_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "@azure check status",
+    )
+
+    specific = output["hookSpecificOutput"]
+    assert "reviewerProfileName" not in specific
+    assert "reviewerFallbackProfiles" not in specific
 
 
 def test_observe_mode_does_not_emit_override(tmp_path):

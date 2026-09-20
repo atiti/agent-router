@@ -745,11 +745,63 @@ index b367ba4bea..ae219e3e1a 100644
          .info()
          .stream_max_retries()
          .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
+diff --git a/codex-rs/core/src/guardian/mod.rs b/codex-rs/core/src/guardian/mod.rs
+index a4e0e1429a..32c05a6b9a 100644
+--- a/codex-rs/core/src/guardian/mod.rs
++++ b/codex-rs/core/src/guardian/mod.rs
+@@ -23,6 +23,7 @@ mod runtime;
+ pub(crate) mod test_host;
+ 
+ use codex_protocol::items::ModelInvocationContext;
++use std::path::PathBuf;
+ use std::sync::Arc;
+ 
+ use codex_protocol::config_types::ApprovalsReviewer;
+@@ -76,6 +77,31 @@ const GUARDIAN_MAX_TOOL_ENTRY_TOKENS: usize = codex_guardian_context::ContextPro
+ pub(crate) const GUARDIAN_MAX_ROOT_MESSAGE_TOKENS: usize = 900;
+ pub(crate) const GUARDIAN_MAX_NODE_REPL_TOOL_RESULT_TOKENS: usize = 6_000;
+ 
++/// Turn-scoped ChatGPT profiles that Guardian may use without changing the answer route.
++#[derive(Debug, Clone)]
++pub(crate) struct GuardianReviewerProfiles {
++    pub(crate) current_name: Option<String>,
++    pub(crate) fallbacks: Vec<GuardianReviewerProfile>,
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct GuardianReviewerProfile {
++    pub(crate) name: String,
++    pub(crate) codex_home: PathBuf,
++}
++
++#[derive(Clone)]
++struct GuardianReviewerIdentity {
++    name: Option<String>,
++    auth_manager: Option<Arc<codex_login::AuthManager>>,
++}
++
++#[derive(Clone)]
++struct GuardianReviewerFallbackState {
++    active: GuardianReviewerIdentity,
++    fallbacks: std::collections::VecDeque<GuardianReviewerProfile>,
++}
++
+ /// Captures review inputs from the issuing step without retaining its MCP bindings or tool router.
+ /// Background network approvals and Unix interception use the active task's resolved settings.
+ /// Startup reviewer prewarming intentionally uses turn-only inputs because it has no issuing step.
 diff --git a/codex-rs/core/src/guardian/review.rs b/codex-rs/core/src/guardian/review.rs
-index fc7960d547..27e494f651 100644
+index fc7960d547..41cc35c537 100644
 --- a/codex-rs/core/src/guardian/review.rs
 +++ b/codex-rs/core/src/guardian/review.rs
-@@ -225,7 +225,25 @@ pub(super) async fn guardian_review_session_config(
+@@ -41,6 +41,7 @@ use super::GUARDIAN_REVIEWER_NAME;
+ use super::GuardianApprovalRequest;
+ use super::GuardianAssessmentOutcome;
+ use super::GuardianReviewContext;
++use super::GuardianReviewerIdentity;
+ use super::approval_request::format_guardian_action_pretty;
+ use super::approval_request::guardian_assessment_action;
+ use super::approval_request::guardian_request_target_item_id;
+@@ -225,7 +226,25 @@ pub(super) async fn guardian_review_session_config(
              turn.config.http_client_factory(),
          )
          .await;
@@ -776,7 +828,7 @@ index fc7960d547..27e494f651 100644
      let codex_guardian_reviewer::ReviewModel {
          model: guardian_model,
          reasoning_effort: guardian_reasoning_effort,
-@@ -234,7 +252,7 @@ pub(super) async fn guardian_review_session_config(
+@@ -234,7 +253,7 @@ pub(super) async fn guardian_review_session_config(
          model_overridden: guardian_review_model_overridden,
          model_override: guardian_review_model_override,
      } = codex_guardian_reviewer::select_review_model(
@@ -785,7 +837,7 @@ index fc7960d547..27e494f651 100644
          context.reasoning_effort.as_ref(),
          default_review_model_id,
          &available_models,
-@@ -257,8 +275,15 @@ pub(super) async fn guardian_review_session_config(
+@@ -257,8 +276,15 @@ pub(super) async fn guardian_review_session_config(
                      .await,
              )
          };
@@ -802,7 +854,7 @@ index fc7960d547..27e494f651 100644
          live_network_config,
          guardian_model.as_str(),
          guardian_reasoning_effort.clone(),
-@@ -266,6 +291,23 @@ pub(super) async fn guardian_review_session_config(
+@@ -266,6 +292,23 @@ pub(super) async fn guardian_review_session_config(
          context.personality,
          guardian_model_info.model_messages.as_ref(),
      )?;
@@ -826,8 +878,296 @@ index fc7960d547..27e494f651 100644
      if context.model_info.computer_use_review_required() {
          spawn_config
              .features
+@@ -312,6 +355,7 @@ pub(super) async fn guardian_review_session_config(
+ async fn run_guardian_review_session_before_deadline(
+     session: Arc<Session>,
+     context: GuardianReviewContext,
++    reviewer: GuardianReviewerIdentity,
+     request: GuardianApprovalRequest,
+     reasons: ApprovalRequestReasons,
+     schema: serde_json::Value,
+@@ -341,6 +385,8 @@ async fn run_guardian_review_session_before_deadline(
+             GuardianReviewSessionParams {
+                 parent_session: Arc::clone(&session),
+                 parent_context: context.clone(),
++                reviewer_profile_name: reviewer.name,
++                reviewer_auth_manager: reviewer.auth_manager,
+                 parent_history: session.clone_history().await,
+                 spawn_config: session_config.spawn_config,
+                 node_repl_policy: session_config.node_repl_policy,
+@@ -405,6 +451,14 @@ async fn run_guardian_review_session_with_retry_before_deadline(
+         run_guardian_review_session_before_deadline(
+             Arc::clone(&session),
+             context.clone(),
++            GuardianReviewerIdentity {
++                name: None,
++                auth_manager: context
++                    .turn()
++                    .model_provider()
++                    .auth_manager()
++                    .or_else(|| Some(Arc::clone(&session.services.auth_manager))),
++            },
+             request.clone(),
+             reasons.clone(),
+             schema.clone(),
+diff --git a/codex-rs/core/src/guardian/review_request.rs b/codex-rs/core/src/guardian/review_request.rs
+index ce6c9c3f64..edd23f5b6a 100644
+--- a/codex-rs/core/src/guardian/review_request.rs
++++ b/codex-rs/core/src/guardian/review_request.rs
+@@ -1,10 +1,14 @@
+ //! Captures and reports one review on the host's original action and authorization state.
+ //! Guardian's extension owns orchestration; this adapter preserves event and evidence behavior.
+ 
++use super::super::GuardianReviewerFallbackState;
++use super::super::GuardianReviewerIdentity;
++use super::super::GuardianReviewerProfiles;
+ use super::*;
+ use crate::codex_thread::GuardianAuthorizationVersion;
+ use codex_guardian_reviewer::ReviewHost;
+ use codex_protocol::approvals::GuardianReviewReason;
++use codex_protocol::protocol::CodexErrorInfo;
+ 
+ pub(in crate::guardian) struct PreparedApproval {
+     request: GuardianApprovalRequest,
+@@ -18,6 +22,7 @@ pub(in crate::guardian) struct PreparedApproval {
+         GuardianAuthorizationVersion,
+         Option<GuardianAuthorizationVersion>,
+     )>,
++    reviewer_profiles: tokio::sync::Mutex<GuardianReviewerFallbackState>,
+ }
+ 
+ impl ReviewHost for super::super::runtime::ReviewRuntime {
+@@ -165,11 +170,28 @@ impl ReviewHost for super::super::runtime::ReviewRuntime {
+         drop(history);
+         Ok(PreparedApproval {
+             request,
+-            turn,
++            turn: Arc::clone(&turn),
+             report,
+             root_authorization_version,
+             user_message_revision,
+             review_evidence,
++            reviewer_profiles: tokio::sync::Mutex::new(GuardianReviewerFallbackState {
++                active: GuardianReviewerIdentity {
++                    name: turn
++                        .extension_data
++                        .get::<GuardianReviewerProfiles>()
++                        .and_then(|profiles| profiles.current_name.clone()),
++                    auth_manager: turn
++                        .model_provider()
++                        .auth_manager()
++                        .or_else(|| Some(Arc::clone(&session.services.auth_manager))),
++                },
++                fallbacks: turn
++                    .extension_data
++                    .get::<GuardianReviewerProfiles>()
++                    .map(|profiles| profiles.fallbacks.iter().cloned().collect())
++                    .unwrap_or_default(),
++            }),
+         })
+     }
+ 
+@@ -178,16 +200,79 @@ impl ReviewHost for super::super::runtime::ReviewRuntime {
+         prepared: &PreparedApproval,
+         deadline: Instant,
+     ) -> (GuardianReviewOutcome, GuardianReviewAnalyticsResult) {
+-        run_guardian_review_session_before_deadline(
++        let reviewer = prepared.reviewer_profiles.lock().await.active.clone();
++        let (outcome, analytics) = run_guardian_review_session_before_deadline(
+             Arc::clone(&self.session),
+             self.context.clone(),
++            reviewer,
+             prepared.request.clone(),
+             self.reasons.clone(),
+             guardian_output_schema(),
+             self.options.external_cancel.clone(),
+             deadline,
+         )
+-        .await
++        .await;
++        if !matches!(
++            &outcome,
++            GuardianReviewOutcome::Error(GuardianReviewError::Session {
++                error_info: Some(CodexErrorInfo::UsageLimitExceeded),
++                ..
++            })
++        ) {
++            return (outcome, analytics);
++        }
++        let mut reviewer_profiles = prepared.reviewer_profiles.lock().await;
++        while let Some(fallback) = reviewer_profiles.fallbacks.pop_front() {
++            let auth_manager = match codex_login::AuthManager::shared_from_config_for_codex_home(
++                prepared.turn.config.as_ref(),
++                fallback.codex_home,
++                /*enable_codex_api_key_env*/ false,
++            )
++            .await
++            {
++                Ok(auth_manager) => auth_manager,
++                Err(error) => {
++                    tracing::warn!(profile = %fallback.name, %error, "could not load reviewer fallback profile");
++                    continue;
++                }
++            };
++            if auth_manager
++                .auth()
++                .await
++                .is_none_or(|auth| !auth.is_chatgpt_auth())
++            {
++                tracing::warn!(profile = %fallback.name, "reviewer fallback profile is not signed in");
++                continue;
++            }
++            let from_profile = reviewer_profiles
++                .active
++                .name
++                .clone()
++                .unwrap_or_else(|| "current".to_string());
++            reviewer_profiles.active = GuardianReviewerIdentity {
++                name: Some(fallback.name.clone()),
++                auth_manager: Some(auth_manager),
++            };
++            self.session
++                .send_event(
++                    prepared.turn.as_ref(),
++                    EventMsg::GuardianWarning(WarningEvent {
++                        message: format!(
++                            "◆ APPROVAL REVIEWER FALLBACK · {from_profile} → {} · current subscription usage limit reached",
++                            fallback.name
++                        ),
++                    }),
++                )
++                .await;
++            return (
++                GuardianReviewOutcome::Error(GuardianReviewError::ReviewerFallbackReady {
++                    from_profile,
++                    to_profile: fallback.name,
++                }),
++                analytics,
++            );
++        }
++        (outcome, analytics)
+     }
+ 
+     async fn complete(
+@@ -203,6 +288,7 @@ impl ReviewHost for super::super::runtime::ReviewRuntime {
+             root_authorization_version,
+             user_message_revision,
+             review_evidence,
++            reviewer_profiles: _,
+         } = prepared;
+         let session = Arc::clone(&self.session);
+         if matches!(&outcome, GuardianReviewOutcome::Completed(assessment) if assessment.outcome == GuardianAssessmentOutcome::Allow)
+diff --git a/codex-rs/core/src/guardian/review_session.rs b/codex-rs/core/src/guardian/review_session.rs
+index 397f1eb635..c9201f50e1 100644
+--- a/codex-rs/core/src/guardian/review_session.rs
++++ b/codex-rs/core/src/guardian/review_session.rs
+@@ -98,6 +98,7 @@ use super::review::guardian_review_session_config;
+ pub(crate) use super::reviewer_config::build_guardian_review_session_config;
+ use codex_guardian_reviewer::run_before_review_deadline;
+ use codex_guardian_reviewer::wait_for_guardian_review;
++use codex_login::AuthManager;
+ 
+ const GUARDIAN_MAX_IMAGE_ITEM_TOKENS: i64 = 10_000;
+ pub(crate) use codex_guardian_reviewer::GuardianReviewSessionOutcome;
+@@ -105,6 +106,8 @@ pub(crate) use codex_guardian_reviewer::GuardianReviewSessionOutcome;
+ pub(crate) struct GuardianReviewSessionParams {
+     pub(crate) parent_session: Arc<Session>,
+     pub(crate) parent_context: GuardianReviewContext,
++    pub(crate) reviewer_profile_name: Option<String>,
++    pub(crate) reviewer_auth_manager: Option<Arc<AuthManager>>,
+     // Checkpoint selection and thread-owned prompt evidence must use the same history.
+     pub(crate) parent_history: ContextManager,
+     pub(crate) spawn_config: Config,
+@@ -208,6 +211,7 @@ pub struct GuardianReviewSessionReuseKey {
+     zsh_path: Option<PathBuf>,
+     features: ManagedFeatures,
+     environment_ids: Vec<String>,
++    reviewer_profile_name: Option<String>,
+ }
+ 
+ impl GuardianReviewSessionReuseKey {
+@@ -252,6 +256,7 @@ impl GuardianReviewSessionReuseKey {
+             zsh_path: spawn_config.zsh_path.clone(),
+             features: spawn_config.features.clone(),
+             environment_ids: Vec::new(),
++            reviewer_profile_name: None,
+         }
+     }
+ 
+diff --git a/codex-rs/core/src/guardian/review_session_setup.rs b/codex-rs/core/src/guardian/review_session_setup.rs
+index edf191bfe0..5a40345479 100644
+--- a/codex-rs/core/src/guardian/review_session_setup.rs
++++ b/codex-rs/core/src/guardian/review_session_setup.rs
+@@ -10,6 +10,7 @@ pub struct PreparedGuardianContext {
+     parent: Arc<Session>,
+     context: GuardianReviewContext,
+     config: Config,
++    reviewer_auth_manager: Option<Arc<codex_login::AuthManager>>,
+     context_policy: ReviewContextPolicy,
+     key: GuardianReviewSessionReuseKey,
+     parent_compaction: Option<ResponseItem>,
+@@ -21,6 +22,8 @@ impl PreparedGuardianContext {
+         parent: Arc<Session>,
+         context: GuardianReviewContext,
+         config: Config,
++        reviewer_profile_name: Option<String>,
++        reviewer_auth_manager: Option<Arc<codex_login::AuthManager>>,
+         history: &ContextManager,
+         node_repl_policy: &GuardianNodeReplPolicy,
+         compaction_model_hash: Option<&str>,
+@@ -45,10 +48,12 @@ impl PreparedGuardianContext {
+         .with_node_repl_policy(node_repl_policy);
+         key.root_authorization_version = root_authorization_version;
+         key.parent_reset_version = history.reset_version;
++        key.reviewer_profile_name = reviewer_profile_name;
+         Ok(Self {
+             parent,
+             context,
+             config,
++            reviewer_auth_manager,
+             context_policy,
+             key,
+             parent_compaction,
+@@ -102,7 +107,10 @@ impl PreparedGuardianContext {
+         let options = crate::StartThreadOptions {
+             internal_parent: Some(crate::thread_manager::InternalSessionParent {
+                 thread_id: self.parent.thread_id(),
+-                auth_manager: Arc::clone(&self.parent.services.auth_manager),
++                auth_manager: self
++                    .reviewer_auth_manager
++                    .clone()
++                    .unwrap_or_else(|| Arc::clone(&self.parent.services.auth_manager)),
+                 agent_control: self.parent.services.agent_control.clone(),
+                 originator: self.context.turn().originator.clone(),
+                 inherited_instructions: Some(self.parent.inherited_instructions().await),
+@@ -223,6 +231,8 @@ pub(super) async fn prepare_review(
+         Arc::clone(&params.parent_session),
+         params.parent_context.clone(),
+         params.spawn_config.clone(),
++        params.reviewer_profile_name.clone(),
++        params.reviewer_auth_manager.clone(),
+         &params.parent_history,
+         &params.node_repl_policy,
+         params.compaction_model_hash.as_deref(),
+@@ -251,13 +261,15 @@ pub(super) fn prepare_prewarm(
+     turn: Arc<TurnContext>,
+ ) -> BoxFuture<'static, anyhow::Result<PreparedGuardianContext>> {
+     Box::pin(async move {
+-        let context = GuardianReviewContext::from(turn);
++        let context = GuardianReviewContext::from(Arc::clone(&turn));
+         let config = guardian_review_session_config(&parent, &context).await?;
+         let history = parent.clone_history().await;
+         PreparedGuardianContext::prepare(
+             Arc::clone(&parent),
+             context,
+             config.spawn_config,
++            None,
++            turn.model_provider().auth_manager(),
+             &history,
+             &config.node_repl_policy,
+             config.compaction_model_hash.as_deref(),
 diff --git a/codex-rs/core/src/guardian/review_session_tests.rs b/codex-rs/core/src/guardian/review_session_tests.rs
-index 6616a291b3..20dfd8024e 100644
+index 6616a291b3..0ac5cc39cc 100644
 --- a/codex-rs/core/src/guardian/review_session_tests.rs
 +++ b/codex-rs/core/src/guardian/review_session_tests.rs
 @@ -91,6 +91,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
@@ -838,6 +1178,30 @@ index 6616a291b3..20dfd8024e 100644
              },
          )
          .await;
+@@ -222,6 +223,8 @@ async fn test_review_params() -> GuardianReviewSessionParams {
+         parent_history: session.clone_history().await,
+         parent_session: Arc::new(session),
+         parent_context: GuardianReviewContext::from(Arc::new(turn)),
++        reviewer_profile_name: None,
++        reviewer_auth_manager: None,
+         spawn_config,
+         node_repl_policy: GuardianNodeReplPolicy::from_model_messages(/*messages*/ None),
+         request: GuardianApprovalRequest::ExecCommand {
+@@ -347,6 +350,14 @@ async fn guardian_review_session_config_change_invalidates_cached_session() {
+         PathUri::from_abs_path(&cached_spawn_config.cwd)
+     );
+     assert_ne!(cached_reuse_key, next_reuse_key);
++    assert_ne!(
++        cached_reuse_key.clone(),
++        GuardianReviewSessionReuseKey {
++            reviewer_profile_name: Some("fallback".to_string()),
++            ..cached_reuse_key.clone()
++        },
++        "switching reviewer subscriptions must invalidate reviewer history"
++    );
+     assert_eq!(
+         cached_reuse_key,
+         GuardianReviewSessionReuseKey::from_spawn_config(
 diff --git a/codex-rs/core/src/guardian/tests.rs b/codex-rs/core/src/guardian/tests.rs
 index cf191851bf..6c0f97c900 100644
 --- a/codex-rs/core/src/guardian/tests.rs
@@ -958,7 +1322,7 @@ index cf191851bf..6c0f97c900 100644
  async fn guardian_review_session_config_clears_parent_developer_instructions() {
      let mut parent_config = test_config().await;
 diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
-index 4e276868ce..ea2a5e2a20 100644
+index 4e276868ce..0c7b47ac6d 100644
 --- a/codex-rs/core/src/hook_runtime.rs
 +++ b/codex-rs/core/src/hook_runtime.rs
 @@ -49,6 +49,8 @@ use codex_protocol::protocol::HookStartedEvent;
@@ -970,7 +1334,16 @@ index 4e276868ce..ea2a5e2a20 100644
  use codex_protocol::protocol::WarningEvent;
  use codex_rollout::state_db;
  use codex_thread_store::PersistContext;
-@@ -74,6 +76,14 @@ use crate::turn_metadata::ExecutionMetadata;
+@@ -62,6 +64,8 @@ use crate::context::ContextualUserFragment;
+ use crate::context::HookAdditionalContext;
+ use crate::event_mapping::parse_turn_item;
+ use crate::guardian::GuardianReviewContext;
++use crate::guardian::GuardianReviewerProfile;
++use crate::guardian::GuardianReviewerProfiles;
+ use crate::session::TurnInput;
+ use crate::session::session::Session;
+ use crate::session::step_context::StepContext;
+@@ -74,6 +78,16 @@ use crate::turn_metadata::ExecutionMetadata;
  pub(crate) struct HookRuntimeOutcome {
      pub should_stop: bool,
      pub additional_contexts: Vec<String>,
@@ -981,11 +1354,13 @@ index 4e276868ce..ea2a5e2a20 100644
 +    pub strip_prompt_prefix_bytes: Option<usize>,
 +    pub strip_provider_state: bool,
 +    pub chatgpt_profile_home: Option<String>,
++    pub reviewer_profile_name: Option<String>,
++    pub reviewer_fallback_profiles: Vec<codex_hooks::ReviewerFallbackProfile>,
 +    pub settings_updated: bool,
  }
  
  pub(crate) enum PreToolUseHookResult {
-@@ -99,6 +109,14 @@ impl From<SessionStartOutcome> for ContextInjectingHookOutcome {
+@@ -99,6 +113,16 @@ impl From<SessionStartOutcome> for ContextInjectingHookOutcome {
              outcome: HookRuntimeOutcome {
                  should_stop,
                  additional_contexts,
@@ -996,11 +1371,13 @@ index 4e276868ce..ea2a5e2a20 100644
 +                strip_prompt_prefix_bytes: None,
 +                strip_provider_state: false,
 +                chatgpt_profile_home: None,
++                reviewer_profile_name: None,
++                reviewer_fallback_profiles: Vec::new(),
 +                settings_updated: false,
              },
          }
      }
-@@ -111,12 +129,27 @@ impl From<UserPromptSubmitOutcome> for ContextInjectingHookOutcome {
+@@ -111,12 +135,31 @@ impl From<UserPromptSubmitOutcome> for ContextInjectingHookOutcome {
              should_stop,
              stop_reason: _,
              additional_contexts,
@@ -1011,6 +1388,8 @@ index 4e276868ce..ea2a5e2a20 100644
 +            strip_prompt_prefix_bytes,
 +            strip_provider_state,
 +            chatgpt_profile_home,
++            reviewer_profile_name,
++            reviewer_fallback_profiles,
          } = value;
          Self {
              hook_events,
@@ -1024,11 +1403,13 @@ index 4e276868ce..ea2a5e2a20 100644
 +                strip_prompt_prefix_bytes,
 +                strip_provider_state,
 +                chatgpt_profile_home,
++                reviewer_profile_name,
++                reviewer_fallback_profiles,
 +                settings_updated: false,
              },
          }
      }
-@@ -444,7 +477,7 @@ pub(crate) async fn run_turn_stop_hooks(
+@@ -444,7 +487,7 @@ pub(crate) async fn run_turn_stop_hooks(
          #[allow(deprecated)]
          cwd: turn_context.cwd.clone(),
          transcript_path,
@@ -1037,7 +1418,7 @@ index 4e276868ce..ea2a5e2a20 100644
          permission_mode: hook_permission_mode(turn_context.approval_policy()),
          request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),
          stop_hook_active,
-@@ -667,43 +700,141 @@ pub(crate) async fn run_legacy_after_agent_hook(
+@@ -667,43 +710,162 @@ pub(crate) async fn run_legacy_after_agent_hook(
      true
  }
  
@@ -1103,6 +1484,8 @@ index 4e276868ce..ea2a5e2a20 100644
 +            strip_prompt_prefix_bytes: None,
 +            strip_provider_state: false,
 +            chatgpt_profile_home: None,
++            reviewer_profile_name: None,
++            reviewer_fallback_profiles: Vec::new(),
 +            settings_updated: false,
 +        };
 +    };
@@ -1137,6 +1520,25 @@ index 4e276868ce..ea2a5e2a20 100644
 +        hooks.run_user_prompt_submit(request),
 +    )
 +    .await;
++    let reviewer_fallbacks = outcome
++        .reviewer_fallback_profiles
++        .iter()
++        .filter_map(|profile| {
++            let codex_home = std::path::PathBuf::from(&profile.codex_home);
++            codex_home.is_absolute().then(|| GuardianReviewerProfile {
++                name: profile.name.clone(),
++                codex_home,
++            })
++        })
++        .collect::<Vec<_>>();
++    if outcome.reviewer_profile_name.is_some() || !reviewer_fallbacks.is_empty() {
++        turn_context
++            .extension_data
++            .insert(GuardianReviewerProfiles {
++                current_name: outcome.reviewer_profile_name.clone(),
++                fallbacks: reviewer_fallbacks,
++            });
++    }
 +    if !outcome.should_stop
 +        && (outcome.model.is_some()
 +            || outcome.model_provider.is_some()
@@ -1207,7 +1609,7 @@ index 4e276868ce..ea2a5e2a20 100644
  }
  
  pub(crate) async fn record_pending_input(
-@@ -1066,6 +1197,7 @@ mod tests {
+@@ -1066,6 +1228,7 @@ mod tests {
      use codex_otel::HOOK_RUN_METRIC;
      use codex_otel::MetricsClient;
      use codex_otel::MetricsConfig;
@@ -1215,7 +1617,7 @@ index 4e276868ce..ea2a5e2a20 100644
      use codex_protocol::models::ContentItem;
      use codex_protocol::protocol::HookEventName;
      use codex_protocol::protocol::HookExecutionMode;
-@@ -1073,6 +1205,9 @@ mod tests {
+@@ -1073,6 +1236,9 @@ mod tests {
      use codex_protocol::protocol::HookRunStatus;
      use codex_protocol::protocol::HookScope;
      use codex_protocol::protocol::HookSource;
@@ -1225,7 +1627,7 @@ index 4e276868ce..ea2a5e2a20 100644
      use opentelemetry_sdk::metrics::InMemoryMetricExporter;
      use opentelemetry_sdk::metrics::data::AggregatedMetrics;
      use opentelemetry_sdk::metrics::data::HistogramDataPoint;
-@@ -1085,6 +1220,7 @@ mod tests {
+@@ -1085,6 +1251,7 @@ mod tests {
      use super::emit_hook_started_events;
      use super::hook_run_analytics_payload;
      use super::hook_run_metric_tags;
@@ -1233,7 +1635,7 @@ index 4e276868ce..ea2a5e2a20 100644
      use crate::session::tests::make_session_and_context;
      use crate::session::tests::make_session_and_context_with_rx;
      use codex_protocol::protocol::HookCompletedEvent;
-@@ -1128,6 +1264,69 @@ mod tests {
+@@ -1128,6 +1295,69 @@ mod tests {
          );
      }
  
@@ -1369,7 +1771,7 @@ index 462bb95ba8..611aaa91e9 100644
          let retry_delay = retry_state.connection_retry_delay;
          warn!(
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index affecf42d5..195ede61a9 100644
+index affecf42d5..86847150d7 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -697,9 +697,16 @@ impl Session {
@@ -1463,7 +1865,7 @@ index ea078a451e..cfee96aca7 100644
          history_mode: parent_turn_context.history_mode,
          parent_thread_id: parent_turn_context.parent_thread_id,
 diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
-index 8dc090315a..2708f3a865 100644
+index 8dc090315a..e72b861acc 100644
 --- a/codex-rs/core/src/session/step_activation.rs
 +++ b/codex-rs/core/src/session/step_activation.rs
 @@ -12,12 +12,18 @@ use crate::context::GuardianNodeReplPolicy;
@@ -1636,7 +2038,7 @@ index 8dc090315a..2708f3a865 100644
          TurnSettingsUpdateOutcome::Applied
      }
  
-@@ -405,6 +508,33 @@ impl Session {
+@@ -405,6 +508,34 @@ impl Session {
      }
  }
  
@@ -1672,7 +2074,7 @@ index 8dc090315a..2708f3a865 100644
  #[path = "step_activation_tests.rs"]
  mod tests;
 diff --git a/codex-rs/core/src/session/step_activation_tests.rs b/codex-rs/core/src/session/step_activation_tests.rs
-index dcaa598eb6..f8eb0b4018 100644
+index dcaa598eb6..9c9310a3cc 100644
 --- a/codex-rs/core/src/session/step_activation_tests.rs
 +++ b/codex-rs/core/src/session/step_activation_tests.rs
 @@ -24,6 +24,7 @@ use codex_extension_api::ThreadInstructionsProvider;
@@ -3109,6 +3511,113 @@ index d9741d0381..136d616c43 100644
      };
  
      let TestCodex { codex, .. } = test_codex()
+diff --git a/codex-rs/ext/guardian-reviewer/src/completion.rs b/codex-rs/ext/guardian-reviewer/src/completion.rs
+index e9ecd3d4b5..ad150f10cf 100644
+--- a/codex-rs/ext/guardian-reviewer/src/completion.rs
++++ b/codex-rs/ext/guardian-reviewer/src/completion.rs
+@@ -130,6 +130,7 @@ pub fn complete_review(
+                 }
+                 GuardianReviewError::InputBudgetExceeded
+                 | GuardianReviewError::PromptBuild { .. }
++                | GuardianReviewError::ReviewerFallbackReady { .. }
+                 | GuardianReviewError::Session { .. }
+                 | GuardianReviewError::Parse { .. } => {
+                     let message = match &error {
+@@ -137,6 +138,22 @@ pub fn complete_review(
+                         GuardianReviewError::PromptBuild { message }
+                         | GuardianReviewError::Session { message, .. }
+                         | GuardianReviewError::Parse { message } => message,
++                        GuardianReviewError::ReviewerFallbackReady {
++                            from_profile,
++                            to_profile,
++                        } => {
++                            return ReviewCompletion {
++                                decision: Some(ReviewDecision::denied(format!(
++                                    "Automatic approval review failed while switching reviewer subscriptions from {from_profile} to {to_profile}.\n{REVIEW_FAILURE_INSTRUCTIONS}"
++                                ))),
++                                event,
++                                warning: Some(format!(
++                                    "Automatic approval review failed while switching reviewer subscriptions from {from_profile} to {to_profile}."
++                                )),
++                                analytics,
++                                assessment_outcome: None,
++                            };
++                        }
+                         GuardianReviewError::Timeout | GuardianReviewError::Cancelled => {
+                             "guardian review failed"
+                         }
+diff --git a/codex-rs/ext/guardian-reviewer/src/outcome.rs b/codex-rs/ext/guardian-reviewer/src/outcome.rs
+index 2e53da5ca6..35d9625fa0 100644
+--- a/codex-rs/ext/guardian-reviewer/src/outcome.rs
++++ b/codex-rs/ext/guardian-reviewer/src/outcome.rs
+@@ -22,6 +22,10 @@ pub enum GuardianReviewError {
+         error_info: Option<CodexErrorInfo>,
+         retry_at: Option<Instant>,
+     },
++    ReviewerFallbackReady {
++        from_profile: String,
++        to_profile: String,
++    },
+     Parse {
+         message: String,
+     },
+@@ -62,9 +66,9 @@ impl GuardianReviewError {
+     pub fn failure_reason(&self) -> GuardianReviewFailureReason {
+         match self {
+             Self::PromptBuild { .. } => GuardianReviewFailureReason::PromptBuildError,
+-            Self::Session { .. } | Self::InputBudgetExceeded => {
+-                GuardianReviewFailureReason::SessionError
+-            }
++            Self::Session { .. }
++            | Self::ReviewerFallbackReady { .. }
++            | Self::InputBudgetExceeded => GuardianReviewFailureReason::SessionError,
+             Self::Parse { .. } => GuardianReviewFailureReason::ParseError,
+             Self::Timeout => GuardianReviewFailureReason::Timeout,
+             Self::Cancelled => GuardianReviewFailureReason::Cancelled,
+diff --git a/codex-rs/ext/guardian-reviewer/src/retry.rs b/codex-rs/ext/guardian-reviewer/src/retry.rs
+index 79d516215b..44ce60f16e 100644
+--- a/codex-rs/ext/guardian-reviewer/src/retry.rs
++++ b/codex-rs/ext/guardian-reviewer/src/retry.rs
+@@ -82,6 +82,7 @@ async fn wait_before_guardian_retry(
+ 
+ fn should_retry_guardian_review(outcome: &GuardianReviewOutcome) -> bool {
+     match outcome {
++        GuardianReviewOutcome::Error(GuardianReviewError::ReviewerFallbackReady { .. }) => true,
+         GuardianReviewOutcome::Error(GuardianReviewError::Parse { .. }) => true,
+         GuardianReviewOutcome::Error(GuardianReviewError::Session {
+             error_info: Some(error),
+diff --git a/codex-rs/ext/guardian-reviewer/src/retry_tests.rs b/codex-rs/ext/guardian-reviewer/src/retry_tests.rs
+index ce335db96f..1817328b33 100644
+--- a/codex-rs/ext/guardian-reviewer/src/retry_tests.rs
++++ b/codex-rs/ext/guardian-reviewer/src/retry_tests.rs
+@@ -71,6 +71,13 @@ fn guardian_review_retry_only_retries_transient_session_and_parse_errors() {
+         .collect::<Vec<_>>();
+     outcomes.extend([
+         (GuardianReviewOutcome::Completed(assessment), false),
++        (
++            GuardianReviewOutcome::Error(GuardianReviewError::ReviewerFallbackReady {
++                from_profile: "exhausted".to_string(),
++                to_profile: "healthy".to_string(),
++            }),
++            true,
++        ),
+         (
+             GuardianReviewOutcome::Error(GuardianReviewError::InputBudgetExceeded),
+             false,
+@@ -92,6 +99,13 @@ fn guardian_review_retry_only_retries_transient_session_and_parse_errors() {
+             )),
+             false,
+         ),
++        (
++            GuardianReviewOutcome::Error(GuardianReviewError::session_with_error_info(
++                anyhow::anyhow!("subscription exhausted"),
++                CodexErrorInfo::UsageLimitExceeded,
++            )),
++            false,
++        ),
+         (
+             GuardianReviewOutcome::Error(GuardianReviewError::parse(anyhow::anyhow!("parse"))),
+             true,
 diff --git a/codex-rs/history/src/lib.rs b/codex-rs/history/src/lib.rs
 index 2be359013b..92281c7c48 100644
 --- a/codex-rs/history/src/lib.rs
@@ -3396,10 +3905,10 @@ index d11da77656..ef3488a3ff 100644
              prompt: "test prompt".to_string(),
          })
 diff --git a/codex-rs/hooks/src/engine/output_parser.rs b/codex-rs/hooks/src/engine/output_parser.rs
-index aaefa46dc1..04e067b66a 100644
+index aaefa46dc1..1f3c0bc1af 100644
 --- a/codex-rs/hooks/src/engine/output_parser.rs
 +++ b/codex-rs/hooks/src/engine/output_parser.rs
-@@ -51,6 +51,13 @@ pub(crate) struct UserPromptSubmitOutput {
+@@ -51,6 +51,15 @@ pub(crate) struct UserPromptSubmitOutput {
      pub reason: Option<String>,
      pub invalid_block_reason: Option<String>,
      pub additional_context: Option<String>,
@@ -3410,10 +3919,12 @@ index aaefa46dc1..04e067b66a 100644
 +    pub strip_prompt_prefix_bytes: Option<usize>,
 +    pub strip_provider_state: bool,
 +    pub chatgpt_profile_home: Option<String>,
++    pub reviewer_profile_name: Option<String>,
++    pub reviewer_fallback_profiles: Vec<crate::ReviewerFallbackProfile>,
  }
  
  #[derive(Debug, Clone)]
-@@ -275,15 +282,43 @@ pub(crate) fn parse_user_prompt_submit(stdout: &str) -> Option<UserPromptSubmitO
+@@ -275,15 +284,67 @@ pub(crate) fn parse_user_prompt_submit(stdout: &str) -> Option<UserPromptSubmitO
      } else {
          None
      };
@@ -3427,6 +3938,8 @@ index aaefa46dc1..04e067b66a 100644
 +        strip_prompt_prefix_bytes,
 +        strip_provider_state,
 +        chatgpt_profile_home,
++        reviewer_profile_name,
++        reviewer_fallback_profiles,
 +    ) = wire
          .hook_specific_output
 -        .and_then(|output| output.additional_context);
@@ -3440,9 +3953,29 @@ index aaefa46dc1..04e067b66a 100644
 +                output.strip_prompt_prefix_bytes,
 +                output.strip_provider_state,
 +                output.chatgpt_profile_home,
++                output.reviewer_profile_name,
++                output
++                    .reviewer_fallback_profiles
++                    .into_iter()
++                    .map(|profile| crate::ReviewerFallbackProfile {
++                        name: profile.name,
++                        codex_home: profile.codex_home,
++                    })
++                    .collect(),
 +            )
 +        })
-+        .unwrap_or((None, None, None, None, None, None, false, None));
++        .unwrap_or((
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            false,
++            None,
++            None,
++            Vec::new(),
++        ));
      Some(UserPromptSubmitOutput {
          universal: UniversalOutput::from(wire.universal),
          should_block: should_block && invalid_block_reason.is_none(),
@@ -3456,10 +3989,12 @@ index aaefa46dc1..04e067b66a 100644
 +        strip_prompt_prefix_bytes,
 +        strip_provider_state: strip_provider_state || chatgpt_profile_home.is_some(),
 +        chatgpt_profile_home,
++        reviewer_profile_name,
++        reviewer_fallback_profiles,
      })
  }
  
-@@ -546,6 +581,27 @@ mod tests {
+@@ -546,6 +607,27 @@ mod tests {
          }
      }
  
@@ -3488,7 +4023,7 @@ index aaefa46dc1..04e067b66a 100644
      fn permission_request_rejects_reserved_updated_input_field() {
          let parsed = parse_permission_request(
 diff --git a/codex-rs/hooks/src/events/user_prompt_submit.rs b/codex-rs/hooks/src/events/user_prompt_submit.rs
-index 9124431bc1..55d0e94c3a 100644
+index 9124431bc1..e3c8d7cdab 100644
 --- a/codex-rs/hooks/src/events/user_prompt_submit.rs
 +++ b/codex-rs/hooks/src/events/user_prompt_submit.rs
 @@ -1,12 +1,14 @@
@@ -3517,7 +4052,7 @@ index 9124431bc1..55d0e94c3a 100644
      pub permission_mode: String,
      pub prompt: String,
  }
-@@ -38,6 +44,13 @@ pub struct UserPromptSubmitOutcome {
+@@ -38,6 +44,21 @@ pub struct UserPromptSubmitOutcome {
      pub should_stop: bool,
      pub stop_reason: Option<String>,
      pub additional_contexts: Vec<String>,
@@ -3528,10 +4063,18 @@ index 9124431bc1..55d0e94c3a 100644
 +    pub strip_prompt_prefix_bytes: Option<usize>,
 +    pub strip_provider_state: bool,
 +    pub chatgpt_profile_home: Option<String>,
++    pub reviewer_profile_name: Option<String>,
++    pub reviewer_fallback_profiles: Vec<ReviewerFallbackProfile>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ReviewerFallbackProfile {
++    pub name: String,
++    pub codex_home: String,
  }
  
  #[derive(Debug, PartialEq, Eq)]
-@@ -45,6 +58,13 @@ struct UserPromptSubmitHandlerData {
+@@ -45,6 +66,15 @@ struct UserPromptSubmitHandlerData {
      should_stop: bool,
      stop_reason: Option<String>,
      additional_contexts_for_model: Vec<AdditionalContext>,
@@ -3542,10 +4085,12 @@ index 9124431bc1..55d0e94c3a 100644
 +    strip_prompt_prefix_bytes: Option<usize>,
 +    strip_provider_state: bool,
 +    chatgpt_profile_home: Option<String>,
++    reviewer_profile_name: Option<String>,
++    reviewer_fallback_profiles: Vec<ReviewerFallbackProfile>,
  }
  
  pub(crate) fn preview(
-@@ -76,6 +96,13 @@ pub(crate) async fn run(
+@@ -76,6 +106,15 @@ pub(crate) async fn run(
              should_stop: false,
              stop_reason: None,
              additional_contexts: Vec::new(),
@@ -3556,10 +4101,12 @@ index 9124431bc1..55d0e94c3a 100644
 +            strip_prompt_prefix_bytes: None,
 +            strip_provider_state: false,
 +            chatgpt_profile_home: None,
++            reviewer_profile_name: None,
++            reviewer_fallback_profiles: Vec::new(),
          };
      }
  
-@@ -89,6 +116,10 @@ pub(crate) async fn run(
+@@ -89,6 +128,10 @@ pub(crate) async fn run(
          cwd: request.cwd.display().to_string(),
          hook_event_name: "UserPromptSubmit".to_string(),
          model: request.model.clone(),
@@ -3570,7 +4117,7 @@ index 9124431bc1..55d0e94c3a 100644
          permission_mode: request.permission_mode.clone(),
          prompt: request.prompt.clone(),
      }) {
-@@ -126,12 +157,38 @@ pub(crate) async fn run(
+@@ -126,12 +169,48 @@ pub(crate) async fn run(
          .output_spiller()
          .maybe_spill_additional_contexts(additional_contexts)
          .await;
@@ -3593,6 +4140,14 @@ index 9124431bc1..55d0e94c3a 100644
 +    let chatgpt_profile_home = results
 +        .iter()
 +        .find_map(|result| result.data.chatgpt_profile_home.clone());
++    let reviewer_profile_name = results
++        .iter()
++        .find_map(|result| result.data.reviewer_profile_name.clone());
++    let reviewer_fallback_profiles = results
++        .iter()
++        .find(|result| !result.data.reviewer_fallback_profiles.is_empty())
++        .map(|result| result.data.reviewer_fallback_profiles.clone())
++        .unwrap_or_default();
  
      UserPromptSubmitOutcome {
          hook_events: results.into_iter().map(|result| result.completed).collect(),
@@ -3606,10 +4161,12 @@ index 9124431bc1..55d0e94c3a 100644
 +        strip_prompt_prefix_bytes,
 +        strip_provider_state,
 +        chatgpt_profile_home,
++        reviewer_profile_name,
++        reviewer_fallback_profiles,
      }
  }
  
-@@ -145,6 +202,13 @@ fn parse_completed(
+@@ -145,6 +224,15 @@ fn parse_completed(
      let mut should_stop = false;
      let mut stop_reason = None;
      let mut additional_contexts_for_model = Vec::new();
@@ -3620,10 +4177,12 @@ index 9124431bc1..55d0e94c3a 100644
 +    let mut strip_prompt_prefix_bytes = None;
 +    let mut strip_provider_state = false;
 +    let mut chatgpt_profile_home = None;
++    let mut reviewer_profile_name = None;
++    let mut reviewer_fallback_profiles = Vec::new();
  
      match run_result.error.as_deref() {
          Some(error) => {
-@@ -180,6 +244,13 @@ fn parse_completed(
+@@ -180,6 +268,15 @@ fn parse_completed(
                      }
                      let _ = parsed.universal.suppress_output;
                      if handler.can_apply_control_effects() {
@@ -3634,10 +4193,12 @@ index 9124431bc1..55d0e94c3a 100644
 +                        strip_prompt_prefix_bytes = parsed.strip_prompt_prefix_bytes;
 +                        strip_provider_state = parsed.strip_provider_state;
 +                        chatgpt_profile_home = parsed.chatgpt_profile_home;
++                        reviewer_profile_name = parsed.reviewer_profile_name;
++                        reviewer_fallback_profiles = parsed.reviewer_fallback_profiles;
                          if !parsed.universal.continue_processing {
                              status = HookRunStatus::Stopped;
                              should_stop = true;
-@@ -269,6 +340,13 @@ fn parse_completed(
+@@ -269,6 +366,15 @@ fn parse_completed(
              should_stop,
              stop_reason,
              additional_contexts_for_model,
@@ -3648,10 +4209,12 @@ index 9124431bc1..55d0e94c3a 100644
 +            strip_prompt_prefix_bytes,
 +            strip_provider_state,
 +            chatgpt_profile_home,
++            reviewer_profile_name,
++            reviewer_fallback_profiles,
          },
          completion_order: 0,
      }
-@@ -280,11 +358,19 @@ fn serialization_failure_outcome(hook_events: Vec<HookCompletedEvent>) -> UserPr
+@@ -280,11 +386,21 @@ fn serialization_failure_outcome(hook_events: Vec<HookCompletedEvent>) -> UserPr
          should_stop: false,
          stop_reason: None,
          additional_contexts: Vec::new(),
@@ -3662,6 +4225,8 @@ index 9124431bc1..55d0e94c3a 100644
 +        strip_prompt_prefix_bytes: None,
 +        strip_provider_state: false,
 +        chatgpt_profile_home: None,
++        reviewer_profile_name: None,
++        reviewer_fallback_profiles: Vec::new(),
      }
  }
  
@@ -3671,7 +4236,15 @@ index 9124431bc1..55d0e94c3a 100644
      use codex_protocol::protocol::HookEventName;
      use codex_protocol::protocol::HookOutputEntry;
      use codex_protocol::protocol::HookOutputEntryKind;
-@@ -320,6 +406,13 @@ mod tests {
+@@ -293,6 +409,7 @@ mod tests {
+     use codex_utils_absolute_path::test_support::test_path_buf;
+     use pretty_assertions::assert_eq;
+ 
++    use super::ReviewerFallbackProfile;
+     use super::UserPromptSubmitHandlerData;
+     use super::parse_completed;
+     use crate::engine::ConfiguredHandler;
+@@ -320,6 +437,15 @@ mod tests {
                      text: "do not inject".to_string(),
                      limit: Default::default(),
                  }],
@@ -3682,10 +4255,12 @@ index 9124431bc1..55d0e94c3a 100644
 +                strip_prompt_prefix_bytes: None,
 +                strip_provider_state: false,
 +                chatgpt_profile_home: None,
++                reviewer_profile_name: None,
++                reviewer_fallback_profiles: Vec::new(),
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Stopped);
-@@ -359,6 +452,13 @@ mod tests {
+@@ -359,6 +485,15 @@ mod tests {
                      text: "do not inject".to_string(),
                      limit: Default::default(),
                  }],
@@ -3696,10 +4271,12 @@ index 9124431bc1..55d0e94c3a 100644
 +                strip_prompt_prefix_bytes: None,
 +                strip_provider_state: false,
 +                chatgpt_profile_home: None,
++                reviewer_profile_name: None,
++                reviewer_fallback_profiles: Vec::new(),
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
-@@ -392,6 +492,13 @@ mod tests {
+@@ -392,6 +527,15 @@ mod tests {
                  should_stop: false,
                  stop_reason: None,
                  additional_contexts_for_model: Vec::new(),
@@ -3710,10 +4287,12 @@ index 9124431bc1..55d0e94c3a 100644
 +                strip_prompt_prefix_bytes: None,
 +                strip_provider_state: false,
 +                chatgpt_profile_home: None,
++                reviewer_profile_name: None,
++                reviewer_fallback_profiles: Vec::new(),
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Failed);
-@@ -434,6 +541,13 @@ mod tests {
+@@ -434,6 +578,15 @@ mod tests {
                  should_stop: true,
                  stop_reason: Some("blocked by policy".to_string()),
                  additional_contexts_for_model: Vec::new(),
@@ -3724,10 +4303,12 @@ index 9124431bc1..55d0e94c3a 100644
 +                strip_prompt_prefix_bytes: None,
 +                strip_provider_state: false,
 +                chatgpt_profile_home: None,
++                reviewer_profile_name: None,
++                reviewer_fallback_profiles: Vec::new(),
              }
          );
          assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
-@@ -455,6 +569,29 @@ mod tests {
+@@ -455,6 +608,40 @@ mod tests {
          assert!(!parsed.data.should_stop);
      }
  
@@ -3737,7 +4318,7 @@ index 9124431bc1..55d0e94c3a 100644
 +            &handler(),
 +            run_result(
 +                Some(0),
-+                r#"{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","model":"gpt-5.6-sol","reasoningEffort":"high","routeMessage":"route details","stripPromptPrefixBytes":7,"stripProviderState":true,"chatgptProfileHome":"/tmp/codex-work"}}"#,
++                r#"{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","model":"gpt-5.6-sol","reasoningEffort":"high","routeMessage":"route details","stripPromptPrefixBytes":7,"stripProviderState":true,"chatgptProfileHome":"/tmp/codex-work","reviewerProfileName":"markster","reviewerFallbackProfiles":[{"name":"personal","codexHome":"/tmp/codex-personal"}]}}"#,
 +                "",
 +            ),
 +            Some("turn-1".to_string()),
@@ -3752,13 +4333,36 @@ index 9124431bc1..55d0e94c3a 100644
 +            parsed.data.chatgpt_profile_home.as_deref(),
 +            Some("/tmp/codex-work")
 +        );
++        assert_eq!(
++            parsed.data.reviewer_profile_name.as_deref(),
++            Some("markster")
++        );
++        assert_eq!(
++            parsed.data.reviewer_fallback_profiles,
++            vec![ReviewerFallbackProfile {
++                name: "personal".to_string(),
++                codex_home: "/tmp/codex-personal".to_string(),
++            }]
++        );
 +    }
 +
      fn handler() -> ConfiguredHandler {
          handler_with_async(/*async*/ false)
      }
+diff --git a/codex-rs/hooks/src/lib.rs b/codex-rs/hooks/src/lib.rs
+index 6abc173535..e6f5c08f33 100644
+--- a/codex-rs/hooks/src/lib.rs
++++ b/codex-rs/hooks/src/lib.rs
+@@ -74,6 +74,7 @@ pub use events::session_start::StartHookTarget;
+ pub use events::stop::StopHookTarget;
+ pub use events::stop::StopOutcome;
+ pub use events::stop::StopRequest;
++pub use events::user_prompt_submit::ReviewerFallbackProfile;
+ pub use events::user_prompt_submit::UserPromptSubmitOutcome;
+ pub use events::user_prompt_submit::UserPromptSubmitRequest;
+ pub use legacy_notify::legacy_notify_json;
 diff --git a/codex-rs/hooks/src/schema.rs b/codex-rs/hooks/src/schema.rs
-index bb50807af5..5ffa98060d 100644
+index bb50807af5..77173c9fbb 100644
 --- a/codex-rs/hooks/src/schema.rs
 +++ b/codex-rs/hooks/src/schema.rs
 @@ -12,6 +12,8 @@ use serde_json::Value;
@@ -3770,7 +4374,7 @@ index bb50807af5..5ffa98060d 100644
  use crate::events::common::SubagentHookContext;
  
  const GENERATED_DIR: &str = "generated";
-@@ -446,6 +448,20 @@ pub(crate) struct UserPromptSubmitHookSpecificOutputWire {
+@@ -446,6 +448,32 @@ pub(crate) struct UserPromptSubmitHookSpecificOutputWire {
      pub hook_event_name: HookEventNameWire,
      #[serde(default)]
      pub additional_context: Option<String>,
@@ -3788,10 +4392,22 @@ index bb50807af5..5ffa98060d 100644
 +    pub strip_provider_state: bool,
 +    #[serde(default)]
 +    pub chatgpt_profile_home: Option<String>,
++    #[serde(default)]
++    pub reviewer_profile_name: Option<String>,
++    #[serde(default)]
++    pub reviewer_fallback_profiles: Vec<ReviewerFallbackProfileWire>,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
++#[serde(rename_all = "camelCase")]
++#[serde(deny_unknown_fields)]
++pub(crate) struct ReviewerFallbackProfileWire {
++    pub name: String,
++    pub codex_home: String,
  }
  
  #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-@@ -577,6 +593,16 @@ pub(crate) struct UserPromptSubmitCommandInput {
+@@ -577,6 +605,16 @@ pub(crate) struct UserPromptSubmitCommandInput {
      #[schemars(schema_with = "user_prompt_submit_hook_event_name_schema")]
      pub hook_event_name: String,
      pub model: String,
@@ -4071,28 +4687,30 @@ index ceeaa80e31..6f547b3fda 100644
      fn session_source_from_startup_arg_normalizes_custom_values() {
          assert_eq!(
 diff --git a/codex-rs/tui/src/chatwidget.rs b/codex-rs/tui/src/chatwidget.rs
-index 3cbe36586e..62594821e3 100644
+index 3cbe36586e..a008c935cc 100644
 --- a/codex-rs/tui/src/chatwidget.rs
 +++ b/codex-rs/tui/src/chatwidget.rs
-@@ -627,6 +627,9 @@ pub(crate) struct ChatWidget {
+@@ -627,6 +627,10 @@ pub(crate) struct ChatWidget {
      rate_limit_warnings: RateLimitWarningState,
      backend_banner_state: backend_banners::BackendBannerState,
      automatic_model_switch_state: backend_banners::AutomaticModelSwitchState,
 +    /// Accepted per-turn route shown in status surfaces without mutating thread defaults.
 +    routed_turn_model: Option<String>,
++    routed_turn_model_provider: Option<String>,
 +    routed_turn_reasoning_effort: Option<ReasoningEffortConfig>,
      backend_banner_notice_model: Option<String>,
      // Remember the account's Reserve entry notice across chats and transient banner refreshes.
      luna_reserve_notice_account_id: Option<String>,
 diff --git a/codex-rs/tui/src/chatwidget/constructor.rs b/codex-rs/tui/src/chatwidget/constructor.rs
-index 3ed23be896..a3528bcd9b 100644
+index 3ed23be896..d9043d92ea 100644
 --- a/codex-rs/tui/src/chatwidget/constructor.rs
 +++ b/codex-rs/tui/src/chatwidget/constructor.rs
-@@ -162,6 +162,8 @@ impl ChatWidget {
+@@ -162,6 +162,9 @@ impl ChatWidget {
              rate_limit_warnings: RateLimitWarningState::default(),
              backend_banner_state: backend_banners::BackendBannerState::default(),
              automatic_model_switch_state: backend_banners::AutomaticModelSwitchState::default(),
 +            routed_turn_model: None,
++            routed_turn_model_provider: None,
 +            routed_turn_reasoning_effort: None,
              backend_banner_notice_model: None,
              luna_reserve_notice_account_id: None,
@@ -4114,10 +4732,23 @@ index 78dac65a9d..ab122279ad 100644
              DEFAULT_MODEL_DISPLAY_NAME
          } else {
 diff --git a/codex-rs/tui/src/chatwidget/status_surfaces.rs b/codex-rs/tui/src/chatwidget/status_surfaces.rs
-index af547ce968..d8c33e14a1 100644
+index af547ce968..0eca880aca 100644
 --- a/codex-rs/tui/src/chatwidget/status_surfaces.rs
 +++ b/codex-rs/tui/src/chatwidget/status_surfaces.rs
-@@ -959,7 +959,10 @@ impl ChatWidget {
+@@ -706,8 +706,10 @@ impl ChatWidget {
+     /// git metadata.
+     pub(super) fn status_line_value(&mut self, item: StatusLineItem) -> Option<String> {
+         match item {
+-            StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
+-            StatusLineItem::ModelWithReasoning => Some(self.model_with_reasoning_display_name()),
++            StatusLineItem::ModelName => Some(self.model_with_provider_display_name()),
++            StatusLineItem::ModelWithReasoning => {
++                Some(self.model_with_reasoning_and_provider_display_name())
++            }
+             StatusLineItem::Reasoning => Some(self.reasoning_display_name()),
+             StatusLineItem::CurrentDir => {
+                 Some(format_directory_display(
+@@ -959,10 +961,47 @@ impl ChatWidget {
      }
  
      fn reasoning_display_name(&self) -> String {
@@ -4129,21 +4760,133 @@ index af547ce968..d8c33e14a1 100644
          Self::status_line_reasoning_effort_label(effort.as_ref())
      }
  
++    fn model_provider_display_name(&self) -> &str {
++        self.routed_turn_model_provider
++            .as_deref()
++            .unwrap_or(self.config.model_provider_id.as_str())
++    }
++
++    fn model_with_provider_display_name(&self) -> String {
++        format!(
++            "{} · {}",
++            self.model_display_name(),
++            self.model_provider_display_name()
++        )
++    }
++
++    fn model_with_reasoning_and_provider_display_name(&self) -> String {
++        let label = self.reasoning_display_name();
++        let service_tier_label = self
++            .current_service_tier()
++            .and_then(|service_tier| {
++                self.current_model_service_tier_commands()
++                    .into_iter()
++                    .find(|tier| tier.id == service_tier)
++                    .map(|tier| tier.name)
++            })
++            .filter(|_| self.has_chatgpt_account)
++            .map(|tier| format!(" {tier}"))
++            .unwrap_or_default();
++        format!(
++            "{} · {} · {label}{service_tier_label}",
++            self.model_display_name(),
++            self.model_provider_display_name()
++        )
++    }
++
+     fn model_with_reasoning_display_name(&self) -> String {
+         let label = self.reasoning_display_name();
+         let service_tier_label = self
+diff --git a/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs b/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
+index 6f5e038a32..f11b016492 100644
+--- a/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
++++ b/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
+@@ -4004,7 +4004,9 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
+ 
+     assert_eq!(
+         status_line_text(&chat),
+-        Some(format!("gpt-5.4 xhigh fast · Context 0% used · {test_cwd}"))
++        Some(format!(
++            "gpt-5.4 · openai · xhigh fast · Context 0% used · {test_cwd}"
++        ))
+     );
+ 
+     chat.set_model("gpt-5.2");
+@@ -4067,19 +4069,49 @@ async fn status_line_model_with_reasoning_updates_on_mode_switch_without_manual_
+     chat.local_settings.tui.status_line = Some(vec!["model-with-reasoning".to_string()]);
+     chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+ 
+-    assert_eq!(status_line_text(&chat), Some("gpt-5.2 high".to_string()));
++    assert_eq!(
++        status_line_text(&chat),
++        Some("gpt-5.2 · openai · high".to_string())
++    );
+ 
+     let plan_mask = collaboration_modes::plan_mask(chat.model_catalog.as_ref())
+         .expect("expected plan collaboration mode");
+     chat.set_collaboration_mask(plan_mask);
+ 
+-    assert_eq!(status_line_text(&chat), Some("gpt-5.2 medium".to_string()));
++    assert_eq!(
++        status_line_text(&chat),
++        Some("gpt-5.2 · openai · medium".to_string())
++    );
+ 
+     let default_mask = collaboration_modes::default_mask(chat.model_catalog.as_ref())
+         .expect("expected default collaboration mode");
+     chat.set_collaboration_mask(default_mask);
+ 
+-    assert_eq!(status_line_text(&chat), Some("gpt-5.2 high".to_string()));
++    assert_eq!(
++        status_line_text(&chat),
++        Some("gpt-5.2 · openai · high".to_string())
++    );
++}
++
++#[tokio::test]
++async fn status_line_model_uses_the_routed_turn_provider() {
++    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
++    chat.local_settings.tui.status_line = Some(vec!["model-with-reasoning".to_string()]);
++    chat.set_reasoning_effort(Some(ReasoningEffortConfig::Medium));
++    chat.refresh_status_line();
++    assert_eq!(
++        status_line_text(&chat),
++        Some("gpt-5.2 · openai · medium".to_string())
++    );
++
++    chat.on_warning(
++        "◆ MODEL ROUTE · SMART → dev-gpt-6-astra · high reasoning · backend azure/agentroute-azure · scope root"
++    );
++
++    assert_eq!(
++        status_line_text(&chat),
++        Some("dev-gpt-6-astra · agentroute-azure · high".to_string())
++    );
+ }
+ 
+ #[tokio::test]
 diff --git a/codex-rs/tui/src/chatwidget/turn_runtime.rs b/codex-rs/tui/src/chatwidget/turn_runtime.rs
-index 6d7c32cecc..f8c5e94008 100644
+index 6d7c32cecc..0de5e553d0 100644
 --- a/codex-rs/tui/src/chatwidget/turn_runtime.rs
 +++ b/codex-rs/tui/src/chatwidget/turn_runtime.rs
-@@ -9,6 +9,31 @@ const LEGACY_SAFETY_ACCESS_BLOCK_PREFIX: &str =
+@@ -9,6 +9,38 @@ const LEGACY_SAFETY_ACCESS_BLOCK_PREFIX: &str =
      "Invalid prompt: we've limited access to this content for safety reasons.";
  const BIO_POLICY_SAFETY_ACCESS_BLOCK_PREFIX: &str =
      "This content was flagged for possible biological risk.";
 +const MODEL_ROUTE_PREFIX: &str = "◆ MODEL ROUTE · ";
 +
-+fn parse_model_route(message: &str) -> Option<(String, ReasoningEffortConfig)> {
-+    let details = message.strip_prefix(MODEL_ROUTE_PREFIX)?;
++fn parse_model_route(message: &str) -> Option<(String, Option<String>, ReasoningEffortConfig)> {
++    let details = message
++        .lines()
++        .find_map(|line| line.strip_prefix(MODEL_ROUTE_PREFIX))?;
 +    let mut parts = details.split(" · ");
 +    let route = parts.next()?;
 +    let effort = parts.next()?.strip_suffix(" reasoning")?;
++    let model_provider = parts.find_map(|part| {
++        part.strip_prefix("backend ")
++            .and_then(|backend| backend.split_once('/'))
++            .map(|(_, provider)| provider.to_string())
++    });
 +    let model = route
 +        .split_once("→")
 +        .map(|(_, model)| model.trim())
@@ -4160,33 +4903,35 @@ index 6d7c32cecc..f8c5e94008 100644
 +        "persistent" => ReasoningEffortConfig::Persistent,
 +        custom => ReasoningEffortConfig::Custom(custom.to_string()),
 +    };
-+    Some((model.to_string(), effort))
++    Some((model.to_string(), model_provider, effort))
 +}
  
  fn is_safety_access_block_message(message: &str) -> bool {
      message.starts_with(LEGACY_SAFETY_ACCESS_BLOCK_PREFIX)
-@@ -74,6 +99,8 @@ impl ChatWidget {
+@@ -74,6 +106,9 @@ impl ChatWidget {
      // Raw reasoning uses the same flow as summarized reasoning
  
      pub(super) fn on_task_started(&mut self) {
 +        self.routed_turn_model = None;
++        self.routed_turn_model_provider = None;
 +        self.routed_turn_reasoning_effort = None;
          self.clear_context_compaction();
          self.input_queue.user_turn_pending_start = false;
          self.reset_safety_buffering_for_turn_start();
-@@ -507,6 +534,11 @@ impl ChatWidget {
+@@ -507,6 +542,12 @@ impl ChatWidget {
          if !self.warning_display_state.should_display(&message) {
              return;
          }
-+        if let Some((model, effort)) = parse_model_route(&message) {
++        if let Some((model, model_provider, effort)) = parse_model_route(&message) {
 +            self.routed_turn_model = Some(model);
++            self.routed_turn_model_provider = model_provider;
 +            self.routed_turn_reasoning_effort = Some(effort);
 +            self.refresh_status_surfaces();
 +        }
          self.add_to_history(history_cell::new_warning_event(message));
          self.request_redraw();
      }
-@@ -544,3 +576,18 @@ impl ChatWidget {
+@@ -544,3 +585,46 @@ impl ChatWidget {
          "Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.".to_string()
      }
  }
@@ -4201,7 +4946,35 @@ index 6d7c32cecc..f8c5e94008 100644
 +            parse_model_route(
 +                "◆ MODEL ROUTE · FAST → gpt-5.6-luna · low reasoning · confidence 92% · score -2"
 +            ),
-+            Some(("gpt-5.6-luna".to_string(), ReasoningEffortConfig::Low))
++            Some(("gpt-5.6-luna".to_string(), None, ReasoningEffortConfig::Low))
++        );
++    }
++
++    #[test]
++    fn parses_model_provider_from_rich_route_notice() {
++        assert_eq!(
++            parse_model_route(
++                "◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning · backend azure/agentroute-azure · scope root"
++            ),
++            Some((
++                "gpt-5.6-sol".to_string(),
++                Some("agentroute-azure".to_string()),
++                ReasoningEffortConfig::High
++            ))
++        );
++    }
++
++    #[test]
++    fn parses_model_provider_after_profile_route_notice() {
++        assert_eq!(
++            parse_model_route(
++                "◆ PROFILE ROUTE · markster · session affinity\n◆ MODEL ROUTE · MAX → dev-gpt-6-astra · high reasoning · backend azure/agentroute-azure · scope root"
++            ),
++            Some((
++                "dev-gpt-6-astra".to_string(),
++                Some("agentroute-azure".to_string()),
++                ReasoningEffortConfig::High
++            ))
 +        );
 +    }
 +}
