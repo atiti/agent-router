@@ -47,7 +47,9 @@ def _apply_profile_selection(
     if selection.selected is None:
         return
     backend = config.backends["gpt"]
-    target = backend.target(decision.tier)
+    profile = config.capacity.profiles.get(selection.selected.name)
+    fallback = backend.target(decision.tier)
+    target = profile.target(decision.tier, fallback) if profile else fallback
     decision.backend = "gpt"
     decision.model_provider = backend.codex_provider
     decision.model = target.model
@@ -77,11 +79,17 @@ def _apply_profile_selection(
             )
         )
     decision.reason_codes = [item.code for item in decision.contributions]
-    decision.strip_provider_state = True
+    decision.selection_receipt["selected"] = {
+        "tier": str(decision.tier),
+        "model": target.model,
+        "backend": "gpt",
+        "model_provider": backend.codex_provider,
+        "reasoning_effort": target.reasoning_effort,
+    }
     decision.selection_receipt["subscription_profile"] = {
         "name": selection.selected.name,
         "account_hash": selection.selected.account_hash,
-        "source": "failover" if selection.switched else "session_affinity",
+        "source": selection.source,
     }
     decision.selection_receipt_hash = hashlib.sha256(
         json.dumps(
@@ -209,7 +217,7 @@ def codex_user_prompt_submit(
         decision.strip_provider_state = store.provider_state_is_mixed(
             session_id, route_scope, agent_id
         ) or decision.model_provider != context.current_model_provider or (
-            profile_selection.switched if profile_selection is not None else False
+            profile_selection.use_profile_home if profile_selection is not None else False
         )
         # @auto clears affinity even though the router's ordinary backend choice may be GPT.
         if tier_override == "auto":
@@ -256,7 +264,11 @@ def codex_user_prompt_submit(
             specific = output["hookSpecificOutput"]
             specific["model"] = decision.model
             specific["modelProvider"] = decision.model_provider
-            if profile_selection is not None and profile_selection.selected is not None:
+            if (
+                profile_selection is not None
+                and profile_selection.selected is not None
+                and profile_selection.use_profile_home
+            ):
                 specific["chatgptProfileHome"] = profile_selection.selected.codex_home
             if decision.strip_provider_state:
                 specific["stripProviderState"] = True
@@ -328,7 +340,8 @@ def codex_user_prompt_submit(
                     f"{failover_reason} "
                     "· continuing this thread on the next turn"
                     if profile_selection.switched
-                    else f"◆ PROFILE ROUTE · {profile_selection.selected.name} · session affinity"
+                    else f"◆ PROFILE ROUTE · {profile_selection.selected.name} · "
+                    f"{profile_selection.source.replace('_', ' ')}"
                 )
                 specific["routeMessage"] = f"{profile_message}\n{model_route_message}"
             else:

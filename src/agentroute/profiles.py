@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -42,12 +44,72 @@ class TurnProfileSelection:
     current: ProfileStatus | None
     selected: ProfileStatus | None
     switched: bool
+    source: str
+    use_profile_home: bool
 
 
 def account_hash(account_id: str | None) -> str | None:
     if not account_id:
         return None
     return hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:16]
+
+
+def profile_account_hash(profile: SubscriptionProfileConfig) -> str | None:
+    """Read a profile's local account identity without exposing the raw identifier."""
+    auth_path = Path(profile.codex_home).expanduser() / "auth.json"
+    try:
+        payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, json.JSONDecodeError):
+        return None
+    tokens = payload.get("tokens")
+    if not isinstance(tokens, dict):
+        return None
+    raw_account_id = tokens.get("account_id") or tokens.get("accountId")
+    return account_hash(str(raw_account_id)) if raw_account_id else None
+
+
+def profile_name_for_account(config: AppConfig, account_id: str | None) -> str | None:
+    """Match a hook account to a configured profile using hashes only."""
+    current_hash = account_hash(account_id)
+    if current_hash is None:
+        return None
+    matches = [
+        (profile.priority, name)
+        for name, profile in config.capacity.profiles.items()
+        if profile.enabled and profile_account_hash(profile) == current_hash
+    ]
+    return min(matches)[1] if matches else None
+
+
+def profile_name_for_home(config: AppConfig, codex_home: str | None = None) -> str | None:
+    """Identify the profile that owns the current process's CODEX_HOME."""
+    raw_home = codex_home or os.environ.get("CODEX_HOME")
+    if not raw_home:
+        return None
+    current_home = Path(raw_home).expanduser().resolve()
+    matches = [
+        (profile.priority, name)
+        for name, profile in config.capacity.profiles.items()
+        if profile.enabled and Path(profile.codex_home).expanduser().resolve() == current_home
+    ]
+    return min(matches)[1] if matches else None
+
+
+def _current_profile_status(
+    name: str,
+    profile: SubscriptionProfileConfig,
+    capacity: CapacityState,
+    current_hash: str | None,
+) -> ProfileStatus:
+    return ProfileStatus(
+        name=name,
+        codex_home=str(Path(profile.codex_home).expanduser()),
+        priority=profile.priority,
+        enabled=profile.enabled,
+        authenticated=current_hash is not None,
+        account_hash=current_hash,
+        capacity=capacity,
+    )
 
 
 def routed_codex_binary() -> Path:
@@ -208,21 +270,31 @@ def select_turn_profile(
     authoritatively exhausted or unavailable and another profile has known capacity.
     """
     profiles = config.capacity.profiles
-    if (
-        not config.capacity.enabled
-        or not config.capacity.auto_select_profile
-        or not profiles
-    ):
-        return None
-
-    if sticky_profile is None and current_capacity.status not in {
-        "exhausted",
-        "unavailable",
-    }:
+    if not profiles:
         return None
 
     current_hash = account_hash(current_account_id)
-    current_name = sticky_profile
+    matched_name = profile_name_for_home(config) or profile_name_for_account(
+        config, current_account_id
+    )
+    if not config.capacity.enabled or not config.capacity.auto_select_profile:
+        if matched_name is None:
+            return None
+        current = _current_profile_status(
+            matched_name,
+            profiles[matched_name],
+            current_capacity,
+            current_hash,
+        )
+        return TurnProfileSelection(
+            matched_name,
+            current,
+            current,
+            False,
+            "account_match",
+            False,
+        )
+    current_name = sticky_profile or matched_name
 
     if sticky_profile is not None:
         profile = profiles.get(sticky_profile)
@@ -242,8 +314,32 @@ def select_turn_profile(
             and current.authenticated
             and current.capacity.status not in {"exhausted", "unavailable"}
         ):
-            return TurnProfileSelection(current_name, current, current, False)
+            return TurnProfileSelection(
+                current_name,
+                current,
+                current,
+                False,
+                "session_affinity",
+                current.account_hash != current_hash,
+            )
         needs_failover = True
+    elif current_capacity.status not in {"exhausted", "unavailable"}:
+        if matched_name is None:
+            return None
+        current = _current_profile_status(
+            matched_name,
+            profiles[matched_name],
+            current_capacity,
+            current_hash,
+        )
+        return TurnProfileSelection(
+            matched_name,
+            current,
+            current,
+            False,
+            "account_match",
+            False,
+        )
     else:
         current = None
         needs_failover = True
@@ -280,10 +376,12 @@ def select_turn_profile(
         None,
     )
     if candidate is None:
-        return TurnProfileSelection(current_name, current, None, False)
+        return TurnProfileSelection(current_name, current, None, False, "unavailable", False)
     return TurnProfileSelection(
         current_name,
         by_name.get(current_name),
         candidate,
         candidate.name != current_name,
+        "failover",
+        candidate.account_hash != current_hash,
     )

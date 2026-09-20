@@ -75,6 +75,140 @@ def invoke(
     return json.loads(sink.getvalue())
 
 
+def write_profile_auth(home, account_id):
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "auth.json").write_text(
+        json.dumps({"tokens": {"account_id": account_id}}), encoding="utf-8"
+    )
+
+
+def test_healthy_gpt_turn_uses_account_matched_profile_model(tmp_path, monkeypatch):
+    personal_home = tmp_path / "personal"
+    work_home = tmp_path / "work"
+    write_profile_auth(personal_home, "personal-account")
+    write_profile_auth(work_home, "work-account")
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.profiles = {
+        "personal": SubscriptionProfileConfig(
+            codex_home=str(personal_home),
+            priority=10,
+            tiers={"max": {"model": "gpt-6-astra", "reasoning_effort": "high"}},
+        ),
+        "work": SubscriptionProfileConfig(
+            codex_home=str(work_home),
+            priority=20,
+            tiers={"max": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}},
+        ),
+    }
+
+    monkeypatch.setenv("CODEX_HOME", str(personal_home))
+    personal = invoke(
+        config,
+        AuditStore(tmp_path / "personal.db"),
+        "@gpt @max hi",
+        account_id="personal-account",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(work_home))
+    work_store = AuditStore(tmp_path / "work.db")
+    work = invoke(
+        config,
+        work_store,
+        "@gpt @max hi",
+        account_id="work-account",
+    )
+
+    assert personal["hookSpecificOutput"]["model"] == "gpt-6-astra"
+    assert work["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert "chatgptProfileHome" not in personal["hookSpecificOutput"]
+    assert "chatgptProfileHome" not in work["hookSpecificOutput"]
+    assert "stripProviderState" not in personal["hookSpecificOutput"]
+    receipt = json.loads(work_store.latest("same-thread")["selection_receipt"])
+    assert receipt["selected"]["model"] == "gpt-5.6-sol"
+    assert receipt["subscription_profile"]["source"] == "account_match"
+    assert "work-account" not in json.dumps(receipt)
+
+
+def test_codex_home_disambiguates_two_profiles_with_same_account(tmp_path, monkeypatch):
+    personal_home = tmp_path / "personal"
+    work_home = tmp_path / "work"
+    write_profile_auth(personal_home, "same-account")
+    write_profile_auth(work_home, "same-account")
+    monkeypatch.setenv("CODEX_HOME", str(work_home))
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.profiles = {
+        "personal": SubscriptionProfileConfig(
+            codex_home=str(personal_home),
+            priority=10,
+            tiers={"max": {"model": "gpt-6-astra", "reasoning_effort": "high"}},
+        ),
+        "work": SubscriptionProfileConfig(
+            codex_home=str(work_home),
+            priority=20,
+            tiers={"max": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}},
+        ),
+    }
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "@gpt @max hi",
+        account_id="same-account",
+    )
+
+    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert "PROFILE ROUTE · work · account match" in output["hookSpecificOutput"][
+        "routeMessage"
+    ]
+
+
+def test_unmatched_gpt_account_keeps_global_model(tmp_path):
+    personal_home = tmp_path / "personal"
+    write_profile_auth(personal_home, "personal-account")
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.profiles["personal"] = SubscriptionProfileConfig(
+        codex_home=str(personal_home),
+        tiers={"max": {"model": "profile-only-max", "reasoning_effort": "high"}},
+    )
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "@gpt @max hi",
+        account_id="unknown-account",
+    )
+
+    assert output["hookSpecificOutput"]["model"] == "gpt-6-astra"
+    assert "PROFILE ROUTE" not in output["hookSpecificOutput"]["routeMessage"]
+
+
+def test_profile_model_compatibility_does_not_require_capacity_failover(tmp_path, monkeypatch):
+    work_home = tmp_path / "work"
+    write_profile_auth(work_home, "work-account")
+    monkeypatch.setenv("CODEX_HOME", str(work_home))
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = False
+    config.capacity.profiles["work"] = SubscriptionProfileConfig(
+        codex_home=str(work_home),
+        tiers={"max": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}},
+    )
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "@gpt @max hi",
+        account_id="work-account",
+    )
+
+    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+
+
 def test_authoritative_subscription_lock_falls_back_with_visible_message(tmp_path, monkeypatch):
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
     config = default_config()
@@ -125,7 +259,11 @@ def test_exhausted_subscription_fails_over_to_another_profile_in_place(tmp_path)
         "personal": SubscriptionProfileConfig(
             codex_home=str(tmp_path / "personal"), priority=10
         ),
-        "work": SubscriptionProfileConfig(codex_home=str(tmp_path / "work"), priority=20),
+        "work": SubscriptionProfileConfig(
+            codex_home=str(tmp_path / "work"),
+            priority=20,
+            tiers={"normal": {"model": "work-compatible", "reasoning_effort": "medium"}},
+        ),
     }
     statuses = (
         ProfileStatus(
@@ -167,6 +305,7 @@ def test_exhausted_subscription_fails_over_to_another_profile_in_place(tmp_path)
     specific = output["hookSpecificOutput"]
     assert output["continue"] is True
     assert specific["modelProvider"] == "openai"
+    assert specific["model"] == "work-compatible"
     assert specific["chatgptProfileHome"] == str(tmp_path / "work")
     assert specific["stripProviderState"] is True
     assert "◆ PROFILE FAILOVER · personal → work" in specific["routeMessage"]
@@ -177,6 +316,7 @@ def test_exhausted_subscription_fails_over_to_another_profile_in_place(tmp_path)
         "name": "work",
         "source": "failover",
     }
+    assert receipt["selected"]["model"] == "work-compatible"
     assert "personal-account" not in json.dumps(dict(row))
 
 

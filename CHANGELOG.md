@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.30 — 2026-09-20
+
+- Add per-ChatGPT-profile tier targets so accounts with different model entitlements can share the
+  same AgentRoute installation; for example, personal MAX can use Astra while a work profile uses
+  Sol.
+- Resolve the current profile from `CODEX_HOME` or a locally hashed account identity on every GPT
+  turn, and apply the destination profile's model target during in-thread capacity failover.
+- Add `agentroute capacity profile-model` to set or clear profile-specific model compatibility
+  without hand-editing YAML, while keeping raw account IDs out of configuration and audit output.
+
 ## 0.5.29 — 2026-09-20
 
 - Preserve the parent turn's Guardian and Node REPL safety policy for every routed provider,

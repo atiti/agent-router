@@ -118,6 +118,11 @@ class SubscriptionProfileConfig(BaseModel):
     codex_home: str
     enabled: bool = True
     priority: int = 100
+    tiers: dict[str, ModelTarget] = Field(default_factory=dict)
+
+    def target(self, tier: Tier, fallback: ModelTarget) -> ModelTarget:
+        """Return a profile-compatible target, falling back to the GPT default."""
+        return self.tiers.get(str(tier), fallback)
 
 
 class CapacityConfig(BaseModel):

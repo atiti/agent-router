@@ -28,6 +28,7 @@ from .classifier import (
 )
 from .codex_patch import apply_patch, build_codex, install_binary
 from .config import (
+    ModelTarget,
     SubscriptionProfileConfig,
     config_path,
     default_config,
@@ -232,6 +233,44 @@ def capacity_profile_select_command(name: str) -> None:
     )
 
 
+@capacity_app.command("profile-model")
+def capacity_profile_model_command(
+    name: str,
+    tier: str,
+    model: str | None = typer.Argument(
+        None, help="Profile-compatible model name. Omit when using --clear."
+    ),
+    reasoning_effort: str | None = typer.Option(None, "--reasoning-effort"),
+    clear: bool = typer.Option(False, "--clear", help="Use the global GPT tier target."),
+) -> None:
+    """Set a model compatibility override for one ChatGPT profile and tier."""
+    config = load_config()
+    name = name.strip().lower()
+    profile = config.capacity.profiles.get(name)
+    if profile is None:
+        raise typer.BadParameter(f"unknown subscription profile: {name}")
+    try:
+        parsed_tier = Tier.parse(tier)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+    tier_name = str(parsed_tier)
+    if clear:
+        if model is not None or reasoning_effort is not None:
+            raise typer.BadParameter("--clear cannot be combined with a model or reasoning effort")
+        profile.tiers.pop(tier_name, None)
+        save_config(config)
+        console.print(
+            f"Cleared {name} {tier_name.upper()} override; it now uses the global GPT target."
+        )
+        return
+    if not model or not model.strip():
+        raise typer.BadParameter("MODEL is required unless --clear is used")
+    profile.tiers[tier_name] = ModelTarget(model=model.strip(), reasoning_effort=reasoning_effort)
+    save_config(config)
+    effort = f" ({reasoning_effort} reasoning)" if reasoning_effort else ""
+    console.print(f"Set {name} {tier_name.upper()} → {model.strip()}{effort}.")
+
+
 @capacity_app.command("profile-bootstrap")
 def capacity_profile_bootstrap_command(
     name: str,
@@ -356,8 +395,9 @@ def capacity_status_command(
         console.print(profile_table)
     if config.capacity.profiles:
         console.print(
-            "Profile changes apply only at launch. Existing sessions keep their current account "
-            "to preserve provider state; checkpoint and relaunch to switch subscriptions."
+            "The selected profile applies at launch. If a current subscription becomes "
+            "unavailable, a patched Codex runtime can continue the thread on another signed-in "
+            "profile at the next turn boundary."
         )
 
 

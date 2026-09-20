@@ -203,6 +203,10 @@ profiles and sign into each one separately:
 agentroute capacity profile-add personal ~/.codex-personal --priority 10 --select
 agentroute capacity profile-add work ~/.codex-work --priority 20
 
+# Keep MAX on Astra where the subscription supports it, and use Sol where it does not.
+agentroute capacity profile-model personal max gpt-6-astra --reasoning-effort high
+agentroute capacity profile-model work max gpt-5.6-sol --reasoning-effort high
+
 # Launch-time selection probes app-server account and quota state.
 agentroute capacity status
 agentroute launch-codex --profile work
@@ -230,6 +234,15 @@ another account. Ordinary conversation and portable tool history remain. AgentRo
 interrupt or replay an in-flight request, and unknown quota telemetry never triggers a profile
 switch. The chosen profile stays sticky for later turns until it is authoritatively exhausted or
 unavailable; subsequent banners show `PROFILE ROUTE · <name> · session affinity`.
+
+Profile model overrides are also applied to ordinary healthy turns. AgentRoute identifies the
+current profile from `CODEX_HOME` first and otherwise compares hashed local account identities;
+raw account IDs are never written to configuration or audit logs. A tier without a profile override
+uses the global GPT tier target. Remove an override with:
+
+```sh
+agentroute capacity profile-model work max --clear
+```
 
 ## Optional LLM classifier
 

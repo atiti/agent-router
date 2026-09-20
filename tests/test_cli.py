@@ -86,6 +86,41 @@ def test_capacity_commands_persist_guardrails_and_keep_profiles_isolated(tmp_pat
     assert updated.capacity.profiles["personal"].codex_home == str(profile_home)
 
 
+def test_capacity_profile_model_sets_and_clears_override(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
+    config = default_config()
+    config.capacity.profiles["personal"] = SubscriptionProfileConfig(
+        codex_home=str(tmp_path / "personal")
+    )
+    save_config(config, path)
+
+    set_result = runner.invoke(
+        app,
+        [
+            "capacity",
+            "profile-model",
+            "personal",
+            "max",
+            "gpt-6-astra",
+            "--reasoning-effort",
+            "high",
+        ],
+    )
+
+    assert set_result.exit_code == 0
+    target = load_config(path).capacity.profiles["personal"].tiers["max"]
+    assert target.model == "gpt-6-astra"
+    assert target.reasoning_effort == "high"
+
+    clear_result = runner.invoke(
+        app, ["capacity", "profile-model", "personal", "max", "--clear"]
+    )
+
+    assert clear_result.exit_code == 0
+    assert "max" not in load_config(path).capacity.profiles["personal"].tiers
+
+
 def test_profile_bootstrap_copies_setup_but_not_authentication_or_sessions(tmp_path, monkeypatch):
     source = tmp_path / "source"
     destination = tmp_path / "destination"
