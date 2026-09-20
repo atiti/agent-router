@@ -1384,7 +1384,7 @@ index affecf42d5..195ede61a9 100644
 +            model_info = step_activation::model_info_for_provider_compatibility(
 +                &model_info,
 +                &model_info,
-+                tool_compatibility,
++                Some(tool_compatibility),
 +            );
 +        }
          let auth = auth_manager.auth_cached();

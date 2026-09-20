@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.31 — 2026-09-20
+
+- Fix the maintained Codex patch's startup provider-compatibility call to pass the optional
+  compatibility value expected by the shared helper, restoring cross-platform release builds.
+
 ## 0.5.30 — 2026-09-20
 
 - Add per-ChatGPT-profile tier targets so accounts with different model entitlements can share the

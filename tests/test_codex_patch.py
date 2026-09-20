@@ -28,6 +28,7 @@ def test_native_patch_is_packaged():
     assert "self.strip_unattributed_provider_state" in content
     assert "guardian_review_session_config_uses_routed_turn_provider" in content
     assert "compatibility: Option<ToolCompatibility>" in content
+    assert "Some(tool_compatibility)," in content
     assert "if let Some((_, tool_compatibility, _)) = requested_provider.as_ref()" in content
     assert "routed_parent_config.model_provider = provider.info().clone()" in content
     assert "approval_review_model" in content
@@ -118,7 +119,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v30" in installer
+    assert "provider-routing-v31" in installer
     assert "chatgpt_profile_home" in installer
     assert "ordinary_usage_allowed" in installer
     assert "codex-desktop-route-notice.patch" in installer

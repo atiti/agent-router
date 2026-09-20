@@ -13,7 +13,7 @@ from .config import AppConfig, agentroute_home, config_path, model_capabilities
 from .install import hook_command
 from .providers import END_MARKER, START_MARKER, backend_readiness
 
-EXPECTED_RUNTIME_REVISION = "provider-routing-v30"
+EXPECTED_RUNTIME_REVISION = "provider-routing-v31"
 
 
 @dataclass(frozen=True)
