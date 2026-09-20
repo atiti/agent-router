@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .capacity import CapacityState, subscription_state
 from .config import AppConfig, SubscriptionProfileConfig, agentroute_home
 from .install import _CodexAppServer
+
+PROFILE_SHARED_FILES = ("config.toml", "hooks.json", "AGENTS.md")
+PROFILE_SHARED_DIRECTORIES = ("skills", "rules")
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,36 @@ def account_hash(account_id: str | None) -> str | None:
 
 def routed_codex_binary() -> Path:
     return agentroute_home() / "bin" / "codex-bin"
+
+
+def bootstrap_profile_home(source: Path, destination: Path) -> tuple[str, ...]:
+    """Copy reusable Codex setup into a profile without copying account state."""
+    source = source.expanduser().resolve()
+    destination = destination.expanduser().resolve()
+    if source == destination:
+        raise ValueError("profile source and destination must be different directories")
+    if not source.is_dir():
+        raise ValueError(f"profile source does not exist: {source}")
+    destination.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    copied: list[str] = []
+    for name in PROFILE_SHARED_FILES:
+        origin = source / name
+        target = destination / name
+        if not origin.is_file():
+            continue
+        if target.exists():
+            shutil.copy2(target, target.with_name(f"{name}.agentroute-profile-backup-{timestamp}"))
+        shutil.copy2(origin, target)
+        copied.append(name)
+    for name in PROFILE_SHARED_DIRECTORIES:
+        origin = source / name
+        target = destination / name
+        if not origin.is_dir():
+            continue
+        shutil.copytree(origin, target, dirs_exist_ok=True)
+        copied.append(name)
+    return tuple(copied)
 
 
 def probe_profile(

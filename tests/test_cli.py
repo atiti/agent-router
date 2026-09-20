@@ -86,6 +86,41 @@ def test_capacity_commands_persist_guardrails_and_keep_profiles_isolated(tmp_pat
     assert updated.capacity.profiles["personal"].codex_home == str(profile_home)
 
 
+def test_profile_bootstrap_copies_setup_but_not_authentication_or_sessions(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    (source / "config.toml").write_text('model = "gpt"\n', encoding="utf-8")
+    (source / "hooks.json").write_text('{"hooks": {}}\n', encoding="utf-8")
+    (source / "AGENTS.md").write_text("shared instructions\n", encoding="utf-8")
+    (source / "skills" / "shared").mkdir(parents=True)
+    (source / "skills" / "shared" / "SKILL.md").write_text("skill\n", encoding="utf-8")
+    (source / "rules").mkdir()
+    (source / "rules" / "shared.md").write_text("rule\n", encoding="utf-8")
+    (destination / "auth.json").write_text("profile credential\n", encoding="utf-8")
+    (destination / "sessions").mkdir()
+    (destination / "sessions" / "thread.jsonl").write_text("thread\n", encoding="utf-8")
+
+    path = tmp_path / "config.yaml"
+    config = default_config()
+    config.capacity.profiles["work"] = SubscriptionProfileConfig(codex_home=str(destination))
+    save_config(config, path)
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
+    monkeypatch.setattr("agentroute.cli.sync_codex_providers", lambda _config, value: (value, None))
+    monkeypatch.setattr("agentroute.cli.merge_codex_hook", lambda value: (value, None))
+    monkeypatch.setattr("agentroute.cli.trust_agentroute_hooks", lambda *_args, **_kwargs: 3)
+
+    result = runner.invoke(app, ["capacity", "profile-bootstrap", "work", "--from", str(source)])
+
+    assert result.exit_code == 0
+    assert (destination / "config.toml").read_text(encoding="utf-8") == 'model = "gpt"\n'
+    assert (destination / "skills" / "shared" / "SKILL.md").is_file()
+    assert (destination / "rules" / "shared.md").is_file()
+    assert (destination / "auth.json").read_text(encoding="utf-8") == "profile credential\n"
+    assert (destination / "sessions" / "thread.jsonl").read_text(encoding="utf-8") == "thread\n"
+
+
 def test_capacity_status_uses_active_profile_telemetry_and_hides_raw_account_id(
     tmp_path, monkeypatch
 ):

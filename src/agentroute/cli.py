@@ -49,7 +49,7 @@ from .install import merge_codex_hook, trust_agentroute_hooks
 from .launcher import launch_codex
 from .models import RouteContext, Tier
 from .pricing import cost_report
-from .profiles import probe_profiles
+from .profiles import bootstrap_profile_home, probe_profiles, routed_codex_binary
 from .providers import (
     backend_readiness,
     effective_review_model,
@@ -229,6 +229,38 @@ def capacity_profile_select_command(name: str) -> None:
     console.print(
         f"Selected {name}. Existing sessions keep their current account; checkpoint and "
         "relaunch Codex to apply the profile."
+    )
+
+
+@capacity_app.command("profile-bootstrap")
+def capacity_profile_bootstrap_command(
+    name: str,
+    source: Path = typer.Option(
+        Path.home() / ".codex",
+        "--from",
+        help="Existing Codex home that supplies shared setup.",
+    ),
+) -> None:
+    """Provision reusable hooks, MCP configuration, rules, and skills for one profile."""
+    config = load_config()
+    name = name.lower()
+    profile = config.capacity.profiles.get(name)
+    if profile is None:
+        raise typer.BadParameter(f"unknown subscription profile: {name}")
+    destination = Path(profile.codex_home).expanduser()
+    try:
+        copied = bootstrap_profile_home(source, destination)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+    providers_path, _ = sync_codex_providers(config, destination / "config.toml")
+    hooks_path, _ = merge_codex_hook(destination / "hooks.json")
+    trusted = trust_agentroute_hooks(
+        routed_codex_binary(), hooks_path=hooks_path, codex_home=destination
+    )
+    console.print(
+        f"Bootstrapped {name}: {', '.join(copied) or 'no reusable files'}; "
+        f"synced providers in {providers_path}; trusted {trusted} AgentRoute hooks. "
+        "Authentication, sessions, history, plugins, and OAuth state were not copied."
     )
 
 

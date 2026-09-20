@@ -9,10 +9,10 @@ AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-"$AGENTROUTE_HOME_DIR/build/c
 AGENTROUTE_BUILD_PROFILE=${AGENTROUTE_BUILD_PROFILE:-dev-small}
 AGENTROUTE_CODEX_COMMIT=b0af519c39766c173191fc39b341808619b51c74
 AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.155.0-alpha.10}
-AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v29"
+AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v30"
 AGENTROUTE_BUILD_ID_FILE="$AGENTROUTE_HOME_DIR/build-id"
 AGENTROUTE_PATCHES="
-$AGENTROUTE_PROJECT_ROOT/patches/codex-user-prompt-model-override.patch
+$AGENTROUTE_PROJECT_ROOT/src/agentroute/patches/codex-user-prompt-model-override.patch
 $AGENTROUTE_PROJECT_ROOT/patches/codex-desktop-route-notice.patch
 $AGENTROUTE_PROJECT_ROOT/patches/codex-package-version.patch
 "
@@ -81,6 +81,8 @@ if grep -F 'Route the turn before pre-sampling compaction' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/hook_runtime.rs" >/dev/null 2>&1 \
     && grep -F 'chatgpt_profile_home' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/step_activation.rs" >/dev/null 2>&1 \
+    && grep -F 'compatibility: Option<ToolCompatibility>' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/step_activation.rs" >/dev/null 2>&1 \
     && ! grep -F '"routing_prompt".to_string()' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/tools/handlers/multi_agents_spec.rs" >/dev/null 2>&1 \
     && grep -F 'version = "0.155.0-alpha.2.7"' \
@@ -147,14 +149,28 @@ if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
         --profile "$AGENTROUTE_BUILD_PROFILE" \
         -p codex-cli --bin codex
 
-    cp "$AGENTROUTE_CODEX_TARGET/$AGENTROUTE_BUILD_PROFILE/codex" "$AGENTROUTE_BIN_DIR/codex-bin"
+    AGENTROUTE_STAGED_CODEX="$AGENTROUTE_CODEX_TARGET/$AGENTROUTE_BUILD_PROFILE/codex-agentroute-staged"
+    cp "$AGENTROUTE_CODEX_TARGET/$AGENTROUTE_BUILD_PROFILE/codex" "$AGENTROUTE_STAGED_CODEX"
+    chmod 755 "$AGENTROUTE_STAGED_CODEX"
+    if [ "$(uname -s)" = Darwin ]; then
+        # Sign and verify the staged file before it can replace the live binary.
+        # An interrupted installer therefore leaves the previous runtime intact.
+        codesign --force --deep --sign - "$AGENTROUTE_STAGED_CODEX"
+        codesign --verify --deep --strict "$AGENTROUTE_STAGED_CODEX"
+    fi
+    "$AGENTROUTE_STAGED_CODEX" --version >/dev/null
+
+    "$AGENTROUTE_HOME_DIR/venv/bin/python" -c '
+from pathlib import Path
+from agentroute.codex_patch import install_binary
+install_binary(
+    Path("'"$AGENTROUTE_STAGED_CODEX"'"),
+    Path("'"$AGENTROUTE_BIN_DIR/codex-bin"'"),
+)
+'
+    rm -f "$AGENTROUTE_STAGED_CODEX"
     if [ "$AGENTROUTE_SOURCE_CODE_MODE_HOST" != "$AGENTROUTE_BIN_DIR/codex-code-mode-host" ]; then
         cp "$AGENTROUTE_SOURCE_CODE_MODE_HOST" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
-    fi
-    if [ "$(uname -s)" = Darwin ]; then
-        # Codex can contain nested executable code. Deep-sign both local
-        # binaries so macOS taskgated validates the complete code hierarchy.
-        codesign --force --deep --sign - "$AGENTROUTE_BIN_DIR/codex-bin"
     fi
     chmod 755 "$AGENTROUTE_BIN_DIR/codex-bin" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
     printf '%s\n' "$AGENTROUTE_BUILD_ID" >"$AGENTROUTE_BUILD_ID_FILE"

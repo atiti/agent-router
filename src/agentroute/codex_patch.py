@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 PINNED_CODEX_COMMIT = "b0af519c39766c173191fc39b341808619b51c74"
@@ -52,6 +54,18 @@ def build_codex(source: Path, *, release: bool = True) -> Path:
 
 def install_binary(binary: Path, destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(binary, destination)
-    destination.chmod(0o755)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+        shutil.copy2(binary, temporary_path)
+        temporary_path.chmod(0o755)
+        os.replace(temporary_path, destination)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
     return destination

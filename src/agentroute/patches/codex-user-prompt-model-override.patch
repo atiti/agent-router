@@ -1616,7 +1616,7 @@ index 8dc090315a..2708f3a865 100644
              Ok(destination) => destination,
              Err(reason) => return TurnSettingsUpdateOutcome::Rejected { reason },
          };
-+        if let Some((_, Some(tool_compatibility), _)) = requested_provider.as_ref() {
++        if let Some((_, tool_compatibility, _)) = requested_provider.as_ref() {
 +            destination.model_info = Arc::new(model_info_for_provider_compatibility(
 +                &current.model_info,
 +                &destination.model_info,
@@ -1643,7 +1643,7 @@ index 8dc090315a..2708f3a865 100644
 +pub(crate) fn model_info_for_provider_compatibility(
 +    admitted: &ModelInfo,
 +    destination: &ModelInfo,
-+    compatibility: ToolCompatibility,
++    compatibility: Option<ToolCompatibility>,
 +) -> ModelInfo {
 +    // Start with the admitted metadata so a provider switch cannot change local
 +    // approval, Guardian, reviewer, or Node REPL authority. Only model identity
@@ -1655,13 +1655,14 @@ index 8dc090315a..2708f3a865 100644
 +        .clone_from(&destination.display_name);
 +    model_info.description.clone_from(&destination.description);
 +    match compatibility {
-+        ToolCompatibility::FunctionsAndApplyPatch => {
++        Some(ToolCompatibility::FunctionsAndApplyPatch) => {
 +            model_info.tool_mode = Some(ToolMode::Direct);
 +            model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
 +            model_info.supports_search_tool = false;
 +            model_info.use_responses_lite = false;
 +            model_info.experimental_supported_tools.clear();
 +        }
++        None => {}
 +    }
 +    model_info.used_fallback_model_metadata = false;
 +    model_info
@@ -1785,7 +1786,7 @@ index dcaa598eb6..f8eb0b4018 100644
 +    let compatible = model_info_for_provider_compatibility(
 +        &admitted,
 +        &destination,
-+        ToolCompatibility::FunctionsAndApplyPatch,
++        Some(ToolCompatibility::FunctionsAndApplyPatch),
 +    );
 +
 +    assert_eq!(compatible.slug, destination.slug);
