@@ -222,6 +222,28 @@ def probe_profiles(
     )
 
 
+def reviewer_fallback_profiles(
+    config: AppConfig,
+    selected: ProfileStatus,
+    *,
+    codex_binary: Path | None = None,
+) -> tuple[ProfileStatus, ...]:
+    """Return healthy, distinct subscription profiles for reviewer-only failover."""
+    return tuple(
+        profile
+        for profile in probe_profiles(config, codex_binary=codex_binary)
+        if profile.name != selected.name
+        and profile.enabled
+        and profile.authenticated
+        and profile.capacity.status in {"healthy", "warning"}
+        and (
+            selected.account_hash is None
+            or profile.account_hash is None
+            or profile.account_hash != selected.account_hash
+        )
+    )
+
+
 def select_launch_profile(
     config: AppConfig,
     requested: str | None = None,

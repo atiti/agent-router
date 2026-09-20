@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.32 — 2026-09-20
+
+- Match the routed Codex CLI package version to the CLI embedded in the current official Desktop
+  app, preserving the Desktop/mobile compatibility gate without forcing a mismatch.
+- Show the active model provider beside the model in the configurable CLI status line, including
+  per-turn AgentRoute backend changes parsed from the visible route notice.
+- When an automatic approval reviewer exhausts its ChatGPT subscription, retry the reviewer only
+  on a distinct healthy signed-in profile, keep the answer route unchanged, re-key reviewer state,
+  and show the profile switch in a visible fallback banner.
+
 ## 0.5.31 — 2026-09-20
 
 - Fix the maintained Codex patch's startup provider-compatibility call to pass the optional

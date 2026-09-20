@@ -119,17 +119,32 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v31" in installer
+    assert "provider-routing-v32" in installer
     assert "chatgpt_profile_home" in installer
     assert "ordinary_usage_allowed" in installer
     assert "codex-desktop-route-notice.patch" in installer
     assert "codex-package-version.patch" in installer
-    assert "0.155.0-alpha.2.7" in "\n".join(
+    assert "routed_turn_model_provider" in "\n".join(
+        path.read_text() for path in patch_paths()
+    )
+    assert "model_with_provider_display_name" in "\n".join(
+        path.read_text() for path in patch_paths()
+    )
+    assert "reviewerFallbackProfiles" in "\n".join(
+        path.read_text() for path in patch_paths()
+    )
+    assert "ReviewerFallbackReady" in "\n".join(
+        path.read_text() for path in patch_paths()
+    )
+    assert "APPROVAL REVIEWER FALLBACK" in "\n".join(
+        path.read_text() for path in patch_paths()
+    )
+    assert "0.155.0-alpha.2.6" in "\n".join(
         path.read_text() for path in patch_paths()
     )
     assert "apply --recount" in installer
     assert "MessagePhase::Commentary" in installer
-    assert 'version = "0.155.0-alpha.2.7"' in installer
+    assert 'version = "0.155.0-alpha.2.6"' in installer
     assert "Some(args.task_name.clone())" in installer
     assert '\"routing_prompt\".to_string()' in installer
     same_host_guard = (
