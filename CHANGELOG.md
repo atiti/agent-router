@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.29 — 2026-09-20
+
+- Preserve the parent turn's Guardian and Node REPL safety policy for every routed provider,
+  including fully tool-compatible Azure deployments.
+- Add `agentroute capacity profile-bootstrap` to copy reusable hooks, MCP configuration, rules,
+  and skills into an isolated profile without copying authentication or session state.
+- Stage, sign, verify, and smoke-test a rebuilt macOS Codex executable before atomically replacing
+  the live binary, so an interrupted source install cannot leave a taskgated-killed runtime.
+
 ## 0.5.28 — 2026-09-19
 
 - Continue an existing Codex CLI or Desktop thread on another configured ChatGPT subscription

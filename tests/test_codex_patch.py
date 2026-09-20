@@ -1,6 +1,7 @@
+import os
 from pathlib import Path
 
-from agentroute.codex_patch import patch_path, patch_paths
+from agentroute.codex_patch import install_binary, patch_path, patch_paths
 
 
 def test_native_patch_is_packaged():
@@ -26,6 +27,8 @@ def test_native_patch_is_packaged():
     assert "normalize_response_items_for_provider(" in content
     assert "self.strip_unattributed_provider_state" in content
     assert "guardian_review_session_config_uses_routed_turn_provider" in content
+    assert "compatibility: Option<ToolCompatibility>" in content
+    assert "if let Some((_, tool_compatibility, _)) = requested_provider.as_ref()" in content
     assert "routed_parent_config.model_provider = provider.info().clone()" in content
     assert "approval_review_model" in content
     assert "config.model_provider.tool_compatibility" in content
@@ -68,6 +71,31 @@ def test_primary_patch_path_is_backwards_compatible():
     assert patch_path() == patch_paths()[0]
 
 
+def test_install_binary_atomically_replaces_destination(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    destination = tmp_path / "bin" / "codex-bin"
+    source.write_bytes(b"new binary")
+    destination.parent.mkdir()
+    destination.write_bytes(b"old binary")
+    replacements: list[tuple[Path, Path]] = []
+    real_replace = os.replace
+
+    def record_replace(staged: Path, installed: Path) -> None:
+        assert staged.parent == destination.parent
+        assert staged.read_bytes() == b"new binary"
+        assert installed.read_bytes() == b"old binary"
+        replacements.append((staged, installed))
+        real_replace(staged, installed)
+
+    monkeypatch.setattr("agentroute.codex_patch.os.replace", record_replace)
+
+    install_binary(source, destination)
+
+    assert replacements
+    assert destination.read_bytes() == b"new binary"
+    assert destination.stat().st_mode & 0o111
+
+
 def test_installer_enables_code_mode_and_signs_macos_binary():
     installer = (Path(__file__).parents[1] / "scripts" / "install.sh").read_text()
     launcher = (Path(__file__).parents[1] / "src/agentroute/launcher.py").read_text()
@@ -84,11 +112,13 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "classifier-refresh" in packaged_launcher
     assert 'cp "$AGENTROUTE_PROJECT_ROOT/packaging/codex-launcher"' in installer
     assert "codesign --force --deep --sign -" in installer
+    assert "codesign --verify --deep --strict" in installer
+    assert '"$AGENTROUTE_STAGED_CODEX" --version' in installer
     assert "codex-code-mode-host.entitlements.plist" in installer
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v29" in installer
+    assert "provider-routing-v30" in installer
     assert "chatgpt_profile_home" in installer
     assert "ordinary_usage_allowed" in installer
     assert "codex-desktop-route-notice.patch" in installer

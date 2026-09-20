@@ -208,6 +208,14 @@ agentroute capacity status
 agentroute launch-codex --profile work
 ```
 
+Provision a new profile with the same hooks, MCP configuration, rules, and skills as your
+existing Codex home. This deliberately does not copy `auth.json`, session history, plugins, or
+OAuth state, so sign into the new account before or after bootstrapping:
+
+```sh
+agentroute capacity profile-bootstrap work --from ~/.codex
+```
+
 At launch, AgentRoute selects the highest-priority healthy profile. During an existing CLI or
 Desktop thread, it can also move the *next turn* to another signed-in profile when the active
 subscription is authoritatively exhausted or unavailable:

@@ -178,16 +178,21 @@ def trust_agentroute_hooks(
     *,
     hooks_path: Path | None = None,
     cwd: Path | None = None,
+    codex_home: Path | None = None,
 ) -> int:
     """Trust only the exact AgentRoute hooks using hashes computed by Codex itself."""
-    hooks_path = (hooks_path or Path.home() / ".codex" / "hooks.json").resolve()
+    if hooks_path is None:
+        home = codex_home or Path.home() / ".codex"
+        hooks_path = home / "hooks.json"
+    hooks_path = hooks_path.resolve()
     cwd = (cwd or Path.cwd()).resolve()
     expected_hooks = {
         "userPromptSubmit": hook_command("user-prompt-submit"),
         "stop": hook_command("stop"),
         "subagentStop": hook_command("stop"),
     }
-    with _CodexAppServer(codex_binary) as client:
+    client_options = {"codex_home": codex_home} if codex_home is not None else {}
+    with _CodexAppServer(codex_binary, **client_options) as client:
         response = client.request("hooks/list", {"cwds": [str(cwd)]})
         entries = response.get("data", [])
         hooks = entries[0].get("hooks", []) if entries else []
