@@ -61,20 +61,20 @@ Spawned subagents are routed independently. Their triggering task is classified 
 before the child's first model call, and each audit row and route banner identifies whether the
 decision belongs to the root agent or a subagent. A child starts with the parent's full or bounded
 context according to Codex's spawn request and inherits the parent's effective provider by default.
-The v2 collaboration tool also accepts an optional explicit backend:
+A qualified explicit `model` can select another configured provider for one child:
 
 ```json
 {
   "task_name": "policy_audit",
   "message": "Review the policy boundary and report only actionable findings.",
-  "backend": "deepseek"
+  "model": "agentroute-deepseek/deepseek-flash"
 }
 ```
 
-That override changes only the new child and becomes affinity for that child's later follow-ups;
-the parent and siblings keep their own providers. An explicitly supplied child model may select its
-uniquely configured backend, but an explicit model/backend mismatch or unavailable backend is
-blocked before the child calls a provider. For the initial child decision, AgentRoute reuses
+That qualified model changes only the new child and becomes affinity for that child's later
+follow-ups; the parent and siblings keep their own providers. Invalid or unavailable qualified
+destinations are blocked before the child calls a provider. For the initial child decision,
+AgentRoute reuses
 Codex's existing non-secret `task_name` as an internal routing hint. The actual delegated task
 remains provider-encrypted, and all routing metadata is ephemeral: it is stripped before rollout
 serialization and never appears in the child model's visible input. An opaque follow-up inherits

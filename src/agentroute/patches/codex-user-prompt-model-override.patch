@@ -1,5 +1,5 @@
 diff --git a/codex-rs/app-server/src/request_processors/account_processor.rs b/codex-rs/app-server/src/request_processors/account_processor.rs
-index 8327cdf7ce1998498501e96cba3912df440548ee..dfad5256f51bbdcbb8d1a52a0c0a188cb3a61dd3 100644
+index 8327cdf7ce..dfad5256f5 100644
 --- a/codex-rs/app-server/src/request_processors/account_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/account_processor.rs
 @@ -1202,11 +1202,21 @@ impl AccountRequestProcessor {
@@ -28,7 +28,7 @@ index 8327cdf7ce1998498501e96cba3912df440548ee..dfad5256f51bbdcbb8d1a52a0c0a188c
              rate_limits_by_limit_id: Some(
                  rate_limits_by_limit_id
 diff --git a/codex-rs/config/src/thread_config/remote.rs b/codex-rs/config/src/thread_config/remote.rs
-index 8d5b8febe4fb898f571e80c51c5dbdbbc2fc950e..6718019d037251f26a9fbabc33a1eebf73cacaf3 100644
+index 8d5b8febe4..6718019d03 100644
 --- a/codex-rs/config/src/thread_config/remote.rs
 +++ b/codex-rs/config/src/thread_config/remote.rs
 @@ -192,6 +192,8 @@ fn model_provider_from_proto(
@@ -59,7 +59,7 @@ index 8d5b8febe4fb898f571e80c51c5dbdbbc2fc950e..6718019d037251f26a9fbabc33a1eebf
          }
      }
 diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
-index 2981b13b0a62bc206f8d27f473a5918ff9a9ad80..5631a5072b56c7716044a0321cbfa518ff3d3117 100644
+index 2981b13b0a..5631a5072b 100644
 --- a/codex-rs/core/src/agent/control_tests.rs
 +++ b/codex-rs/core/src/agent/control_tests.rs
 @@ -966,7 +966,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
@@ -72,7 +72,7 @@ index 2981b13b0a62bc206f8d27f473a5918ff9a9ad80..5631a5072b56c7716044a0321cbfa518
                  .clone(),
          ),
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 9e4cf7df6f8da9348db018714d6f419e67a7f379..2de9dbafc22e2ac86c1981cf33802860ee11029c 100644
+index 9e4cf7df6f..2de9dbafc2 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -26,6 +26,7 @@
@@ -375,7 +375,7 @@ index 9e4cf7df6f8da9348db018714d6f419e67a7f379..2de9dbafc22e2ac86c1981cf33802860
              self.websocket_session.last_response_from_untraced_warmup = warmup;
              let stream_result = stream_result.map_err(|err| {
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index 8936f5afaba5653be67a3e128876dc60ae3211d3..c678bfed123beb01064866de59fac0f5c67d77be 100644
+index 8936f5afab..c678bfed12 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
 @@ -8,6 +8,7 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
@@ -506,7 +506,7 @@ index 8936f5afaba5653be67a3e128876dc60ae3211d3..c678bfed123beb01064866de59fac0f5
  use tempfile::TempDir;
  use tokio::sync::Notify;
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
-index 76c5ad7df94eb84deb8017e7d616162b971cbac8..80b8f0746b0ad55576880949862973eea4f5749f 100644
+index 76c5ad7df9..80b8f0746b 100644
 --- a/codex-rs/core/src/codex_thread.rs
 +++ b/codex-rs/core/src/codex_thread.rs
 @@ -228,6 +228,12 @@ impl CodexThread {
@@ -523,7 +523,7 @@ index 76c5ad7df94eb84deb8017e7d616162b971cbac8..80b8f0746b0ad55576880949862973ee
      pub fn session_telemetry(&self) -> SessionTelemetry {
          self.session.services.session_telemetry.clone()
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 77e28b85e5f92b9593e4778e9afc052a3b959bf4..a86d344377b39c3e3d15845f838e7599a111a1fe 100644
+index 77e28b85e5..a86d344377 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
 @@ -86,6 +86,7 @@ pub(crate) struct CompactedHistoryMetadata {
@@ -707,7 +707,7 @@ index 77e28b85e5f92b9593e4778e9afc052a3b959bf4..a86d344377b39c3e3d15845f838e7599
                  )
                  .await;
 diff --git a/codex-rs/core/src/compact_remote_v2.rs b/codex-rs/core/src/compact_remote_v2.rs
-index b367ba4beaa6387e12cbea6298f198805c47b467..ae219e3e1a50a59b102cd753a4d4c9ad771e3770 100644
+index b367ba4bea..ae219e3e1a 100644
 --- a/codex-rs/core/src/compact_remote_v2.rs
 +++ b/codex-rs/core/src/compact_remote_v2.rs
 @@ -230,7 +230,7 @@ async fn run_remote_compact_task_inner_impl(
@@ -746,7 +746,7 @@ index b367ba4beaa6387e12cbea6298f198805c47b467..ae219e3e1a50a59b102cd753a4d4c9ad
          .stream_max_retries()
          .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
 diff --git a/codex-rs/core/src/guardian/mod.rs b/codex-rs/core/src/guardian/mod.rs
-index a4e0e1429ae9ec77c6b801ab8e23ec900cfb5bc0..32c05a6b9a1080fee2bf0774b11c6e96a1c1dc8b 100644
+index a4e0e1429a..32c05a6b9a 100644
 --- a/codex-rs/core/src/guardian/mod.rs
 +++ b/codex-rs/core/src/guardian/mod.rs
 @@ -23,6 +23,7 @@ mod runtime;
@@ -790,7 +790,7 @@ index a4e0e1429ae9ec77c6b801ab8e23ec900cfb5bc0..32c05a6b9a1080fee2bf0774b11c6e96
  /// Background network approvals and Unix interception use the active task's resolved settings.
  /// Startup reviewer prewarming intentionally uses turn-only inputs because it has no issuing step.
 diff --git a/codex-rs/core/src/guardian/review.rs b/codex-rs/core/src/guardian/review.rs
-index fc7960d54774a8bdb776193a490523a9a82f3e9e..41cc35c537c9f088308c8ad5617211b0313326d9 100644
+index fc7960d547..41cc35c537 100644
 --- a/codex-rs/core/src/guardian/review.rs
 +++ b/codex-rs/core/src/guardian/review.rs
 @@ -41,6 +41,7 @@ use super::GUARDIAN_REVIEWER_NAME;
@@ -911,7 +911,7 @@ index fc7960d54774a8bdb776193a490523a9a82f3e9e..41cc35c537c9f088308c8ad5617211b0
              reasons.clone(),
              schema.clone(),
 diff --git a/codex-rs/core/src/guardian/review_request.rs b/codex-rs/core/src/guardian/review_request.rs
-index ce6c9c3f640e64b28447599b1ed766892547abff..edd23f5b6adeaebf7a43e38a6d753710af05c932 100644
+index ce6c9c3f64..edd23f5b6a 100644
 --- a/codex-rs/core/src/guardian/review_request.rs
 +++ b/codex-rs/core/src/guardian/review_request.rs
 @@ -1,10 +1,14 @@
@@ -1058,7 +1058,7 @@ index ce6c9c3f640e64b28447599b1ed766892547abff..edd23f5b6adeaebf7a43e38a6d753710
          let session = Arc::clone(&self.session);
          if matches!(&outcome, GuardianReviewOutcome::Completed(assessment) if assessment.outcome == GuardianAssessmentOutcome::Allow)
 diff --git a/codex-rs/core/src/guardian/review_session.rs b/codex-rs/core/src/guardian/review_session.rs
-index 397f1eb635d7f98e4bb9b08c66744145cd3dcd89..c9201f50e18a646a18351f5a632bf0ee9c6e89c6 100644
+index 397f1eb635..c9201f50e1 100644
 --- a/codex-rs/core/src/guardian/review_session.rs
 +++ b/codex-rs/core/src/guardian/review_session.rs
 @@ -98,6 +98,7 @@ use super::review::guardian_review_session_config;
@@ -1095,7 +1095,7 @@ index 397f1eb635d7f98e4bb9b08c66744145cd3dcd89..c9201f50e18a646a18351f5a632bf0ee
      }
  
 diff --git a/codex-rs/core/src/guardian/review_session_setup.rs b/codex-rs/core/src/guardian/review_session_setup.rs
-index edf191bfe08adfbf4c96fe349e351cdfc1749b59..5a40345479996a658d3a023a65032aafff319b19 100644
+index edf191bfe0..5a40345479 100644
 --- a/codex-rs/core/src/guardian/review_session_setup.rs
 +++ b/codex-rs/core/src/guardian/review_session_setup.rs
 @@ -10,6 +10,7 @@ pub struct PreparedGuardianContext {
@@ -1167,7 +1167,7 @@ index edf191bfe08adfbf4c96fe349e351cdfc1749b59..5a40345479996a658d3a023a65032aaf
              &config.node_repl_policy,
              config.compaction_model_hash.as_deref(),
 diff --git a/codex-rs/core/src/guardian/review_session_tests.rs b/codex-rs/core/src/guardian/review_session_tests.rs
-index 6616a291b345ea23cd204c45a8a44a7197d0e2ab..0ac5cc39cce12ad6ae5ab552176aa86e6d104260 100644
+index 6616a291b3..0ac5cc39cc 100644
 --- a/codex-rs/core/src/guardian/review_session_tests.rs
 +++ b/codex-rs/core/src/guardian/review_session_tests.rs
 @@ -91,6 +91,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
@@ -1203,7 +1203,7 @@ index 6616a291b345ea23cd204c45a8a44a7197d0e2ab..0ac5cc39cce12ad6ae5ab552176aa86e
          cached_reuse_key,
          GuardianReviewSessionReuseKey::from_spawn_config(
 diff --git a/codex-rs/core/src/guardian/tests.rs b/codex-rs/core/src/guardian/tests.rs
-index cf191851bfe63f73d1877f1e3226894bc1497b3c..6c0f97c9007dc48db4bb11de5214dd42d0080fb4 100644
+index cf191851bf..6c0f97c900 100644
 --- a/codex-rs/core/src/guardian/tests.rs
 +++ b/codex-rs/core/src/guardian/tests.rs
 @@ -181,8 +181,10 @@ async fn guardian_test_session_turn_and_rx(
@@ -1322,7 +1322,7 @@ index cf191851bfe63f73d1877f1e3226894bc1497b3c..6c0f97c9007dc48db4bb11de5214dd42
  async fn guardian_review_session_config_clears_parent_developer_instructions() {
      let mut parent_config = test_config().await;
 diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
-index 4e276868ce9ee6d18cbf909849f6b738db94c3ad..507c8abd91bcf07895c4b61bd0ab7c4e1ca26812 100644
+index 4e276868ce..507c8abd91 100644
 --- a/codex-rs/core/src/hook_runtime.rs
 +++ b/codex-rs/core/src/hook_runtime.rs
 @@ -49,6 +49,8 @@ use codex_protocol::protocol::HookStartedEvent;
@@ -1798,7 +1798,7 @@ index 4e276868ce9ee6d18cbf909849f6b738db94c3ad..507c8abd91bcf07895c4b61bd0ab7c4e
      async fn hook_lifecycle_notifications_hide_builtin_and_async_runs_but_preserve_metrics() {
          let metrics = MetricsClient::new(
 diff --git a/codex-rs/core/src/mcp_tool_call_tests.rs b/codex-rs/core/src/mcp_tool_call_tests.rs
-index 2e7fee39507b12ecdc51cbff17243ecba7d82a28..701c6a445388064bb454f1926fbd9c2df6cf9a75 100644
+index 2e7fee3950..701c6a4453 100644
 --- a/codex-rs/core/src/mcp_tool_call_tests.rs
 +++ b/codex-rs/core/src/mcp_tool_call_tests.rs
 @@ -2629,9 +2629,12 @@ async fn guardian_mode_skips_auto_when_annotations_do_not_require_approval() {
@@ -1850,7 +1850,7 @@ index 2e7fee39507b12ecdc51cbff17243ecba7d82a28..701c6a445388064bb454f1926fbd9c2d
  
          let session = Arc::new(session);
 diff --git a/codex-rs/core/src/responses_retry.rs b/codex-rs/core/src/responses_retry.rs
-index 462bb95ba8ef3a0615d13e1d3cfd7a13d6edd982..611aaa91e973ecea2bf18ba4a5c117d9cca44781 100644
+index 462bb95ba8..611aaa91e9 100644
 --- a/codex-rs/core/src/responses_retry.rs
 +++ b/codex-rs/core/src/responses_retry.rs
 @@ -69,7 +69,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
@@ -1863,7 +1863,7 @@ index 462bb95ba8ef3a0615d13e1d3cfd7a13d6edd982..611aaa91e973ecea2bf18ba4a5c117d9
          let retry_delay = retry_state.connection_retry_delay;
          warn!(
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index affecf42d584763b67370abf1251e7555d8595a5..86847150d7a3125118514fc5b14d215288d908da 100644
+index affecf42d5..86847150d7 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -697,9 +697,16 @@ impl Session {
@@ -1934,7 +1934,7 @@ index affecf42d584763b67370abf1251e7555d8595a5..86847150d7a3125118514fc5b14d2152
          let state = self.state.lock().await;
          state.mcp_dependency_prompted()
 diff --git a/codex-rs/core/src/session/review.rs b/codex-rs/core/src/session/review.rs
-index ea078a451e0f245e9840848b3c06e61c3478388d..cfee96aca74932c519a681488563fd8f3d67bbec 100644
+index ea078a451e..cfee96aca7 100644
 --- a/codex-rs/core/src/session/review.rs
 +++ b/codex-rs/core/src/session/review.rs
 @@ -42,7 +42,7 @@ pub(super) async fn spawn_review_thread(
@@ -1957,7 +1957,7 @@ index ea078a451e0f245e9840848b3c06e61c3478388d..cfee96aca74932c519a681488563fd8f
          history_mode: parent_turn_context.history_mode,
          parent_thread_id: parent_turn_context.parent_thread_id,
 diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
-index 8dc090315aa15e231f34d1968d76ecce1d509186..e72b861accaf5726983c0b733d991f6b3dd791f5 100644
+index 8dc090315a..e72b861acc 100644
 --- a/codex-rs/core/src/session/step_activation.rs
 +++ b/codex-rs/core/src/session/step_activation.rs
 @@ -12,12 +12,18 @@ use crate::context::GuardianNodeReplPolicy;
@@ -2166,7 +2166,7 @@ index 8dc090315aa15e231f34d1968d76ecce1d509186..e72b861accaf5726983c0b733d991f6b
  #[path = "step_activation_tests.rs"]
  mod tests;
 diff --git a/codex-rs/core/src/session/step_activation_tests.rs b/codex-rs/core/src/session/step_activation_tests.rs
-index dcaa598eb6d4c31a2b603fc60c96f30a0f735868..9c9310a3cc5517042b1a00713f912aa07314c6e7 100644
+index dcaa598eb6..9c9310a3cc 100644
 --- a/codex-rs/core/src/session/step_activation_tests.rs
 +++ b/codex-rs/core/src/session/step_activation_tests.rs
 @@ -24,6 +24,7 @@ use codex_extension_api::ThreadInstructionsProvider;
@@ -2339,7 +2339,7 @@ index dcaa598eb6d4c31a2b603fc60c96f30a0f735868..9c9310a3cc5517042b1a00713f912aa0
  
  #[test_case(None, None, false; "both catalog policies")]
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index f2d047d0ea495146b42291a94663fc809bc0c433..341b7d65771b1289a87094e9543d861b63145d41 100644
+index f2d047d0ea..341b7d6577 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
 @@ -5353,7 +5353,7 @@ async fn session_configuration_apply_preserves_absolute_cwd_write_root_on_cwd_up
@@ -2360,7 +2360,7 @@ index f2d047d0ea495146b42291a94663fc809bc0c433..341b7d65771b1289a87094e9543d861b
          ),
      ));
 diff --git a/codex-rs/core/src/session/tests/guardian_tests.rs b/codex-rs/core/src/session/tests/guardian_tests.rs
-index 72ae06956278f6c2abfd8c9c38164ffb8f0b7751..b36296aaf76f929c9098b42496051a516c60a58a 100644
+index 72ae069562..b36296aaf7 100644
 --- a/codex-rs/core/src/session/tests/guardian_tests.rs
 +++ b/codex-rs/core/src/session/tests/guardian_tests.rs
 @@ -225,9 +225,12 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
@@ -2428,7 +2428,7 @@ index 72ae06956278f6c2abfd8c9c38164ffb8f0b7751..b36296aaf76f929c9098b42496051a51
      let session = Arc::new(session);
      let turn_context = Arc::new(turn_context_raw);
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 8ab44553bee03ea0e803e93cb7deffe46947aae5..b24a2ffb9827db664b3b5e094e2912fcb55bdf73 100644
+index 8ab44553be..b24a2ffb98 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -15,6 +15,7 @@ use crate::context::ContextualUserFragment;
@@ -2914,7 +2914,7 @@ index 8ab44553bee03ea0e803e93cb7deffe46947aae5..b24a2ffb9827db664b3b5e094e2912fc
          .stream(
              prompt,
 diff --git a/codex-rs/core/src/session/turn_context.rs b/codex-rs/core/src/session/turn_context.rs
-index 9f86627a4569c31b4a1bbb0a75be42e336912179..e9e5cbbab94fe11a4f619c658a301237da502899 100644
+index 9f86627a45..e9e5cbbab9 100644
 --- a/codex-rs/core/src/session/turn_context.rs
 +++ b/codex-rs/core/src/session/turn_context.rs
 @@ -301,7 +301,8 @@ pub struct TurnContext {
@@ -2988,7 +2988,7 @@ index 9f86627a4569c31b4a1bbb0a75be42e336912179..e9e5cbbab94fe11a4f619c658a301237
              history_mode: session_configuration.history_mode,
              parent_thread_id: session_configuration.parent_thread_id,
 diff --git a/codex-rs/core/src/session/turn_tests.rs b/codex-rs/core/src/session/turn_tests.rs
-index e43fb6a2ae6cfcb98e791bcfd12bbf37656d74c4..7c042ead8c0e269c2101563c3999ef4a03f5d896 100644
+index e43fb6a2ae..7c042ead8c 100644
 --- a/codex-rs/core/src/session/turn_tests.rs
 +++ b/codex-rs/core/src/session/turn_tests.rs
 @@ -108,3 +108,121 @@ fn realtime_user_verification_notice_excludes_request_payload() {
@@ -3114,7 +3114,7 @@ index e43fb6a2ae6cfcb98e791bcfd12bbf37656d74c4..7c042ead8c0e269c2101563c3999ef4a
 +    assert_eq!(input, vec![expected_function_call, expected_message]);
 +}
 diff --git a/codex-rs/core/src/state/session.rs b/codex-rs/core/src/state/session.rs
-index b3ea977da01d732dec0553b0704fa90d48b97ef9..201128b1d49adde357b806cea635efce8aa8038d 100644
+index b3ea977da0..201128b1d4 100644
 --- a/codex-rs/core/src/state/session.rs
 +++ b/codex-rs/core/src/state/session.rs
 @@ -76,6 +76,9 @@ pub(crate) struct SessionState {
@@ -3159,7 +3159,7 @@ index b3ea977da01d732dec0553b0704fa90d48b97ef9..201128b1d49adde357b806cea635efce
          self.history.set_token_usage_full(context_window);
      }
 diff --git a/codex-rs/core/src/state/session_tests.rs b/codex-rs/core/src/state/session_tests.rs
-index 5d3defeefee1a2dcfcc1add69f3e5434342531df..364ee17b80f3996485da540eebb9436b8f7b099f 100644
+index 5d3defeefe..364ee17b80 100644
 --- a/codex-rs/core/src/state/session_tests.rs
 +++ b/codex-rs/core/src/state/session_tests.rs
 @@ -112,6 +112,19 @@ async fn set_rate_limits_defaults_limit_id_to_codex_when_missing() {
@@ -3183,7 +3183,7 @@ index 5d3defeefee1a2dcfcc1add69f3e5434342531df..364ee17b80f3996485da540eebb9436b
  async fn replace_history_clears_auto_compact_window_prefill() {
      let session_configuration = make_session_configuration_for_tests().await;
 diff --git a/codex-rs/core/src/tasks/compact.rs b/codex-rs/core/src/tasks/compact.rs
-index 14913d95c89bcbefeeb5a7b33e6cee5248f3cdb7..0f8f5f52b06089c715f58724cf09b8845bd56c54 100644
+index 14913d95c8..0f8f5f52b0 100644
 --- a/codex-rs/core/src/tasks/compact.rs
 +++ b/codex-rs/core/src/tasks/compact.rs
 @@ -38,7 +38,7 @@ impl SessionTask for CompactTask {
@@ -3195,8 +3195,21 @@ index 14913d95c89bcbefeeb5a7b33e6cee5248f3cdb7..0f8f5f52b06089c715f58724cf09b884
              RemoteCompactionSupport::V2 => {
                  emit_compact_metric(
                      &session.services.session_telemetry,
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs b/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
+index a9615aeca8..0d42693e51 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
+@@ -94,7 +94,7 @@ async fn handle_spawn_agent(
+     if args.fork_context {
+         reject_full_fork_agent_type_override(role_name)?;
+     }
+-    apply_requested_spawn_agent_model_overrides(
++    let _requested_backend = apply_requested_spawn_agent_model_overrides(
+         &session,
+         turn.as_ref(),
+         &mut config,
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_common.rs b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
-index 9cbe72df88ef69b07ad455ef2bbbb2cbf231293b..8a1cbee8aeed3f06fd0468eb6ed2a1a9e70d12db 100644
+index 9cbe72df88..74ecafb157 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_common.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
 @@ -199,7 +199,8 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
@@ -3209,20 +3222,245 @@ index 9cbe72df88ef69b07ad455ef2bbbb2cbf231293b..8a1cbee8aeed3f06fd0468eb6ed2a1a9
      config.model_reasoning_effort = turn
          .reasoning_effort()
          .or(turn.model_info().default_reasoning_level.as_ref())
+@@ -270,15 +271,63 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
+     config: &mut Config,
+     requested_model: Option<&str>,
+     requested_reasoning_effort: Option<ReasoningEffort>,
+-) -> Result<(), FunctionCallError> {
++) -> Result<Option<String>, FunctionCallError> {
+     let requested_model = requested_model.or(turn.config.agent_default_subagent_model.as_deref());
+     let requested_reasoning_effort = requested_reasoning_effort
+         .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone());
+     if requested_model.is_none() && requested_reasoning_effort.is_none() {
+-        return Ok(());
++        return Ok(None);
+     }
+ 
+     if let Some(requested_model) = requested_model {
++        let requested_model =
++            parse_spawn_agent_model_override(requested_model, &config.model_providers)?;
++        let requested_backend = requested_model
++            .provider_id
++            .as_deref()
++            .map(spawn_agent_backend_for_provider);
++        let provider_changed = requested_model
++            .provider_id
++            .as_deref()
++            .is_some_and(|provider_id| provider_id != config.model_provider_id);
++        if let Some(provider_id) = requested_model.provider_id.as_deref() {
++            let provider = config.model_providers.get(provider_id).cloned().ok_or_else(|| {
++                let mut available = config.model_providers.keys().cloned().collect::<Vec<_>>();
++                available.sort();
++                FunctionCallError::RespondToModel(format!(
++                    "Unknown model provider `{provider_id}` for spawn_agent. Available providers: {}",
++                    available.join(", ")
++                ))
++            })?;
++            config.model_provider_id = provider_id.to_string();
++            config.model_provider = provider;
++        }
++
++        if provider_changed {
++            let selected_model_info = session
++                .services
++                .models_manager
++                .get_model_info(
++                    requested_model.model.as_str(),
++                    &config.to_models_manager_config(),
++                )
++                .await;
++            config.model = Some(requested_model.model.clone());
++            if let Some(reasoning_effort) = requested_reasoning_effort {
++                if !selected_model_info.used_fallback_model_metadata {
++                    validate_spawn_agent_reasoning_effort(
++                        requested_model.model.as_str(),
++                        &selected_model_info.supported_reasoning_levels,
++                        &reasoning_effort,
++                    )?;
++                }
++                config.model_reasoning_effort = Some(reasoning_effort);
++            } else if !selected_model_info.used_fallback_model_metadata {
++                config.model_reasoning_effort = selected_model_info.default_reasoning_level;
++            }
++            return Ok(requested_backend);
++        }
++
+         let available_models = session
+             .services
+             .models_manager
+@@ -286,7 +335,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
+             .await;
+         let selected_model_name = find_spawn_agent_model_name(
+             &available_models,
+-            requested_model,
++            requested_model.model.as_str(),
+             turn.multi_agent_version,
+         )?;
+         let selected_model_info = session
+@@ -307,7 +356,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
+             config.model_reasoning_effort = selected_model_info.default_reasoning_level;
+         }
+ 
+-        return Ok(());
++        return Ok(requested_backend);
+     }
+ 
+     if let Some(reasoning_effort) = requested_reasoning_effort {
+@@ -319,7 +368,138 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
+         config.model_reasoning_effort = Some(reasoning_effort);
+     }
+ 
+-    Ok(())
++    Ok(None)
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++struct SpawnAgentModelOverride {
++    provider_id: Option<String>,
++    model: String,
++}
++
++fn parse_spawn_agent_model_override(
++    requested_model: &str,
++    model_providers: &std::collections::HashMap<
++        String,
++        codex_model_provider_info::ModelProviderInfo,
++    >,
++) -> Result<SpawnAgentModelOverride, FunctionCallError> {
++    let requested_model = requested_model.trim();
++    if requested_model.is_empty() {
++        return Err(FunctionCallError::RespondToModel(
++            "Model override for spawn_agent cannot be empty".to_string(),
++        ));
++    }
++    let Some((provider_id, model)) = requested_model.split_once('/') else {
++        return Ok(SpawnAgentModelOverride {
++            provider_id: None,
++            model: requested_model.to_string(),
++        });
++    };
++    let provider_id = provider_id.trim();
++    if !model_providers.contains_key(provider_id) {
++        return Ok(SpawnAgentModelOverride {
++            provider_id: None,
++            model: requested_model.to_string(),
++        });
++    }
++    let model = model.trim();
++    if model.is_empty() {
++        return Err(FunctionCallError::RespondToModel(
++            "Provider-qualified spawn_agent models must use `<provider>/<model>`".to_string(),
++        ));
++    }
++    Ok(SpawnAgentModelOverride {
++        provider_id: Some(provider_id.to_string()),
++        model: model.to_string(),
++    })
++}
++
++fn spawn_agent_backend_for_provider(provider_id: &str) -> String {
++    match provider_id {
++        "openai" => "gpt".to_string(),
++        provider_id => provider_id
++            .strip_prefix("agentroute-")
++            .unwrap_or(provider_id)
++            .to_string(),
++    }
++}
++
++#[cfg(test)]
++mod provider_qualified_model_tests {
++    use super::*;
++    use codex_model_provider_info::built_in_model_providers;
++
++    fn model_providers()
++    -> std::collections::HashMap<String, codex_model_provider_info::ModelProviderInfo> {
++        let mut providers = built_in_model_providers(/*openai_base_url*/ None);
++        providers.insert(
++            "agentroute-deepseek".to_string(),
++            codex_model_provider_info::ModelProviderInfo::default(),
++        );
++        providers
++    }
++
++    #[test]
++    fn parses_provider_qualified_model() {
++        assert_eq!(
++            parse_spawn_agent_model_override(
++                "agentroute-deepseek/deepseek-v4-pro",
++                &model_providers(),
++            )
++            .expect("qualified model should parse"),
++            SpawnAgentModelOverride {
++                provider_id: Some("agentroute-deepseek".to_string()),
++                model: "deepseek-v4-pro".to_string(),
++            }
++        );
++    }
++
++    #[test]
++    fn plain_model_keeps_inherited_provider() {
++        assert_eq!(
++            parse_spawn_agent_model_override("dev-gpt-6-astra", &model_providers())
++                .expect("plain model should parse"),
++            SpawnAgentModelOverride {
++                provider_id: None,
++                model: "dev-gpt-6-astra".to_string(),
++            }
++        );
++    }
++
++    #[test]
++    fn namespaced_model_with_unknown_prefix_remains_a_model() {
++        assert_eq!(
++            parse_spawn_agent_model_override("vendor/model-name", &model_providers())
++                .expect("namespaced model should parse"),
++            SpawnAgentModelOverride {
++                provider_id: None,
++                model: "vendor/model-name".to_string(),
++            }
++        );
++    }
++
++    #[test]
++    fn rejects_empty_model_and_incomplete_configured_provider() {
++        assert!(parse_spawn_agent_model_override("", &model_providers()).is_err());
++        assert!(
++            parse_spawn_agent_model_override("agentroute-deepseek/", &model_providers()).is_err()
++        );
++    }
++
++    #[test]
++    fn maps_provider_ids_to_agentroute_backends() {
++        assert_eq!(spawn_agent_backend_for_provider("openai"), "gpt");
++        assert_eq!(
++            spawn_agent_backend_for_provider("agentroute-azure"),
++            "azure"
++        );
++        assert_eq!(
++            spawn_agent_backend_for_provider("agentroute-deepseek"),
++            "deepseek"
++        );
++        assert_eq!(spawn_agent_backend_for_provider("ollama"), "ollama");
++    }
+ }
+ 
+ pub(crate) async fn apply_spawn_agent_service_tier(
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
-index 2e11d899b75768a3205d81de0055267c3846be7d..2ab09521df2528f5c3f2e2470318e180811bf2e9 100644
+index 2e11d899b7..26b02b4ded 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
-@@ -18,6 +18,8 @@ const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your
+@@ -16,8 +16,7 @@ const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and manag
+ 
+ const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
  const SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1: &str = "Agent type override for the new agent. Omit to inherit the parent agent type with a full-history fork; otherwise, `default` is used.";
- const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
-     "Model override for the new agent. Omit unless an explicit override is needed.";
-+const SPAWN_AGENT_BACKEND_OVERRIDE_DESCRIPTION: &str =
-+    "Backend override for the new agent, such as `gpt`, `azure`, or `deepseek`. Omit to inherit the parent's effective backend.";
+-const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
+-    "Model override for the new agent. Omit unless an explicit override is needed.";
++const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str = "Model override for the new agent. Omit unless an explicit override is needed. Use `<provider>/<model>` to switch providers without adding provider-specific tool arguments.";
  const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
  
  #[derive(Debug, Clone)]
-@@ -119,7 +121,6 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
+@@ -119,7 +118,6 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
                  .to_string(),
          )),
      );
@@ -3230,7 +3468,7 @@ index 2e11d899b75768a3205d81de0055267c3846be7d..2ab09521df2528f5c3f2e2470318e180
      ToolSpec::Function(ResponsesApiTool {
          name: "spawn_agent".to_string(),
          description: spawn_agent_tool_description_v2(
-@@ -234,7 +235,11 @@ pub fn create_followup_task_tool() -> ToolSpec {
+@@ -234,7 +232,11 @@ pub fn create_followup_task_tool() -> ToolSpec {
              .to_string(),
          strict: false,
          defer_loading: None,
@@ -3243,21 +3481,8 @@ index 2e11d899b75768a3205d81de0055267c3846be7d..2ab09521df2528f5c3f2e2470318e180
          output_schema: None,
      })
  }
-@@ -645,6 +650,12 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
-                     .to_string(),
-             )),
-         ),
-+        (
-+            "backend".to_string(),
-+            JsonSchema::string(Some(
-+                SPAWN_AGENT_BACKEND_OVERRIDE_DESCRIPTION.to_string(),
-+            )),
-+        ),
-         (
-             "model".to_string(),
-             JsonSchema::string(Some(
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
-index 888a11376ab08249e8280418b0eb5906dde9b29d..600b408df27547ceec61cf13240206b8a738cec6 100644
+index 888a11376a..d3d10c5e13 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
 @@ -95,6 +95,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
@@ -3268,20 +3493,25 @@ index 888a11376ab08249e8280418b0eb5906dde9b29d..600b408df27547ceec61cf13240206b8
      assert_eq!(
          properties
              .get("message")
-@@ -102,6 +103,12 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
+@@ -102,6 +103,17 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
          Some(true)
      );
      assert!(properties.contains_key("fork_turns"));
 +    assert_eq!(
-+        properties
-+            .get("backend")
-+            .and_then(|schema| schema.description.as_deref()),
-+        Some(SPAWN_AGENT_BACKEND_OVERRIDE_DESCRIPTION)
++        properties.keys().map(String::as_str).collect::<Vec<_>>(),
++        vec![
++            "agent_type",
++            "fork_turns",
++            "message",
++            "model",
++            "reasoning_effort",
++            "task_name",
++        ]
 +    );
      assert!(!properties.contains_key("items"));
      assert!(!properties.contains_key("fork_context"));
      assert_eq!(
-@@ -159,6 +166,7 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
+@@ -159,6 +171,7 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
  
      assert!(properties.contains_key("fork_context"));
      assert!(!properties.contains_key("fork_turns"));
@@ -3289,7 +3519,7 @@ index 888a11376ab08249e8280418b0eb5906dde9b29d..600b408df27547ceec61cf13240206b8
      assert_eq!(
          properties.get("agent_type"),
          Some(&JsonSchema::string(Some(format!(
-@@ -366,6 +374,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
+@@ -366,6 +379,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
          .expect("followup_task should use object params");
      assert!(properties.contains_key("target"));
      assert!(properties.contains_key("message"));
@@ -3298,7 +3528,7 @@ index 888a11376ab08249e8280418b0eb5906dde9b29d..600b408df27547ceec61cf13240206b8
          properties
              .get("message")
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
-index 1f34d69085d48b7f2c39cbeac3f18cc8d761dfb1..221a4d5e0649e7ac5487cdbc9d368bff7f4cb641 100644
+index 1f34d69085..820a59e723 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
 @@ -301,7 +301,10 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
@@ -3331,8 +3561,60 @@ index 1f34d69085d48b7f2c39cbeac3f18cc8d761dfb1..221a4d5e0649e7ac5487cdbc9d368bff
      expected.model_reasoning_effort = turn.reasoning_effort().cloned();
      expected.model_reasoning_summary = Some(turn.reasoning_summary());
      expected.developer_instructions = turn.developer_instructions.clone();
+@@ -4564,3 +4567,51 @@ async fn build_agent_resume_config_clears_base_instructions() {
+         .expect("approval policy set");
+     assert_eq!(config, expected);
+ }
++
++#[tokio::test]
++async fn spawn_agent_model_override_can_switch_providers() {
++    let (session, mut turn) = make_session_and_context().await;
++    let azure_provider = codex_model_provider_info::ModelProviderInfo {
++        name: "AgentRoute Azure".to_string(),
++        ..Default::default()
++    };
++    let deepseek_provider = codex_model_provider_info::ModelProviderInfo {
++        name: "AgentRoute DeepSeek".to_string(),
++        ..Default::default()
++    };
++    let parent_config = Arc::make_mut(&mut turn.config);
++    parent_config
++        .model_providers
++        .insert("agentroute-azure".to_string(), azure_provider.clone());
++    parent_config
++        .model_providers
++        .insert("agentroute-deepseek".to_string(), deepseek_provider.clone());
++    parent_config.model_provider_id = "agentroute-azure".to_string();
++    parent_config.model_provider = azure_provider.clone();
++    parent_config.model = Some("dev-gpt-5.6-sol".to_string());
++    turn.set_model_provider(
++        "agentroute-azure".to_string(),
++        create_model_provider(azure_provider, turn.auth_manager.clone()),
++    );
++
++    let mut child_config = build_agent_spawn_config(&session.get_base_instructions().await, &turn)
++        .expect("spawn config");
++    let requested_backend = apply_requested_spawn_agent_model_overrides(
++        &session,
++        &turn,
++        &mut child_config,
++        Some("agentroute-deepseek/deepseek-v4-pro"),
++        Some(ReasoningEffort::High),
++    )
++    .await
++    .expect("provider-qualified model override");
++
++    assert_eq!(child_config.model_provider_id, "agentroute-deepseek");
++    assert_eq!(child_config.model_provider, deepseek_provider);
++    assert_eq!(child_config.model.as_deref(), Some("deepseek-v4-pro"));
++    assert_eq!(
++        child_config.model_reasoning_effort,
++        Some(ReasoningEffort::High)
++    );
++    assert_eq!(requested_backend.as_deref(), Some("deepseek"));
++}
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
-index b82bdd6a0b8498b627972f047d715949cb9b9286..b3442ef8a6b347004f21f17e51934401cd89a037 100644
+index b82bdd6a0b..b3442ef8a6 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
 @@ -59,6 +59,10 @@ fn communication_from_tool_message(
@@ -3410,7 +3692,7 @@ index b82bdd6a0b8498b627972f047d715949cb9b9286..b3442ef8a6b347004f21f17e51934401
 +    }
  }
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs
-index 19de4d842f2829c9f95240b89d193339435f01e2..48515b9d37dc508a1d25ab35790a928f792bc26c 100644
+index 19de4d842f..48515b9d37 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs
 @@ -43,6 +43,7 @@ impl Handler {
@@ -3422,7 +3704,7 @@ index 19de4d842f2829c9f95240b89d193339435f01e2..48515b9d37dc508a1d25ab35790a928f
          )
          .await
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs
-index a88c76512580a905ebd53549e21066b50e0042fe..646e33fbdc093bf209fd3d0d1dad6ad0c305c00d 100644
+index a88c765125..646e33fbdc 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs
 @@ -55,6 +55,7 @@ pub(super) async fn handle_message_string_tool(
@@ -3445,7 +3727,7 @@ index a88c76512580a905ebd53549e21066b50e0042fe..646e33fbdc093bf209fd3d0d1dad6ad0
          mode.trigger_turn(),
      );
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs
-index 70fc7d4350eaac3afe10b9256d0840774881c340..59bdd1442f84e49276fedaaa1aad10dfbf53e4e9 100644
+index 70fc7d4350..59bdd1442f 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs
 @@ -43,6 +43,7 @@ impl Handler {
@@ -3457,21 +3739,29 @@ index 70fc7d4350eaac3afe10b9256d0840774881c340..59bdd1442f84e49276fedaaa1aad10df
          )
          .await
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
-index 41d394243f95cd92ed8ca64de371e6d02fed9f23..890add8451bdc755ca7de7e00c56c5732a610a2b 100644
+index 41d394243f..00ae4180df 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
-@@ -114,6 +114,10 @@ async fn handle_spawn_agent(
+@@ -114,6 +114,9 @@ async fn handle_spawn_agent(
      let args: SpawnAgentArgs = parse_arguments(&arguments)?;
      let fork_mode = args.fork_mode()?;
      let message = message_content(args.message)?;
 +    let routing_prompt = Some(args.task_name.clone());
 +    let inherited_model_provider = Some(turn.model_provider_id());
-+    let requested_backend = args.backend.clone();
 +    let model_explicit = args.model.is_some();
      let role_name = args
          .agent_type
          .as_deref()
-@@ -173,6 +177,10 @@ async fn handle_spawn_agent(
+@@ -125,7 +128,7 @@ async fn handle_spawn_agent(
+     let mut config =
+         build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
+     let is_full_history_fork = matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory));
+-    apply_requested_spawn_agent_model_overrides(
++    let requested_backend = apply_requested_spawn_agent_model_overrides(
+         &session,
+         turn.as_ref(),
+         &mut config,
+@@ -173,6 +176,10 @@ async fn handle_spawn_agent(
          author,
          new_agent_path.clone(),
          message,
@@ -3482,16 +3772,8 @@ index 41d394243f95cd92ed8ca64de371e6d02fed9f23..890add8451bdc755ca7de7e00c56c573
          &source,
          /*trigger_turn*/ true,
      );
-@@ -282,6 +290,7 @@ struct SpawnAgentArgs {
-     message: String,
-     task_name: String,
-     agent_type: Option<String>,
-+    backend: Option<String>,
-     model: Option<String>,
-     reasoning_effort: Option<ReasoningEffort>,
-     fork_turns: Option<String>,
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
-index 1f308ab5f349b5bfa749e98572d7d909088e6f77..17c9d7920e5b4d18d7fcc012c54c3e21f232b369 100644
+index 1f308ab5f3..17c9d7920e 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
 +++ b/codex-rs/core/src/tools/spec_plan.rs
 @@ -611,7 +611,7 @@ fn hosted_model_tool_specs(
@@ -3545,7 +3827,7 @@ index 1f308ab5f349b5bfa749e98572d7d909088e6f77..17c9d7920e5b4d18d7fcc012c54c3e21
              || turn_context
                  .config
 diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
-index c0125ad9968e3bf168778ac4f3fe2a6889efa874..645cbc5859126be091e8ac51631197467184af37 100644
+index c0125ad996..645cbc5859 100644
 --- a/codex-rs/core/src/tools/spec_plan_tests.rs
 +++ b/codex-rs/core/src/tools/spec_plan_tests.rs
 @@ -313,9 +313,12 @@ fn use_chatgpt_auth(turn: &mut TurnContext) {
@@ -3577,7 +3859,7 @@ index c0125ad9968e3bf168778ac4f3fe2a6889efa874..645cbc5859126be091e8ac5163119746
  
  struct TestNamespaceExtensionTool {
 diff --git a/codex-rs/core/tests/responses_headers.rs b/codex-rs/core/tests/responses_headers.rs
-index be184753e73442ce9f10cacf98c3d48da14982d1..0cf2ca33436f2bb2140aea804e14814695ea9906 100644
+index be184753e7..0cf2ca3343 100644
 --- a/codex-rs/core/tests/responses_headers.rs
 +++ b/codex-rs/core/tests/responses_headers.rs
 @@ -90,6 +90,8 @@ async fn responses_stream_includes_subagent_header_on_review() {
@@ -3608,7 +3890,7 @@ index be184753e73442ce9f10cacf98c3d48da14982d1..0cf2ca33436f2bb2140aea804e148146
  
      let codex_home = TempDir::new().expect("failed to create TempDir");
 diff --git a/codex-rs/core/tests/suite/client.rs b/codex-rs/core/tests/suite/client.rs
-index 79d0eb4f6da55ad0758a5b4182723c77c4a1e2a8..517b13b4ae583b3e79c178b9c68d85b6217b59b2 100644
+index 79d0eb4f6d..517b13b4ae 100644
 --- a/codex-rs/core/tests/suite/client.rs
 +++ b/codex-rs/core/tests/suite/client.rs
 @@ -1528,6 +1528,8 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
@@ -3648,7 +3930,7 @@ index 79d0eb4f6da55ad0758a5b4182723c77c4a1e2a8..517b13b4ae583b3e79c178b9c68d85b6
  
      // Init session
 diff --git a/codex-rs/core/tests/suite/client_websockets.rs b/codex-rs/core/tests/suite/client_websockets.rs
-index 4d2ba3c9264ba22b93a4a67a299d385d95402e58..901516dc2506ea3b8c96907b56974e6e196caa39 100755
+index 4d2ba3c926..901516dc25 100755
 --- a/codex-rs/core/tests/suite/client_websockets.rs
 +++ b/codex-rs/core/tests/suite/client_websockets.rs
 @@ -2691,6 +2691,8 @@ fn websocket_provider_with_connect_timeout(
@@ -3661,7 +3943,7 @@ index 4d2ba3c9264ba22b93a4a67a299d385d95402e58..901516dc2506ea3b8c96907b56974e6e
  }
  
 diff --git a/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs b/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs
-index 32ebbf29799ec2f7bc796417818eea28425482db..ad1e943baeb6151f3ce13c367243a1e8fadd6bcd 100644
+index 32ebbf2979..ad1e943bae 100644
 --- a/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs
 +++ b/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs
 @@ -82,6 +82,8 @@ async fn continue_after_stream_error() {
@@ -3674,7 +3956,7 @@ index 32ebbf29799ec2f7bc796417818eea28425482db..ad1e943baeb6151f3ce13c367243a1e8
  
      let TestCodex { codex, .. } = test_codex()
 diff --git a/codex-rs/core/tests/suite/stream_no_completed.rs b/codex-rs/core/tests/suite/stream_no_completed.rs
-index d9741d0381b742b2d49c4705029e2faffa1ad3a6..136d616c43f5ae12bea0d0e36c9bc89b15868276 100644
+index d9741d0381..136d616c43 100644
 --- a/codex-rs/core/tests/suite/stream_no_completed.rs
 +++ b/codex-rs/core/tests/suite/stream_no_completed.rs
 @@ -68,6 +68,8 @@ async fn retries_on_early_close() {
@@ -3687,7 +3969,7 @@ index d9741d0381b742b2d49c4705029e2faffa1ad3a6..136d616c43f5ae12bea0d0e36c9bc89b
  
      let TestCodex { codex, .. } = test_codex()
 diff --git a/codex-rs/ext/guardian-reviewer/src/completion.rs b/codex-rs/ext/guardian-reviewer/src/completion.rs
-index e9ecd3d4b553b16f982dad6674e08232fd1a3bec..ad150f10cf7aa217d16e198b9d3fe8b55c70deae 100644
+index e9ecd3d4b5..ad150f10cf 100644
 --- a/codex-rs/ext/guardian-reviewer/src/completion.rs
 +++ b/codex-rs/ext/guardian-reviewer/src/completion.rs
 @@ -130,6 +130,7 @@ pub fn complete_review(
@@ -3722,7 +4004,7 @@ index e9ecd3d4b553b16f982dad6674e08232fd1a3bec..ad150f10cf7aa217d16e198b9d3fe8b5
                              "guardian review failed"
                          }
 diff --git a/codex-rs/ext/guardian-reviewer/src/outcome.rs b/codex-rs/ext/guardian-reviewer/src/outcome.rs
-index 2e53da5ca669bcc160fa489a2712778065db6d19..35d9625fa0822432635c3b420646b2b38f568cf2 100644
+index 2e53da5ca6..35d9625fa0 100644
 --- a/codex-rs/ext/guardian-reviewer/src/outcome.rs
 +++ b/codex-rs/ext/guardian-reviewer/src/outcome.rs
 @@ -22,6 +22,10 @@ pub enum GuardianReviewError {
@@ -3750,7 +4032,7 @@ index 2e53da5ca669bcc160fa489a2712778065db6d19..35d9625fa0822432635c3b420646b2b3
              Self::Timeout => GuardianReviewFailureReason::Timeout,
              Self::Cancelled => GuardianReviewFailureReason::Cancelled,
 diff --git a/codex-rs/ext/guardian-reviewer/src/retry.rs b/codex-rs/ext/guardian-reviewer/src/retry.rs
-index 79d516215bbfeaba732f0480a764957423712375..44ce60f16eb0ac2d3eb157ea6cff0236230d999e 100644
+index 79d516215b..44ce60f16e 100644
 --- a/codex-rs/ext/guardian-reviewer/src/retry.rs
 +++ b/codex-rs/ext/guardian-reviewer/src/retry.rs
 @@ -82,6 +82,7 @@ async fn wait_before_guardian_retry(
@@ -3762,7 +4044,7 @@ index 79d516215bbfeaba732f0480a764957423712375..44ce60f16eb0ac2d3eb157ea6cff0236
          GuardianReviewOutcome::Error(GuardianReviewError::Session {
              error_info: Some(error),
 diff --git a/codex-rs/ext/guardian-reviewer/src/retry_tests.rs b/codex-rs/ext/guardian-reviewer/src/retry_tests.rs
-index ce335db96f16999058dc34dca5cc4429ebf90958..1817328b331de60914f48fb548e53cbe47ab4bec 100644
+index ce335db96f..1817328b33 100644
 --- a/codex-rs/ext/guardian-reviewer/src/retry_tests.rs
 +++ b/codex-rs/ext/guardian-reviewer/src/retry_tests.rs
 @@ -71,6 +71,13 @@ fn guardian_review_retry_only_retries_transient_session_and_parse_errors() {
@@ -3794,7 +4076,7 @@ index ce335db96f16999058dc34dca5cc4429ebf90958..1817328b331de60914f48fb548e53cbe
              GuardianReviewOutcome::Error(GuardianReviewError::parse(anyhow::anyhow!("parse"))),
              true,
 diff --git a/codex-rs/history/src/lib.rs b/codex-rs/history/src/lib.rs
-index 2be359013bc89c92e881c8918dfb26f723980525..92281c7c4833caa137efc89aab52a2da14a820f4 100644
+index 2be359013b..92281c7c48 100644
 --- a/codex-rs/history/src/lib.rs
 +++ b/codex-rs/history/src/lib.rs
 @@ -67,6 +67,11 @@ pub struct CodexHarnessMetadata {
@@ -3810,7 +4092,7 @@ index 2be359013bc89c92e881c8918dfb26f723980525..92281c7c4833caa137efc89aab52a2da
      #[serde(default, skip_serializing_if = "Option::is_none")]
      pub user_input_order: Option<u64>,
 diff --git a/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json b/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json
-index 6a10a9f75c19720b0863d11d7d7d80f190e8eacd..9cc8e12ae0bb78c951b07dce93f85fdb7d10e108 100644
+index 6a10a9f75c..9cc8e12ae0 100644
 --- a/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json
 +++ b/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json
 @@ -2,14 +2,153 @@
@@ -4005,7 +4287,7 @@ index 6a10a9f75c19720b0863d11d7d7d80f190e8eacd..9cc8e12ae0bb78c951b07dce93f85fdb
      "prompt",
      "session_id",
 diff --git a/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json b/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json
-index 97875c108b9345bbe5518bb1968ce12c67db7484..b1170ae38c388ae09c2fa331003f307e9a09cd3c 100644
+index 97875c108b..b1170ae38c 100644
 --- a/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json
 +++ b/codex-rs/hooks/schema/generated/user-prompt-submit.command.output.schema.json
 @@ -8,6 +8,11 @@
@@ -4065,7 +4347,7 @@ index 97875c108b9345bbe5518bb1968ce12c67db7484..b1170ae38c388ae09c2fa331003f307e
        },
        "required": [
 diff --git a/codex-rs/hooks/src/engine/command_runner_tests.rs b/codex-rs/hooks/src/engine/command_runner_tests.rs
-index d11da7765682ed849d75b57545bfe682899b8c4e..b895dd518c6f20ecf9cee8524fe6ddce17177a22 100644
+index d11da77656..b895dd518c 100644
 --- a/codex-rs/hooks/src/engine/command_runner_tests.rs
 +++ b/codex-rs/hooks/src/engine/command_runner_tests.rs
 @@ -495,6 +495,13 @@ async fn schedule(runtime: &CommandHookRuntime, handler: ConfiguredHandler, cwd:
@@ -4083,7 +4365,7 @@ index d11da7765682ed849d75b57545bfe682899b8c4e..b895dd518c6f20ecf9cee8524fe6ddce
              prompt: "test prompt".to_string(),
          })
 diff --git a/codex-rs/hooks/src/engine/output_parser.rs b/codex-rs/hooks/src/engine/output_parser.rs
-index aaefa46dc10217a5e9259b9f8ff010bfee0f7c36..1f3c0bc1af291689f417f4efd5741adc32c0f482 100644
+index aaefa46dc1..1f3c0bc1af 100644
 --- a/codex-rs/hooks/src/engine/output_parser.rs
 +++ b/codex-rs/hooks/src/engine/output_parser.rs
 @@ -51,6 +51,15 @@ pub(crate) struct UserPromptSubmitOutput {
@@ -4201,7 +4483,7 @@ index aaefa46dc10217a5e9259b9f8ff010bfee0f7c36..1f3c0bc1af291689f417f4efd5741adc
      fn permission_request_rejects_reserved_updated_input_field() {
          let parsed = parse_permission_request(
 diff --git a/codex-rs/hooks/src/events/user_prompt_submit.rs b/codex-rs/hooks/src/events/user_prompt_submit.rs
-index 9124431bc194284ef4a009c76008851a984ff319..b7e3dfceeb83ac74430293577852f2e767d97a3c 100644
+index 9124431bc1..b7e3dfceeb 100644
 --- a/codex-rs/hooks/src/events/user_prompt_submit.rs
 +++ b/codex-rs/hooks/src/events/user_prompt_submit.rs
 @@ -1,12 +1,14 @@
@@ -4534,7 +4816,7 @@ index 9124431bc194284ef4a009c76008851a984ff319..b7e3dfceeb83ac74430293577852f2e7
          handler_with_async(/*async*/ false)
      }
 diff --git a/codex-rs/hooks/src/lib.rs b/codex-rs/hooks/src/lib.rs
-index 6abc173535b23b5ee6bd057fd3f49d9b82ea7fe0..e6f5c08f332ee8a242bcd9f5b2b77523383d2a65 100644
+index 6abc173535..e6f5c08f33 100644
 --- a/codex-rs/hooks/src/lib.rs
 +++ b/codex-rs/hooks/src/lib.rs
 @@ -74,6 +74,7 @@ pub use events::session_start::StartHookTarget;
@@ -4546,7 +4828,7 @@ index 6abc173535b23b5ee6bd057fd3f49d9b82ea7fe0..e6f5c08f332ee8a242bcd9f5b2b77523
  pub use events::user_prompt_submit::UserPromptSubmitRequest;
  pub use legacy_notify::legacy_notify_json;
 diff --git a/codex-rs/hooks/src/schema.rs b/codex-rs/hooks/src/schema.rs
-index bb50807af5fc242f4fb65a20357920a9fc315a63..b263a6f0f333d4f7439726c237924f0e2f79006c 100644
+index bb50807af5..b263a6f0f3 100644
 --- a/codex-rs/hooks/src/schema.rs
 +++ b/codex-rs/hooks/src/schema.rs
 @@ -12,6 +12,8 @@ use serde_json::Value;
@@ -4646,7 +4928,7 @@ index bb50807af5fc242f4fb65a20357920a9fc315a63..b263a6f0f333d4f7439726c237924f0e
      fn subagent_context_fields_serialize_flat_and_omit_when_absent() {
          let subagent = SubagentCommandInputFields::from(Some(&SubagentHookContext {
 diff --git a/codex-rs/login/src/auth/auth_tests.rs b/codex-rs/login/src/auth/auth_tests.rs
-index 9927a604a1706b1275af057751edbb6d5fc8b47d..9a6d1f292cfeb825c90583c4b64d4312d8a5cdd8 100644
+index 9927a604a1..9a6d1f292c 100644
 --- a/codex-rs/login/src/auth/auth_tests.rs
 +++ b/codex-rs/login/src/auth/auth_tests.rs
 @@ -1955,6 +1955,46 @@ fn auth_config_from_preserves_all_fields() {
@@ -4697,7 +4979,7 @@ index 9927a604a1706b1275af057751edbb6d5fc8b47d..9a6d1f292cfeb825c90583c4b64d4312
  #[serial(codex_auth_env)]
  async fn shared_from_config_prefers_workload_identity_to_explicit_access_token() {
 diff --git a/codex-rs/login/src/auth/manager.rs b/codex-rs/login/src/auth/manager.rs
-index baf243faf652a75272bb250439933fddd4d82504..4aa6142e334816598ce86d955e79ff26abe2dc32 100644
+index baf243faf6..4aa6142e33 100644
 --- a/codex-rs/login/src/auth/manager.rs
 +++ b/codex-rs/login/src/auth/manager.rs
 @@ -2749,6 +2749,19 @@ impl AuthManager {
@@ -4721,7 +5003,7 @@ index baf243faf652a75272bb250439933fddd4d82504..4aa6142e334816598ce86d955e79ff26
      pub async fn shared_from_auth_config(
          auth_config: AuthConfig,
 diff --git a/codex-rs/login/src/auth_env_telemetry.rs b/codex-rs/login/src/auth_env_telemetry.rs
-index 86cbbfd8fea04016310093df15b84b5a0a235268..030e1aea85387762f7040b1778bffca0bf25c159 100644
+index 86cbbfd8fe..030e1aea85 100644
 --- a/codex-rs/login/src/auth_env_telemetry.rs
 +++ b/codex-rs/login/src/auth_env_telemetry.rs
 @@ -77,6 +77,8 @@ mod tests {
@@ -4734,7 +5016,7 @@ index 86cbbfd8fea04016310093df15b84b5a0a235268..030e1aea85387762f7040b1778bffca0
  
          let telemetry =
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
-index 9c27b15cc4800fbc8138423806e5e794122a211e..b86fc3764fc55362011632cd7d49a12f8e1796c3 100644
+index 9c27b15cc4..b86fc3764f 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
 +++ b/codex-rs/model-provider-info/src/lib.rs
 @@ -94,6 +94,14 @@ impl<'de> Deserialize<'de> for WireApi {
@@ -4793,7 +5075,7 @@ index 9c27b15cc4800fbc8138423806e5e794122a211e..b86fc3764fc55362011632cd7d49a12f
  }
  
 diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
-index ceeaa80e31fd6a61721f7ba43e744010f56d2c96..a03ae9e130ad85579465e5fb043880aff9fedc76 100644
+index ceeaa80e31..a03ae9e130 100644
 --- a/codex-rs/protocol/src/protocol.rs
 +++ b/codex-rs/protocol/src/protocol.rs
 @@ -495,6 +495,7 @@ pub struct TurnSettingsUpdate {
@@ -4951,7 +5233,7 @@ index ceeaa80e31fd6a61721f7ba43e744010f56d2c96..a03ae9e130ad85579465e5fb043880af
      fn session_source_from_startup_arg_normalizes_custom_values() {
          assert_eq!(
 diff --git a/codex-rs/tui/src/chatwidget.rs b/codex-rs/tui/src/chatwidget.rs
-index 3cbe36586ef8b5f5e5a34a2e1839bfabe27c8472..a008c935cc1524fd491f071088be78f03dab28ef 100644
+index 3cbe36586e..a008c935cc 100644
 --- a/codex-rs/tui/src/chatwidget.rs
 +++ b/codex-rs/tui/src/chatwidget.rs
 @@ -627,6 +627,10 @@ pub(crate) struct ChatWidget {
@@ -4966,7 +5248,7 @@ index 3cbe36586ef8b5f5e5a34a2e1839bfabe27c8472..a008c935cc1524fd491f071088be78f0
      // Remember the account's Reserve entry notice across chats and transient banner refreshes.
      luna_reserve_notice_account_id: Option<String>,
 diff --git a/codex-rs/tui/src/chatwidget/constructor.rs b/codex-rs/tui/src/chatwidget/constructor.rs
-index 3ed23be896479bfeff486bb26944dc199dc896bf..d9043d92ea4a9340adbfffcb4301651d62b35a6c 100644
+index 3ed23be896..d9043d92ea 100644
 --- a/codex-rs/tui/src/chatwidget/constructor.rs
 +++ b/codex-rs/tui/src/chatwidget/constructor.rs
 @@ -162,6 +162,9 @@ impl ChatWidget {
@@ -4980,7 +5262,7 @@ index 3ed23be896479bfeff486bb26944dc199dc896bf..d9043d92ea4a9340adbfffcb4301651d
              luna_reserve_notice_account_id: None,
              warning_display_state: WarningDisplayState::default(),
 diff --git a/codex-rs/tui/src/chatwidget/settings.rs b/codex-rs/tui/src/chatwidget/settings.rs
-index 78dac65a9df13fb895892f01fff533928b3a1cf4..ab122279adf8042503962737db705bdc13f053cb 100644
+index 78dac65a9d..ab122279ad 100644
 --- a/codex-rs/tui/src/chatwidget/settings.rs
 +++ b/codex-rs/tui/src/chatwidget/settings.rs
 @@ -545,7 +545,10 @@ impl ChatWidget {
@@ -4996,7 +5278,7 @@ index 78dac65a9df13fb895892f01fff533928b3a1cf4..ab122279adf8042503962737db705bdc
              DEFAULT_MODEL_DISPLAY_NAME
          } else {
 diff --git a/codex-rs/tui/src/chatwidget/status_surfaces.rs b/codex-rs/tui/src/chatwidget/status_surfaces.rs
-index af547ce9687fecf82fbb1adacb1eb82178e5b6f2..0eca880acaf06e6361c4fe38164c1f4508036bdd 100644
+index af547ce968..0eca880aca 100644
 --- a/codex-rs/tui/src/chatwidget/status_surfaces.rs
 +++ b/codex-rs/tui/src/chatwidget/status_surfaces.rs
 @@ -706,8 +706,10 @@ impl ChatWidget {
@@ -5062,7 +5344,7 @@ index af547ce9687fecf82fbb1adacb1eb82178e5b6f2..0eca880acaf06e6361c4fe38164c1f45
          let label = self.reasoning_display_name();
          let service_tier_label = self
 diff --git a/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs b/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
-index 6f5e038a323136d8f5b85bb38661fd70a91c59f7..f11b016492670fcccc817c7a23bba95b7c45fda2 100644
+index 6f5e038a32..f11b016492 100644
 --- a/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
 +++ b/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
 @@ -4004,7 +4004,9 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
@@ -5130,7 +5412,7 @@ index 6f5e038a323136d8f5b85bb38661fd70a91c59f7..f11b016492670fcccc817c7a23bba95b
  
  #[tokio::test]
 diff --git a/codex-rs/tui/src/chatwidget/turn_runtime.rs b/codex-rs/tui/src/chatwidget/turn_runtime.rs
-index 6d7c32cecccde684462843f3f22e1fcd53e60bb6..0de5e553d076abe9d413f8afb3cc0f1c074b8a48 100644
+index 6d7c32cecc..0de5e553d0 100644
 --- a/codex-rs/tui/src/chatwidget/turn_runtime.rs
 +++ b/codex-rs/tui/src/chatwidget/turn_runtime.rs
 @@ -9,6 +9,38 @@ const LEGACY_SAFETY_ACCESS_BLOCK_PREFIX: &str =
