@@ -42,6 +42,7 @@ class ReasonCode(str, Enum):
     PREVIOUS_TASK_INHERITANCE = "PREVIOUS_TASK_INHERITANCE"
     TASK_DEFINITION_INHERITANCE = "TASK_DEFINITION_INHERITANCE"
     MANUAL_OVERRIDE = "MANUAL_OVERRIDE"
+    REASONING_EFFORT_OVERRIDE = "REASONING_EFFORT_OVERRIDE"
     RISK_FLOOR = "RISK_FLOOR"
     SESSION_AFFINITY = "SESSION_AFFINITY"
     PROVIDER_INHERITANCE = "PROVIDER_INHERITANCE"
@@ -52,6 +53,7 @@ class ReasonCode(str, Enum):
     CLASSIFIER_FALLBACK = "CLASSIFIER_FALLBACK"
     QUOTA_LIMIT = "QUOTA_LIMIT"
     BACKEND_OVERRIDE = "BACKEND_OVERRIDE"
+    SPAWN_BACKEND_OVERRIDE = "SPAWN_BACKEND_OVERRIDE"
     BACKEND_FALLBACK = "BACKEND_FALLBACK"
     CAPACITY_WARNING = "CAPACITY_WARNING"
     CAPACITY_FALLBACK = "CAPACITY_FALLBACK"
@@ -71,6 +73,9 @@ class RouteContext(BaseModel):
     provider: str = "codex"
     current_model_provider: str = "openai"
     sticky_backend: str | None = None
+    requested_backend: str | None = None
+    requested_reasoning_effort: str | None = None
+    spawn_model_explicit: bool = False
     inherited_backend: str | None = None
     route_scope: str = "root"
     agent_id: str | None = None
@@ -99,6 +104,7 @@ class RouteDecision(BaseModel):
     tier: Tier
     model: str
     reasoning_effort: str | None = None
+    requested_reasoning_effort: str | None = None
     confidence: float = Field(ge=0, le=1)
     raw_score: float
     reason_codes: list[ReasonCode]

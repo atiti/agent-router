@@ -56,6 +56,9 @@ def invoke(
     account_id=None,
     rate_limits=None,
     ordinary_usage_allowed=None,
+    inherited_model_provider=None,
+    requested_backend=None,
+    spawn_model_explicit=False,
 ):
     source = io.StringIO(
         json.dumps(
@@ -64,6 +67,9 @@ def invoke(
                 "turn_id": "turn-1",
                 "model": model,
                 "model_provider": model_provider,
+                "inherited_model_provider": inherited_model_provider,
+                "requested_backend": requested_backend,
+                "spawn_model_explicit": spawn_model_explicit,
                 "prompt": prompt,
                 "subagent": subagent,
                 "agent_id": flat_agent_id,
@@ -78,6 +84,26 @@ def invoke(
     sink = io.StringIO()
     assert codex_user_prompt_submit(source, sink, config=config, store=store) == 0
     return json.loads(sink.getvalue())
+
+
+def test_prompt_reasoning_effort_override_works_with_backend_and_tier(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    store = AuditStore(tmp_path / "audit.db")
+
+    output = invoke(config, store, "@azure @ultra @smart review the policy boundary")
+
+    specific = output["hookSpecificOutput"]
+    assert specific["modelProvider"] == "agentroute-azure"
+    assert specific["reasoningEffort"] == "ultra"
+    assert specific["stripPromptPrefixBytes"] == len(b"@azure @ultra @smart ")
+    assert "REASONING_EFFORT_OVERRIDE" in store.latest("same-thread")["reason_codes"]
+    receipt = json.loads(store.latest("same-thread")["selection_receipt"])
+    assert receipt["selected"]["reasoning_effort"] == "ultra"
+    assert receipt["policy"]["reasoning_effort_override"] == "ultra"
 
 
 def write_profile_auth(home, account_id):
@@ -905,6 +931,7 @@ def test_explicit_subagent_model_uses_its_uniquely_configured_backend(
         "Investigate this implementation",
         model="gpt-6-astra",
         model_provider="agentroute-azure",
+        spawn_model_explicit=True,
         flat_agent_id="child-a",
     )
 
@@ -927,6 +954,7 @@ def test_explicit_subagent_model_can_cross_from_inherited_azure_to_gpt(
         "Review the implementation",
         model="gpt-5.6-sol",
         model_provider="agentroute-azure",
+        spawn_model_explicit=True,
         flat_agent_id="child-gpt",
     )
 
@@ -950,10 +978,148 @@ def test_ambiguous_subagent_model_preserves_inherited_provider(tmp_path, monkeyp
         "Review the implementation",
         model="gpt-5.6-sol",
         model_provider="agentroute-azure",
+        spawn_model_explicit=True,
         flat_agent_id="child-azure",
     )
 
     assert output["hookSpecificOutput"]["modelProvider"] == "agentroute-azure"
+
+
+def test_subagent_uses_explicit_inherited_provider_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "Review the implementation",
+        model="gpt-5.6-sol",
+        model_provider="openai",
+        inherited_model_provider="agentroute-azure",
+        flat_agent_id="child-azure",
+    )
+
+    assert output["hookSpecificOutput"]["modelProvider"] == "agentroute-azure"
+
+
+def test_subagent_explicit_backend_crosses_provider_and_becomes_sticky(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    config.backends["deepseek"].enabled = True
+    store = AuditStore(tmp_path / "audit.db")
+
+    first = invoke(
+        config,
+        store,
+        "Review the implementation",
+        model="dev-gpt-5.6-sol",
+        model_provider="agentroute-azure",
+        inherited_model_provider="agentroute-azure",
+        requested_backend="deepseek",
+        flat_agent_id="child-deepseek",
+    )
+    followup = invoke(
+        config,
+        store,
+        "Continue",
+        model_provider="agentroute-azure",
+        inherited_model_provider="agentroute-azure",
+        flat_agent_id="child-deepseek",
+    )
+
+    assert first["hookSpecificOutput"]["modelProvider"] == "agentroute-deepseek"
+    assert followup["hookSpecificOutput"]["modelProvider"] == "agentroute-deepseek"
+    assert store.route_preference("same-thread", "subagent", "child-deepseek") == "deepseek"
+    assert "SPAWN_BACKEND_OVERRIDE" in store.rows_since()[0]["reason_codes"]
+
+
+def test_inherited_model_is_not_mistaken_for_explicit_provider_jump(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "Review the implementation",
+        model="gpt-5.6-sol",
+        model_provider="openai",
+        inherited_model_provider="agentroute-azure",
+        spawn_model_explicit=False,
+        flat_agent_id="child-azure",
+    )
+
+    assert output["hookSpecificOutput"]["modelProvider"] == "agentroute-azure"
+
+
+def test_unknown_spawn_backend_is_blocked_without_silent_gpt_fallback(tmp_path):
+    config = default_config()
+    config.enabled = True
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "Review the implementation",
+        requested_backend="missing-provider",
+        flat_agent_id="child-invalid",
+    )
+
+    assert output["continue"] is False
+    assert "explicit child backend missing-provider is unavailable" in output["stopReason"]
+
+
+def test_explicit_spawn_model_must_exist_on_requested_backend(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    config.backends["deepseek"].enabled = True
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "Review the implementation",
+        model="gpt-6-astra",
+        model_provider="agentroute-azure",
+        inherited_model_provider="agentroute-azure",
+        requested_backend="deepseek",
+        spawn_model_explicit=True,
+        flat_agent_id="child-invalid-model",
+    )
+
+    assert output["continue"] is False
+    assert "explicit child model gpt-6-astra is not configured for backend deepseek" in output[
+        "stopReason"
+    ]
+
+
+def test_root_turn_ignores_spawn_only_backend_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["deepseek"].enabled = True
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "Review the implementation",
+        requested_backend="deepseek",
+    )
+
+    assert output["hookSpecificOutput"]["modelProvider"] == "openai"
 
 
 def test_flat_codex_subagent_fields_are_routed_and_audited(tmp_path):

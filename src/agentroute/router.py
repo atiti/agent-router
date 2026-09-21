@@ -53,10 +53,21 @@ class Router:
             self.classifier = OpenAICompatibleClassifier(classifier_config)
 
     def route(self, context: RouteContext) -> RouteDecision:
-        override, backend_override, _ = route_overrides(
+        override, backend_override, parsed_reasoning_effort, _ = route_overrides(
             context.latest_prompt, self.config.backends
         )
+        reasoning_effort_override = (
+            context.requested_reasoning_effort or parsed_reasoning_effort
+        )
         contributions = extract_signals(context)
+        if reasoning_effort_override:
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.REASONING_EFFORT_OVERRIDE,
+                    weight=0,
+                    detail=f"explicit @{reasoning_effort_override} reasoning override",
+                )
+            )
         raw_score = sum(item.weight for item in contributions)
         inherited = False
         task_context_used = False
@@ -182,6 +193,7 @@ class Router:
         backend_name = (
             backend_override
             or context.sticky_backend
+            or context.requested_backend
             or context.inherited_backend
             or self.config.routing.backend_by_tier.get(str(proposed), "gpt")
         )
@@ -202,6 +214,14 @@ class Router:
                     detail=f"continued explicit {context.sticky_backend} session route",
                 )
             )
+        elif context.requested_backend:
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.SPAWN_BACKEND_OVERRIDE,
+                    weight=0,
+                    detail=f"explicit child {context.requested_backend} backend override",
+                )
+            )
         elif context.inherited_backend:
             contributions.append(
                 ScoreContribution(
@@ -217,13 +237,28 @@ class Router:
             or not backend.enabled
             or not backend_readiness(self.config, backend_name)[0]
         )
+        explicit_child_backend_unavailable = bool(
+            context.requested_backend and backend_unavailable
+        )
+        explicit_child_model_mismatch = bool(
+            context.requested_backend
+            and context.spawn_model_explicit
+            and backend is not None
+            and context.current_model
+            and context.current_model
+            not in {target.model for target in backend.tiers.values()}
+        )
         unavailable_requested_backend: str | None = None
         unavailable_locked = False
         if backend_unavailable:
             unavailable_requested_backend = backend_name
-            unavailable_locked = bool(backend_override or context.sticky_backend)
+            unavailable_locked = bool(
+                backend_override or context.sticky_backend or context.requested_backend
+            )
             selected_ready: str | None = None
-            if not unavailable_locked or not self.config.capacity.enabled:
+            if not unavailable_locked or (
+                not self.config.capacity.enabled and not context.requested_backend
+            ):
                 candidates = (
                     fallback_chain(self.config, backend_name)
                     if self.config.capacity.enabled
@@ -270,6 +305,7 @@ class Router:
             backend_name = (
                 backend_override
                 or context.sticky_backend
+                or context.requested_backend
                 or context.inherited_backend
                 or self.config.routing.backend_by_tier.get(str(proposed), "gpt")
             )
@@ -309,8 +345,42 @@ class Router:
         capacity_detail = capacity.detail
         capacity_trigger = capacity.trigger
         capacity_status = capacity.status
-        capacity_locked = bool(backend_override or context.sticky_backend)
-        if unavailable_locked and self.config.capacity.enabled:
+        capacity_locked = bool(
+            backend_override or context.sticky_backend or context.requested_backend
+        )
+        if explicit_child_model_mismatch:
+            capacity_blocked = True
+            capacity_status = "blocked"
+            capacity_trigger = "spawn_model_backend_mismatch"
+            capacity_requested_backend = context.requested_backend
+            capacity_detail = (
+                f"explicit child model {context.current_model} is not configured for "
+                f"backend {context.requested_backend}"
+            )
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.CAPACITY_BLOCKED,
+                    weight=0,
+                    detail=capacity_detail,
+                )
+            )
+        elif explicit_child_backend_unavailable:
+            capacity_blocked = True
+            capacity_status = "blocked"
+            capacity_trigger = "spawn_backend_unavailable"
+            capacity_requested_backend = unavailable_requested_backend
+            capacity_detail = (
+                f"explicit child backend {unavailable_requested_backend} is unavailable. "
+                "Choose a configured, ready backend or omit backend to inherit the parent."
+            )
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.CAPACITY_BLOCKED,
+                    weight=0,
+                    detail=capacity_detail,
+                )
+            )
+        elif unavailable_locked and self.config.capacity.enabled:
             capacity_blocked = True
             capacity_status = "blocked"
             capacity_trigger = "backend_unavailable"
@@ -521,7 +591,7 @@ class Router:
                 "model": target.model,
                 "backend": backend_name,
                 "model_provider": backend.codex_provider,
-                "reasoning_effort": target.reasoning_effort,
+                "reasoning_effort": reasoning_effort_override or target.reasoning_effort,
             },
             "capacity": {
                 "status": capacity_status,
@@ -534,6 +604,7 @@ class Router:
             "policy": {
                 "max_tier": str(max_tier),
                 "risk_floor_applied": risk_floor_applied,
+                "reasoning_effort_override": reasoning_effort_override,
             },
             "context": {
                 "previous_context_sent": previous_context_sent,
@@ -546,7 +617,8 @@ class Router:
         return RouteDecision(
             tier=proposed,
             model=target.model,
-            reasoning_effort=target.reasoning_effort,
+            reasoning_effort=reasoning_effort_override or target.reasoning_effort,
+            requested_reasoning_effort=reasoning_effort_override,
             confidence=confidence,
             raw_score=round(raw_score, 2),
             reason_codes=reason_codes(contributions),
@@ -554,7 +626,9 @@ class Router:
             provider=context.provider,
             backend=backend_name,
             model_provider=backend.codex_provider,
-            sticky_backend=(backend_override or context.sticky_backend),
+            sticky_backend=(
+                backend_override or context.sticky_backend or context.requested_backend
+            ),
             route_scope=context.route_scope,
             agent_id=context.agent_id,
             session_id=context.session_id,

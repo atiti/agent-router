@@ -125,6 +125,16 @@ def test_mechanical_task_downgrades_to_fast():
     assert ReasonCode.MECHANICAL_TASK in decision.reason_codes
 
 
+def test_reasoning_effort_prefix_preserves_tier_and_is_audited():
+    decision = route("@ultra rename the label", current_tier=Tier.NORMAL)
+
+    assert decision.tier is Tier.FAST
+    assert decision.reasoning_effort == "ultra"
+    assert decision.requested_reasoning_effort == "ultra"
+    assert ReasonCode.REASONING_EFFORT_OVERRIDE in decision.reason_codes
+    assert decision.selection_receipt["policy"]["reasoning_effort_override"] == "ultra"
+
+
 def test_read_only_issue_comment_retrieval_routes_to_fast():
     decision = route(
         "pull the latest comment from the issue owner: "

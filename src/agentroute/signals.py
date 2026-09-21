@@ -71,6 +71,10 @@ CONTEXT_FOLLOWUP = re.compile(
     re.IGNORECASE,
 )
 MANUAL = re.compile(r"^\s*@(?P<tier>fast|normal|smart|max|auto)\b[: ]*", re.I)
+REASONING_EFFORT = re.compile(
+    r"^\s*@(?P<effort>none|minimal|low|medium|high|xhigh|ultra|persistent)\b[: ]*",
+    re.I,
+)
 
 
 def _add(
@@ -200,15 +204,17 @@ def _backend_manual(backends: Iterable[str] | None) -> re.Pattern[str] | None:
 
 def route_overrides(
     prompt: str, backends: Iterable[str] | None = None
-) -> tuple[str | None, str | None, str]:
-    """Parse tier/backend prefixes in either order while preserving the task text."""
+) -> tuple[str | None, str | None, str | None, str]:
+    """Parse tier, backend, and reasoning prefixes in any order."""
     tier: str | None = None
     backend: str | None = None
+    reasoning_effort: str | None = None
     remaining = prompt
     backend_manual = _backend_manual(backends)
-    for _ in range(2):
+    for _ in range(3):
         tier_match = MANUAL.match(remaining)
         backend_match = backend_manual.match(remaining) if backend_manual else None
+        effort_match = REASONING_EFFORT.match(remaining)
         if tier_match and tier is None:
             tier = tier_match.group("tier").lower()
             remaining = remaining[tier_match.end() :].lstrip()
@@ -217,8 +223,12 @@ def route_overrides(
             backend = backend_match.group("backend").lower()
             remaining = remaining[backend_match.end() :].lstrip()
             continue
+        if effort_match and reasoning_effort is None:
+            reasoning_effort = effort_match.group("effort").lower()
+            remaining = remaining[effort_match.end() :].lstrip()
+            continue
         break
-    return tier, backend, remaining
+    return tier, backend, reasoning_effort, remaining
 
 
 def is_confirmation(prompt: str) -> bool:

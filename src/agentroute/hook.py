@@ -44,7 +44,7 @@ def _subagent_identity(payload: dict[str, Any]) -> tuple[str, str | None]:
 
 
 def _unique_backend_for_model(config: AppConfig, model: str) -> str | None:
-    """Resolve a model to a backend only when the configured mapping is unambiguous."""
+    """Resolve an explicitly requested model to an unambiguous configured backend."""
     matches = {
         name
         for name, backend in config.backends.items()
@@ -78,7 +78,7 @@ def _apply_profile_selection(
     decision.backend = "gpt"
     decision.model_provider = backend.codex_provider
     decision.model = target.model
-    decision.reasoning_effort = target.reasoning_effort
+    decision.reasoning_effort = decision.requested_reasoning_effort or target.reasoning_effort
     decision.capacity_status = selection.selected.capacity.status
     decision.capacity_detail = (
         f"account {selection.selected.name}: {selection.selected.capacity.detail}"
@@ -109,7 +109,7 @@ def _apply_profile_selection(
         "model": target.model,
         "backend": "gpt",
         "model_provider": backend.codex_provider,
-        "reasoning_effort": target.reasoning_effort,
+        "reasoning_effort": decision.reasoning_effort,
     }
     decision.selection_receipt["chatgpt_account"] = {
         "name": selection.selected.name,
@@ -142,18 +142,30 @@ def codex_user_prompt_submit(
         prompt = str(payload.get("prompt", ""))
         route_scope, agent_id = _subagent_identity(payload)
         previous_tier = store.previous_tier(session_id, route_scope, agent_id)
-        tier_override, backend_override, routed_prompt = route_overrides(
+        tier_override, backend_override, reasoning_effort_override, routed_prompt = route_overrides(
             prompt, config.backends
         )
         sticky_backend = store.route_preference(session_id, route_scope, agent_id)
+        requested_backend = (
+            str(payload.get("requested_backend"))
+            if route_scope == "subagent" and payload.get("requested_backend")
+            else None
+        )
+        spawn_model_explicit = bool(
+            route_scope == "subagent" and payload.get("spawn_model_explicit") is True
+        )
         inherited_backend = None
         if route_scope == "subagent" and sticky_backend is None:
             inherited_backend = store.previous_backend(session_id, route_scope, agent_id)
-            if inherited_backend is None:
+            if inherited_backend is None and spawn_model_explicit:
                 inherited_backend = _unique_backend_for_model(config, current_model)
             if inherited_backend is None:
                 inherited_backend = _backend_for_model_provider(
-                    config, str(payload.get("model_provider", "openai"))
+                    config,
+                    str(
+                        payload.get("inherited_model_provider")
+                        or payload.get("model_provider", "openai")
+                    ),
                 )
         previous_capacity_status, previous_capacity_backend = store.previous_capacity(
             session_id, route_scope, agent_id
@@ -165,6 +177,7 @@ def codex_user_prompt_submit(
             sticky_backend = store.previous_backend(session_id, route_scope, agent_id)
         if tier_override == "auto":
             sticky_backend = None
+            requested_backend = None
             inherited_backend = None
         elif backend_override:
             sticky_backend = backend_override
@@ -215,6 +228,9 @@ def codex_user_prompt_submit(
             agent_id=agent_id,
             latest_prompt=routing_input,
             sticky_backend=sticky_backend,
+            requested_backend=requested_backend,
+            requested_reasoning_effort=reasoning_effort_override,
+            spawn_model_explicit=spawn_model_explicit,
             inherited_backend=inherited_backend,
             current_model=current_model,
             current_tier=current_tier,

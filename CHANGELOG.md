@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.36 — 2026-09-21
+
+- Complete subagent provider inheritance with typed, ephemeral routing metadata carried from the
+  Codex spawn boundary into the child's first `UserPromptSubmit` hook. Children now inherit the
+  parent's effective provider without inferring it from an already rewritten model alias.
+- Add an optional `backend` field to Codex's v2 `spawn_agent` tool so one child can explicitly use
+  another configured provider while the parent and siblings keep their own routes. The selected
+  backend becomes affinity for that child's follow-up turns only.
+- Fail closed with actionable messages when a requested child backend is unavailable or an
+  explicitly requested child model is not configured for that backend. Spawn-only metadata stays
+  out of serialized transcripts, generated public API schemas, and model-visible history.
+- Add prompt-level reasoning effort overrides. Prefix `@ultra` (or another supported effort) with
+  any provider and tier, such as `@azure @ultra`, to retain the selected route while explicitly
+  setting that turn's request effort. The override is visible in the route notice and audit receipt.
+
 ## 0.5.35 — 2026-09-21
 
 - Preserve the parent turn's effective provider on a subagent's first routed turn, while keeping

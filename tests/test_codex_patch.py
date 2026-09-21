@@ -8,6 +8,7 @@ def test_native_patch_is_packaged():
     content = "\n".join(path.read_text() for path in patch_paths())
 
     assert "reasoningEffort" in content
+    assert '"ultra" => ReasoningEffortConfig::Ultra' in content
     assert "settings_updated" in content
     assert "UserPromptSubmit" in content
     assert "MODEL ROUTE" in content
@@ -52,6 +53,10 @@ def test_native_patch_is_packaged():
     assert "not added to the model's input history" in content
     assert "routing_prompt" in content
     assert "Some(args.task_name.clone())" in content
+    assert "routing_inherited_model_provider" in content
+    assert "routing_requested_backend" in content
+    assert "routing_model_explicit" in content
+    assert "backend: Option<String>" in content
     assert '!properties.contains_key("routing_prompt")' in content
     assert "response_input_serialization_excludes_ephemeral_routing_prompt" in content
     assert "encrypted_subagent_input_uses_ephemeral_routing_prompt" in content
@@ -119,7 +124,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v32" in installer
+    assert "provider-routing-v33" in installer
     assert "chatgpt_profile_home" in installer
     assert "ordinary_usage_allowed" in installer
     assert "codex-desktop-route-notice.patch" in installer
@@ -147,6 +152,10 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert 'version = "0.155.0-alpha.2.6"' in installer
     assert "Some(args.task_name.clone())" in installer
     assert '\"routing_prompt\".to_string()' in installer
+    assert "routing_inherited_model_provider" in installer
+    assert "routing_requested_backend" in installer
+    assert "routing_model_explicit" in installer
+    assert "backend: Option<String>" in installer
     same_host_guard = (
         'AGENTROUTE_SOURCE_CODE_MODE_HOST" != "$AGENTROUTE_BIN_DIR/codex-code-mode-host'
     )
