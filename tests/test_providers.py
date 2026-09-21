@@ -3,7 +3,13 @@ import os
 import pytest
 import yaml
 
-from agentroute.config import default_config, load_config, model_capabilities
+from agentroute.config import (
+    ExecutionBackendConfig,
+    ModelTarget,
+    default_config,
+    load_config,
+    model_capabilities,
+)
 from agentroute.providers import (
     END_MARKER,
     START_MARKER,
@@ -39,6 +45,51 @@ def test_sync_codex_providers_is_idempotent_and_never_writes_keys(tmp_path):
     assert "secret" not in first.lower()
 
 
+def test_sync_custom_provider_preserves_optional_auth_and_safe_tools(tmp_path):
+    path = tmp_path / "config.toml"
+    config = default_config()
+    config.backends["ollama"] = ExecutionBackendConfig(
+        enabled=True,
+        codex_provider="agentroute-ollama",
+        display_name="Local Ollama",
+        base_url="http://127.0.0.1:11434/v1",
+        tool_compatibility="functions_and_apply_patch",
+        tiers={
+            tier: ModelTarget(model="qwen3-coder")
+            for tier in ("fast", "normal", "smart", "max")
+        },
+    )
+    config.backends["gateway"] = ExecutionBackendConfig(
+        enabled=True,
+        codex_provider="agentroute-gateway",
+        display_name="Private Gateway",
+        base_url="https://models.example.test/v1",
+        api_key_env="PRIVATE_GATEWAY_KEY",
+        tiers={
+            tier: ModelTarget(model="gateway-model")
+            for tier in ("fast", "normal", "smart", "max")
+        },
+    )
+
+    sync_codex_providers(config, path, backup=False)
+
+    rendered = path.read_text(encoding="utf-8")
+    assert "[model_providers.agentroute-ollama]" in rendered
+    assert 'base_url = "http://127.0.0.1:11434/v1"' in rendered
+    assert 'tool_compatibility = "functions_and_apply_patch"' in rendered
+    assert "[model_providers.agentroute-gateway]" in rendered
+    assert 'env_key = "PRIVATE_GATEWAY_KEY"' in rendered
+
+
+def test_sync_codex_providers_uses_active_codex_home(tmp_path, monkeypatch):
+    active_home = tmp_path / "codex-profile"
+    monkeypatch.setenv("CODEX_HOME", str(active_home))
+
+    written, _ = sync_codex_providers(default_config(), backup=False)
+
+    assert written == active_home / "config.toml"
+
+
 def test_explicit_review_model_overrides_fast_default(tmp_path):
     path = tmp_path / "config.toml"
     config = default_config()
@@ -71,6 +122,26 @@ def test_capability_registry_declares_agent_tool_safety_and_pricing():
     assert deepseek.tool_calling == "apply_patch_only"
     assert deepseek.context_window == 128_000
     assert deepseek.pricing_model == "deepseek-flash"
+
+
+def test_custom_backend_capability_defaults_safe_and_can_be_explicitly_validated():
+    config = default_config()
+    config.backends["ollama"] = ExecutionBackendConfig(
+        enabled=True,
+        codex_provider="agentroute-ollama",
+        display_name="Local Ollama",
+        base_url="http://127.0.0.1:11434/v1",
+        tool_compatibility="functions_and_apply_patch",
+        tiers={
+            tier: ModelTarget(model="qwen3-coder")
+            for tier in ("fast", "normal", "smart", "max")
+        },
+    )
+
+    assert model_capabilities(config, "ollama", "qwen3-coder").tool_calling == "apply_patch_only"
+
+    config.backends["ollama"].tool_compatibility = "full"
+    assert model_capabilities(config, "ollama", "qwen3-coder").tool_calling == "full"
 
 
 def test_azure_deployment_prefix_resolves_capabilities_and_pricing_alias(tmp_path):

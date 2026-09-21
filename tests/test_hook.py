@@ -4,7 +4,12 @@ from unittest.mock import patch
 
 from agentroute.audit import AuditStore
 from agentroute.capacity import CapacityState
-from agentroute.config import SubscriptionProfileConfig, default_config
+from agentroute.config import (
+    ExecutionBackendConfig,
+    ModelTarget,
+    SubscriptionProfileConfig,
+    default_config,
+)
 from agentroute.hook import codex_stop, codex_user_prompt_submit
 from agentroute.profiles import ProfileStatus, reviewer_fallback_profiles
 
@@ -684,6 +689,30 @@ def test_explicit_backend_is_sticky_and_directive_is_hidden_from_model(tmp_path,
     assert second["hookSpecificOutput"]["stripProviderState"] is True
     assert "stripPromptPrefixBytes" not in second["hookSpecificOutput"]
     assert "SESSION_AFFINITY" in store.latest("same-thread")["reason_codes"]
+
+
+def test_custom_backend_prefix_is_sticky_and_hidden_from_model(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.backends["ollama"] = ExecutionBackendConfig(
+        enabled=True,
+        codex_provider="agentroute-ollama",
+        display_name="Local Ollama",
+        base_url="http://127.0.0.1:11434/v1",
+        tool_compatibility="functions_and_apply_patch",
+        tiers={
+            tier: ModelTarget(model="qwen3-coder")
+            for tier in ("fast", "normal", "smart", "max")
+        },
+    )
+    store = AuditStore(tmp_path / "audit.db")
+
+    first = invoke(config, store, "@ollama check status and eta")
+    second = invoke(config, store, "continue with the check")
+
+    assert first["hookSpecificOutput"]["modelProvider"] == "agentroute-ollama"
+    assert first["hookSpecificOutput"]["stripPromptPrefixBytes"] == len("@ollama ")
+    assert second["hookSpecificOutput"]["modelProvider"] == "agentroute-ollama"
 
 
 def test_auto_clears_explicit_backend_affinity(tmp_path, monkeypatch):

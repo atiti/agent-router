@@ -186,17 +186,29 @@ def prompt_override(prompt: str) -> tuple[str | None, str]:
     return match.group("tier").lower(), prompt[match.end() :].lstrip()
 
 
-BACKEND_MANUAL = re.compile(r"^\s*@(?P<backend>gpt|azure|deepseek)\b", re.IGNORECASE)
+def _backend_manual(backends: Iterable[str] | None) -> re.Pattern[str] | None:
+    """Build a prefix matcher from configured backend names."""
+    if backends is None:
+        names = ("gpt", "azure", "deepseek")
+    else:
+        names = tuple(str(name) for name in backends)
+    if not names:
+        return None
+    choices = "|".join(sorted((re.escape(name) for name in names), key=len, reverse=True))
+    return re.compile(rf"^\s*@(?P<backend>{choices})\b", re.IGNORECASE)
 
 
-def route_overrides(prompt: str) -> tuple[str | None, str | None, str]:
+def route_overrides(
+    prompt: str, backends: Iterable[str] | None = None
+) -> tuple[str | None, str | None, str]:
     """Parse tier/backend prefixes in either order while preserving the task text."""
     tier: str | None = None
     backend: str | None = None
     remaining = prompt
+    backend_manual = _backend_manual(backends)
     for _ in range(2):
         tier_match = MANUAL.match(remaining)
-        backend_match = BACKEND_MANUAL.match(remaining)
+        backend_match = backend_manual.match(remaining) if backend_manual else None
         if tier_match and tier is None:
             tier = tier_match.group("tier").lower()
             remaining = remaining[tier_match.end() :].lstrip()

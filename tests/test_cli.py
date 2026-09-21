@@ -61,6 +61,95 @@ def test_backend_default_rejects_unready_backend(tmp_path, monkeypatch):
     assert set(load_config(path).routing.backend_by_tier.values()) == {"gpt"}
 
 
+def test_backend_add_creates_credentialless_ollama_backend(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    codex_config = tmp_path / "codex" / "config.toml"
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEX_HOME", str(codex_config.parent))
+
+    result = runner.invoke(
+        app,
+        [
+            "backend-add",
+            "ollama",
+            "--base-url",
+            "http://127.0.0.1:11434/v1",
+            "--model",
+            "qwen3-coder:30b",
+            "--display-name",
+            "Local Ollama",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    config = load_config(config_path)
+    backend = config.backends["ollama"]
+    assert backend.enabled
+    assert backend.api_key_env is None
+    assert backend.codex_provider == "agentroute-ollama"
+    assert backend.tiers["smart"].model == "qwen3-coder:30b"
+    assert backend.tool_compatibility == "functions_and_apply_patch"
+    rendered = codex_config.read_text(encoding="utf-8")
+    assert "[model_providers.agentroute-ollama]" in rendered
+    assert "Use it with `agentroute backend-route fast ollama`" in result.output
+
+
+def test_backend_add_supports_custom_tiers_and_api_key(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+
+    result = runner.invoke(
+        app,
+        [
+            "backend-add",
+            "private-gateway",
+            "--base-url",
+            "https://models.example.test/v1",
+            "--model",
+            "default-model",
+            "--smart-model",
+            "reasoning-model",
+            "--api-key-env",
+            "PRIVATE_GATEWAY_KEY",
+            "--tool-compatibility",
+            "full",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    backend = load_config(config_path).backends["private-gateway"]
+    assert backend.tiers["smart"].model == "reasoning-model"
+    assert backend.api_key_env == "PRIVATE_GATEWAY_KEY"
+    assert backend.tool_compatibility == "full"
+    assert "backend-credential-import" in result.output
+    assert "private-gateway SOURCE_ENV" in result.output
+
+
+def test_backend_add_rejects_non_responses_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(tmp_path / "config.yaml"))
+
+    result = runner.invoke(
+        app,
+        ["backend-add", "ollama", "--base-url", "http://127.0.0.1:11434", "--model", "qwen"],
+    )
+
+    assert result.exit_code == 2
+    assert "must end in /v1" in result.output
+
+
+def test_backend_add_rejects_routing_directive_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(tmp_path / "config.yaml"))
+
+    result = runner.invoke(
+        app,
+        ["backend-add", "auto", "--base-url", "http://127.0.0.1:11434/v1", "--model", "qwen"],
+    )
+
+    assert result.exit_code == 2
+    assert "reserved for routing directives" in result.output
+
+
 def test_capacity_commands_persist_guardrails_and_keep_profiles_isolated(tmp_path, monkeypatch):
     path = tmp_path / "config.yaml"
     profile_home = tmp_path / "codex-personal"

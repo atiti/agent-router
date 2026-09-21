@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,7 @@ from .classifier import (
 )
 from .codex_patch import apply_patch, build_codex, install_binary
 from .config import (
+    ExecutionBackendConfig,
     ModelTarget,
     SubscriptionProfileConfig,
     config_path,
@@ -1139,7 +1141,7 @@ def classifier_disable_command() -> None:
 
 @app.command("backend-enable")
 def backend_enable_command(
-    name: str = typer.Argument(..., help="Backend name: gpt, azure, or deepseek."),
+    name: str = typer.Argument(..., help="Configured backend name."),
     base_url: str | None = typer.Option(None, help="Responses API base URL."),
     fast_model: str | None = typer.Option(None),
     normal_model: str | None = typer.Option(None),
@@ -1195,6 +1197,94 @@ def backend_enable_command(
             )
 
 
+BACKEND_NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+API_KEY_ENV = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+@app.command("backend-add")
+def backend_add_command(
+    name: str = typer.Argument(..., help="Lowercase backend name used as @NAME."),
+    base_url: str = typer.Option(..., help="OpenAI Responses-compatible base URL ending in /v1."),
+    model: str = typer.Option(..., help="Default model for every routing tier."),
+    fast_model: str | None = typer.Option(None, help="Override the FAST model."),
+    normal_model: str | None = typer.Option(None, help="Override the NORMAL model."),
+    smart_model: str | None = typer.Option(None, help="Override the SMART model."),
+    max_model: str | None = typer.Option(None, help="Override the MAX model."),
+    display_name: str | None = typer.Option(None, help="Human-readable provider name."),
+    api_key_env: str | None = typer.Option(
+        None, help="Optional environment variable holding a bearer token."
+    ),
+    api_key_header: str = typer.Option(
+        "authorization", help="Credential header: authorization or api-key."
+    ),
+    tool_compatibility: str = typer.Option(
+        "functions_and_apply_patch",
+        help="functions_and_apply_patch (safe default) or full (only after validation).",
+    ),
+    review_model: str | None = typer.Option(
+        None, help="Dedicated automatic-approval model; defaults to FAST."
+    ),
+) -> None:
+    """Add an OpenAI Responses-compatible backend, including local endpoints."""
+    normalized_name = name.lower()
+    if not BACKEND_NAME.fullmatch(normalized_name):
+        raise typer.BadParameter(
+            "backend name must be lowercase letters, digits, or hyphens and start with a letter"
+        )
+    if normalized_name in {"gpt", "azure", "deepseek"}:
+        raise typer.BadParameter(f"{normalized_name} is built in; use backend-enable instead")
+    if normalized_name in {"fast", "normal", "smart", "max", "auto"}:
+        raise typer.BadParameter(f"{normalized_name} is reserved for routing directives")
+    if not base_url.rstrip().endswith("/v1"):
+        raise typer.BadParameter("--base-url must end in /v1")
+    if api_key_header.lower() not in {"authorization", "api-key"}:
+        raise typer.BadParameter("--api-key-header must be authorization or api-key")
+    if tool_compatibility not in {"functions_and_apply_patch", "full"}:
+        raise typer.BadParameter(
+            "--tool-compatibility must be functions_and_apply_patch or full"
+        )
+    if api_key_env and not API_KEY_ENV.fullmatch(api_key_env):
+        raise typer.BadParameter("--api-key-env must be a valid uppercase environment variable")
+
+    config = load_config()
+    if normalized_name in config.backends:
+        raise typer.BadParameter(
+            f"backend already exists: {normalized_name}; use backend-enable to modify it"
+        )
+    tiers = {
+        "fast": ModelTarget(model=fast_model or model, reasoning_effort="low"),
+        "normal": ModelTarget(model=normal_model or model, reasoning_effort="medium"),
+        "smart": ModelTarget(model=smart_model or model, reasoning_effort="high"),
+        "max": ModelTarget(model=max_model or model, reasoning_effort="high"),
+    }
+    config.backends[normalized_name] = ExecutionBackendConfig(
+        enabled=True,
+        codex_provider=f"agentroute-{normalized_name}",
+        display_name=display_name or normalized_name.replace("-", " ").title(),
+        base_url=base_url.rstrip(),
+        api_key_env=api_key_env,
+        api_key_header=api_key_header.lower(),
+        tool_compatibility=tool_compatibility,
+        review_model=review_model,
+        tiers=tiers,
+    )
+    save_config(config)
+    path, backup = sync_codex_providers(config)
+    console.print(f"Added {normalized_name}; synced {path}")
+    if backup:
+        console.print(f"Backup: {backup}")
+    if api_key_env:
+        console.print(
+            f"Set {api_key_env} or import it with "
+            f"`agentroute backend-credential-import {normalized_name} SOURCE_ENV`."
+        )
+    else:
+        console.print(
+            f"Use it with `agentroute backend-route fast {normalized_name}` or "
+            f"`@{normalized_name} PROMPT` inside Codex."
+        )
+
+
 @app.command("backend-disable")
 def backend_disable_command(name: str) -> None:
     """Disable an API backend and remove its generated Codex provider entry."""
@@ -1215,7 +1305,7 @@ def backend_disable_command(name: str) -> None:
 
 @app.command("backend-credential-import")
 def backend_credential_import_command(
-    name: str = typer.Argument(..., help="Backend name: azure or deepseek."),
+    name: str = typer.Argument(..., help="Configured API backend name."),
     source_env: str = typer.Argument(..., help="Environment variable to import from."),
 ) -> None:
     """Store one backend credential in AgentRoute's owner-only local credential file."""
@@ -1233,7 +1323,7 @@ def backend_credential_import_command(
 @app.command("backend-route")
 def backend_route_command(
     tier: str = typer.Argument(..., help="fast, normal, smart, or max"),
-    backend: str = typer.Argument(..., help="gpt, azure, or deepseek"),
+    backend: str = typer.Argument(..., help="Enabled backend name."),
 ) -> None:
     """Choose the default execution backend for one intelligence tier."""
     config = load_config()
@@ -1248,7 +1338,7 @@ def backend_route_command(
 
 @app.command("backend-default")
 def backend_default_command(
-    backend: str = typer.Argument(..., help="Enabled backend: gpt, azure, or deepseek"),
+    backend: str = typer.Argument(..., help="Enabled backend name."),
 ) -> None:
     """Route every intelligence tier through one ready backend by default."""
     config = load_config()

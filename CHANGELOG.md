@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add `agentroute backend-add` for arbitrary OpenAI Responses-compatible providers,
+  including credential-free local Ollama endpoints.
+- Support dynamic `@backend-name` session routing, optional per-tier custom model maps,
+  and generated provider configuration in the active `CODEX_HOME` profile.
+- Default custom providers to the constrained `functions_and_apply_patch` tool mode;
+  operators must explicitly opt into full tool compatibility after validating an endpoint.
 - Improve the open-source project surface with a visual README quickstart, support and conduct
   guidance, structured issue and pull-request templates, automated dependency updates, and an
   OpenSSF Scorecard workflow.

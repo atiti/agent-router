@@ -389,7 +389,11 @@ def model_capabilities(
         "apply_patch_only"
         if backend.tool_compatibility == "functions_and_apply_patch"
         else "full"
-        if backend_name == "gpt" or backend.codex_provider.startswith("agentroute-azure")
+        if (
+            backend.tool_compatibility == "full"
+            or backend_name == "gpt"
+            or backend.codex_provider.startswith("agentroute-azure")
+        )
         else "unknown"
     )
     return ModelCapabilities(

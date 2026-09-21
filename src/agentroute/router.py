@@ -53,7 +53,9 @@ class Router:
             self.classifier = OpenAICompatibleClassifier(classifier_config)
 
     def route(self, context: RouteContext) -> RouteDecision:
-        override, backend_override, _ = route_overrides(context.latest_prompt)
+        override, backend_override, _ = route_overrides(
+            context.latest_prompt, self.config.backends
+        )
         contributions = extract_signals(context)
         raw_score = sum(item.weight for item in contributions)
         inherited = False
