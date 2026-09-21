@@ -40,6 +40,12 @@ def test_native_patch_is_packaged():
     assert "Route the turn before pre-sampling compaction" in content
     assert "inspect_input_hooks(&sess, &turn_context, &input).await" in content
     assert "model_info_for_provider_compatibility" in content
+    assert "new_turn_reapplies_provider_tool_compatibility_after_model_resolution" in content
+    assert (
+        "new_turn_without_provider_tool_compatibility_preserves_fallback_metadata"
+        in content
+    )
+    assert "direct_provider_compatibility_hides_code_mode_exec" in content
     assert "client_session: &mut ModelClientSession" in content
     assert "run_inline_auto_compact_task" in content
     assert "request_step_context" in content
@@ -126,7 +132,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v34" in installer
+    assert "provider-routing-v35" in installer
     assert "chatgpt_profile_home" in installer
     assert "ordinary_usage_allowed" in installer
     assert "codex-desktop-route-notice.patch" in installer
