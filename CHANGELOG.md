@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.5.34 — 2026-09-21
+
+- Replace isolated per-subscription `CODEX_HOME` trees with one canonical Codex home and
+  turn-bound ChatGPT account routing. Configuration, hooks, MCPs, skills, plugins, sessions,
+  history, and rules now stay together in the running Codex home.
+- Preserve `~/.codex/auth.json` as the implicit backward-compatible `default` account. New named
+  accounts store credentials only under `~/.codex/accounts/<name>/auth.json` and are selected by
+  AgentRoute at `UserPromptSubmit` without restarting or changing `CODEX_HOME`.
+- Add `agentroute account` commands to add, sign in to, migrate, select, inspect, prioritize, and
+  remove ChatGPT accounts. Migration copies only `auth.json` from a legacy isolated home, leaving
+  its configuration and session history untouched.
+- Keep legacy `capacity profile-*` configuration readable during upgrade, while routing receipts,
+  capacity status, doctor guidance, and user-visible notices use the clearer account terminology.
+
 ## 0.5.33 — 2026-09-21
 
 - Add `agentroute backend-add` for arbitrary OpenAI Responses-compatible providers,
