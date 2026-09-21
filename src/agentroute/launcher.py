@@ -6,7 +6,6 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .config import AppConfig, agentroute_home, load_config
-from .profiles import select_launch_profile
 
 BASE_CODEX_ARGS = [
     "--enable",
@@ -68,24 +67,12 @@ def launch_codex(
 ) -> None:
     binary = binary or agentroute_home() / "bin" / "codex-bin"
     config = load_config()
-    selected_name, selected, _ = select_launch_profile(
-        config, profile, codex_binary=binary
-    )
-    environment = os.environ.copy()
-    if selected_name:
-        selected_config = config.capacity.profiles[selected_name]
-        environment["CODEX_HOME"] = str(Path(selected_config.codex_home).expanduser())
-        state = selected.capacity.status if selected else "unknown"
-        detail = selected.capacity.detail if selected else "not probed"
+    if profile is not None:
         print(
-            f"◆ CAPACITY PROFILE · {selected_name} · {state}: {detail}",
+            "◆ ACCOUNT NOTICE · --profile no longer changes CODEX_HOME; "
+            "select accounts at the next routed turn boundary",
             file=sys.stderr,
         )
-        if profile is None and selected_name != config.capacity.active_profile:
-            print(
-                "◆ PROFILE FAILOVER · starting a new Codex process with this profile; "
-                "active sessions can also switch profiles at a turn boundary",
-                file=sys.stderr,
-            )
+    environment = os.environ.copy()
     argv = codex_argv(binary, user_args, config)
     os.execve(str(binary), argv, environment)

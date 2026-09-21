@@ -16,6 +16,7 @@ def test_doctor_validates_local_runtime_hooks_and_audit(tmp_path, monkeypatch):
     binary.chmod(0o755)
     (home / "build-id").write_text(f"commit-{EXPECTED_RUNTIME_REVISION}\n", encoding="utf-8")
     monkeypatch.setenv("AGENTROUTE_HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setattr("agentroute.doctor.Path.home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr("agentroute.doctor.platform.system", lambda: "Linux")
     config = default_config()
@@ -44,6 +45,7 @@ def test_doctor_validates_local_runtime_hooks_and_audit(tmp_path, monkeypatch):
 def test_doctor_requires_commands_under_each_exact_hook_event(tmp_path, monkeypatch):
     codex_home = tmp_path / ".codex"
     codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setattr("agentroute.doctor.Path.home", classmethod(lambda cls: tmp_path))
     hooks = {
         "hooks": {

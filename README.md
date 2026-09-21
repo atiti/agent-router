@@ -251,55 +251,55 @@ backend is exhausted or over budget. The banner and stop message explain the nex
 CAPACITY BLOCKED: explicit session route gpt is capacity-locked. Use @auto to permit backend fallback.
 ```
 
-### Multiple ChatGPT subscriptions
+### Multiple ChatGPT subscriptions, one Codex home
 
-Each subscription must have an isolated `CODEX_HOME`; AgentRoute never copies credentials. Register
-profiles and sign into each one separately:
-
-```sh
-agentroute capacity profile-add personal ~/.codex-personal --priority 10 --select
-agentroute capacity profile-add work ~/.codex-work --priority 20
-
-# Keep MAX on Astra where the subscription supports it, and use Sol where it does not.
-agentroute capacity profile-model personal max gpt-6-astra --reasoning-effort high
-agentroute capacity profile-model work max gpt-5.6-sol --reasoning-effort high
-
-# Launch-time selection probes app-server account and quota state.
-agentroute capacity status
-agentroute launch-codex --profile work
-```
-
-Provision a new profile with the same hooks, MCP configuration, rules, and skills as your
-existing Codex home. This deliberately does not copy `auth.json`, session history, plugins, or
-OAuth state, so sign into the new account before or after bootstrapping:
+AgentRoute keeps the normal Codex state directory as the only `CODEX_HOME`. Sessions, `config.toml`,
+hooks, MCP servers, skills, plugins, history, and rules therefore remain shared and resumable. The
+stock `~/.codex/auth.json` is the implicit **default** account. Additional accounts contain only
+credentials under `~/.codex/accounts/<name>/auth.json`.
 
 ```sh
-agentroute capacity profile-bootstrap work --from ~/.codex
+# Your normal Codex login is already the default account.
+agentroute account list
+
+# Add a second subscription without creating another Codex setup.
+agentroute account add work --select
+agentroute account login work
+
+# Keep MAX on Astra where this account supports it, and use Sol where it does not.
+agentroute account model default max gpt-6-astra --reasoning-effort high
+agentroute account model work max gpt-5.6-sol --reasoning-effort high
+
+# Use an account for new threads. Existing threads preserve account affinity.
+agentroute account use default
 ```
 
-At launch, AgentRoute selects the highest-priority healthy profile. During an existing CLI or
-Desktop thread, it can also move the *next turn* to another signed-in profile when the active
-subscription is authoritatively exhausted or unavailable:
+Selection happens inside the active `UserPromptSubmit` hook, not at Codex launch. When a
+subscription is authoritatively exhausted, the next turn can continue the same thread using another
+signed-in account:
 
 ```text
-◆ PROFILE FAILOVER · personal → work · current subscription exhausted · continuing this thread on the next turn
+◆ ACCOUNT FAILOVER · work → default · current subscription exhausted · continuing this thread on the next turn
 ```
 
-The transcript and thread continue, but provider-bound encrypted reasoning and cache state are
-discarded for turns using the alternate profile because those opaque values cannot be decrypted by
-another account. Ordinary conversation and portable tool history remain. AgentRoute does not
-interrupt or replay an in-flight request, and unknown quota telemetry never triggers a profile
-switch. The chosen profile stays sticky for later turns until it is authoritatively exhausted or
-unavailable; subsequent banners show `PROFILE ROUTE · <name> · session affinity`.
+The transcript and thread remain in the canonical home. Provider-bound encrypted reasoning,
+compaction state, encrypted function arguments, and response item IDs are discarded at an account
+or provider boundary because another identity cannot decrypt them. Ordinary conversation and
+portable tool history remain. AgentRoute never interrupts or replays an in-flight request, and
+unknown quota telemetry never triggers an account switch. The chosen account stays sticky for later
+turns until it is authoritatively exhausted or unavailable; subsequent banners show
+`ACCOUNT ROUTE · <name> · session affinity`.
 
-Profile model overrides are also applied to ordinary healthy turns. AgentRoute identifies the
-current profile from `CODEX_HOME` first and otherwise compares hashed local account identities;
-raw account IDs are never written to configuration or audit logs. A tier without a profile override
-uses the global GPT tier target. Remove an override with:
+To migrate an old isolated home, copy only its file-backed credentials; its original directory is
+left untouched as a rollback option:
 
 ```sh
-agentroute capacity profile-model work max --clear
+agentroute account migrate work ~/.codex-work --select
 ```
+
+If the old login is Keychain-backed rather than stored in `auth.json`, add the account and sign in
+again with `agentroute account login work`. Do not copy configuration, sessions, skills, MCP
+configuration, or hooks: the canonical `~/.codex` already owns them.
 
 ## Optional LLM classifier
 

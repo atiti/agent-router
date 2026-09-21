@@ -12,6 +12,7 @@ from .config import AppConfig, load_config
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
 from .profiles import (
     TurnProfileSelection,
+    account_credential_home,
     reviewer_fallback_profiles,
     select_turn_profile,
 )
@@ -47,7 +48,7 @@ def _apply_profile_selection(
     selection: TurnProfileSelection,
     config: AppConfig,
 ) -> None:
-    """Keep a GPT route on the selected subscription profile."""
+    """Keep a GPT route on the selected ChatGPT account."""
     if selection.selected is None:
         return
     backend = config.backends["gpt"]
@@ -60,7 +61,7 @@ def _apply_profile_selection(
     decision.reasoning_effort = target.reasoning_effort
     decision.capacity_status = selection.selected.capacity.status
     decision.capacity_detail = (
-        f"profile {selection.selected.name}: {selection.selected.capacity.detail}"
+        f"account {selection.selected.name}: {selection.selected.capacity.detail}"
     )
     decision.capacity_trigger = selection.selected.capacity.trigger
     decision.capacity_requested_backend = "gpt"
@@ -77,7 +78,7 @@ def _apply_profile_selection(
                 code=ReasonCode.PROFILE_FAILOVER,
                 weight=0,
                 detail=(
-                    f"ChatGPT profile {selection.current_name or 'current'} exhausted; "
+                    f"ChatGPT account {selection.current_name or 'current'} exhausted; "
                     f"using {selection.selected.name}"
                 ),
             )
@@ -90,7 +91,7 @@ def _apply_profile_selection(
         "model_provider": backend.codex_provider,
         "reasoning_effort": target.reasoning_effort,
     }
-    decision.selection_receipt["subscription_profile"] = {
+    decision.selection_receipt["chatgpt_account"] = {
         "name": selection.selected.name,
         "account_hash": selection.selected.account_hash,
         "source": selection.source,
@@ -275,7 +276,10 @@ def codex_user_prompt_submit(
                 and profile_selection.selected is not None
                 and profile_selection.use_profile_home
             ):
-                specific["chatgptProfileHome"] = profile_selection.selected.codex_home
+                profile = config.capacity.profiles[profile_selection.selected.name]
+                specific["chatgptProfileHome"] = str(
+                    account_credential_home(profile_selection.selected.name, profile)
+                )
             if (
                 profile_selection is not None
                 and profile_selection.selected is not None
@@ -288,8 +292,16 @@ def codex_user_prompt_submit(
                 specific["reviewerProfileName"] = profile_selection.selected.name
                 if reviewer_fallbacks:
                     specific["reviewerFallbackProfiles"] = [
-                        {"name": profile.name, "codexHome": profile.codex_home}
-                        for profile in reviewer_fallbacks
+                        {
+                            "name": candidate.name,
+                            "codexHome": str(
+                                account_credential_home(
+                                    candidate.name,
+                                    config.capacity.profiles[candidate.name],
+                                )
+                            ),
+                        }
+                        for candidate in reviewer_fallbacks
                     ]
             if decision.strip_provider_state:
                 specific["stripProviderState"] = True
@@ -356,12 +368,12 @@ def codex_user_prompt_submit(
                 )
                 failover_reason = "unavailable" if unavailable else "exhausted"
                 profile_message = (
-                    f"◆ PROFILE FAILOVER · {profile_selection.current_name or 'current'} "
+                    f"◆ ACCOUNT FAILOVER · {profile_selection.current_name or 'current'} "
                     f"→ {profile_selection.selected.name} · current subscription "
                     f"{failover_reason} "
                     "· continuing this thread on the next turn"
                     if profile_selection.switched
-                    else f"◆ PROFILE ROUTE · {profile_selection.selected.name} · "
+                    else f"◆ ACCOUNT ROUTE · {profile_selection.selected.name} · "
                     f"{profile_selection.source.replace('_', ' ')}"
                 )
                 specific["routeMessage"] = f"{profile_message}\n{model_route_message}"

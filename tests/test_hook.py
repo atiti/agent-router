@@ -131,7 +131,7 @@ def test_healthy_gpt_turn_uses_account_matched_profile_model(tmp_path, monkeypat
     assert "stripProviderState" not in personal["hookSpecificOutput"]
     receipt = json.loads(work_store.latest("same-thread")["selection_receipt"])
     assert receipt["selected"]["model"] == "gpt-5.6-sol"
-    assert receipt["subscription_profile"]["source"] == "account_match"
+    assert receipt["chatgpt_account"]["source"] == "account_match"
     assert "work-account" not in json.dumps(receipt)
 
 
@@ -165,7 +165,7 @@ def test_codex_home_disambiguates_two_profiles_with_same_account(tmp_path, monke
     )
 
     assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
-    assert "PROFILE ROUTE · work · account match" in output["hookSpecificOutput"][
+    assert "ACCOUNT ROUTE · work · account match" in output["hookSpecificOutput"][
         "routeMessage"
     ]
 
@@ -189,7 +189,9 @@ def test_unmatched_gpt_account_keeps_global_model(tmp_path):
     )
 
     assert output["hookSpecificOutput"]["model"] == "gpt-6-astra"
-    assert "PROFILE ROUTE" not in output["hookSpecificOutput"]["routeMessage"]
+    assert "ACCOUNT ROUTE · default · account match" in output["hookSpecificOutput"][
+        "routeMessage"
+    ]
 
 
 def test_profile_model_compatibility_does_not_require_capacity_failover(tmp_path, monkeypatch):
@@ -313,10 +315,10 @@ def test_exhausted_subscription_fails_over_to_another_profile_in_place(tmp_path)
     assert specific["model"] == "work-compatible"
     assert specific["chatgptProfileHome"] == str(tmp_path / "work")
     assert specific["stripProviderState"] is True
-    assert "◆ PROFILE FAILOVER · personal → work" in specific["routeMessage"]
+    assert "◆ ACCOUNT FAILOVER · personal → work" in specific["routeMessage"]
     row = store.latest("same-thread")
     receipt = json.loads(row["selection_receipt"])
-    assert receipt["subscription_profile"] == {
+    assert receipt["chatgpt_account"] == {
         "account_hash": "work-hash",
         "name": "work",
         "source": "failover",
@@ -383,7 +385,7 @@ def test_selected_subscription_profile_stays_sticky_for_followup_turns(tmp_path)
     assert followup["continue"] is True
     assert specific["chatgptProfileHome"] == str(tmp_path / "work")
     assert specific["stripProviderState"] is True
-    assert "◆ PROFILE ROUTE · work · session affinity" in specific["routeMessage"]
+    assert "◆ ACCOUNT ROUTE · work · session affinity" in specific["routeMessage"]
 
 
 def test_profile_failover_skips_another_home_for_the_same_account(tmp_path):
@@ -441,7 +443,7 @@ def test_profile_failover_skips_another_home_for_the_same_account(tmp_path):
 
     specific = output["hookSpecificOutput"]
     assert specific["chatgptProfileHome"] == str(tmp_path / "work")
-    assert "◆ PROFILE FAILOVER · personal → work" in specific["routeMessage"]
+    assert "◆ ACCOUNT FAILOVER · personal → work" in specific["routeMessage"]
 
 
 def test_profile_failover_reports_unavailable_current_profile(tmp_path):
@@ -662,6 +664,7 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path, 
     assert first["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
     assert first["hookSpecificOutput"]["reasoningEffort"] == "high"
     assert first["hookSpecificOutput"]["routeMessage"] == (
+        "◆ ACCOUNT ROUTE · default · account match\n"
         "◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning "
         "· backend gpt/openai · scope root · source MANUAL "
         "· rule confidence 100% · rule score -0.5"

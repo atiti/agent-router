@@ -113,9 +113,15 @@ class UIConfig(BaseModel):
 
 
 class SubscriptionProfileConfig(BaseModel):
-    """An isolated Codex login. Credentials remain inside its CODEX_HOME."""
+    """One ChatGPT account used for turn-boundary routing.
 
-    codex_home: str
+    ``codex_home`` is retained for configurations written by AgentRoute <= 0.5.33.
+    New accounts use ``credential_home`` and share the running Codex process's
+    canonical ``CODEX_HOME`` for config, sessions, hooks, MCP servers, and skills.
+    """
+
+    codex_home: str | None = None
+    credential_home: str | None = None
     enabled: bool = True
     priority: int = 100
     tiers: dict[str, ModelTarget] = Field(default_factory=dict)
@@ -300,12 +306,20 @@ def default_config() -> AppConfig:
             pricing_model="deepseek-v4-pro",
         ),
     }
+    config.capacity.profiles["default"] = SubscriptionProfileConfig(priority=0)
+    config.capacity.active_profile = "default"
     return config
 
 
 def _with_default_backends(config: AppConfig) -> AppConfig:
     """Migrate pre-backend configs without changing their established GPT mappings."""
     defaults = default_config()
+    # The normal Codex credential is deliberately an implicit account.  Keep it
+    # available for old installations instead of forcing users to move or copy
+    # ~/.codex/auth.json before capacity routing can begin.
+    config.capacity.profiles.setdefault("default", SubscriptionProfileConfig(priority=0))
+    if config.capacity.active_profile is None:
+        config.capacity.active_profile = "default"
     if not config.backends:
         defaults.backends["gpt"].tiers = config.providers["codex"].tiers
         config.backends = defaults.backends
@@ -421,6 +435,11 @@ def agentroute_home() -> Path:
     if override:
         return Path(override).expanduser()
     return Path.home() / ".agentroute"
+
+
+def codex_home() -> Path:
+    """Return the one canonical Codex state directory for this process."""
+    return Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
 
 
 def load_config(path: Path | None = None) -> AppConfig:

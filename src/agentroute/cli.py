@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -32,6 +33,7 @@ from .config import (
     ExecutionBackendConfig,
     ModelTarget,
     SubscriptionProfileConfig,
+    codex_home,
     config_path,
     default_config,
     load_config,
@@ -52,7 +54,7 @@ from .install import merge_codex_hook, trust_agentroute_hooks
 from .launcher import launch_codex
 from .models import RouteContext, Tier
 from .pricing import cost_report
-from .profiles import bootstrap_profile_home, probe_profiles, routed_codex_binary
+from .profiles import account_credential_home, probe_profiles, routed_codex_binary
 from .providers import (
     backend_readiness,
     effective_review_model,
@@ -64,9 +66,15 @@ from .router import Router
 
 app = typer.Typer(no_args_is_help=True, help="Local, auditable model routing for coding agents.")
 desktop_app = typer.Typer(no_args_is_help=True, help="Build and manage Codex Desktop locally.")
-capacity_app = typer.Typer(no_args_is_help=True, help="Manage quota, budgets, and profiles.")
+capacity_app = typer.Typer(
+    no_args_is_help=True, help="Manage quota, budgets, and ChatGPT accounts."
+)
+account_app = typer.Typer(
+    no_args_is_help=True, help="Manage ChatGPT accounts without splitting Codex state."
+)
 app.add_typer(desktop_app, name="desktop")
 app.add_typer(capacity_app, name="capacity")
+app.add_typer(account_app, name="account")
 console = Console()
 
 
@@ -189,11 +197,13 @@ def capacity_profile_add_command(
     priority: int = typer.Option(100),
     select: bool = typer.Option(False, "--select", help="Use for future launches."),
 ) -> None:
-    """Register an isolated CODEX_HOME without reading or copying credentials."""
+    """Legacy: register an existing isolated Codex home as an account source."""
     config = load_config()
     name = name.strip().lower()
-    if not name:
-        raise typer.BadParameter("profile name cannot be empty")
+    if not name or name == "default":
+        raise typer.BadParameter(
+            "choose a non-default account name; default always uses ~/.codex/auth.json"
+        )
     config.capacity.profiles[name] = SubscriptionProfileConfig(
         codex_home=str(codex_home.expanduser()), priority=priority
     )
@@ -201,8 +211,8 @@ def capacity_profile_add_command(
         config.capacity.active_profile = name
     save_config(config)
     console.print(
-        f"Added profile {name} → {codex_home.expanduser()}. "
-        "Sign in inside that CODEX_HOME, then relaunch Codex."
+        f"Registered legacy account {name} → {codex_home.expanduser()}. "
+        "Use `agentroute capacity account-migrate` to move only its auth into the canonical home."
     )
 
 
@@ -211,6 +221,10 @@ def capacity_profile_remove_command(name: str) -> None:
     """Remove a profile reference; its CODEX_HOME and credentials are untouched."""
     config = load_config()
     name = name.lower()
+    if name == "default":
+        raise typer.BadParameter(
+            "default is the canonical ~/.codex/auth.json account and cannot be removed"
+        )
     if name not in config.capacity.profiles:
         raise typer.BadParameter(f"unknown subscription profile: {name}")
     del config.capacity.profiles[name]
@@ -222,7 +236,7 @@ def capacity_profile_remove_command(name: str) -> None:
 
 @capacity_app.command("profile-select")
 def capacity_profile_select_command(name: str) -> None:
-    """Select the profile used by future CLI and Desktop launches."""
+    """Select the default account for future routed turns."""
     config = load_config()
     name = name.lower()
     if name not in config.capacity.profiles:
@@ -230,8 +244,8 @@ def capacity_profile_select_command(name: str) -> None:
     config.capacity.active_profile = name
     save_config(config)
     console.print(
-        f"Selected {name}. Existing sessions keep their current account; checkpoint and "
-        "relaunch Codex to apply the profile."
+        f"Selected {name}. New threads use it; existing threads retain account affinity "
+        "until capacity failover or an explicit account switch."
     )
 
 
@@ -273,35 +287,165 @@ def capacity_profile_model_command(
     console.print(f"Set {name} {tier_name.upper()} → {model.strip()}{effort}.")
 
 
-@capacity_app.command("profile-bootstrap")
-def capacity_profile_bootstrap_command(
+@capacity_app.command("account-add")
+def capacity_account_add_command(
     name: str,
-    source: Path = typer.Option(
-        Path.home() / ".codex",
-        "--from",
-        help="Existing Codex home that supplies shared setup.",
-    ),
+    priority: int = typer.Option(100),
+    select: bool = typer.Option(False, "--select", help="Use for new routed threads."),
 ) -> None:
-    """Provision reusable hooks, MCP configuration, rules, and skills for one profile."""
+    """Add a named credential slot under the canonical Codex home."""
     config = load_config()
-    name = name.lower()
+    name = name.strip().lower()
+    if not name or name == "default":
+        raise typer.BadParameter("choose a non-default account name")
+    profile = SubscriptionProfileConfig(
+        credential_home=str(codex_home() / "accounts" / name), priority=priority
+    )
+    config.capacity.profiles[name] = profile
+    if select:
+        config.capacity.active_profile = name
+    save_config(config)
+    destination = account_credential_home(name, profile)
+    destination.mkdir(parents=True, exist_ok=True)
+    destination.chmod(0o700)
+    console.print(
+        f"Added account {name} → {destination}. This directory stores credentials only; "
+        f"configuration, MCPs, skills, hooks, and sessions remain in {codex_home()}."
+    )
+
+
+@capacity_app.command("account-migrate")
+def capacity_account_migrate_command(
+    name: str,
+    source: Path = typer.Argument(..., help="Legacy Codex home containing auth.json."),
+    select: bool = typer.Option(False, "--select", help="Use for new routed threads."),
+) -> None:
+    """Copy only a file-backed legacy auth.json into a named account slot."""
+    source = source.expanduser()
+    auth_source = source / "auth.json"
+    if not auth_source.is_file():
+        raise typer.BadParameter(
+            f"no file-backed auth.json in {source}; sign in again with account-login"
+        )
+    config = load_config()
+    name = name.strip().lower()
+    if not name or name == "default":
+        raise typer.BadParameter("choose a non-default account name")
+    existing = config.capacity.profiles.get(name)
+    profile = SubscriptionProfileConfig(
+        credential_home=str(codex_home() / "accounts" / name),
+        priority=existing.priority if existing is not None else 100,
+    )
+    destination = account_credential_home(name, profile)
+    destination.mkdir(parents=True, exist_ok=True)
+    destination.chmod(0o700)
+    destination_auth = destination / "auth.json"
+    shutil.copy2(auth_source, destination_auth)
+    destination_auth.chmod(0o600)
+    config.capacity.profiles[name] = profile
+    if select:
+        config.capacity.active_profile = name
+    save_config(config)
+    console.print(
+        f"Migrated only auth.json into account {name}. The legacy home remains unchanged; "
+        "all Codex state continues in the canonical home."
+    )
+
+
+@capacity_app.command("account-login")
+def capacity_account_login_command(name: str) -> None:
+    """Open Codex login against a credential-only account slot."""
+    config = load_config()
+    name = name.strip().lower()
     profile = config.capacity.profiles.get(name)
     if profile is None:
-        raise typer.BadParameter(f"unknown subscription profile: {name}")
-    destination = Path(profile.codex_home).expanduser()
-    try:
-        copied = bootstrap_profile_home(source, destination)
-    except ValueError as error:
-        raise typer.BadParameter(str(error)) from error
-    providers_path, _ = sync_codex_providers(config, destination / "config.toml")
-    hooks_path, _ = merge_codex_hook(destination / "hooks.json")
-    trusted = trust_agentroute_hooks(
-        routed_codex_binary(), hooks_path=hooks_path, codex_home=destination
-    )
+        raise typer.BadParameter(f"unknown account: {name}")
+    destination = account_credential_home(name, profile)
+    destination.mkdir(parents=True, exist_ok=True)
+    destination.chmod(0o700)
+    environment = os.environ.copy()
+    environment["CODEX_HOME"] = str(destination)
+    result = subprocess.run([str(routed_codex_binary()), "login"], env=environment, check=False)
+    if result.returncode:
+        raise typer.Exit(result.returncode)
     console.print(
-        f"Bootstrapped {name}: {', '.join(copied) or 'no reusable files'}; "
-        f"synced providers in {providers_path}; trusted {trusted} AgentRoute hooks. "
-        "Authentication, sessions, history, plugins, and OAuth state were not copied."
+        f"Signed in account {name}. Its credentials are isolated; normal Codex sessions "
+        f"still use {codex_home()}."
+    )
+
+
+@account_app.command("add")
+def account_add_command(
+    name: str,
+    priority: int = typer.Option(100),
+    select: bool = typer.Option(False, "--select"),
+) -> None:
+    """Add a credential-only ChatGPT account slot."""
+    capacity_account_add_command(name, priority, select)
+
+
+@account_app.command("login")
+def account_login_command(name: str) -> None:
+    """Sign in a named account without creating another Codex home."""
+    capacity_account_login_command(name)
+
+
+@account_app.command("migrate")
+def account_migrate_command(
+    name: str,
+    source: Path = typer.Argument(...),
+    select: bool = typer.Option(False, "--select"),
+) -> None:
+    """Migrate only auth.json from an old isolated home."""
+    capacity_account_migrate_command(name, source, select)
+
+
+@account_app.command("use")
+def account_use_command(name: str) -> None:
+    """Select the account used for new routed threads."""
+    capacity_profile_select_command(name)
+
+
+@account_app.command("remove")
+def account_remove_command(name: str) -> None:
+    """Remove an account configuration without deleting its credential slot."""
+    if name.strip().lower() == "default":
+        raise typer.BadParameter(
+            "default is the canonical ~/.codex/auth.json account and cannot be removed"
+        )
+    capacity_profile_remove_command(name)
+
+
+@account_app.command("model")
+def account_model_command(
+    name: str,
+    tier: str,
+    model: str | None = typer.Argument(None),
+    reasoning_effort: str | None = typer.Option(None, "--reasoning-effort"),
+    clear: bool = typer.Option(False, "--clear"),
+) -> None:
+    """Set or clear a model compatibility override for one account."""
+    capacity_profile_model_command(name, tier, model, reasoning_effort, clear)
+
+
+@account_app.command("list")
+def account_list_command(
+    json_output: bool = typer.Option(False, "--json"),
+    no_probe: bool = typer.Option(False, help="Skip live quota reads."),
+) -> None:
+    """Show accounts and their capacity state."""
+    capacity_status_command(json_output=json_output, no_probe=no_probe)
+
+
+@capacity_app.command("profile-bootstrap", hidden=True)
+def capacity_profile_bootstrap_command(name: str) -> None:
+    """Compatibility alias: shared Codex setup is now canonical and needs no copy."""
+    config = load_config()
+    if name.lower() not in config.capacity.profiles:
+        raise typer.BadParameter(f"unknown account: {name}")
+    console.print(
+        "No bootstrap is needed: hooks, MCPs, skills, config, and sessions are shared "
+        f"from {codex_home()}."
     )
 
 
@@ -384,7 +528,7 @@ def capacity_status_command(
     if no_probe and config.capacity.profiles:
         console.print("Profile probes skipped; run without --no-probe for live quota state.")
     elif profiles:
-        profile_table = Table("Profile", "Active", "Signed in", "Account", "Capacity", "Reset")
+        profile_table = Table("Account", "Active", "Signed in", "Account", "Capacity", "Reset")
         for item in profiles:
             profile_table.add_row(
                 item.name,
@@ -397,9 +541,9 @@ def capacity_status_command(
         console.print(profile_table)
     if config.capacity.profiles:
         console.print(
-            "The selected profile applies at launch. If a current subscription becomes "
-            "unavailable, a patched Codex runtime can continue the thread on another signed-in "
-            "profile at the next turn boundary."
+            "The selected account applies to new routed threads. If a current subscription becomes "
+            "unavailable, a patched Codex runtime can continue the same thread on another "
+            "signed-in account at the next turn boundary."
         )
 
 
