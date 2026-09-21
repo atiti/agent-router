@@ -9,7 +9,7 @@ AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-"$AGENTROUTE_HOME_DIR/build/c
 AGENTROUTE_BUILD_PROFILE=${AGENTROUTE_BUILD_PROFILE:-dev-small}
 AGENTROUTE_CODEX_COMMIT=b0af519c39766c173191fc39b341808619b51c74
 AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.155.0-alpha.10}
-AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v33"
+AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v34"
 AGENTROUTE_BUILD_ID_FILE="$AGENTROUTE_HOME_DIR/build-id"
 AGENTROUTE_PATCHES="
 $AGENTROUTE_PROJECT_ROOT/src/agentroute/patches/codex-user-prompt-model-override.patch
@@ -83,8 +83,12 @@ if grep -F 'Route the turn before pre-sampling compaction' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/protocol/src/protocol.rs" >/dev/null 2>&1 \
     && grep -F 'routing_model_explicit' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/protocol/src/protocol.rs" >/dev/null 2>&1 \
-    && grep -F 'backend: Option<String>' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/tools/handlers/multi_agents_v2.rs" >/dev/null 2>&1 \
+    && grep -F 'properties.keys().map(String::as_str).collect::<Vec<_>>()' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs" >/dev/null 2>&1 \
+    && ! grep -F '"backend".to_string()' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/tools/handlers/multi_agents_spec.rs" >/dev/null 2>&1 \
+    && ! grep -F '    backend: Option<String>,' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs" >/dev/null 2>&1 \
     && grep -F 'ordinary_usage_allowed' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/hook_runtime.rs" >/dev/null 2>&1 \
     && grep -F 'chatgpt_profile_home' \

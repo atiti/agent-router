@@ -56,7 +56,9 @@ def test_native_patch_is_packaged():
     assert "routing_inherited_model_provider" in content
     assert "routing_requested_backend" in content
     assert "routing_model_explicit" in content
-    assert "backend: Option<String>" in content
+    assert '"backend".to_string()' not in content
+    assert "+    backend: Option<String>," not in content
+    assert "properties.keys().map(String::as_str).collect::<Vec<_>>()" in content
     assert '!properties.contains_key("routing_prompt")' in content
     assert "response_input_serialization_excludes_ephemeral_routing_prompt" in content
     assert "encrypted_subagent_input_uses_ephemeral_routing_prompt" in content
@@ -124,7 +126,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v33" in installer
+    assert "provider-routing-v34" in installer
     assert "chatgpt_profile_home" in installer
     assert "ordinary_usage_allowed" in installer
     assert "codex-desktop-route-notice.patch" in installer
@@ -155,7 +157,9 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "routing_inherited_model_provider" in installer
     assert "routing_requested_backend" in installer
     assert "routing_model_explicit" in installer
-    assert "backend: Option<String>" in installer
+    assert 'properties.keys().map(String::as_str).collect::<Vec<_>>()' in installer
+    assert "! grep -F '\"backend\".to_string()'" in installer
+    assert "! grep -F '    backend: Option<String>,'" in installer
     same_host_guard = (
         'AGENTROUTE_SOURCE_CODE_MODE_HOST" != "$AGENTROUTE_BIN_DIR/codex-code-mode-host'
     )

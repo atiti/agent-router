@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.37 — 2026-09-21
+
+- Restore Azure and OpenAI compatibility for the reserved `collaboration.spawn_agent` tool by
+  keeping its model-visible v2 schema identical to upstream Codex.
+- Remove the noncanonical child `backend` argument while preserving provider inheritance and
+  cross-provider child routing through the canonical `model` field with a qualified model value.
+- Preserve prompt-level and child-level reasoning-effort overrides without changing the reserved
+  collaboration tool contract.
+
 ## 0.5.36 — 2026-09-21
 
 - Complete subagent provider inheritance with typed, ephemeral routing metadata carried from the
