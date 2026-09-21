@@ -182,6 +182,7 @@ class Router:
         backend_name = (
             backend_override
             or context.sticky_backend
+            or context.inherited_backend
             or self.config.routing.backend_by_tier.get(str(proposed), "gpt")
         )
         backend = self.config.backends.get(backend_name)
@@ -199,6 +200,16 @@ class Router:
                     code=ReasonCode.SESSION_AFFINITY,
                     weight=0,
                     detail=f"continued explicit {context.sticky_backend} session route",
+                )
+            )
+        elif context.inherited_backend:
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.PROVIDER_INHERITANCE,
+                    weight=0,
+                    detail=(
+                        f"subagent retained inherited {context.inherited_backend} provider"
+                    ),
                 )
             )
         backend_unavailable = bool(
@@ -259,6 +270,7 @@ class Router:
             backend_name = (
                 backend_override
                 or context.sticky_backend
+                or context.inherited_backend
                 or self.config.routing.backend_by_tier.get(str(proposed), "gpt")
             )
             backend = self.config.backends.get(backend_name)

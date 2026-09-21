@@ -43,6 +43,26 @@ def _subagent_identity(payload: dict[str, Any]) -> tuple[str, str | None]:
     return ("subagent" if agent_id else "root", agent_id)
 
 
+def _unique_backend_for_model(config: AppConfig, model: str) -> str | None:
+    """Resolve a model to a backend only when the configured mapping is unambiguous."""
+    matches = {
+        name
+        for name, backend in config.backends.items()
+        if any(target.model == model for target in backend.tiers.values())
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _backend_for_model_provider(config: AppConfig, model_provider: str) -> str | None:
+    """Resolve a Codex provider id to one configured AgentRoute backend."""
+    matches = [
+        name
+        for name, backend in config.backends.items()
+        if backend.codex_provider == model_provider
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _apply_profile_selection(
     decision: RouteDecision,
     selection: TurnProfileSelection,
@@ -126,6 +146,15 @@ def codex_user_prompt_submit(
             prompt, config.backends
         )
         sticky_backend = store.route_preference(session_id, route_scope, agent_id)
+        inherited_backend = None
+        if route_scope == "subagent" and sticky_backend is None:
+            inherited_backend = store.previous_backend(session_id, route_scope, agent_id)
+            if inherited_backend is None:
+                inherited_backend = _unique_backend_for_model(config, current_model)
+            if inherited_backend is None:
+                inherited_backend = _backend_for_model_provider(
+                    config, str(payload.get("model_provider", "openai"))
+                )
         previous_capacity_status, previous_capacity_backend = store.previous_capacity(
             session_id, route_scope, agent_id
         )
@@ -136,6 +165,7 @@ def codex_user_prompt_submit(
             sticky_backend = store.previous_backend(session_id, route_scope, agent_id)
         if tier_override == "auto":
             sticky_backend = None
+            inherited_backend = None
         elif backend_override:
             sticky_backend = backend_override
         routing_input = "continue" if opaque_subagent_followup else prompt
@@ -185,6 +215,7 @@ def codex_user_prompt_submit(
             agent_id=agent_id,
             latest_prompt=routing_input,
             sticky_backend=sticky_backend,
+            inherited_backend=inherited_backend,
             current_model=current_model,
             current_tier=current_tier,
             previous_task_tier=previous_tier,

@@ -44,6 +44,7 @@ class ReasonCode(str, Enum):
     MANUAL_OVERRIDE = "MANUAL_OVERRIDE"
     RISK_FLOOR = "RISK_FLOOR"
     SESSION_AFFINITY = "SESSION_AFFINITY"
+    PROVIDER_INHERITANCE = "PROVIDER_INHERITANCE"
     DOWNGRADE_HYSTERESIS = "DOWNGRADE_HYSTERESIS"
     AGENT_ESCALATION = "AGENT_ESCALATION"
     MODEL_COMPATIBILITY_FALLBACK = "MODEL_COMPATIBILITY_FALLBACK"
@@ -70,6 +71,7 @@ class RouteContext(BaseModel):
     provider: str = "codex"
     current_model_provider: str = "openai"
     sticky_backend: str | None = None
+    inherited_backend: str | None = None
     route_scope: str = "root"
     agent_id: str | None = None
     latest_prompt: str
