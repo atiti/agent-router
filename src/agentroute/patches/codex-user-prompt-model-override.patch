@@ -2492,15 +2492,10 @@ index 72ae069562..b36296aaf7 100644
      let session = Arc::new(session);
      let turn_context = Arc::new(turn_context_raw);
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 8ab44553be..5a31f48a18 100644
+index 8ab44553be..b24a2ffb98 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -12,9 +12,12 @@ use crate::compact::run_inline_auto_compact_task;
- use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
- use crate::connectors;
- use crate::context::ContextualUserFragment;
-+use crate::context::InterAgentMessage;
-+use crate::context::InterAgentMessageType;
+@@ -15,6 +15,7 @@ use crate::context::ContextualUserFragment;
  use crate::context::UserVerificationNotice;
  use crate::environment_selection::TurnEnvironmentSnapshot;
  use crate::feedback_tags;
@@ -2508,7 +2503,7 @@ index 8ab44553be..5a31f48a18 100644
  use crate::hook_runtime::drain_async_hook_results;
  use crate::hook_runtime::inspect_pending_input;
  use crate::hook_runtime::record_additional_contexts;
-@@ -78,6 +81,8 @@ use codex_file_system::FindUpErrorPolicy;
+@@ -78,6 +79,8 @@ use codex_file_system::FindUpErrorPolicy;
  use codex_file_system::find_nearest_ancestor_with_markers;
  use codex_login::CodexAuth;
  use codex_model_provider::RemoteCompactionSupport;
@@ -2517,7 +2512,7 @@ index 8ab44553be..5a31f48a18 100644
  use codex_protocol::ResponseItemId;
  use codex_protocol::config_types::AutoCompactTokenLimitScope;
  use codex_protocol::config_types::ModeKind;
-@@ -174,8 +179,66 @@ pub(crate) async fn run_turn(
+@@ -174,8 +177,66 @@ pub(crate) async fn run_turn(
      // Record results from hooks that finished after the previous turn before this turn's user prompt.
      drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ true).await;
  
@@ -2586,7 +2581,7 @@ index 8ab44553be..5a31f48a18 100644
      // TODO(ccunningham): Pre-turn compaction runs before context updates and the
      // new user message are recorded. Estimate pending incoming items (context
      // diffs/full reinjection + user input) and trigger compaction preemptively
-@@ -184,16 +247,18 @@ pub(crate) async fn run_turn(
+@@ -184,16 +245,18 @@ pub(crate) async fn run_turn(
          &sess,
          &turn_context,
          &mut client_session,
@@ -2606,7 +2601,7 @@ index 8ab44553be..5a31f48a18 100644
              PersistContext::Standard,
          )
          .await;
-@@ -208,7 +273,11 @@ pub(crate) async fn run_turn(
+@@ -208,7 +271,11 @@ pub(crate) async fn run_turn(
              .await;
          // Publish the failure only after prompt hooks finish, so clients cannot react to
          // an error by steering follow-up input into a turn still preserving its prompt.
@@ -2619,7 +2614,7 @@ index 8ab44553be..5a31f48a18 100644
              RemoteCompactionSupport::V2 => Some("Error running remote compact task".to_string()),
              RemoteCompactionSupport::Unsupported => None,
          };
-@@ -238,11 +307,12 @@ pub(crate) async fn run_turn(
+@@ -238,11 +305,12 @@ pub(crate) async fn run_turn(
          {
              Ok(requirements) => requirements,
              Err(err) => {
@@ -2633,7 +2628,7 @@ index 8ab44553be..5a31f48a18 100644
                      PersistContext::Standard,
                  )
                  .await;
-@@ -266,11 +336,12 @@ pub(crate) async fn run_turn(
+@@ -266,11 +334,12 @@ pub(crate) async fn run_turn(
      {
          Ok(step_context) => step_context,
          Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
@@ -2647,7 +2642,7 @@ index 8ab44553be..5a31f48a18 100644
                  PersistContext::Standard,
              )
              .await;
-@@ -363,11 +434,12 @@ pub(crate) async fn run_turn(
+@@ -363,11 +432,12 @@ pub(crate) async fn run_turn(
          .await?;
      }
      let mut can_drain_pending_input = input.is_empty();
@@ -2661,7 +2656,7 @@ index 8ab44553be..5a31f48a18 100644
          PersistContext::TurnStart,
      )
      .await
-@@ -387,8 +459,8 @@ pub(crate) async fn run_turn(
+@@ -387,8 +457,8 @@ pub(crate) async fn run_turn(
      sess.merge_connector_selection(explicitly_enabled_connectors.clone())
          .await;
      sess.set_previous_turn_settings(Some(PreviousTurnSettings {
@@ -2672,7 +2667,7 @@ index 8ab44553be..5a31f48a18 100644
          realtime_active: Some(turn_context.realtime_active),
      }))
      .await;
-@@ -508,13 +580,17 @@ pub(crate) async fn run_turn(
+@@ -508,13 +578,17 @@ pub(crate) async fn run_turn(
                  .await;
  
              // Construct the input that we will send to the model.
@@ -2691,7 +2686,7 @@ index 8ab44553be..5a31f48a18 100644
  
              let responses_metadata = sess
                  .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
-@@ -812,6 +888,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -812,6 +886,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
      model_info: &ModelInfo,
      input: &[TurnInput],
      persist_context: PersistContext,
@@ -2730,7 +2725,7 @@ index 8ab44553be..5a31f48a18 100644
  ) -> bool {
      // Cancellation can reach this path before Guardian's tools and context are
      // resolved. Only finalized evidence may enter reusable reviewer history.
-@@ -825,8 +933,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -825,8 +931,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
      }
      let mut blocked_input = false;
      let mut accepted_user_input = false;
@@ -2740,7 +2735,7 @@ index 8ab44553be..5a31f48a18 100644
          if hook_outcome.should_stop {
              blocked_input = true;
              record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
-@@ -842,11 +949,19 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -842,11 +947,15 @@ pub(crate) async fn run_hooks_and_record_inputs(
              } else {
                  persist_context
              };
@@ -2748,10 +2743,6 @@ index 8ab44553be..5a31f48a18 100644
 +            if let Some(prefix_bytes) = hook_outcome.strip_prompt_prefix_bytes {
 +                strip_text_prefix(&mut recorded_input, prefix_bytes);
 +            }
-+            make_inter_agent_input_portable_for_provider(
-+                &mut recorded_input,
-+                &turn_context.model_provider_id(),
-+            );
              record_pending_input(
                  sess,
                  turn_context,
@@ -2761,38 +2752,10 @@ index 8ab44553be..5a31f48a18 100644
                  hook_outcome.additional_contexts,
                  input_persist_context,
              )
-@@ -856,6 +971,144 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -856,6 +965,48 @@ pub(crate) async fn run_hooks_and_record_inputs(
      blocked_input && !accepted_user_input
  }
  
-+fn make_inter_agent_input_portable_for_provider(input: &mut TurnInput, provider_id: &str) {
-+    let TurnInput::InterAgentCommunication(communication) = input else {
-+        return;
-+    };
-+    let Some(inherited_provider_id) = communication.routing_inherited_model_provider.as_deref()
-+    else {
-+        return;
-+    };
-+    if inherited_provider_id == provider_id {
-+        return;
-+    }
-+    let Some(payload) = communication.encrypted_content.take() else {
-+        return;
-+    };
-+    let message_type = if communication.trigger_turn {
-+        InterAgentMessageType::NewTask
-+    } else {
-+        InterAgentMessageType::Message
-+    };
-+    communication.content = InterAgentMessage::new(
-+        message_type,
-+        communication.recipient.clone(),
-+        communication.author.clone(),
-+        payload,
-+    )
-+    .render();
-+}
-+
 +fn strip_text_prefix(input: &mut TurnInput, prefix_bytes: usize) {
 +    let TurnInput::UserInput { content, .. } = input else {
 +        return;
@@ -2835,78 +2798,10 @@ index 8ab44553be..5a31f48a18 100644
 +    ));
 +}
 +
-+#[cfg(test)]
-+#[test]
-+fn same_provider_inter_agent_input_retains_encrypted_payload() {
-+    let mut input = TurnInput::InterAgentCommunication(
-+        codex_protocol::protocol::InterAgentCommunication::new_encrypted(
-+            codex_protocol::AgentPath::root(),
-+            codex_protocol::AgentPath::root()
-+                .join("worker")
-+                .expect("recipient path"),
-+            Vec::new(),
-+            "Reply with exactly: deepseek child ok".to_string(),
-+            true,
-+        )
-+        .with_routing_provider_context(
-+            Some("agentroute-azure".to_string()),
-+            Some("azure".to_string()),
-+            true,
-+        ),
-+    );
-+
-+    make_inter_agent_input_portable_for_provider(&mut input, "agentroute-azure");
-+
-+    let TurnInput::InterAgentCommunication(communication) = input else {
-+        panic!("expected inter-agent communication");
-+    };
-+    assert_eq!(communication.content, "");
-+    assert_eq!(
-+        communication.encrypted_content.as_deref(),
-+        Some("Reply with exactly: deepseek child ok")
-+    );
-+}
-+
-+#[cfg(test)]
-+#[test]
-+fn cross_provider_inter_agent_input_converts_payload_to_plaintext() {
-+    let mut input = TurnInput::InterAgentCommunication(
-+        codex_protocol::protocol::InterAgentCommunication::new_encrypted(
-+            codex_protocol::AgentPath::root(),
-+            codex_protocol::AgentPath::root()
-+                .join("v38_clean_smoke")
-+                .expect("recipient path"),
-+            Vec::new(),
-+            "Reply with exactly: deepseek child ok".to_string(),
-+            true,
-+        )
-+        .with_routing_provider_context(
-+            Some("agentroute-azure".to_string()),
-+            Some("deepseek".to_string()),
-+            true,
-+        ),
-+    );
-+
-+    make_inter_agent_input_portable_for_provider(&mut input, "agentroute-deepseek");
-+
-+    let TurnInput::InterAgentCommunication(communication) = input else {
-+        panic!("expected inter-agent communication");
-+    };
-+    assert!(communication.encrypted_content.is_none());
-+    assert!(communication.content.contains("Message Type: NEW_TASK"));
-+    assert!(communication.content.contains("Task name: v38_clean_smoke"));
-+    assert!(communication.content.contains("Sender: root"));
-+    assert!(
-+        communication
-+            .content
-+            .contains("Payload:\nReply with exactly: deepseek child ok")
-+    );
-+}
-+
  fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
      input
          .iter()
-@@ -1240,10 +1493,21 @@ async fn run_pre_sampling_compact(
+@@ -1240,10 +1391,21 @@ async fn run_pre_sampling_compact(
      sess: &Arc<Session>,
      turn_context: &Arc<TurnContext>,
      client_session: &mut ModelClientSession,
@@ -2929,7 +2824,7 @@ index 8ab44553be..5a31f48a18 100644
      let token_status =
          super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
              .await;
-@@ -1290,7 +1554,7 @@ async fn capture_current_model_fallback_step_context(
+@@ -1290,7 +1452,7 @@ async fn capture_current_model_fallback_step_context(
          .as_deref()
          .is_some_and(codex_login::AuthManager::current_auth_uses_codex_backend);
      if !uses_codex_backend
@@ -2938,7 +2833,7 @@ index 8ab44553be..5a31f48a18 100644
          || previous_model == turn_context.model_info().slug
      {
          return Ok(None);
-@@ -1425,7 +1689,11 @@ async fn run_auto_compact(
+@@ -1425,7 +1587,11 @@ async fn run_auto_compact(
          return Ok(());
      }
  
@@ -2951,7 +2846,7 @@ index 8ab44553be..5a31f48a18 100644
          RemoteCompactionSupport::V2 => {
              emit_compact_metric(
                  &sess.services.session_telemetry,
-@@ -1451,7 +1719,8 @@ async fn run_auto_compact(
+@@ -1451,7 +1617,8 @@ async fn run_auto_compact(
              );
              run_inline_auto_compact_task(
                  Arc::clone(sess),
@@ -2961,7 +2856,7 @@ index 8ab44553be..5a31f48a18 100644
                  initial_context_injection,
                  reason,
                  phase,
-@@ -1533,6 +1802,86 @@ pub(crate) fn build_prompt(
+@@ -1533,6 +1700,86 @@ pub(crate) fn build_prompt(
      }
  }
  
@@ -3048,7 +2943,7 @@ index 8ab44553be..5a31f48a18 100644
  #[allow(clippy::too_many_arguments)]
  #[allow(deprecated)]
  #[instrument(level = "trace",
-@@ -1566,7 +1915,7 @@ async fn run_sampling_request(
+@@ -1566,7 +1813,7 @@ async fn run_sampling_request(
          Arc::clone(&step_context),
          Arc::clone(&turn_diff_tracker),
      );
@@ -3057,7 +2952,7 @@ index 8ab44553be..5a31f48a18 100644
      let mut retry_state = ResponsesStreamRetryState::default();
      let mut initial_input = Some(input);
      let mut original_input = None;
-@@ -1582,6 +1931,7 @@ async fn run_sampling_request(
+@@ -1582,6 +1829,7 @@ async fn run_sampling_request(
                  .for_prompt(&step_context.settings.model_info.input_modalities)
          };
          let mut prompt_input = prompt_input;
@@ -3065,7 +2960,7 @@ index 8ab44553be..5a31f48a18 100644
          sess.services
              .executed_tool_calls
              .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
-@@ -2435,14 +2785,14 @@ async fn try_run_sampling_request(
+@@ -2435,14 +2683,14 @@ async fn try_run_sampling_request(
      let inference_trace = sess.services.rollout_thread_trace.inference_trace_context(
          turn_context.sub_id.as_str(),
          step_context.settings.model_info.slug.as_str(),
@@ -3634,7 +3529,7 @@ index 9cbe72df88..74ecafb157 100644
  
  pub(crate) async fn apply_spawn_agent_service_tier(
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
-index 2e11d899b7..26b02b4ded 100644
+index 2e11d899b7..d2216a33bd 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
 @@ -16,8 +16,7 @@ const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and manag
@@ -3655,7 +3550,27 @@ index 2e11d899b7..26b02b4ded 100644
      ToolSpec::Function(ResponsesApiTool {
          name: "spawn_agent".to_string(),
          description: spawn_agent_tool_description_v2(
-@@ -234,7 +232,11 @@ pub fn create_followup_task_tool() -> ToolSpec {
+@@ -190,8 +188,7 @@ pub fn create_send_message_tool() -> ToolSpec {
+             "message".to_string(),
+             JsonSchema::string(Some(
+                 "Message text to queue on the target agent.".to_string(),
+-            ))
+-            .with_encrypted(),
++            )),
+         ),
+     ]);
+ 
+@@ -223,8 +220,7 @@ pub fn create_followup_task_tool() -> ToolSpec {
+             "message".to_string(),
+             JsonSchema::string(Some(
+                 "Message text to send to the target agent.".to_string(),
+-            ))
+-            .with_encrypted(),
++            )),
+         ),
+     ]);
+ 
+@@ -234,7 +230,11 @@ pub fn create_followup_task_tool() -> ToolSpec {
              .to_string(),
          strict: false,
          defer_loading: None,
@@ -3668,11 +3583,21 @@ index 2e11d899b7..26b02b4ded 100644
          output_schema: None,
      })
  }
+@@ -629,8 +629,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
+             "message".to_string(),
+             JsonSchema::string(Some(
+                 "Initial plain-text task for the new agent.".to_string(),
+-            ))
+-            .with_encrypted(),
++            )),
+         ),
+         (
+             "agent_type".to_string(),
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
-index 888a11376a..d3d10c5e13 100644
+index 888a11376a..3af971c440 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
-@@ -95,6 +95,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
+@@ -95,13 +95,25 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
      assert!(!description.contains("disabled-model"));
      assert!(properties.contains_key("task_name"));
      assert!(properties.contains_key("message"));
@@ -3680,8 +3605,9 @@ index 888a11376a..d3d10c5e13 100644
      assert_eq!(
          properties
              .get("message")
-@@ -102,6 +103,17 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
-         Some(true)
+             .and_then(|schema| schema.encrypted),
+-        Some(true)
++        None
      );
      assert!(properties.contains_key("fork_turns"));
 +    assert_eq!(
@@ -3706,7 +3632,16 @@ index 888a11376a..d3d10c5e13 100644
      assert_eq!(
          properties.get("agent_type"),
          Some(&JsonSchema::string(Some(format!(
-@@ -366,6 +379,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
+@@ -322,7 +335,7 @@ fn send_message_tool_requires_message_and_has_no_output_schema() {
+         properties
+             .get("message")
+             .and_then(|schema| schema.encrypted),
+-        Some(true)
++        None
+     );
+     assert!(!properties.contains_key("interrupt"));
+     assert!(!properties.contains_key("items"));
+@@ -366,11 +379,12 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
          .expect("followup_task should use object params");
      assert!(properties.contains_key("target"));
      assert!(properties.contains_key("message"));
@@ -3714,6 +3649,12 @@ index 888a11376a..d3d10c5e13 100644
      assert_eq!(
          properties
              .get("message")
+             .and_then(|schema| schema.encrypted),
+-        Some(true)
++        None
+     );
+     assert!(!properties.contains_key("items"));
+     assert_eq!(
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
 index 1f34d69085..820a59e723 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
@@ -3801,7 +3742,7 @@ index 1f34d69085..820a59e723 100644
 +    assert_eq!(requested_backend.as_deref(), Some("deepseek"));
 +}
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
-index b82bdd6a0b..f79672f17e 100644
+index b82bdd6a0b..ea4a255e90 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
 @@ -59,6 +59,10 @@ fn communication_from_tool_message(
@@ -3828,7 +3769,7 @@ index b82bdd6a0b..f79672f17e 100644
          );
      }
      let message_type = if trigger_turn {
-@@ -82,4 +92,45 @@ fn communication_from_tool_message(
+@@ -82,4 +92,79 @@ fn communication_from_tool_message(
      let content =
          InterAgentMessage::new(message_type, recipient.clone(), author.clone(), message).render();
      InterAgentCommunication::new(author, recipient, Vec::new(), content, trigger_turn)
@@ -3862,6 +3803,40 @@ index b82bdd6a0b..f79672f17e 100644
 +        assert_eq!(
 +            communication.routing_prompt.as_deref(),
 +            Some("Analyze a high-risk database migration")
++        );
++        assert_eq!(
++            communication.routing_inherited_model_provider.as_deref(),
++            Some("agentroute-azure")
++        );
++        assert_eq!(
++            communication.routing_requested_backend.as_deref(),
++            Some("deepseek")
++        );
++        assert!(communication.routing_model_explicit);
++    }
++
++    #[test]
++    fn plaintext_communication_renders_exact_task_for_cross_provider_delivery() {
++        let communication = communication_from_tool_message(
++            AgentPath::root(),
++            AgentPath::root().join("worker").expect("recipient path"),
++            "Reply with exactly: deepseek child ok".to_string(),
++            Some("Reply with exactly: deepseek child ok".to_string()),
++            Some("agentroute-azure".to_string()),
++            Some("deepseek".to_string()),
++            true,
++            &crate::tools::context::ToolCallSource::DirectPlaintextMessage,
++            true,
++        );
++
++        assert!(communication.encrypted_content.is_none());
++        assert_eq!(
++            communication.content,
++            "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\nReply with exactly: deepseek child ok"
++        );
++        assert_eq!(
++            communication.routing_prompt.as_deref(),
++            Some("Reply with exactly: deepseek child ok")
 +        );
 +        assert_eq!(
 +            communication.routing_inherited_model_provider.as_deref(),
@@ -3955,6 +3930,62 @@ index 41d394243f..00ae4180df 100644
          &source,
          /*trigger_turn*/ true,
      );
+diff --git a/codex-rs/core/src/tools/router.rs b/codex-rs/core/src/tools/router.rs
+index c3526fee10..0a375f77aa 100644
+--- a/codex-rs/core/src/tools/router.rs
++++ b/codex-rs/core/src/tools/router.rs
+@@ -51,7 +51,7 @@ impl ToolCall {
+             && self
+                 .encrypted_function_args
+                 .as_ref()
+-                .is_some_and(Vec::is_empty)
++                .is_none_or(Vec::is_empty)
+         {
+             ToolCallSource::DirectPlaintextMessage
+         } else {
+diff --git a/codex-rs/core/src/tools/router_tests.rs b/codex-rs/core/src/tools/router_tests.rs
+index 05a1e2e65a..47945ae302 100644
+--- a/codex-rs/core/src/tools/router_tests.rs
++++ b/codex-rs/core/src/tools/router_tests.rs
+@@ -59,6 +59,38 @@ fn tool_log_payload_redacts_plaintext_multi_agent_messages() {
+     );
+ }
+ 
++#[test]
++fn plaintext_v2_collaboration_calls_are_redacted_without_encryption_metadata() {
++    for tool_name in ["spawn_agent", "send_message", "followup_task"] {
++        for encrypted_function_args in [None, Some(Vec::new())] {
++            let call = ToolCall {
++                tool_name: ToolName::namespaced("collaboration", tool_name),
++                call_id: format!("call-{tool_name}"),
++                payload: ToolPayload::Function {
++                    arguments: json!({"message": "portable task"}).to_string(),
++                },
++                encrypted_function_args,
++            };
++
++            assert_eq!(call.direct_source(), ToolCallSource::DirectPlaintextMessage);
++        }
++    }
++}
++
++#[test]
++fn encrypted_v2_collaboration_calls_remain_encrypted() {
++    let call = ToolCall {
++        tool_name: ToolName::namespaced("collaboration", "spawn_agent"),
++        call_id: "call-encrypted-spawn".to_string(),
++        payload: ToolPayload::Function {
++            arguments: json!({"message": "gAAAA-provider-bound"}).to_string(),
++        },
++        encrypted_function_args: Some(vec!["message".to_string()]),
++    };
++
++    assert_eq!(call.direct_source(), ToolCallSource::Direct);
++}
++
+ impl codex_extension_api::ToolContributor for ExtensionEchoContributor {
+     fn tools(
+         &self,
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
 index 1f308ab5f3..17c9d7920e 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs

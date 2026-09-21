@@ -62,10 +62,13 @@ def test_native_patch_is_packaged():
     assert "routing_inherited_model_provider" in content
     assert "routing_requested_backend" in content
     assert "routing_model_explicit" in content
-    assert "make_inter_agent_input_portable_for_provider" in content
-    assert "same_provider_inter_agent_input_retains_encrypted_payload" in content
-    assert "cross_provider_inter_agent_input_converts_payload_to_plaintext" in content
-    assert 'contains("Payload:\\nReply with exactly: deepseek child ok")' in content
+    assert "make_inter_agent_input_portable_for_provider" not in content
+    assert "cross_provider_inter_agent_input_converts_payload_to_plaintext" not in content
+    assert "plaintext_v2_collaboration_calls_are_redacted_without_encryption_metadata" in content
+    assert "encrypted_v2_collaboration_calls_remain_encrypted" in content
+    assert ".is_none_or(Vec::is_empty)" in content
+    assert "plaintext_communication_renders_exact_task_for_cross_provider_delivery" in content
+    assert "Payload:\\nReply with exactly: deepseek child ok" in content
     assert '"backend".to_string()' not in content
     assert "+    backend: Option<String>," not in content
     assert "properties.keys().map(String::as_str).collect::<Vec<_>>()" in content

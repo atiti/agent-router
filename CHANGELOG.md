@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.40 — 2026-09-21
+
+- Make the v2 collaboration `spawn_agent`, `send_message`, and `followup_task` message fields
+  plaintext at the tool-schema boundary so Azure/OpenAI parents can delegate readable tasks to
+  DeepSeek and other providers without producing provider-bound ciphertext.
+- Preserve genuinely encrypted legacy and same-provider collaboration calls, while classifying
+  only the three namespaced v2 collaboration tools as plaintext and keeping their arguments
+  redacted from logs.
+- Remove v0.5.39's ineffective post-routing ciphertext conversion and add exact task-envelope,
+  plaintext metadata, and encrypted-compatibility regressions.
+
 ## 0.5.39 — 2026-09-21
 
 - Convert provider-encrypted subagent tasks to the native plaintext inter-agent envelope after
