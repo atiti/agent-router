@@ -14,7 +14,7 @@ from .install import hook_command
 from .profiles import account_credential_home
 from .providers import END_MARKER, START_MARKER, backend_readiness
 
-EXPECTED_RUNTIME_REVISION = "provider-routing-v32"
+EXPECTED_RUNTIME_REVISION = "provider-routing-v33"
 
 
 @dataclass(frozen=True)
