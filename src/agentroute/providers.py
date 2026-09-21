@@ -73,7 +73,8 @@ def sync_codex_providers(
     backup: bool = True,
 ) -> tuple[Path, Path | None]:
     """Replace only AgentRoute's marked provider block in Codex configuration."""
-    path = path or Path.home() / ".codex" / "config.toml"
+    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    path = path or codex_home.expanduser() / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     current = path.read_text(encoding="utf-8") if path.exists() else ""
     start = current.find(START_MARKER)

@@ -121,7 +121,9 @@ def codex_user_prompt_submit(
         prompt = str(payload.get("prompt", ""))
         route_scope, agent_id = _subagent_identity(payload)
         previous_tier = store.previous_tier(session_id, route_scope, agent_id)
-        tier_override, backend_override, routed_prompt = route_overrides(prompt)
+        tier_override, backend_override, routed_prompt = route_overrides(
+            prompt, config.backends
+        )
         sticky_backend = store.route_preference(session_id, route_scope, agent_id)
         previous_capacity_status, previous_capacity_backend = store.previous_capacity(
             session_id, route_scope, agent_id

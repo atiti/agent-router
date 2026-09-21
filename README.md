@@ -125,6 +125,45 @@ agentroute backend-status
 For an OpenAI-compatible bearer-auth proxy in front of Azure, use its `/v1` base URL and add
 `--api-key-header authorization`.
 
+### Local and custom OpenAI-compatible backends
+
+Add any endpoint that implements the OpenAI **Responses API** with `backend-add`. It is not
+restricted to a provider allowlist. The backend name becomes both the route target and the prompt
+prefix, so `ollama` is selected with `@ollama` inside Codex. Custom backends default to
+`functions_and_apply_patch`: this deliberately keeps the admitted Codex safety authority while
+only passing function calls and `apply_patch` to an unvalidated provider. Use `--tool-compatibility
+full` only after validating the endpoint's tool behavior for your workload.
+
+Ollama's local OpenAI-compatible endpoint needs no API key:
+
+```sh
+ollama pull qwen3-coder:30b
+agentroute backend-add ollama \
+  --base-url http://127.0.0.1:11434/v1 \
+  --model qwen3-coder:30b \
+  --display-name "Local Ollama"
+agentroute backend-route fast ollama
+```
+
+Use `@ollama fix the lint error` to select it for one session, or `agentroute backend-default
+ollama` to make it the default for every tier. An arbitrary authenticated gateway works the same
+way; AgentRoute records only the environment-variable name, never the key:
+
+```sh
+agentroute backend-add private-gateway \
+  --base-url https://models.example.com/v1 \
+  --model fast-model \
+  --smart-model reasoning-model \
+  --api-key-env PRIVATE_GATEWAY_KEY
+export PRIVATE_GATEWAY_KEY="..."
+# Or persist it in AgentRoute's owner-only credential file:
+agentroute backend-credential-import private-gateway PRIVATE_GATEWAY_KEY
+```
+
+`backend-add` requires a `/v1` base URL because Codex sends Responses API requests. A provider
+that only implements Chat Completions is not compatible as an execution backend yet; it can still
+be used for the classifier through `agentroute classifier-enable`.
+
 For a persistent local test without putting a key in YAML or Codex TOML, import it from the
 current process into AgentRoute's owner-only credential file, then unset the source variable:
 

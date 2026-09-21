@@ -1,5 +1,5 @@
 from agentroute.classifier import ClassifierResult
-from agentroute.config import default_config
+from agentroute.config import ExecutionBackendConfig, ModelTarget, default_config
 from agentroute.models import ReasonCode, RouteContext, Tier
 from agentroute.router import Router, confidence_for
 
@@ -334,6 +334,36 @@ def test_explicit_deepseek_backend_selects_its_model_and_provider(monkeypatch):
     assert decision.backend == "deepseek"
     assert decision.model_provider == "agentroute-deepseek"
     assert decision.model == "deepseek-flash"
+    assert ReasonCode.BACKEND_OVERRIDE in decision.reason_codes
+
+
+def test_explicit_custom_backend_selects_its_model_and_provider():
+    config = default_config()
+    config.backends["ollama"] = ExecutionBackendConfig(
+        enabled=True,
+        codex_provider="agentroute-ollama",
+        display_name="Local Ollama",
+        base_url="http://127.0.0.1:11434/v1",
+        tool_compatibility="functions_and_apply_patch",
+        tiers={
+            "fast": ModelTarget(model="qwen3-coder", reasoning_effort="low"),
+            "normal": ModelTarget(model="qwen3-coder", reasoning_effort="medium"),
+            "smart": ModelTarget(model="qwen3-coder", reasoning_effort="high"),
+            "max": ModelTarget(model="qwen3-coder", reasoning_effort="high"),
+        },
+    )
+
+    decision = Router(config).route(
+        RouteContext(
+            session_id="test-session",
+            latest_prompt="@ollama @smart investigate this failure",
+            current_tier=Tier.NORMAL,
+        )
+    )
+
+    assert decision.backend == "ollama"
+    assert decision.model_provider == "agentroute-ollama"
+    assert decision.model == "qwen3-coder"
     assert ReasonCode.BACKEND_OVERRIDE in decision.reason_codes
 
 
