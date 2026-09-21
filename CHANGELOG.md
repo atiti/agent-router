@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.5.35 — 2026-09-21
+
+- Preserve the parent turn's effective provider on a subagent's first routed turn, while keeping
+  explicit child backend overrides and child-specific affinity isolated from the parent and siblings.
+- Let an explicit subagent model select another provider when that model maps to exactly one
+  configured backend; ambiguous model names retain the inherited provider.
 
 ## 0.5.34 — 2026-09-21
 

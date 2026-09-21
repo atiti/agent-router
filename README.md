@@ -57,8 +57,10 @@ transcript is unavailable, it inherits the previous selected tier.
 Spawned subagents are routed independently. Their triggering task is classified by the same hook
 before the child's first model call, and each audit row and route banner identifies whether the
 decision belongs to the root agent or a subagent. A child starts with the parent's full or bounded
-context according to Codex's spawn request, but it does not have to keep the parent's model or
-backend. For the initial child decision, AgentRoute reuses Codex's existing non-secret `task_name`
+context according to Codex's spawn request and inherits the parent's effective provider unless the
+spawn request selects a model that maps unambiguously to another configured backend. This lets one
+child deliberately use another provider without changing the parent or a sibling. For the initial
+child decision, AgentRoute reuses Codex's existing non-secret `task_name`
 as an internal routing hint; the provider-facing collaboration tool schema is unchanged. The actual
 delegated task remains provider-encrypted, and the internal hint is ephemeral: it is stripped before
 rollout serialization and never appears in the child model's visible input. An opaque follow-up

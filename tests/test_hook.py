@@ -786,6 +786,176 @@ def test_subagent_task_is_independently_routed_and_audited(tmp_path):
     assert row["agent_id"] == "/root/mechanical"
 
 
+def test_first_subagent_turn_inherits_azure_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    store = AuditStore(tmp_path / "audit.db")
+
+    output = invoke(
+        config,
+        store,
+        "Investigate the allocator state machine",
+        model="dev-gpt-5.6-sol",
+        model_provider="agentroute-azure",
+        flat_agent_id="child-azure",
+    )
+    row = store.latest("same-thread")
+
+    assert output["hookSpecificOutput"]["modelProvider"] == "agentroute-azure"
+    assert row["backend"] == "azure"
+    assert row["sticky_backend"] is None
+    assert "PROVIDER_INHERITANCE" in row["reason_codes"]
+
+
+def test_first_subagent_turn_inherits_openai_provider(tmp_path):
+    config = default_config()
+    config.enabled = True
+    store = AuditStore(tmp_path / "audit.db")
+
+    output = invoke(
+        config,
+        store,
+        "Investigate the allocator state machine",
+        model_provider="openai",
+        flat_agent_id="child-gpt",
+    )
+    row = store.latest("same-thread")
+
+    assert output["hookSpecificOutput"]["modelProvider"] == "openai"
+    assert row["backend"] == "gpt"
+    assert "PROVIDER_INHERITANCE" in row["reason_codes"]
+
+
+def test_subagent_explicit_override_can_cross_provider_without_changing_parent(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    config.backends["deepseek"].enabled = True
+    store = AuditStore(tmp_path / "audit.db")
+
+    invoke(config, store, "@azure investigate this", model_provider="openai")
+    child_a = invoke(
+        config,
+        store,
+        "@deepseek investigate this",
+        model_provider="agentroute-azure",
+        flat_agent_id="child-a",
+    )
+    child_b = invoke(
+        config,
+        store,
+        "investigate this",
+        model="gpt-5",
+        model_provider="agentroute-azure",
+        flat_agent_id="child-b",
+    )
+
+    assert child_a["hookSpecificOutput"]["modelProvider"] == "agentroute-deepseek"
+    assert child_b["hookSpecificOutput"]["modelProvider"] == "agentroute-azure"
+    assert store.route_preference("same-thread", "subagent", "child-a") == "deepseek"
+    assert store.route_preference("same-thread", "subagent", "child-b") is None
+    assert store.route_preference("same-thread", "root", None) == "azure"
+
+
+def test_existing_child_affinity_wins_over_inherited_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["deepseek"].enabled = True
+    store = AuditStore(tmp_path / "audit.db")
+
+    invoke(
+        config,
+        store,
+        "@deepseek investigate this",
+        model_provider="agentroute-azure",
+        flat_agent_id="child-a",
+    )
+    followup = invoke(
+        config,
+        store,
+        "continue investigating",
+        model_provider="agentroute-azure",
+        flat_agent_id="child-a",
+    )
+
+    assert followup["hookSpecificOutput"]["modelProvider"] == "agentroute-deepseek"
+
+
+def test_explicit_subagent_model_uses_its_uniquely_configured_backend(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "Investigate this implementation",
+        model="gpt-6-astra",
+        model_provider="agentroute-azure",
+        flat_agent_id="child-a",
+    )
+
+    assert output["hookSpecificOutput"]["modelProvider"] == "openai"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6-astra"
+
+
+def test_explicit_subagent_model_can_cross_from_inherited_azure_to_gpt(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "Review the implementation",
+        model="gpt-5.6-sol",
+        model_provider="agentroute-azure",
+        flat_agent_id="child-gpt",
+    )
+
+    assert output["hookSpecificOutput"]["modelProvider"] == "openai"
+    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+
+
+def test_ambiguous_subagent_model_preserves_inherited_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    config.backends["azure"].tiers["smart"] = ModelTarget(
+        model="gpt-5.6-sol", reasoning_effort="high"
+    )
+
+    output = invoke(
+        config,
+        AuditStore(tmp_path / "audit.db"),
+        "Review the implementation",
+        model="gpt-5.6-sol",
+        model_provider="agentroute-azure",
+        flat_agent_id="child-azure",
+    )
+
+    assert output["hookSpecificOutput"]["modelProvider"] == "agentroute-azure"
+
+
 def test_flat_codex_subagent_fields_are_routed_and_audited(tmp_path):
     config = default_config()
     config.enabled = True
