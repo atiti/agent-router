@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.38 — 2026-09-21
+
+- Reapply provider tool compatibility after per-turn model resolution so provider-qualified
+  cross-provider subagents use portable function tools plus `apply_patch` instead of exposing Code
+  Mode's reserved custom `exec` schema.
+- Add real new-turn and tool-router regressions covering Azure/OpenAI parents spawning
+  DeepSeek-compatible children while preserving `exec_command`, `write_stdin`, and `apply_patch`.
+
 ## 0.5.37 — 2026-09-21
 
 - Restore Azure and OpenAI compatibility for the reserved `collaboration.spawn_agent` tool by

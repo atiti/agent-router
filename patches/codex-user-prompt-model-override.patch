@@ -2339,10 +2339,74 @@ index dcaa598eb6..9c9310a3cc 100644
  
  #[test_case(None, None, false; "both catalog policies")]
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index f2d047d0ea..341b7d6577 100644
+index f2d047d0ea..d7dd1c7adb 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
-@@ -5353,7 +5353,7 @@ async fn session_configuration_apply_preserves_absolute_cwd_write_root_on_cwd_up
+@@ -56,6 +56,7 @@ use codex_login::CodexAuth;
+ use codex_login::auth::AgentIdentityAuthPolicy;
+ use codex_model_provider::create_model_provider;
+ use codex_model_provider_info::ModelProviderInfo;
++use codex_model_provider_info::ToolCompatibility;
+ use codex_model_provider_info::built_in_model_providers;
+ use codex_models_manager::model_info;
+ use codex_models_manager::test_support::construct_model_info_offline_for_tests;
+@@ -77,6 +78,7 @@ use codex_protocol::models::ImageDetail;
+ use codex_protocol::models::ImageReference;
+ use codex_protocol::models::PermissionProfile;
+ use codex_protocol::models::SandboxEnforcement;
++use codex_protocol::openai_models::ApplyPatchToolType;
+ use codex_protocol::openai_models::ModelServiceTier;
+ use codex_protocol::openai_models::ToolMode;
+ use codex_protocol::permissions::FileSystemAccessMode;
+@@ -1347,6 +1349,47 @@ async fn danger_full_access_turns_do_not_expose_managed_network_proxy() -> anyho
+     Ok(())
+ }
+ 
++#[tokio::test]
++async fn new_turn_reapplies_provider_tool_compatibility_after_model_resolution()
++-> anyhow::Result<()> {
++    let session = make_session_with_config(|config| {
++        config.features.enable(Feature::CodeMode).unwrap();
++        config.model_provider.tool_compatibility = Some(ToolCompatibility::FunctionsAndApplyPatch);
++    })
++    .await?;
++
++    let turn_context = session.new_default_turn().await;
++    let model_info = turn_context.model_info();
++
++    assert_eq!(model_info.tool_mode, Some(ToolMode::Direct));
++    assert_eq!(
++        model_info.apply_patch_tool_type,
++        Some(ApplyPatchToolType::Freeform)
++    );
++    assert_eq!(
++        crate::tools::effective_tool_mode(&turn_context, model_info),
++        ToolMode::Direct
++    );
++
++    Ok(())
++}
++
++#[tokio::test]
++async fn new_turn_without_provider_tool_compatibility_preserves_fallback_metadata()
++-> anyhow::Result<()> {
++    let session = make_session_with_config(|config| {
++        config.model = Some("unknown-provider-model".to_string());
++        config.model_provider.tool_compatibility = None;
++    })
++    .await?;
++
++    let turn_context = session.new_default_turn().await;
++
++    assert!(turn_context.model_info().used_fallback_model_metadata);
++
++    Ok(())
++}
++
+ #[tokio::test]
+ async fn danger_full_access_tool_attempts_do_not_enforce_managed_network() -> anyhow::Result<()> {
+     #[derive(Default)]
+@@ -5353,7 +5396,7 @@ async fn session_configuration_apply_preserves_absolute_cwd_write_root_on_cwd_up
  
  #[tokio::test]
  async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
@@ -2351,7 +2415,7 @@ index f2d047d0ea..341b7d6577 100644
          CodexAuth::from_api_key("Test API Key"),
          Vec::new(),
          |config| {
-@@ -5399,6 +5399,7 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
+@@ -5399,6 +5442,7 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
                  window_ids,
                  compaction_response_id: None,
                  compaction_model_hash: None,
@@ -2914,7 +2978,7 @@ index 8ab44553be..b24a2ffb98 100644
          .stream(
              prompt,
 diff --git a/codex-rs/core/src/session/turn_context.rs b/codex-rs/core/src/session/turn_context.rs
-index 9f86627a45..e9e5cbbab9 100644
+index 9f86627a45..83f150934b 100644
 --- a/codex-rs/core/src/session/turn_context.rs
 +++ b/codex-rs/core/src/session/turn_context.rs
 @@ -301,7 +301,8 @@ pub struct TurnContext {
@@ -2987,6 +3051,24 @@ index 9f86627a45..e9e5cbbab9 100644
              session_source,
              history_mode: session_configuration.history_mode,
              parent_thread_id: session_configuration.parent_thread_id,
+@@ -1021,6 +1050,17 @@ impl Session {
+                 self.features.enabled(Feature::Personality),
+             )
+             .await;
++        let model_info = if let Some(tool_compatibility) =
++            session_configuration.provider.info().tool_compatibility
++        {
++            step_activation::model_info_for_provider_compatibility(
++                &model_info,
++                &model_info,
++                Some(tool_compatibility),
++            )
++        } else {
++            model_info
++        };
+         let multi_agent_version = match multi_agent_runtime {
+             TurnMultiAgentRuntime::ResolveAndStore => {
+                 // A background preview must not overwrite a newer turn's model metadata.
 diff --git a/codex-rs/core/src/session/turn_tests.rs b/codex-rs/core/src/session/turn_tests.rs
 index e43fb6a2ae..7c042ead8c 100644
 --- a/codex-rs/core/src/session/turn_tests.rs
@@ -3827,7 +3909,7 @@ index 1f308ab5f3..17c9d7920e 100644
              || turn_context
                  .config
 diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
-index c0125ad996..645cbc5859 100644
+index c0125ad996..a1ff077de2 100644
 --- a/codex-rs/core/src/tools/spec_plan_tests.rs
 +++ b/codex-rs/core/src/tools/spec_plan_tests.rs
 @@ -313,9 +313,12 @@ fn use_chatgpt_auth(turn: &mut TurnContext) {
@@ -3858,6 +3940,29 @@ index c0125ad996..645cbc5859 100644
  }
  
  struct TestNamespaceExtensionTool {
+@@ -641,6 +647,22 @@ async fn internal_guardian_sessions_preserve_code_mode() {
+     );
+ }
+ 
++#[tokio::test]
++async fn direct_provider_compatibility_hides_code_mode_exec() {
++    let plan = probe(|turn| {
++        set_feature(turn, Feature::CodeMode, /*enabled*/ true);
++        update_turn_settings_for_test(turn, |settings| {
++            let model_info = Arc::make_mut(&mut settings.model_info);
++            model_info.tool_mode = Some(ToolMode::Direct);
++            model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
++        });
++    })
++    .await;
++
++    plan.assert_visible_lacks(&[codex_code_mode::PUBLIC_TOOL_NAME]);
++    plan.assert_visible_contains(&["exec_command", "write_stdin", "apply_patch"]);
++}
++
+ #[tokio::test]
+ async fn internal_guardian_sessions_require_managed_secondary_environments() {
+     for (secondary_profile, expected_tools) in [
 diff --git a/codex-rs/core/tests/responses_headers.rs b/codex-rs/core/tests/responses_headers.rs
 index be184753e7..0cf2ca3343 100644
 --- a/codex-rs/core/tests/responses_headers.rs
