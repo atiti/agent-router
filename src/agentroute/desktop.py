@@ -5,6 +5,8 @@ import plistlib
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +33,25 @@ def _run(*command: str | Path, capture: bool = False) -> subprocess.CompletedPro
 def _require_macos() -> None:
     if platform.system() != "Darwin":
         raise RuntimeError("Codex Desktop installation is supported only on macOS")
+
+
+@contextmanager
+def _desktop_build_lock(home: Path) -> Iterator[None]:
+    import fcntl
+
+    home.mkdir(parents=True, exist_ok=True)
+    lock_path = home / "desktop-rebuild.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(
+                "another AgentRoute Desktop build is already running; wait for it to finish"
+            ) from error
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _read_build_id(home: Path) -> str:
@@ -78,6 +99,25 @@ def build_desktop_app(
 ) -> tuple[Path, Path | None]:
     """Derive a signed routed app from the user's installed official app."""
     _require_macos()
+    home = agentroute_home()
+    with _desktop_build_lock(home):
+        return _build_desktop_app_locked(
+            source,
+            destination,
+            signing_identity=signing_identity,
+            replace=replace,
+            allow_version_mismatch=allow_version_mismatch,
+        )
+
+
+def _build_desktop_app_locked(
+    source: Path,
+    destination: Path,
+    *,
+    signing_identity: str,
+    replace: bool,
+    allow_version_mismatch: bool,
+) -> tuple[Path, Path | None]:
     home = agentroute_home()
     codex = home / "bin/codex-bin"
     code_mode_host = home / "bin/codex-code-mode-host"
@@ -164,6 +204,18 @@ def build_desktop_app(
         _run("codesign", "--verify", "--deep", "--strict", "--verbose=2", staging_app)
         smoke_code_mode_host(resources / "codex-code-mode-host")
         _run(resources / "codex", "app-server", "--help", capture=True)
+        if destination.exists():
+            conflict_root = home / "backups" / "desktop" / "conflicts"
+            conflict_root.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            conflict = conflict_root / f"{destination.stem}-{timestamp}.app"
+            shutil.move(destination, conflict)
+            if backup is not None and backup.exists():
+                shutil.move(backup, destination)
+            raise FileExistsError(
+                "Desktop destination appeared during rebuild; restored the previous app and "
+                f"preserved the conflicting bundle at {conflict}"
+            )
         shutil.move(staging_app, destination)
     except Exception:
         if backup is not None and backup.exists() and not destination.exists():

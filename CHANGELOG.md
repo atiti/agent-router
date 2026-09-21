@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.39 — 2026-09-21
+
+- Convert provider-encrypted subagent tasks to the native plaintext inter-agent envelope after
+  routing when a child switches providers, so Azure/OpenAI parents can delegate usable tasks to
+  DeepSeek or other compatible backends without weakening same-provider encrypted delivery.
+- Serialize routed Desktop builds with an exclusive lock so overlapping rebuilds fail clearly
+  instead of racing during bundle replacement.
+- Quarantine any destination bundle that appears during the final install step, restore the prior
+  routed app, and fail without nesting or corrupting either application bundle.
+
 ## 0.5.38 — 2026-09-21
 
 - Reapply provider tool compatibility after per-turn model resolution so provider-qualified
