@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Improve the open-source project surface with a visual README quickstart, support and conduct
+  guidance, structured issue and pull-request templates, automated dependency updates, and an
+  OpenSSF Scorecard workflow.
+
 ## 0.5.32 — 2026-09-20
 
 - Match the routed Codex CLI package version to the CLI embedded in the current official Desktop

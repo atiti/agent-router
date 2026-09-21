@@ -1,5 +1,12 @@
 # Contributing
 
+AgentRoute is alpha infrastructure around a pinned open-source Codex build. Start with a focused
+issue for changes that affect provider boundaries, authentication, installation, or the maintained
+Codex patch stack. Small documentation and test improvements can go directly to a pull request.
+
+By participating, you agree to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). For support and
+safe diagnostic-sharing guidance, see [SUPPORT.md](SUPPORT.md).
+
 Create focused changes, add tests for behavioral changes, and run:
 
 ```sh

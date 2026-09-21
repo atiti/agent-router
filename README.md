@@ -1,5 +1,10 @@
 # AgentRoute
 
+[![CI](https://github.com/atiti/agent-router/actions/workflows/ci.yml/badge.svg)](https://github.com/atiti/agent-router/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/atiti/agent-router)](https://github.com/atiti/agent-router/releases/latest)
+[![License](https://img.shields.io/github/license/atiti/agent-router)](LICENSE)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/atiti/agent-router/badge)](https://securityscorecards.dev/viewer/?uri=github.com/atiti/agent-router)
+
 AgentRoute is a local-first, auditable model router for coding agents. It selects a model,
 reasoning effort, and execution backend for every user turn while keeping the same Codex thread,
 transcript, tools, and working context.
@@ -7,6 +12,19 @@ transcript, tools, and working context.
 It is deliberately boring infrastructure: rules are inspectable, decisions are auditable, and
 `@fast`, `@normal`, `@smart`, or `@max` always gives the human control. An optional LLM classifier
 can resolve ambiguous turns; it is disabled until explicitly configured.
+
+![AgentRoute routing three Codex tasks across GPT, Azure, and DeepSeek](assets/terminal-demo.svg)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/atiti/agent-router/main/scripts/bootstrap.sh | sh
+source ~/.zshrc
+agentroute doctor
+codex
+```
+
+AgentRoute supports the interactive Codex CLI, `codex exec`, locally rebuilt Codex Desktop,
+multiple ChatGPT subscription profiles, Azure OpenAI, and tool-compatible DeepSeek endpoints. See
+[Install](#install) for prerequisites and the review-before-running flow.
 
 > **Alpha:** Codex does not currently accept model overrides from `UserPromptSubmit` hooks. The
 > installer builds a narrowly patched Codex from the pinned upstream commit documented below.
@@ -568,5 +586,6 @@ uv run pytest
 uv run ruff check .
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Run `./scripts/uninstall.sh` for safe removal instructions.
-Licensed under Apache-2.0.
+See [CONTRIBUTING.md](CONTRIBUTING.md), [SUPPORT.md](SUPPORT.md), and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Run `./scripts/uninstall.sh` for safe removal
+instructions. Licensed under Apache-2.0.
