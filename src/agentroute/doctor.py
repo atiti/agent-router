@@ -9,8 +9,9 @@ from pathlib import Path
 
 from .audit import AuditStore
 from .classifier import catalog_age_seconds, read_api_key
-from .config import AppConfig, agentroute_home, config_path, model_capabilities
+from .config import AppConfig, agentroute_home, codex_home, config_path, model_capabilities
 from .install import hook_command
+from .profiles import account_credential_home
 from .providers import END_MARKER, START_MARKER, backend_readiness
 
 EXPECTED_RUNTIME_REVISION = "provider-routing-v32"
@@ -24,7 +25,7 @@ class DoctorCheck:
 
 
 def _hooks_check() -> DoctorCheck:
-    path = Path.home() / ".codex" / "hooks.json"
+    path = codex_home() / "hooks.json"
     if not path.exists():
         return DoctorCheck("hooks", "fail", f"missing {path}")
     try:
@@ -108,41 +109,33 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
                 ),
             )
         )
-        if not config.capacity.profiles:
+        active = config.capacity.active_profile
+        missing = [
+            name
+            for name, profile in config.capacity.profiles.items()
+            if profile.enabled and not account_credential_home(name, profile).is_dir()
+        ]
+        if active and active not in config.capacity.profiles:
+            checks.append(
+                DoctorCheck("capacity-accounts", "fail", f"unknown active account: {active}")
+            )
+        elif missing:
             checks.append(
                 DoctorCheck(
-                    "capacity-profiles",
+                    "capacity-accounts",
                     "warn",
-                    "no isolated ChatGPT profiles; API backend failover remains available",
+                    "missing credential slots: " + ", ".join(sorted(missing)),
                 )
             )
         else:
-            active = config.capacity.active_profile
-            missing = [
-                name
-                for name, profile in config.capacity.profiles.items()
-                if profile.enabled and not Path(profile.codex_home).expanduser().is_dir()
-            ]
-            if active and active not in config.capacity.profiles:
-                checks.append(
-                    DoctorCheck("capacity-profiles", "fail", f"unknown active profile: {active}")
+            checks.append(
+                DoctorCheck(
+                    "capacity-accounts",
+                    "pass",
+                    f"{len(config.capacity.profiles)} configured; active {active or 'default'}; "
+                    f"canonical home {codex_home()}",
                 )
-            elif missing:
-                checks.append(
-                    DoctorCheck(
-                        "capacity-profiles",
-                        "warn",
-                        "missing CODEX_HOME directories: " + ", ".join(sorted(missing)),
-                    )
-                )
-            else:
-                checks.append(
-                    DoctorCheck(
-                        "capacity-profiles",
-                        "pass",
-                        f"{len(config.capacity.profiles)} configured; active {active or 'auto'}",
-                    )
-                )
+            )
     checks.append(
         DoctorCheck(
             "routing",
@@ -163,7 +156,7 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
         checks.append(DoctorCheck("runtime", "pass", build_id))
 
     checks.append(_hooks_check())
-    provider_path = Path.home() / ".codex" / "config.toml"
+    provider_path = codex_home() / "config.toml"
     provider_text = provider_path.read_text(encoding="utf-8") if provider_path.exists() else ""
     external_enabled = any(
         name != "gpt" and backend.enabled for name, backend in config.backends.items()

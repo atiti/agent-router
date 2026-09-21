@@ -3,18 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .capacity import CapacityState, subscription_state
 from .config import AppConfig, SubscriptionProfileConfig, agentroute_home
+from .config import codex_home as canonical_codex_home
 from .install import _CodexAppServer
-
-PROFILE_SHARED_FILES = ("config.toml", "hooks.json", "AGENTS.md")
-PROFILE_SHARED_DIRECTORIES = ("skills", "rules")
 
 
 @dataclass(frozen=True)
@@ -54,9 +50,27 @@ def account_hash(account_id: str | None) -> str | None:
     return hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:16]
 
 
-def profile_account_hash(profile: SubscriptionProfileConfig) -> str | None:
+def account_credential_home(
+    name: str, profile: SubscriptionProfileConfig
+) -> Path:
+    """Resolve an account's credentials without changing the canonical CODEX_HOME.
+
+    ``default`` deliberately uses the standard Codex credential path. Legacy
+    profile homes remain readable so an upgrade never invalidates an existing
+    signed-in account; new named accounts live underneath the canonical home.
+    """
+    if profile.credential_home:
+        return Path(profile.credential_home).expanduser()
+    if name == "default":
+        return canonical_codex_home()
+    if profile.codex_home:
+        return Path(profile.codex_home).expanduser()
+    return canonical_codex_home() / "accounts" / name
+
+
+def profile_account_hash(name: str, profile: SubscriptionProfileConfig) -> str | None:
     """Read a profile's local account identity without exposing the raw identifier."""
-    auth_path = Path(profile.codex_home).expanduser() / "auth.json"
+    auth_path = account_credential_home(name, profile) / "auth.json"
     try:
         payload = json.loads(auth_path.read_text(encoding="utf-8"))
     except (OSError, TypeError, json.JSONDecodeError):
@@ -76,23 +90,32 @@ def profile_name_for_account(config: AppConfig, account_id: str | None) -> str |
     matches = [
         (profile.priority, name)
         for name, profile in config.capacity.profiles.items()
-        if profile.enabled and profile_account_hash(profile) == current_hash
+        if profile.enabled and profile_account_hash(name, profile) == current_hash
     ]
     return min(matches)[1] if matches else None
 
 
-def profile_name_for_home(config: AppConfig, codex_home: str | None = None) -> str | None:
-    """Identify the profile that owns the current process's CODEX_HOME."""
-    raw_home = codex_home or os.environ.get("CODEX_HOME")
-    if not raw_home:
-        return None
-    current_home = Path(raw_home).expanduser().resolve()
+def profile_name_for_home(config: AppConfig, current_codex_home: str | None = None) -> str | None:
+    """Identify legacy process homes; canonical homes always mean ``default``."""
+    raw_home = current_codex_home or os.environ.get("CODEX_HOME")
+    current_home = (
+        Path(raw_home).expanduser().resolve()
+        if raw_home
+        else canonical_codex_home().resolve()
+    )
     matches = [
         (profile.priority, name)
         for name, profile in config.capacity.profiles.items()
-        if profile.enabled and Path(profile.codex_home).expanduser().resolve() == current_home
+        if profile.enabled
+        and name != "default"
+        and profile.codex_home
+        and Path(profile.codex_home).expanduser().resolve() == current_home
     ]
-    return min(matches)[1] if matches else None
+    if matches:
+        return min(matches)[1]
+    if current_home == canonical_codex_home().resolve() and "default" in config.capacity.profiles:
+        return "default"
+    return None
 
 
 def _current_profile_status(
@@ -103,7 +126,7 @@ def _current_profile_status(
 ) -> ProfileStatus:
     return ProfileStatus(
         name=name,
-        codex_home=str(Path(profile.codex_home).expanduser()),
+        codex_home=str(account_credential_home(name, profile)),
         priority=profile.priority,
         enabled=profile.enabled,
         authenticated=current_hash is not None,
@@ -116,36 +139,6 @@ def routed_codex_binary() -> Path:
     return agentroute_home() / "bin" / "codex-bin"
 
 
-def bootstrap_profile_home(source: Path, destination: Path) -> tuple[str, ...]:
-    """Copy reusable Codex setup into a profile without copying account state."""
-    source = source.expanduser().resolve()
-    destination = destination.expanduser().resolve()
-    if source == destination:
-        raise ValueError("profile source and destination must be different directories")
-    if not source.is_dir():
-        raise ValueError(f"profile source does not exist: {source}")
-    destination.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    copied: list[str] = []
-    for name in PROFILE_SHARED_FILES:
-        origin = source / name
-        target = destination / name
-        if not origin.is_file():
-            continue
-        if target.exists():
-            shutil.copy2(target, target.with_name(f"{name}.agentroute-profile-backup-{timestamp}"))
-        shutil.copy2(origin, target)
-        copied.append(name)
-    for name in PROFILE_SHARED_DIRECTORIES:
-        origin = source / name
-        target = destination / name
-        if not origin.is_dir():
-            continue
-        shutil.copytree(origin, target, dirs_exist_ok=True)
-        copied.append(name)
-    return tuple(copied)
-
-
 def probe_profile(
     name: str,
     profile: SubscriptionProfileConfig,
@@ -153,7 +146,7 @@ def probe_profile(
     *,
     codex_binary: Path | None = None,
 ) -> ProfileStatus:
-    home = Path(profile.codex_home).expanduser()
+    home = account_credential_home(name, profile)
     binary = codex_binary or routed_codex_binary()
     if not profile.enabled:
         return ProfileStatus(
@@ -163,8 +156,8 @@ def probe_profile(
     if not home.is_dir():
         return ProfileStatus(
             name, str(home), profile.priority, True, False, None,
-            CapacityState("gpt", "unavailable", "CODEX_HOME does not exist", "profile"),
-            "CODEX_HOME does not exist",
+            CapacityState("gpt", "unavailable", "account credentials do not exist", "profile"),
+            "account credentials do not exist",
         )
     if not binary.is_file():
         return ProfileStatus(
@@ -296,9 +289,44 @@ def select_turn_profile(
         return None
 
     current_hash = account_hash(current_account_id)
-    matched_name = profile_name_for_home(config) or profile_name_for_account(
-        config, current_account_id
+    home_match = profile_name_for_home(config)
+    account_match = profile_name_for_account(config, current_account_id)
+    # A legacy non-canonical home is stronger evidence than account identity:
+    # two old homes may intentionally hold the same login with different model
+    # compatibility mappings. Canonical single-home sessions use account ID.
+    matched_name = (
+        home_match
+        if home_match not in {None, "default"}
+        else account_match or home_match
     )
+    configured = config.capacity.active_profile
+    configured_profile = profiles.get(configured) if configured else None
+    if sticky_profile is None and configured_profile is not None and configured != matched_name:
+        selected = probe_profile(
+            configured,
+            configured_profile,
+            config,
+            codex_binary=codex_binary,
+        )
+        if selected.enabled and selected.authenticated:
+            current = (
+                _current_profile_status(
+                    matched_name,
+                    profiles[matched_name],
+                    current_capacity,
+                    current_hash,
+                )
+                if matched_name in profiles
+                else None
+            )
+            return TurnProfileSelection(
+                matched_name,
+                current,
+                selected,
+                True,
+                "default_account",
+                selected.account_hash != current_hash,
+            )
     if not config.capacity.enabled or not config.capacity.auto_select_profile:
         if matched_name is None:
             return None

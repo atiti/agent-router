@@ -37,7 +37,7 @@ def test_explicit_model_keeps_default_provider_but_not_default_model():
     assert args[-2:] == ["--model", "custom"]
 
 
-def test_launch_profile_sets_isolated_codex_home_before_exec(tmp_path, monkeypatch):
+def test_launch_profile_preserves_canonical_codex_home_before_exec(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     profile_home = tmp_path / "profile"
     profile_home.mkdir()
@@ -59,14 +59,12 @@ def test_launch_profile_sets_isolated_codex_home_before_exec(tmp_path, monkeypat
         raise SystemExit
 
     monkeypatch.setattr("agentroute.launcher.os.execve", fake_execve)
-    monkeypatch.setattr(
-        "agentroute.launcher.select_launch_profile",
-        lambda *_args, **_kwargs: ("personal", None, ()),
-    )
+    canonical_home = tmp_path / "canonical"
+    monkeypatch.setenv("CODEX_HOME", str(canonical_home))
 
     try:
         launch_codex(binary, ["--version"], "personal")
     except SystemExit:
         pass
 
-    assert captured["environment"]["CODEX_HOME"] == str(profile_home)
+    assert captured["environment"]["CODEX_HOME"] == str(canonical_home)

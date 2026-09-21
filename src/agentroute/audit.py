@@ -512,7 +512,10 @@ class AuditStore:
         )
 
     def subscription_profile_affinity(self, session_id: str) -> str | None:
-        """Return the most recently selected subscription profile for a session."""
+        """Return the most recently selected ChatGPT account for a session.
+
+        The historical method name remains stable for callers and old audit rows.
+        """
         with self.connection() as connection:
             rows = connection.execute(
                 "SELECT selection_receipt FROM routing_decisions "
@@ -524,9 +527,9 @@ class AuditStore:
                 receipt = json.loads(row["selection_receipt"] or "{}")
             except (TypeError, json.JSONDecodeError):
                 continue
-            profile = receipt.get("subscription_profile")
-            if isinstance(profile, dict) and profile.get("name"):
-                return str(profile["name"])
+            account = receipt.get("chatgpt_account") or receipt.get("subscription_profile")
+            if isinstance(account, dict) and account.get("name"):
+                return str(account["name"])
         return None
 
     def provider_state_is_mixed(
