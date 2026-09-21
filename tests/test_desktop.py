@@ -78,6 +78,53 @@ def test_desktop_build_rejects_non_macos(tmp_path, monkeypatch):
         desktop.build_desktop_app(tmp_path / "source", tmp_path / "destination")
 
 
+def test_desktop_build_rejects_concurrent_rebuild(tmp_path, monkeypatch):
+    fcntl = pytest.importorskip("fcntl")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("AGENTROUTE_HOME", str(home))
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    with (home / "desktop-rebuild.lock").open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(RuntimeError, match="another AgentRoute Desktop build"):
+            desktop.build_desktop_app(tmp_path / "source", tmp_path / "destination")
+
+
+def test_desktop_build_restores_backup_if_destination_appears(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    source = tmp_path / "ChatGPT.app"
+    destination = tmp_path / "ChatGPT-Routed.app"
+    _fake_app(source)
+    _fake_app(destination)
+    (destination / "original-marker").write_text("original", encoding="utf-8")
+    (home / "bin").mkdir(parents=True)
+    for name in ("codex-bin", "codex-code-mode-host"):
+        path = home / "bin" / name
+        path.write_text(name, encoding="utf-8")
+        path.chmod(0o755)
+    monkeypatch.setenv("AGENTROUTE_HOME", str(home))
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(desktop, "smoke_code_mode_host", lambda _path: None)
+
+    def fake_run(*command, capture=False):
+        if command[0] == "ditto":
+            shutil.copytree(command[1], command[2])
+        elif Path(command[0]).name == "codex" and command[1:] == ("app-server", "--help"):
+            _fake_app(destination)
+            (destination / "conflict-marker").write_text("conflict", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="same\n", stderr="")
+
+    monkeypatch.setattr(desktop, "_run", fake_run)
+    with pytest.raises(FileExistsError, match="appeared during rebuild"):
+        desktop.build_desktop_app(source, destination, replace=True)
+
+    assert (destination / "original-marker").read_text(encoding="utf-8") == "original"
+    assert not (destination / "ChatGPT-Routed.app").exists()
+    conflicts = list((home / "backups" / "desktop" / "conflicts").glob("*.app"))
+    assert len(conflicts) == 1
+    assert (conflicts[0] / "conflict-marker").read_text(encoding="utf-8") == "conflict"
+
+
 def test_desktop_build_rejects_app_server_version_mismatch(tmp_path, monkeypatch):
     home = tmp_path / "home"
     source = tmp_path / "ChatGPT.app"

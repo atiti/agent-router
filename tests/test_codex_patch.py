@@ -62,6 +62,10 @@ def test_native_patch_is_packaged():
     assert "routing_inherited_model_provider" in content
     assert "routing_requested_backend" in content
     assert "routing_model_explicit" in content
+    assert "make_inter_agent_input_portable_for_provider" in content
+    assert "same_provider_inter_agent_input_retains_encrypted_payload" in content
+    assert "cross_provider_inter_agent_input_converts_payload_to_plaintext" in content
+    assert 'contains("Payload:\\nReply with exactly: deepseek child ok")' in content
     assert '"backend".to_string()' not in content
     assert "+    backend: Option<String>," not in content
     assert "properties.keys().map(String::as_str).collect::<Vec<_>>()" in content
