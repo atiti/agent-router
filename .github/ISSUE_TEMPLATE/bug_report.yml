@@ -1,0 +1,65 @@
+name: Bug report
+description: Report a reproducible AgentRoute problem
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve AgentRoute. Remove credentials, prompts, transcripts, and customer data from all output.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Run ...
+        2. Enter ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Paste `agentroute doctor`, `agentroute desktop status`, and `codex --version` output as relevant.
+      render: shell
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - Codex CLI interactive
+        - codex exec
+        - Codex Desktop / ChatGPT-Routed
+        - AgentRoute CLI
+        - Installer or updater
+        - GitHub Actions release
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS Apple silicon
+        - macOS Intel
+        - Linux arm64
+        - Linux x64
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed secrets, private prompts, transcripts, and customer data.
+          required: true
