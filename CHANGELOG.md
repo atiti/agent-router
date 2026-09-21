@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.33 — 2026-09-21
+
 - Add `agentroute backend-add` for arbitrary OpenAI Responses-compatible providers,
   including credential-free local Ollama endpoints.
 - Support dynamic `@backend-name` session routing, optional per-tier custom model maps,
