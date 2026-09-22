@@ -101,7 +101,7 @@ apply. The requested tier and a SHA-256 hash of the reason are audited; the reas
 
 | Tier | Default Codex target | Typical work |
 |---|---|---|
-| FAST | `gpt-5.6-luna`, low | renames, formatting, mechanical edits |
+| FAST | `gpt-5.6-luna`, low | greetings, exact retrieval, status checks, formatting, mechanical edits |
 | NORMAL | `gpt-5.6-terra`, medium | routine implementation |
 | SMART | `gpt-5.6-sol`, high | debugging, security, complex changes |
 | MAX | `gpt-6-astra`, high | architecture and high-risk cross-cutting work |
@@ -442,6 +442,7 @@ agentroute stats --baseline gpt-6-astra
 agentroute models
 agentroute doctor
 agentroute label 42 correct --notes "appropriate model for the completed task"
+agentroute label 43 too-low --notes "needed Normal for reliable tool use"
 ```
 
 Use `agentroute observe` to audit decisions without changing models and `agentroute enable` to
@@ -584,7 +585,14 @@ provider-returned model metadata. LLM rows distinguish previous context sent fro
 inheritance, hash the exact request body, and record request latency plus numeric token-usage fields
 returned by the provider. Prompt and classifier reason text remain excluded. Use `agentroute label`
 to build a local calibration set. Approved agent requests are also recorded. Manual overrides
-automatically label the previous automatic decision as overridden.
+records a next-turn manual tier choice as a calibration signal without assuming the earlier route
+was wrong. Label it explicitly as `correct`, `too-low`, `too-high`, `changed-task`, or `failed`.
+
+The hybrid classifier chooses model tier and reasoning effort independently. FAST is protected by a
+quality floor: authored communication, explanation, analysis, implementation, debugging, and
+orchestration use at least NORMAL even if the classifier proposes FAST. Continuations retain the
+previous task's model tier and strongest known reasoning effort. Explicit prefixes such as
+`@normal @high` always win.
 
 ## Native Codex patch
 

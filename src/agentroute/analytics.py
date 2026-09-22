@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from statistics import median
 from typing import Any
 
+from .classifier import normalize_task_type
 from .config import PricingConfig
 from .pricing import CostReport, cost_report, token_cost
 
@@ -108,6 +109,7 @@ class ReconciliationSummary:
     stale_unreconciled: int
     failed: int
     interrupted: int
+    superseded: int
 
 
 @dataclass(frozen=True)
@@ -133,6 +135,22 @@ class CapacityUsage:
 
 
 @dataclass(frozen=True)
+class CalibrationSummary:
+    automatic_turns: int
+    labeled_turns: int
+    explicit_correct: int
+    too_low: int
+    too_high: int
+    execution_failed: int
+    next_manual_override_signals: int
+    stronger_next_override_signals: int
+    reasoning_effort_sources: dict[str, int]
+    reasoning_efforts: dict[str, int]
+    task_types: dict[str, int]
+    confidence_bands: dict[str, int]
+
+
+@dataclass(frozen=True)
 class AnalyticsReport:
     rows: int
     model_mismatch_turns: int
@@ -144,6 +162,7 @@ class AnalyticsReport:
     reconciliation: ReconciliationSummary
     longest_turns: tuple[LongestTurn, ...]
     capacity: CapacityUsage
+    calibration: CalibrationSummary
 
 
 def _duration_ms(row: Any) -> float | None:
@@ -182,11 +201,12 @@ def _reconciliation_summary(rows: list[Any], stale_after_hours: int = 24) -> Rec
         "stale_unreconciled": 0,
         "failed": 0,
         "interrupted": 0,
+        "superseded": 0,
     }
     now = datetime.now(timezone.utc)
     for row in rows:
         outcome = str(row["turn_outcome"] or "pending")
-        if outcome in {"failed", "interrupted"}:
+        if outcome in {"failed", "interrupted", "superseded"}:
             counts[outcome] += 1
         elif row["turn_completed_at"] is not None:
             key = (
@@ -236,6 +256,57 @@ def _capacity_summary(rows: list[Any]) -> CapacityUsage:
         fallback_duration_ms=fallback_duration_ms,
         by_route=dict(sorted(by_route.items())),
         by_trigger=dict(sorted(by_trigger.items())),
+    )
+
+
+def _calibration_summary(rows: list[Any]) -> CalibrationSummary:
+    automatic = [row for row in rows if not bool(row["manual_override"])]
+    labels: dict[str, int] = defaultdict(int)
+    effort_sources: dict[str, int] = defaultdict(int)
+    efforts: dict[str, int] = defaultdict(int)
+    task_types: dict[str, int] = defaultdict(int)
+    confidence_bands: dict[str, int] = defaultdict(int)
+    override_signals = stronger_override_signals = 0
+    tier_rank = {"fast": 0, "normal": 1, "smart": 2, "max": 3}
+    for row in automatic:
+        if row["outcome_label"]:
+            labels[str(row["outcome_label"])] += 1
+        effort_sources[str(row["reasoning_effort_source"] or "tier_default")] += 1
+        efforts[str(row["reasoning_effort"] or "none")] += 1
+        if row["classifier_task_type"]:
+            task_types[normalize_task_type(str(row["classifier_task_type"])).value] += 1
+        if row["classifier_confidence"] is not None:
+            confidence = float(row["classifier_confidence"])
+            band = (
+                "<70%"
+                if confidence < 0.70
+                else "70-79%"
+                if confidence < 0.80
+                else "80-89%"
+                if confidence < 0.90
+                else "90-94%"
+                if confidence < 0.95
+                else "95-100%"
+            )
+            confidence_bands[band] += 1
+        override = row["next_manual_override_tier"]
+        if override:
+            override_signals += 1
+            if tier_rank.get(str(override), -1) > tier_rank.get(str(row["selected_tier"]), -1):
+                stronger_override_signals += 1
+    return CalibrationSummary(
+        automatic_turns=len(automatic),
+        labeled_turns=sum(labels.values()),
+        explicit_correct=labels["correct"],
+        too_low=labels["too-low"],
+        too_high=labels["too-high"],
+        execution_failed=labels["failed"],
+        next_manual_override_signals=override_signals,
+        stronger_next_override_signals=stronger_override_signals,
+        reasoning_effort_sources=dict(sorted(effort_sources.items())),
+        reasoning_efforts=dict(sorted(efforts.items())),
+        task_types=dict(sorted(task_types.items(), key=lambda item: (-item[1], item[0]))),
+        confidence_bands=dict(sorted(confidence_bands.items())),
     )
 
 
@@ -391,6 +462,7 @@ def usage_analytics(
         duration=_duration_summary(rows),
         reconciliation=_reconciliation_summary(rows),
         capacity=_capacity_summary(rows),
+        calibration=_calibration_summary(rows),
         longest_turns=tuple(
             LongestTurn(
                 decision_id=int(row["id"]),

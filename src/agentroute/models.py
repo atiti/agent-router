@@ -43,6 +43,9 @@ class ReasonCode(str, Enum):
     TASK_DEFINITION_INHERITANCE = "TASK_DEFINITION_INHERITANCE"
     MANUAL_OVERRIDE = "MANUAL_OVERRIDE"
     REASONING_EFFORT_OVERRIDE = "REASONING_EFFORT_OVERRIDE"
+    CLASSIFIER_REASONING_EFFORT = "CLASSIFIER_REASONING_EFFORT"
+    FAST_QUALITY_FLOOR = "FAST_QUALITY_FLOOR"
+    CONTINUATION_CAPABILITY_FLOOR = "CONTINUATION_CAPABILITY_FLOOR"
     RISK_FLOOR = "RISK_FLOOR"
     SESSION_AFFINITY = "SESSION_AFFINITY"
     PROVIDER_INHERITANCE = "PROVIDER_INHERITANCE"
@@ -83,6 +86,7 @@ class RouteContext(BaseModel):
     current_model: str = ""
     current_tier: Tier = Tier.NORMAL
     previous_task_tier: Tier | None = None
+    previous_reasoning_effort: str | None = None
     task_definition: str | None = None
     agent_requested_tier: Tier | None = None
     agent_request_reason_hash: str | None = None
@@ -125,10 +129,12 @@ class RouteDecision(BaseModel):
     metadata: dict[str, object] = Field(default_factory=dict)
     proposed_tier: Tier | None = None
     comparison_tier: Tier | None = None
-    classifier_version: str = "hybrid-v7"
+    classifier_version: str = "hybrid-v8"
     classification_source: str = "heuristic"
     classifier_confidence: float | None = Field(default=None, ge=0, le=1)
     classifier_task_type: str | None = None
+    classifier_reasoning_effort: str | None = None
+    reasoning_effort_source: str = "tier_default"
     classifier_reason_hash: str | None = None
     task_context_used: bool = False
     previous_context_sent: bool = False

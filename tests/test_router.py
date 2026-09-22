@@ -13,17 +13,26 @@ def route(prompt: str, **kwargs):
 class FakeClassifier:
     source = "cloud_llm"
 
-    def __init__(self, tier=Tier.SMART, confidence=0.84):
+    def __init__(
+        self,
+        tier=Tier.SMART,
+        confidence=0.84,
+        reasoning_effort="high",
+        task_type="implementation",
+    ):
         self.tier = tier
         self.confidence = confidence
+        self.reasoning_effort = reasoning_effort
+        self.task_type = task_type
         self.calls = 0
 
     def classify(self, context):
         self.calls += 1
         return ClassifierResult(
             tier=self.tier,
+            reasoning_effort=self.reasoning_effort,
             confidence=self.confidence,
-            task_type="implementation",
+            task_type=self.task_type,
             reason="A stronger model is likely to improve task completion.",
         )
 
@@ -51,6 +60,9 @@ def test_hybrid_uses_llm_for_ambiguous_prompt():
     assert decision.classification_source == "cloud_llm"
     assert decision.classifier_confidence == 0.84
     assert decision.classifier_task_type == "implementation"
+    assert decision.classifier_reasoning_effort == "high"
+    assert decision.reasoning_effort == "high"
+    assert decision.reasoning_effort_source == "classifier"
     assert len(decision.classifier_reason_hash or "") == 64
     assert ReasonCode.LLM_CLASSIFIER in decision.reason_codes
     assert len(decision.selection_receipt_hash or "") == 64
@@ -227,10 +239,12 @@ def test_confirmation_inherits_previous_task_tier():
     assert ReasonCode.PREVIOUS_TASK_INHERITANCE in decision.reason_codes
 
 
-def test_bounded_slack_reply_routes_fast_without_inheriting_completed_work():
+def test_bounded_slack_reply_routes_normal_without_inheriting_completed_work():
     config = default_config()
     config.routing.classifier.enabled = True
-    classifier = FakeClassifier(tier=Tier.SMART)
+    classifier = FakeClassifier(
+        tier=Tier.NORMAL, confidence=0.95, reasoning_effort="medium", task_type="communication"
+    )
     decision = Router(config, classifier=classifier).route(
         RouteContext(
             session_id="reply",
@@ -241,9 +255,51 @@ def test_bounded_slack_reply_routes_fast_without_inheriting_completed_work():
         )
     )
 
-    assert decision.tier is Tier.FAST
-    assert classifier.calls == 0
+    assert decision.tier is Tier.NORMAL
+    assert decision.reasoning_effort == "medium"
+    assert classifier.calls == 1
     assert ReasonCode.BOUNDED_COMMUNICATION in decision.reason_codes
+
+
+def test_classifier_fast_is_floored_for_judgment_work():
+    decision = hybrid_route(
+        "write the project update",
+        FakeClassifier(tier=Tier.FAST, reasoning_effort="medium", task_type="communication"),
+        current_tier=Tier.NORMAL,
+    )
+
+    assert decision.tier is Tier.NORMAL
+    assert decision.reasoning_effort == "medium"
+    assert ReasonCode.FAST_QUALITY_FLOOR in decision.reason_codes
+
+
+def test_classifier_fast_remains_available_for_exact_retrieval():
+    decision = hybrid_route(
+        "find this exact identifier",
+        FakeClassifier(
+            tier=Tier.FAST, confidence=0.95, reasoning_effort="low", task_type="retrieval"
+        ),
+        current_tier=Tier.NORMAL,
+    )
+
+    assert decision.tier is Tier.FAST
+    assert decision.reasoning_effort == "low"
+    assert ReasonCode.FAST_QUALITY_FLOOR not in decision.reason_codes
+
+
+def test_continuation_preserves_previous_tier_floor():
+    decision = hybrid_route(
+        "continue",
+        FakeClassifier(tier=Tier.FAST, reasoning_effort="low", task_type="acknowledgment"),
+        current_tier=Tier.SMART,
+        previous_task_tier=Tier.SMART,
+        previous_reasoning_effort="xhigh",
+        task_definition="Implement and verify the cross-provider routing architecture.",
+    )
+
+    assert decision.tier is Tier.SMART
+    assert decision.reasoning_effort == "xhigh"
+    assert ReasonCode.CONTINUATION_CAPABILITY_FLOOR in decision.reason_codes
 
 
 def test_confirmation_uses_assistant_defined_task_scope():

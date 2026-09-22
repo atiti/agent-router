@@ -25,6 +25,7 @@ class FakeClassifierResponse:
         content = json.dumps(
             {
                 "tier": "SMART",
+                "reasoning_effort": "HIGH",
                 "confidence": 0.87,
                 "task_type": "implementation",
                 "reason": "The task requires substantial implementation judgment.",
@@ -104,6 +105,21 @@ def test_prompt_reasoning_effort_override_works_with_backend_and_tier(tmp_path, 
     receipt = json.loads(store.latest("same-thread")["selection_receipt"])
     assert receipt["selected"]["reasoning_effort"] == "ultra"
     assert receipt["policy"]["reasoning_effort_override"] == "ultra"
+
+
+def test_manual_tier_override_offers_nonjudgmental_route_feedback(tmp_path):
+    config = default_config()
+    config.enabled = True
+    store = AuditStore(tmp_path / "audit.db")
+
+    invoke(config, store, "routine work")
+    previous = store.latest("same-thread")
+    output = invoke(config, store, "@normal continue")
+
+    assert previous is not None
+    message = output["hookSpecificOutput"]["routeMessage"]
+    assert f"previous #{previous['id']}" in message
+    assert "too-low|too-high|changed-task|correct" in message
 
 
 def write_profile_auth(home, account_id):
@@ -1245,6 +1261,8 @@ def test_hook_surfaces_llm_classifier_confidence_and_audits_hash(tmp_path, monke
     assert row is not None
     assert row["classification_source"] == "local_llm"
     assert row["classifier_task_type"] == "implementation"
+    assert row["classifier_reasoning_effort"] == "high"
+    assert row["reasoning_effort_source"] == "classifier"
     assert len(row["classifier_reason_hash"]) == 64
     assert "substantial implementation" not in str(dict(row)).lower()
     assert row["classifier_latency_ms"] is not None

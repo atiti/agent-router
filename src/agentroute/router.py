@@ -18,7 +18,31 @@ from .signals import (
     route_overrides,
 )
 
-CLASSIFIER_VERSION = "hybrid-v7"
+CLASSIFIER_VERSION = "hybrid-v8"
+
+FAST_SAFE_TASK_TYPES = {
+    "greeting",
+    "acknowledgment",
+    "no_op",
+    "status",
+    "retrieval",
+    "formatting",
+}
+REASONING_EFFORT_RANK = {
+    "none": 0,
+    "minimal": 1,
+    "low": 2,
+    "medium": 3,
+    "high": 4,
+    "xhigh": 5,
+    "ultra": 6,
+    "persistent": 7,
+}
+
+
+def _stronger_reasoning_effort(*values: str | None) -> str | None:
+    available = [value for value in values if value]
+    return max(available, key=lambda value: REASONING_EFFORT_RANK.get(value, -1), default=None)
 
 
 def tier_from_score(score: float) -> Tier:
@@ -75,6 +99,7 @@ class Router:
         classification_source = "heuristic"
         classifier_confidence: float | None = None
         classifier_task_type: str | None = None
+        classifier_reasoning_effort: str | None = None
         classifier_reason_hash: str | None = None
 
         if manual:
@@ -134,6 +159,7 @@ class Router:
                     classifier_confidence,
                     classifier_task_type,
                     classifier_reason_hash,
+                    classifier_reasoning_effort,
                 ) = self._maybe_classify(task_context, proposed, confidence, contributions)
                 task_context_used = True
                 contributions.append(
@@ -167,7 +193,39 @@ class Router:
                 classifier_confidence,
                 classifier_task_type,
                 classifier_reason_hash,
+                classifier_reasoning_effort,
             ) = self._maybe_classify(context, proposed, confidence, contributions)
+
+        if (
+            not manual
+            and self.config.routing.fast_quality_floor
+            and classification_source in {"local_llm", "private_llm", "cloud_llm"}
+            and proposed is Tier.FAST
+            and classifier_task_type not in FAST_SAFE_TASK_TYPES
+        ):
+            proposed = Tier.NORMAL
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.FAST_QUALITY_FLOOR,
+                    weight=0,
+                    detail=f"{classifier_task_type or 'unknown'} requires at least NORMAL",
+                )
+            )
+        if (
+            not manual
+            and inherited
+            and self.config.routing.continuation_capability_floor
+            and context.previous_task_tier is not None
+            and proposed < context.previous_task_tier
+        ):
+            proposed = context.previous_task_tier
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.CONTINUATION_CAPABILITY_FLOOR,
+                    weight=0,
+                    detail="continuation retained the previous task's model tier",
+                )
+            )
 
         score_proposed = proposed
 
@@ -471,6 +529,23 @@ class Router:
                         )
                     )
         target = backend.target(proposed)
+        inherited_effort = context.previous_reasoning_effort if inherited else None
+        selected_reasoning_effort = reasoning_effort_override or (
+            _stronger_reasoning_effort(classifier_reasoning_effort, inherited_effort)
+            if classifier_reasoning_effort or inherited_effort
+            else target.reasoning_effort
+        )
+        reasoning_effort_source = (
+            "manual"
+            if reasoning_effort_override
+            else "classifier+inheritance"
+            if classifier_reasoning_effort and inherited_effort
+            else "classifier"
+            if classifier_reasoning_effort
+            else "inheritance"
+            if inherited and context.previous_reasoning_effort
+            else "tier_default"
+        )
         digest = hashlib.sha256(context.latest_prompt.encode("utf-8")).hexdigest()
         comparison_tier = context.previous_task_tier or context.current_tier
         classifier_config = self.config.routing.classifier
@@ -591,7 +666,7 @@ class Router:
                 "model": target.model,
                 "backend": backend_name,
                 "model_provider": backend.codex_provider,
-                "reasoning_effort": reasoning_effort_override or target.reasoning_effort,
+                "reasoning_effort": selected_reasoning_effort,
             },
             "capacity": {
                 "status": capacity_status,
@@ -605,6 +680,8 @@ class Router:
                 "max_tier": str(max_tier),
                 "risk_floor_applied": risk_floor_applied,
                 "reasoning_effort_override": reasoning_effort_override,
+                "classifier_reasoning_effort": classifier_reasoning_effort,
+                "reasoning_effort_source": reasoning_effort_source,
             },
             "context": {
                 "previous_context_sent": previous_context_sent,
@@ -617,7 +694,7 @@ class Router:
         return RouteDecision(
             tier=proposed,
             model=target.model,
-            reasoning_effort=reasoning_effort_override or target.reasoning_effort,
+            reasoning_effort=selected_reasoning_effort,
             requested_reasoning_effort=reasoning_effort_override,
             confidence=confidence,
             raw_score=round(raw_score, 2),
@@ -646,6 +723,8 @@ class Router:
             classification_source=classification_source,
             classifier_confidence=classifier_confidence,
             classifier_task_type=classifier_task_type,
+            classifier_reasoning_effort=classifier_reasoning_effort,
+            reasoning_effort_source=reasoning_effort_source,
             classifier_reason_hash=classifier_reason_hash,
             task_context_used=task_context_used,
             previous_context_sent=previous_context_sent,
@@ -678,17 +757,17 @@ class Router:
         proposed: Tier,
         confidence: float,
         contributions: list[ScoreContribution],
-    ) -> tuple[Tier, float, str, float | None, str | None, str | None]:
+    ) -> tuple[Tier, float, str, float | None, str | None, str | None, str | None]:
         routing = self.config.routing
         if routing.mode == "heuristic" or self.classifier is None:
-            return proposed, confidence, "heuristic", None, None, None
+            return proposed, confidence, "heuristic", None, None, None, None
         codes = {item.code for item in contributions}
         if ReasonCode.CREDENTIAL_EXPOSURE in codes or contains_credential(
             context.task_definition
         ):
-            return proposed, confidence, "heuristic_sensitive", None, None, None
+            return proposed, confidence, "heuristic_sensitive", None, None, None, None
         if routing.mode == "hybrid" and confidence >= routing.classifier.ambiguity_threshold:
-            return proposed, confidence, "heuristic", None, None, None
+            return proposed, confidence, "heuristic", None, None, None, None
         try:
             result = self.classifier.classify(context)
         except Exception as error:
@@ -703,7 +782,7 @@ class Router:
                     detail=f"classifier unavailable ({type(error).__name__}); used heuristic",
                 )
             )
-            return proposed, confidence, "heuristic_fallback", None, None, None
+            return proposed, confidence, "heuristic_fallback", None, None, None, None
         contributions.append(
             ScoreContribution(
                 code=ReasonCode.LLM_CLASSIFIER,
@@ -716,8 +795,9 @@ class Router:
             result.confidence,
             self.classifier.source,
             result.confidence,
-            result.task_type,
+            result.task_type.value,
             result.reason_hash,
+            result.reasoning_effort,
         )
 
     @staticmethod
@@ -732,7 +812,6 @@ class Router:
             ReasonCode.READ_ONLY_RETRIEVAL,
             ReasonCode.SIMPLE_CONTEXT_QUESTION,
             ReasonCode.READ_ONLY_STATUS,
-            ReasonCode.BOUNDED_COMMUNICATION,
         }
         if proposed is Tier.FAST and codes & high_confidence_fast_codes:
             confidence = max(confidence, 0.90)

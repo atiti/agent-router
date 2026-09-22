@@ -47,6 +47,7 @@ def test_local_classifier_needs_no_api_key_and_parses_json(monkeypatch):
                             "content": json.dumps(
                                 {
                                     "tier": "SMART",
+                                    "reasoning_effort": "HIGH",
                                     "confidence": 0.87,
                                     "task_type": "debugging",
                                     "reason": "The task requires multi-step diagnosis.",
@@ -77,12 +78,16 @@ def test_local_classifier_needs_no_api_key_and_parses_json(monkeypatch):
     )
 
     assert result.tier is Tier.SMART
+    assert result.reasoning_effort == "high"
     assert result.confidence == 0.87
     assert captured["timeout"] == 5.0
     assert captured["request"].get_header("Authorization") is None
     body = json.loads(captured["request"].data)
     classifier_input = json.loads(body["messages"][1]["content"])
     assert classifier_input["previous_assistant_context"] == "finition"
+    assert classifier_input["candidate_reasoning_efforts"] == [
+        "LOW", "MEDIUM", "HIGH", "XHIGH"
+    ]
     assert len(classifier.last_request_hash or "") == 64
     assert classifier.last_latency_ms is not None
     assert classifier.last_usage == {"prompt_tokens": 42, "completion_tokens": 9}

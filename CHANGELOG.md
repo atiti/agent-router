@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.42 — 2026-09-22
+
+- Classify model tier and reasoning effort independently, persist the selected effort and its
+  source, and preserve the strongest known effort across continuation turns.
+- Reserve FAST for deterministic low-judgment work; floor communication, explanation, analysis,
+  implementation, debugging, operations, and orchestration at NORMAL.
+- Replace free-form classifier task names with a stable taxonomy suitable for calibration reports.
+- Treat next-turn manual tier changes as nonjudgmental signals rather than automatically labeling
+  the previous route as wrong, and expose explicit calibration labels and effort distributions.
+- Reconcile superseded turns without inventing completion latency from user idle time.
+
 ## 0.5.41 — 2026-09-21
 
 - Move AgentRoute's portable v2 subagent tools to the nonreserved
