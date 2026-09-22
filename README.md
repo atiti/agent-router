@@ -627,8 +627,8 @@ can work. This preserves reasoning continuity without attempting to decrypt or c
 state across trust boundaries.
 
 The installer pins OpenAI Codex commit `b0af519c39766c173191fc39b341808619b51c74`. The maintained
-patches are `patches/codex-user-prompt-model-override.patch`,
-`patches/codex-desktop-route-notice.patch`, and `patches/codex-package-version.patch`.
+patches are `patches/codex-user-prompt-model-override.patch` and
+`patches/codex-package-version.patch`.
 A weekly GitHub Actions job applies all patches to the latest upstream Codex release and compiles
 the CLI. Failures open one actionable compatibility issue; automation never publishes an unreviewed
 Codex upgrade. AgentRoute is not affiliated with or endorsed by OpenAI.

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.41 — 2026-09-21
+
+- Move AgentRoute's portable v2 subagent tools to the nonreserved
+  `agentroute_collaboration` namespace, allowing Azure/OpenAI parents to delegate readable tasks
+  to DeepSeek and other compatible providers without violating reserved collaboration schemas.
+- Preserve the upstream reserved `collaboration` contract and encrypted delivery for explicit
+  legacy/provider-managed calls; only AgentRoute's portable wrappers accept plaintext task
+  messages.
+- Deliver portable plaintext child instructions to constrained Responses-compatible providers as
+  ordinary user input at the final request boundary, so DeepSeek actually receives the delegated
+  task while encrypted/native inter-agent messages remain provider-local.
+- Redact portable plaintext task arguments from dispatch traces and logs, and derive subagent
+  usage hints from the provider's effective namespace so namespaced and non-namespaced providers
+  show the command that will actually run.
+
 ## 0.5.40 — 2026-09-21
 
 - Make the v2 collaboration `spawn_agent`, `send_message`, and `followup_task` message fields

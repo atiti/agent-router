@@ -58,6 +58,67 @@ index 8d5b8febe4..6718019d03 100644
              aws: None,
          }
      }
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index 3da7924509..4897ed725c 100644
+--- a/codex-rs/core/src/agent/control/spawn.rs
++++ b/codex-rs/core/src/agent/control/spawn.rs
+@@ -17,6 +17,7 @@ use codex_context_fragments::set_annotated_content;
+ use codex_context_fragments::to_annotated_content;
+ use codex_extension_api::ExtensionDataInit;
+ use codex_history::ResponseItemEnvelope;
++use codex_model_provider::create_model_provider;
+ use codex_protocol::intersect_effective_permission_profiles;
+ use codex_protocol::protocol::EnvironmentConfigState;
+ use codex_utils_path_uri::PathUri;
+@@ -910,22 +911,24 @@ impl AgentControl {
+             forked_rollout_items =
+                 truncate_rollout_to_last_n_fork_turns(forked_rollout_items, *last_n_turns);
+         }
+-        let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> =
+-            if multi_agent_version == MultiAgentVersion::V2 {
+-                let parent_config = parent_thread.session.get_config().await;
+-                let parent_usage_hints = resolve_usage_hints(
+-                    &parent_config.multi_agent_v2,
+-                    /*catalog*/ None,
+-                    !parent_config.update_plan_enabled,
+-                );
+-                [parent_usage_hints.root, parent_usage_hints.subagent]
+-                    .into_iter()
+-                    .flatten()
+-                    .map(|instructions| instructions.render())
+-                    .collect()
+-            } else {
+-                Vec::new()
+-            };
++        let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> = if multi_agent_version
++            == MultiAgentVersion::V2
++        {
++            let parent_config = parent_thread.session.get_config().await;
++            let parent_usage_hints = resolve_usage_hints(
++                &parent_config.multi_agent_v2,
++                /*catalog*/ None,
++                !parent_config.update_plan_enabled,
++                create_model_provider(parent_config.model_provider.clone(), None).capabilities(),
++            );
++            [parent_usage_hints.root, parent_usage_hints.subagent]
++                .into_iter()
++                .flatten()
++                .map(|instructions| instructions.render())
++                .collect()
++        } else {
++            Vec::new()
++        };
+         let mut preserve_reference_context_item =
+             matches!(fork_mode, SpawnAgentForkMode::FullHistory);
+         if preserve_reference_context_item {
+@@ -1105,6 +1108,7 @@ impl AgentControl {
+                         &config.multi_agent_v2,
+                         /*catalog*/ None,
+                         !config.update_plan_enabled,
++                        create_model_provider(config.model_provider.clone(), None).capabilities(),
+                     )
+                     .subagent
+                 })
 diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
 index 2981b13b0a..5631a5072b 100644
 --- a/codex-rs/core/src/agent/control_tests.rs
@@ -72,7 +133,7 @@ index 2981b13b0a..5631a5072b 100644
                  .clone(),
          ),
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 9e4cf7df6f..2de9dbafc2 100644
+index 9e4cf7df6f..355137fce1 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -26,6 +26,7 @@
@@ -83,7 +144,15 @@ index 9e4cf7df6f..2de9dbafc2 100644
  use std::sync::Arc;
  use std::sync::Mutex as StdMutex;
  use std::sync::OnceLock;
-@@ -140,6 +141,7 @@ use codex_model_provider::create_model_provider;
+@@ -82,6 +83,7 @@ use codex_protocol::ThreadId;
+ use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+ use codex_protocol::config_types::Verbosity as VerbosityConfig;
+ use codex_protocol::models::ResponseItem;
++use codex_protocol::models::plaintext_agent_message_content;
+ use codex_protocol::openai_models::ModelInfo;
+ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+ use codex_protocol::protocol::AuthRecoveryEvent;
+@@ -140,6 +142,7 @@ use codex_model_provider::create_model_provider;
  #[cfg(test)]
  use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
  use codex_model_provider_info::ModelProviderInfo;
@@ -91,7 +160,7 @@ index 9e4cf7df6f..2de9dbafc2 100644
  use codex_model_provider_info::WireApi;
  use codex_protocol::error::CodexErr;
  use codex_protocol::error::Result;
-@@ -281,6 +283,8 @@ pub struct ModelClientSession {
+@@ -281,6 +284,8 @@ pub struct ModelClientSession {
      /// appends, or continuation requests), and must not send it between different turns.
      /// An auth ownership change clears it so the new owner gets fresh routing state.
      turn_state: Arc<OnceLock<String>>,
@@ -100,7 +169,7 @@ index 9e4cf7df6f..2de9dbafc2 100644
  }
  
  #[derive(Debug, Clone)]
-@@ -301,6 +305,123 @@ struct WebsocketSession {
+@@ -301,6 +306,139 @@ struct WebsocketSession {
      connection_reused: StdMutex<bool>,
  }
  
@@ -147,6 +216,21 @@ index 9e4cf7df6f..2de9dbafc2 100644
 +    }
 +    match provider.tool_compatibility {
 +        Some(ToolCompatibility::FunctionsAndApplyPatch) => {
++            for item in input.iter_mut() {
++                let ResponseItem::AgentMessage { content, .. } = item else {
++                    continue;
++                };
++                let Some(text) = plaintext_agent_message_content(content) else {
++                    continue;
++                };
++                *item = ResponseItem::Message {
++                    id: None,
++                    role: "user".to_string(),
++                    content: vec![codex_protocol::models::ContentItem::InputText { text }],
++                    phase: None,
++                    internal_chat_message_metadata_passthrough: None,
++                };
++            }
 +            let unsupported_custom_calls = input
 +                .iter()
 +                .filter_map(|item| match item {
@@ -165,7 +249,8 @@ index 9e4cf7df6f..2de9dbafc2 100644
 +                | ResponseItem::WebSearchCall { .. }
 +                | ResponseItem::ImageGenerationCall { .. }
 +                | ResponseItem::Compaction { .. }
-+                | ResponseItem::ContextCompaction { .. } => false,
++                | ResponseItem::ContextCompaction { .. }
++                | ResponseItem::AgentMessage { .. } => false,
 +                ResponseItem::CustomToolCall { name, .. } => name == "apply_patch",
 +                ResponseItem::CustomToolCallOutput { call_id, .. } => {
 +                    !unsupported_custom_calls.contains(call_id)
@@ -224,7 +309,7 @@ index 9e4cf7df6f..2de9dbafc2 100644
  // This is intentionally not a `PartialEq` implementation: request equality includes `input` and
  // `client_metadata`, while websocket reuse compares the input separately and ignores metadata.
  // Access programs are authorized per response, including continuations, without replaying input.
-@@ -536,9 +657,63 @@ impl ModelClient {
+@@ -536,9 +674,63 @@ impl ModelClient {
              client: self.clone(),
              websocket_session,
              turn_state: Arc::new(OnceLock::new()),
@@ -288,7 +373,7 @@ index 9e4cf7df6f..2de9dbafc2 100644
      pub(crate) fn auth_manager(&self) -> Option<Arc<AuthManager>> {
          self.state.provider.auth_manager()
      }
-@@ -919,7 +1094,18 @@ impl ModelClient {
+@@ -919,7 +1111,18 @@ impl ModelClient {
          }
      }
  
@@ -308,7 +393,7 @@ index 9e4cf7df6f..2de9dbafc2 100644
          for item in input {
              if item.id().is_some_and(|id| !id.is_prefixed()) {
                  item.set_id(/*new_id*/ None);
-@@ -1568,8 +1754,11 @@ impl ModelClientSession {
+@@ -1568,8 +1771,11 @@ impl ModelClientSession {
                  client_setup.auth.as_ref(),
                  prompt.cyber_access_program,
              );
@@ -322,7 +407,7 @@ index 9e4cf7df6f..2de9dbafc2 100644
              if crate::guardian::is_basic_session_source(&self.client.state.session_source) {
                  crate::guardian::observe_guardian_request(session_telemetry, &request);
              }
-@@ -1774,6 +1963,11 @@ impl ModelClientSession {
+@@ -1774,6 +1980,11 @@ impl ModelClientSession {
              if let Some(turn_state) = self.turn_state.get() {
                  client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
              }
@@ -334,7 +419,7 @@ index 9e4cf7df6f..2de9dbafc2 100644
              let (incremental_request, previous_response_id_from_untraced_warmup) =
                  self.prepare_websocket_request(&request);
              let inference_trace_attempt = if warmup {
-@@ -1794,20 +1988,13 @@ impl ModelClientSession {
+@@ -1794,20 +2005,13 @@ impl ModelClientSession {
                  Some((response_id, items)) => (Some(response_id), Some(items)),
                  None => (None, None),
              };
@@ -362,7 +447,7 @@ index 9e4cf7df6f..2de9dbafc2 100644
              let mut ws_payload = ResponseCreateWsRequest {
                  previous_response_id,
                  input: incremental_items.as_deref().unwrap_or(&request.input),
-@@ -1843,11 +2030,6 @@ impl ModelClientSession {
+@@ -1843,11 +2047,6 @@ impl ModelClientSession {
                      Some(Arc::clone(&self.turn_state)),
                  )
                  .await;
@@ -375,7 +460,7 @@ index 9e4cf7df6f..2de9dbafc2 100644
              self.websocket_session.last_response_from_untraced_warmup = warmup;
              let stream_result = stream_result.map_err(|err| {
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index 8936f5afab..c678bfed12 100644
+index 8936f5afab..d486174867 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
 @@ -8,6 +8,7 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
@@ -386,7 +471,12 @@ index 8936f5afab..c678bfed12 100644
  use crate::AttestationContext;
  use crate::AttestationProvider;
  use crate::GenerateAttestationFuture;
-@@ -38,6 +39,7 @@ use codex_model_provider_info::WireApi;
+@@ -34,15 +35,18 @@ use codex_model_provider::SharedModelProvider;
+ use codex_model_provider::create_model_provider;
+ use codex_model_provider_info::CHATGPT_CODEX_BASE_URL;
+ use codex_model_provider_info::ModelProviderInfo;
++use codex_model_provider_info::ToolCompatibility;
+ use codex_model_provider_info::WireApi;
  use codex_model_provider_info::create_oss_provider_with_base_url;
  use codex_models_manager::manager::SharedModelsManager;
  use codex_otel::SessionTelemetry;
@@ -394,7 +484,13 @@ index 8936f5afab..c678bfed12 100644
  use codex_protocol::ThreadId;
  use codex_protocol::auth::AuthMode;
  use codex_protocol::error::CodexErr;
-@@ -69,6 +71,7 @@ use futures::StreamExt;
+ use codex_protocol::error::CodexErrorDetails;
+ use codex_protocol::models::BaseInstructions;
++use codex_protocol::models::AgentMessageInputContent;
+ use codex_protocol::models::ContentItem;
+ use codex_protocol::models::ExecutedToolCall;
+ use codex_protocol::models::FunctionCallOutputPayload;
+@@ -69,6 +73,7 @@ use futures::StreamExt;
  use pretty_assertions::assert_eq;
  use serde_json::json;
  use std::collections::BTreeMap;
@@ -402,7 +498,7 @@ index 8936f5afab..c678bfed12 100644
  use std::collections::VecDeque;
  use std::path::PathBuf;
  use std::pin::Pin;
-@@ -78,6 +81,102 @@ use std::sync::atomic::AtomicUsize;
+@@ -78,6 +83,151 @@ use std::sync::atomic::AtomicUsize;
  use std::sync::atomic::Ordering;
  use std::task::Context;
  use std::task::Poll;
@@ -446,6 +542,55 @@ index 8936f5afab..c678bfed12 100644
 +        *encrypted_function_args = None;
 +    }
 +    assert_eq!(input, vec![expected]);
++}
++
++#[test]
++fn restricted_provider_downgrades_plaintext_agent_message_to_user_message() {
++    let mut provider = ModelProviderInfo::default();
++    provider.tool_compatibility = Some(ToolCompatibility::FunctionsAndApplyPatch);
++    let mut input = vec![ResponseItem::AgentMessage {
++        id: Some(ResponseItemId::with_suffix("amsg", "portable")),
++        author: "/root".to_string(),
++        recipient: "/root/deepseek_smoke".to_string(),
++        content: vec![AgentMessageInputContent::InputText {
++            text: "Reply with exactly: deepseek child ok".to_string(),
++        }],
++        internal_chat_message_metadata_passthrough: None,
++    }];
++
++    normalize_response_items_for_provider(&mut input, &provider, &HashSet::new(), false);
++
++    assert_eq!(
++        input,
++        vec![ResponseItem::Message {
++            id: None,
++            role: "user".to_string(),
++            content: vec![ContentItem::InputText {
++                text: "Reply with exactly: deepseek child ok".to_string(),
++            }],
++            phase: None,
++            internal_chat_message_metadata_passthrough: None,
++        }]
++    );
++}
++
++#[test]
++fn restricted_provider_drops_encrypted_agent_message() {
++    let mut provider = ModelProviderInfo::default();
++    provider.tool_compatibility = Some(ToolCompatibility::FunctionsAndApplyPatch);
++    let mut input = vec![ResponseItem::AgentMessage {
++        id: Some(ResponseItemId::with_suffix("amsg", "native")),
++        author: "/root".to_string(),
++        recipient: "/root/worker".to_string(),
++        content: vec![AgentMessageInputContent::EncryptedContent {
++            encrypted_content: "provider-owned".to_string(),
++        }],
++        internal_chat_message_metadata_passthrough: None,
++    }];
++
++    normalize_response_items_for_provider(&mut input, &provider, &HashSet::new(), false);
++
++    assert!(input.is_empty());
 +}
 +
 +#[test]
@@ -745,6 +890,128 @@ index b367ba4bea..ae219e3e1a 100644
          .info()
          .stream_max_retries()
          .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
+diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
+index cafb0ff6fe..22479fed4b 100644
+--- a/codex-rs/core/src/config/config_tests.rs
++++ b/codex-rs/core/src/config/config_tests.rs
+@@ -11758,6 +11758,10 @@ enabled = true
+         config.multi_agent_v2,
+         resolve_multi_agent_v2_config(&ConfigToml::default())
+     );
++    assert_eq!(
++        config.multi_agent_v2.tool_namespace.as_deref(),
++        Some("agentroute_collaboration")
++    );
+     assert_eq!(
+         (
+             config.agent_max_threads,
+@@ -11786,7 +11790,10 @@ max_concurrent_threads_per_session = 17
+         let mut config = config.clone();
+         config.wait_agent_enabled = wait_agent_enabled;
+         let usage_hints = resolve_usage_hints(
+-            &config, /*catalog*/ None, /*omit_update_plan_instructions*/ false,
++            &config,
++            /*catalog*/ None,
++            /*omit_update_plan_instructions*/ false,
++            ProviderCapabilities::default(),
+         );
+         for hint in [usage_hints.root, usage_hints.subagent] {
+             let hint = hint.expect("default usage hints should be present").body();
+@@ -11805,10 +11812,45 @@ max_concurrent_threads_per_session = 17
+             subagent: Some(String::new()),
+         }),
+         /*omit_update_plan_instructions*/ false,
++        ProviderCapabilities::default(),
+     );
+     assert!(usage_hints.root.is_none() && usage_hints.subagent.is_none());
+ }
+ 
++#[test]
++fn multi_agent_v2_usage_hints_follow_provider_namespace_capability() {
++    let config = resolve_multi_agent_v2_config(&ConfigToml::default());
++
++    let namespaced = resolve_usage_hints(
++        &config,
++        /*catalog*/ None,
++        /*omit_update_plan_instructions*/ false,
++        ProviderCapabilities::default(),
++    );
++    let direct = resolve_usage_hints(
++        &config,
++        /*catalog*/ None,
++        /*omit_update_plan_instructions*/ false,
++        ProviderCapabilities {
++            namespace_tools: false,
++            ..ProviderCapabilities::default()
++        },
++    );
++
++    for hint in [namespaced.root, namespaced.subagent] {
++        assert!(
++            hint.expect("default usage hints should be present")
++                .body()
++                .contains("to=functions.agentroute_collaboration.spawn_agent")
++        );
++    }
++    for hint in [direct.root, direct.subagent] {
++        let hint = hint.expect("default usage hints should be present").body();
++        assert!(hint.contains("to=functions.spawn_agent"));
++        assert!(!hint.contains("functions.agentroute_collaboration.spawn_agent"));
++    }
++}
++
+ #[test]
+ fn multi_agent_v2_model_override_exposure_preserves_configured_usage_hints() {
+     let config_toml = toml::from_str(
+@@ -11838,6 +11880,7 @@ expose_spawn_agent_model_overrides = true
+             subagent: Some("Catalog subagent base.".to_string()),
+         }),
+         /*omit_update_plan_instructions*/ true,
++        ProviderCapabilities::default(),
+     );
+     assert_eq!(
+         (
+@@ -11859,11 +11902,17 @@ fn multi_agent_v2_exposes_model_overrides_by_default() {
+     let mut config = resolve_multi_agent_v2_config(&config_toml);
+     assert!(config.expose_spawn_agent_model_overrides);
+     let usage_hints = resolve_usage_hints(
+-        &config, /*catalog*/ None, /*omit_update_plan_instructions*/ false,
++        &config,
++        /*catalog*/ None,
++        /*omit_update_plan_instructions*/ false,
++        ProviderCapabilities::default(),
+     );
+     config.expose_spawn_agent_model_overrides = false;
+     let usage_hints_without_model_overrides = resolve_usage_hints(
+-        &config, /*catalog*/ None, /*omit_update_plan_instructions*/ false,
++        &config,
++        /*catalog*/ None,
++        /*omit_update_plan_instructions*/ false,
++        ProviderCapabilities::default(),
+     );
+ 
+     for (hint, hint_without_model_overrides) in [
+@@ -11980,6 +12029,7 @@ subagent_usage_hint_text = ""
+             subagent: Some("catalog subagent".to_string()),
+         }),
+         /*omit_update_plan_instructions*/ false,
++        ProviderCapabilities::default(),
+     );
+     assert_eq!(
+         (
+diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
+index 12a1472ac4..eb295d825c 100644
+--- a/codex-rs/core/src/config/mod.rs
++++ b/codex-rs/core/src/config/mod.rs
+@@ -252,7 +252,7 @@ pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION: usiz
+ pub(crate) const DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
+ pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
+ pub(crate) const DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
+-const DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE: &str = "collaboration";
++pub(crate) const DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE: &str = "agentroute_collaboration";
+ 
+ pub(crate) const HARD_MIN_MULTI_AGENT_V2_TIMEOUT_MS: i64 = 0;
+ pub(crate) const HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS: i64 =
 diff --git a/codex-rs/core/src/guardian/mod.rs b/codex-rs/core/src/guardian/mod.rs
 index a4e0e1429a..32c05a6b9a 100644
 --- a/codex-rs/core/src/guardian/mod.rs
@@ -1322,10 +1589,26 @@ index cf191851bf..6c0f97c900 100644
  async fn guardian_review_session_config_clears_parent_developer_instructions() {
      let mut parent_config = test_config().await;
 diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
-index 4e276868ce..507c8abd91 100644
+index 4e276868ce..648d17a606 100644
 --- a/codex-rs/core/src/hook_runtime.rs
 +++ b/codex-rs/core/src/hook_runtime.rs
-@@ -49,6 +49,8 @@ use codex_protocol::protocol::HookStartedEvent;
+@@ -29,11 +29,15 @@ use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+ use codex_otel::HOOK_RUN_DURATION_METRIC;
+ use codex_otel::HOOK_RUN_METRIC;
+ use codex_plugin::ExecutorPluginHookSource;
++use codex_protocol::items::AgentMessageContent;
++use codex_protocol::items::AgentMessageItem;
+ use codex_protocol::items::FunctionCallOutputItem;
+ use codex_protocol::items::TurnItem;
+ use codex_protocol::items::UserMessageItem;
++use codex_protocol::models::MessagePhase;
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::openai_models::ModelInfo;
++use codex_protocol::protocol::AgentMessageContentDeltaEvent;
+ use codex_protocol::protocol::AskForApproval;
+ use codex_protocol::protocol::CodexErrorInfo;
+ use codex_protocol::protocol::EventMsg;
+@@ -49,6 +53,8 @@ use codex_protocol::protocol::HookStartedEvent;
  use codex_protocol::protocol::InternalSessionSource;
  use codex_protocol::protocol::SessionSource;
  use codex_protocol::protocol::SubAgentSource;
@@ -1334,7 +1617,7 @@ index 4e276868ce..507c8abd91 100644
  use codex_protocol::protocol::WarningEvent;
  use codex_rollout::state_db;
  use codex_thread_store::PersistContext;
-@@ -62,6 +64,8 @@ use crate::context::ContextualUserFragment;
+@@ -62,6 +68,8 @@ use crate::context::ContextualUserFragment;
  use crate::context::HookAdditionalContext;
  use crate::event_mapping::parse_turn_item;
  use crate::guardian::GuardianReviewContext;
@@ -1343,7 +1626,7 @@ index 4e276868ce..507c8abd91 100644
  use crate::session::TurnInput;
  use crate::session::session::Session;
  use crate::session::step_context::StepContext;
-@@ -74,6 +78,16 @@ use crate::turn_metadata::ExecutionMetadata;
+@@ -74,6 +82,16 @@ use crate::turn_metadata::ExecutionMetadata;
  pub(crate) struct HookRuntimeOutcome {
      pub should_stop: bool,
      pub additional_contexts: Vec<String>,
@@ -1360,7 +1643,7 @@ index 4e276868ce..507c8abd91 100644
  }
  
  pub(crate) enum PreToolUseHookResult {
-@@ -99,6 +113,16 @@ impl From<SessionStartOutcome> for ContextInjectingHookOutcome {
+@@ -99,6 +117,16 @@ impl From<SessionStartOutcome> for ContextInjectingHookOutcome {
              outcome: HookRuntimeOutcome {
                  should_stop,
                  additional_contexts,
@@ -1377,7 +1660,7 @@ index 4e276868ce..507c8abd91 100644
              },
          }
      }
-@@ -111,12 +135,31 @@ impl From<UserPromptSubmitOutcome> for ContextInjectingHookOutcome {
+@@ -111,12 +139,31 @@ impl From<UserPromptSubmitOutcome> for ContextInjectingHookOutcome {
              should_stop,
              stop_reason: _,
              additional_contexts,
@@ -1409,7 +1692,7 @@ index 4e276868ce..507c8abd91 100644
              },
          }
      }
-@@ -444,7 +487,7 @@ pub(crate) async fn run_turn_stop_hooks(
+@@ -444,7 +491,7 @@ pub(crate) async fn run_turn_stop_hooks(
          #[allow(deprecated)]
          cwd: turn_context.cwd.clone(),
          transcript_path,
@@ -1418,7 +1701,7 @@ index 4e276868ce..507c8abd91 100644
          permission_mode: hook_permission_mode(turn_context.approval_policy()),
          request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),
          stop_hook_active,
-@@ -667,43 +710,188 @@ pub(crate) async fn run_legacy_after_agent_hook(
+@@ -667,43 +714,227 @@ pub(crate) async fn run_legacy_after_agent_hook(
      true
  }
  
@@ -1597,7 +1880,46 @@ index 4e276868ce..507c8abd91 100644
 +        {
 +            TurnSettingsUpdateOutcome::Applied => {
 +                outcome.settings_updated = true;
-+                if let Some(message) = route_notice {
++                if matches!(turn_context.session_source, SessionSource::VSCode) {
++                    if let Some(message) = route_notice {
++                        // App-server forwards Warning notifications, but Codex Desktop does not
++                        // render them in the conversation. Emit a display-only route commentary
++                        // item so desktop and VS Code users can verify the selected provider and
++                        // model. This event is not added to the model's input history.
++                        let item_id = format!("agentroute-route-{}", turn_context.sub_id);
++                        let agent_message = AgentMessageItem {
++                            id: item_id.clone(),
++                            content: vec![AgentMessageContent::Text {
++                                text: message.clone(),
++                            }],
++                            phase: Some(MessagePhase::Commentary),
++                            memory_citation: None,
++                            delivery: None,
++                            questions: None,
++                        };
++                        let started_item = TurnItem::AgentMessage(AgentMessageItem {
++                            content: Vec::new(),
++                            ..agent_message.clone()
++                        });
++                        sess.emit_turn_item_started(turn_context, &started_item)
++                            .await;
++                        sess.send_event(
++                            turn_context,
++                            EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
++                                thread_id: sess.thread_id.to_string(),
++                                turn_id: turn_context.sub_id.clone(),
++                                item_id,
++                                delta: message,
++                            }),
++                        )
++                        .await;
++                        sess.emit_turn_item_completed(
++                            turn_context,
++                            TurnItem::AgentMessage(agent_message),
++                        )
++                        .await;
++                    }
++                } else if let Some(message) = route_notice {
 +                    sess.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
 +                        .await;
 +                }
@@ -1635,7 +1957,7 @@ index 4e276868ce..507c8abd91 100644
  }
  
  pub(crate) async fn record_pending_input(
-@@ -1066,6 +1254,7 @@ mod tests {
+@@ -1066,6 +1297,7 @@ mod tests {
      use codex_otel::HOOK_RUN_METRIC;
      use codex_otel::MetricsClient;
      use codex_otel::MetricsConfig;
@@ -1643,7 +1965,7 @@ index 4e276868ce..507c8abd91 100644
      use codex_protocol::models::ContentItem;
      use codex_protocol::protocol::HookEventName;
      use codex_protocol::protocol::HookExecutionMode;
-@@ -1073,6 +1262,9 @@ mod tests {
+@@ -1073,6 +1305,9 @@ mod tests {
      use codex_protocol::protocol::HookRunStatus;
      use codex_protocol::protocol::HookScope;
      use codex_protocol::protocol::HookSource;
@@ -1653,16 +1975,16 @@ index 4e276868ce..507c8abd91 100644
      use opentelemetry_sdk::metrics::InMemoryMetricExporter;
      use opentelemetry_sdk::metrics::data::AggregatedMetrics;
      use opentelemetry_sdk::metrics::data::HistogramDataPoint;
-@@ -1085,6 +1277,8 @@ mod tests {
+@@ -1085,6 +1320,8 @@ mod tests {
      use super::emit_hook_started_events;
      use super::hook_run_analytics_payload;
      use super::hook_run_metric_tags;
-+    use super::routing_provider_context_for_pending_input;
 +    use super::routing_prompt_for_pending_input;
++    use super::routing_provider_context_for_pending_input;
      use crate::session::tests::make_session_and_context;
      use crate::session::tests::make_session_and_context_with_rx;
      use codex_protocol::protocol::HookCompletedEvent;
-@@ -1128,6 +1322,134 @@ mod tests {
+@@ -1128,6 +1365,134 @@ mod tests {
          );
      }
  
@@ -1933,6 +2255,73 @@ index affecf42d5..86847150d7 100644
      pub(crate) async fn mcp_dependency_prompted(&self) -> HashSet<String> {
          let state = self.state.lock().await;
          state.mcp_dependency_prompted()
+diff --git a/codex-rs/core/src/session/multi_agents.rs b/codex-rs/core/src/session/multi_agents.rs
+index 19d0cb95e5..d2ec0a7952 100644
+--- a/codex-rs/core/src/session/multi_agents.rs
++++ b/codex-rs/core/src/session/multi_agents.rs
+@@ -1,6 +1,7 @@
+ use crate::config::MultiAgentV2Config;
+ use crate::context::MultiAgentRoleInstructions;
+ use crate::session::step_context::StepContext;
++use codex_model_provider::ProviderCapabilities;
+ use codex_protocol::config_types::MultiAgentMode;
+ use codex_protocol::openai_models::MultiAgentRoleMessages;
+ use codex_protocol::openai_models::ReasoningEffort;
+@@ -50,13 +51,20 @@ You may also see them addressed as to=/root/..., which indicates your identity i
+ const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"` or a positive integer string.";
+ const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str =
+     "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
+-const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
++fn default_multi_agent_v2_shared_usage_hint_text(tool_namespace: Option<&str>) -> String {
++    let spawn_agent_recipient = tool_namespace
++        .map(|namespace| format!("functions.{namespace}.spawn_agent"))
++        .unwrap_or_else(|| "functions.spawn_agent".to_string());
++    format!(
++        r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to={spawn_agent_recipient}`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
+ 
+ All agents share the same directory. In detail:
+ - All agents have access to the same container and filesystem as you.
+ - All agents use the same current working directory.
+ - As a result, edits made by one agent are immediately visible to all other agents.
+-"#;
++"#
++    )
++}
+ 
+ #[derive(Clone, Debug, Default)]
+ pub(crate) struct ResolvedMultiAgentV2UsageHints {
+@@ -84,6 +92,7 @@ pub(super) fn usage_hint_text(
+         &turn_context.config.multi_agent_v2,
+         catalog,
+         !turn_context.config.update_plan_enabled && turn_context.config.model_catalog.is_none(),
++        turn_context.model_provider().capabilities(),
+     );
+     match session_source {
+         SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) => snapshot.subagent,
+@@ -101,7 +110,12 @@ pub(crate) fn resolve_usage_hints(
+     config: &MultiAgentV2Config,
+     catalog: Option<&MultiAgentRoleMessages>,
+     omit_update_plan_instructions: bool,
++    provider_capabilities: ProviderCapabilities,
+ ) -> ResolvedMultiAgentV2UsageHints {
++    let tool_namespace = provider_capabilities
++        .namespace_tools
++        .then_some(config.tool_namespace.as_deref())
++        .flatten();
+     let resolve_role = |configured: Option<&str>, catalog: Option<&str>, bundled: &str| {
+         // Configured roles take precedence; empty configured or catalog roles suppress fallback.
+         if let Some(configured) = configured {
+@@ -125,8 +139,9 @@ pub(crate) fn resolve_usage_hints(
+         } else {
+             String::new()
+         };
++        let shared_usage_hint_text = default_multi_agent_v2_shared_usage_hint_text(tool_namespace);
+         let mut text = format!(
+-            "{base}\n{DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT}\n{wait_agent_guidance}There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."
++            "{base}\n{shared_usage_hint_text}\n{wait_agent_guidance}There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."
+         );
+         if config.expose_spawn_agent_model_overrides {
+             text.push_str("\n\n");
 diff --git a/codex-rs/core/src/session/review.rs b/codex-rs/core/src/session/review.rs
 index ea078a451e..cfee96aca7 100644
 --- a/codex-rs/core/src/session/review.rs
@@ -3529,7 +3918,7 @@ index 9cbe72df88..74ecafb157 100644
  
  pub(crate) async fn apply_spawn_agent_service_tier(
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
-index 2e11d899b7..d2216a33bd 100644
+index 2e11d899b7..26b02b4ded 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
 @@ -16,8 +16,7 @@ const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and manag
@@ -3550,27 +3939,7 @@ index 2e11d899b7..d2216a33bd 100644
      ToolSpec::Function(ResponsesApiTool {
          name: "spawn_agent".to_string(),
          description: spawn_agent_tool_description_v2(
-@@ -190,8 +188,7 @@ pub fn create_send_message_tool() -> ToolSpec {
-             "message".to_string(),
-             JsonSchema::string(Some(
-                 "Message text to queue on the target agent.".to_string(),
--            ))
--            .with_encrypted(),
-+            )),
-         ),
-     ]);
- 
-@@ -223,8 +220,7 @@ pub fn create_followup_task_tool() -> ToolSpec {
-             "message".to_string(),
-             JsonSchema::string(Some(
-                 "Message text to send to the target agent.".to_string(),
--            ))
--            .with_encrypted(),
-+            )),
-         ),
-     ]);
- 
-@@ -234,7 +230,11 @@ pub fn create_followup_task_tool() -> ToolSpec {
+@@ -234,7 +232,11 @@ pub fn create_followup_task_tool() -> ToolSpec {
              .to_string(),
          strict: false,
          defer_loading: None,
@@ -3583,21 +3952,11 @@ index 2e11d899b7..d2216a33bd 100644
          output_schema: None,
      })
  }
-@@ -629,8 +629,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
-             "message".to_string(),
-             JsonSchema::string(Some(
-                 "Initial plain-text task for the new agent.".to_string(),
--            ))
--            .with_encrypted(),
-+            )),
-         ),
-         (
-             "agent_type".to_string(),
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
-index 888a11376a..3af971c440 100644
+index 888a11376a..d3d10c5e13 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
-@@ -95,13 +95,25 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
+@@ -95,6 +95,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
      assert!(!description.contains("disabled-model"));
      assert!(properties.contains_key("task_name"));
      assert!(properties.contains_key("message"));
@@ -3605,9 +3964,8 @@ index 888a11376a..3af971c440 100644
      assert_eq!(
          properties
              .get("message")
-             .and_then(|schema| schema.encrypted),
--        Some(true)
-+        None
+@@ -102,6 +103,17 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
+         Some(true)
      );
      assert!(properties.contains_key("fork_turns"));
 +    assert_eq!(
@@ -3632,16 +3990,7 @@ index 888a11376a..3af971c440 100644
      assert_eq!(
          properties.get("agent_type"),
          Some(&JsonSchema::string(Some(format!(
-@@ -322,7 +335,7 @@ fn send_message_tool_requires_message_and_has_no_output_schema() {
-         properties
-             .get("message")
-             .and_then(|schema| schema.encrypted),
--        Some(true)
-+        None
-     );
-     assert!(!properties.contains_key("interrupt"));
-     assert!(!properties.contains_key("items"));
-@@ -366,11 +379,12 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
+@@ -366,6 +379,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
          .expect("followup_task should use object params");
      assert!(properties.contains_key("target"));
      assert!(properties.contains_key("message"));
@@ -3649,12 +3998,6 @@ index 888a11376a..3af971c440 100644
      assert_eq!(
          properties
              .get("message")
-             .and_then(|schema| schema.encrypted),
--        Some(true)
-+        None
-     );
-     assert!(!properties.contains_key("items"));
-     assert_eq!(
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
 index 1f34d69085..820a59e723 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
@@ -3742,10 +4085,22 @@ index 1f34d69085..820a59e723 100644
 +    assert_eq!(requested_backend.as_deref(), Some("deepseek"));
 +}
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
-index b82bdd6a0b..ea4a255e90 100644
+index b82bdd6a0b..39b9a409ae 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
-@@ -59,6 +59,10 @@ fn communication_from_tool_message(
+@@ -15,6 +15,7 @@ use crate::tools::handlers::parse_arguments;
+ use crate::tools::registry::CoreToolRuntime;
+ use crate::tools::registry::ToolExecutor;
+ use codex_protocol::AgentPath;
++use codex_protocol::ResponseItemId;
+ use codex_protocol::items::CollabAgentTool;
+ use codex_protocol::items::CollabAgentToolCallItem;
+ use codex_protocol::items::CollabAgentToolCallStatus;
+@@ -56,30 +57,120 @@ pub(crate) async fn emit_sub_agent_activity(
+ }
+ 
+ fn communication_from_tool_message(
++    call_id: &str,
      author: AgentPath,
      recipient: AgentPath,
      message: String,
@@ -3756,25 +4111,51 @@ index b82bdd6a0b..ea4a255e90 100644
      source: &crate::tools::context::ToolCallSource,
      trigger_turn: bool,
  ) -> InterAgentCommunication {
-@@ -72,6 +76,12 @@ fn communication_from_tool_message(
-             Vec::new(),
-             message,
-             trigger_turn,
-+        )
-+        .with_routing_prompt(routing_prompt)
-+        .with_routing_provider_context(
-+            inherited_model_provider,
-+            requested_backend,
-+            model_explicit,
-         );
-     }
-     let message_type = if trigger_turn {
-@@ -82,4 +92,79 @@ fn communication_from_tool_message(
-     let content =
-         InterAgentMessage::new(message_type, recipient.clone(), author.clone(), message).render();
-     InterAgentCommunication::new(author, recipient, Vec::new(), content, trigger_turn)
-+        .with_routing_prompt(routing_prompt)
-+        .with_routing_provider_context(inherited_model_provider, requested_backend, model_explicit)
+-    if !matches!(
++    let mut communication = if !matches!(
+         source,
+         crate::tools::context::ToolCallSource::DirectPlaintextMessage
+     ) {
+-        return InterAgentCommunication::new_encrypted(
+-            author,
+-            recipient,
+-            Vec::new(),
+-            message,
+-            trigger_turn,
+-        );
+-    }
+-    let message_type = if trigger_turn {
+-        InterAgentMessageType::NewTask
++        InterAgentCommunication::new_encrypted(author, recipient, Vec::new(), message, trigger_turn)
++            .with_routing_prompt(routing_prompt)
++            .with_routing_provider_context(
++                inherited_model_provider,
++                requested_backend,
++                model_explicit,
++            )
+     } else {
+-        InterAgentMessageType::Message
++        let message_type = if trigger_turn {
++            InterAgentMessageType::NewTask
++        } else {
++            InterAgentMessageType::Message
++        };
++        let content =
++            InterAgentMessage::new(message_type, recipient.clone(), author.clone(), message)
++                .render();
++        InterAgentCommunication::new(author, recipient, Vec::new(), content, trigger_turn)
++            .with_routing_prompt(routing_prompt)
++            .with_routing_provider_context(
++                inherited_model_provider,
++                requested_backend,
++                model_explicit,
++            )
+     };
+-    let content =
+-        InterAgentMessage::new(message_type, recipient.clone(), author.clone(), message).render();
+-    InterAgentCommunication::new(author, recipient, Vec::new(), content, trigger_turn)
++    communication.id = Some(ResponseItemId::with_suffix("amsg", call_id));
++    communication
 +}
 +
 +#[cfg(test)]
@@ -3784,6 +4165,7 @@ index b82bdd6a0b..ea4a255e90 100644
 +    #[test]
 +    fn encrypted_communication_keeps_ephemeral_routing_prompt_in_memory() {
 +        let communication = communication_from_tool_message(
++            "call-spawn",
 +            AgentPath::root(),
 +            AgentPath::root().join("worker").expect("recipient path"),
 +            "encrypted payload".to_string(),
@@ -3818,6 +4200,7 @@ index b82bdd6a0b..ea4a255e90 100644
 +    #[test]
 +    fn plaintext_communication_renders_exact_task_for_cross_provider_delivery() {
 +        let communication = communication_from_tool_message(
++            "call-spawn",
 +            AgentPath::root(),
 +            AgentPath::root().join("worker").expect("recipient path"),
 +            "Reply with exactly: deepseek child ok".to_string(),
@@ -3862,7 +4245,7 @@ index 19de4d842f..48515b9d37 100644
          )
          .await
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs
-index a88c765125..646e33fbdc 100644
+index a88c765125..a4bcae587b 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs
 @@ -55,6 +55,7 @@ pub(super) async fn handle_message_string_tool(
@@ -3873,7 +4256,11 @@ index a88c765125..646e33fbdc 100644
      analytics: &mut ToolCallAnalytics,
  ) -> Result<FunctionToolOutput, FunctionCallError> {
      let message = message_content(message)?;
-@@ -100,6 +101,10 @@ pub(super) async fn handle_message_string_tool(
+@@ -97,9 +98,14 @@ pub(super) async fn handle_message_string_tool(
+         .get_agent_path()
+         .unwrap_or_else(AgentPath::root);
+     let communication = communication_from_tool_message(
++        &call_id,
          author,
          receiver_agent_path.clone(),
          message,
@@ -3897,10 +4284,18 @@ index 70fc7d4350..59bdd1442f 100644
          )
          .await
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
-index 41d394243f..00ae4180df 100644
+index 41d394243f..b9594ab0e9 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
-@@ -114,6 +114,9 @@ async fn handle_spawn_agent(
+@@ -12,6 +12,7 @@ use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
+ use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
+ use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
+ use crate::turn_timing::now_unix_timestamp_ms;
++use codex_model_provider::create_model_provider;
+ use codex_protocol::AgentPath;
+ use codex_protocol::ThreadId;
+ use codex_protocol::protocol::MultiAgentVersion;
+@@ -114,6 +115,9 @@ async fn handle_spawn_agent(
      let args: SpawnAgentArgs = parse_arguments(&arguments)?;
      let fork_mode = args.fork_mode()?;
      let message = message_content(args.message)?;
@@ -3910,7 +4305,7 @@ index 41d394243f..00ae4180df 100644
      let role_name = args
          .agent_type
          .as_deref()
-@@ -125,7 +128,7 @@ async fn handle_spawn_agent(
+@@ -125,7 +129,7 @@ async fn handle_spawn_agent(
      let mut config =
          build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
      let is_full_history_fork = matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory));
@@ -3919,7 +4314,11 @@ index 41d394243f..00ae4180df 100644
          &session,
          turn.as_ref(),
          &mut config,
-@@ -173,6 +176,10 @@ async fn handle_spawn_agent(
+@@ -170,9 +174,14 @@ async fn handle_spawn_agent(
+         .get_agent_path()
+         .unwrap_or_else(AgentPath::root);
+     let communication = communication_from_tool_message(
++        &call_id,
          author,
          new_agent_path.clone(),
          message,
@@ -3930,11 +4329,41 @@ index 41d394243f..00ae4180df 100644
          &source,
          /*trigger_turn*/ true,
      );
+@@ -200,6 +209,11 @@ async fn handle_spawn_agent(
+                 &config.multi_agent_v2,
+                 child_catalog,
+                 !config.update_plan_enabled && config.model_catalog.is_none(),
++                create_model_provider(
++                    config.model_provider.clone(),
++                    Some(session.services.auth_manager.clone()),
++                )
++                .capabilities(),
+             ))
+         } else {
+             None
 diff --git a/codex-rs/core/src/tools/router.rs b/codex-rs/core/src/tools/router.rs
-index c3526fee10..0a375f77aa 100644
+index c3526fee10..6ac160f686 100644
 --- a/codex-rs/core/src/tools/router.rs
 +++ b/codex-rs/core/src/tools/router.rs
-@@ -51,7 +51,7 @@ impl ToolCall {
+@@ -1,3 +1,4 @@
++use crate::config::DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE;
+ use crate::function_tool::FunctionCallError;
+ use crate::responses_metadata::TurnToolNamespacesInfo;
+ use crate::session::session::Session;
+@@ -43,7 +44,11 @@ pub struct ToolCall {
+ 
+ impl ToolCall {
+     pub(crate) fn direct_source(&self) -> ToolCallSource {
+-        if self.tool_name.namespace.as_deref() == Some("collaboration")
++        if self
++            .tool_name
++            .namespace
++            .as_deref()
++            .is_some_and(|namespace| namespace == DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE)
+             && matches!(
+                 self.tool_name.name.as_str(),
+                 "spawn_agent" | "send_message" | "followup_task"
+@@ -51,7 +56,7 @@ impl ToolCall {
              && self
                  .encrypted_function_args
                  .as_ref()
@@ -3944,19 +4373,22 @@ index c3526fee10..0a375f77aa 100644
              ToolCallSource::DirectPlaintextMessage
          } else {
 diff --git a/codex-rs/core/src/tools/router_tests.rs b/codex-rs/core/src/tools/router_tests.rs
-index 05a1e2e65a..47945ae302 100644
+index 05a1e2e65a..a0a8acfcdf 100644
 --- a/codex-rs/core/src/tools/router_tests.rs
 +++ b/codex-rs/core/src/tools/router_tests.rs
-@@ -59,6 +59,38 @@ fn tool_log_payload_redacts_plaintext_multi_agent_messages() {
+@@ -59,6 +59,55 @@ fn tool_log_payload_redacts_plaintext_multi_agent_messages() {
      );
  }
  
 +#[test]
-+fn plaintext_v2_collaboration_calls_are_redacted_without_encryption_metadata() {
++fn plaintext_v2_custom_namespace_calls_are_redacted_without_encryption_metadata() {
 +    for tool_name in ["spawn_agent", "send_message", "followup_task"] {
 +        for encrypted_function_args in [None, Some(Vec::new())] {
 +            let call = ToolCall {
-+                tool_name: ToolName::namespaced("collaboration", tool_name),
++                tool_name: ToolName::namespaced(
++                    crate::config::DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE,
++                    tool_name,
++                ),
 +                call_id: format!("call-{tool_name}"),
 +                payload: ToolPayload::Function {
 +                    arguments: json!({"message": "portable task"}).to_string(),
@@ -3983,14 +4415,35 @@ index 05a1e2e65a..47945ae302 100644
 +    assert_eq!(call.direct_source(), ToolCallSource::Direct);
 +}
 +
++#[test]
++fn reserved_collaboration_calls_without_metadata_remain_provider_managed() {
++    let call = ToolCall {
++        tool_name: ToolName::namespaced("collaboration", "spawn_agent"),
++        call_id: "call-reserved-spawn".to_string(),
++        payload: ToolPayload::Function {
++            arguments: json!({"message": "provider-managed"}).to_string(),
++        },
++        encrypted_function_args: None,
++    };
++
++    assert_eq!(call.direct_source(), ToolCallSource::Direct);
++}
++
  impl codex_extension_api::ToolContributor for ExtensionEchoContributor {
      fn tools(
          &self,
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
-index 1f308ab5f3..17c9d7920e 100644
+index 1f308ab5f3..6af56f19a6 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
 +++ b/codex-rs/core/src/tools/spec_plan.rs
-@@ -611,7 +611,7 @@ fn hosted_model_tool_specs(
+@@ -1,5 +1,6 @@
+ use crate::agent::exceeds_thread_spawn_depth_limit;
+ use crate::agent::next_thread_spawn_depth;
++use crate::config::DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE;
+ use crate::environment_selection::TurnEnvironmentSnapshot;
+ use crate::image_preparation::unified_image_budget_enabled;
+ use crate::session::session::Session;
+@@ -611,7 +612,7 @@ fn hosted_model_tool_specs(
      // `Some(Cached/Live/Disabled)` are the options for mode when standalone search is unavailable
      // and the provider supports hosted search. `None` prevents emitting a hosted search tool.
      let web_search_mode = (!standalone_web_search_available
@@ -3999,7 +4452,7 @@ index 1f308ab5f3..17c9d7920e 100644
          .then_some(turn_context.config.web_search_mode.value());
      let web_search_config = web_search_mode
          .as_ref()
-@@ -638,7 +638,7 @@ pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
+@@ -638,7 +639,7 @@ pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
  }
  
  fn namespace_tools_enabled(turn_context: &TurnContext) -> bool {
@@ -4008,7 +4461,7 @@ index 1f308ab5f3..17c9d7920e 100644
  }
  
  fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
-@@ -716,7 +716,8 @@ fn image_generation_available(turn_context: &TurnContext, model_info: &ModelInfo
+@@ -716,7 +717,8 @@ fn image_generation_available(turn_context: &TurnContext, model_info: &ModelInfo
          return false;
      }
  
@@ -4018,7 +4471,7 @@ index 1f308ab5f3..17c9d7920e 100644
      if !capabilities.image_generation || !capabilities.namespace_tools {
          return false;
      }
-@@ -725,9 +726,9 @@ fn image_generation_available(turn_context: &TurnContext, model_info: &ModelInfo
+@@ -725,9 +727,9 @@ fn image_generation_available(turn_context: &TurnContext, model_info: &ModelInfo
          return false;
      }
  
@@ -4031,7 +4484,7 @@ index 1f308ab5f3..17c9d7920e 100644
              && turn_context
                  .auth_manager
                  .as_deref()
-@@ -1037,7 +1038,7 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
+@@ -1037,7 +1039,7 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
  
  fn standalone_web_search_enabled(turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
      namespace_tools_enabled(turn_context)
@@ -4040,10 +4493,51 @@ index 1f308ab5f3..17c9d7920e 100644
          && (model_info.use_responses_lite
              || turn_context
                  .config
+@@ -1478,11 +1480,26 @@ impl ToolExecutor<ToolInvocation> for MultiAgentV2NamespaceOverride {
+ 
+     fn spec(&self) -> ToolSpec {
+         match self.handler.spec() {
+-            ToolSpec::Function(tool) => ToolSpec::Namespace(ResponsesApiNamespace {
+-                name: self.namespace.clone(),
+-                description: MULTI_AGENT_V2_NAMESPACE_DESCRIPTION.to_string(),
+-                tools: vec![ResponsesApiNamespaceTool::Function(tool)],
+-            }),
++            ToolSpec::Function(mut tool) => {
++                if self.namespace == DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE
++                    && matches!(
++                        tool.name.as_str(),
++                        "spawn_agent" | "send_message" | "followup_task"
++                    )
++                    && let Some(message) = tool
++                        .parameters
++                        .properties
++                        .as_mut()
++                        .and_then(|properties| properties.get_mut("message"))
++                {
++                    message.encrypted = None;
++                }
++                ToolSpec::Namespace(ResponsesApiNamespace {
++                    name: self.namespace.clone(),
++                    description: MULTI_AGENT_V2_NAMESPACE_DESCRIPTION.to_string(),
++                    tools: vec![ResponsesApiNamespaceTool::Function(tool)],
++                })
++            }
+             spec => spec,
+         }
+     }
 diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
-index c0125ad996..a1ff077de2 100644
+index c0125ad996..32acdb5e84 100644
 --- a/codex-rs/core/src/tools/spec_plan_tests.rs
 +++ b/codex-rs/core/src/tools/spec_plan_tests.rs
+@@ -64,7 +64,7 @@ use crate::tools::router::ToolSuggestPresentation;
+ use crate::tools::spec_plan::append_source_tools;
+ use crate::tools::spec_plan::build_core_tool_registry;
+ 
+-const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
++const MULTI_AGENT_V2_NAMESPACE: &str = "agentroute_collaboration";
+ 
+ #[derive(Default)]
+ struct ToolPlanInputs {
 @@ -313,9 +313,12 @@ fn use_chatgpt_auth(turn: &mut TurnContext) {
      turn.auth_manager = Some(AuthManager::from_auth_for_testing(
          CodexAuth::create_dummy_chatgpt_auth_for_testing(),
@@ -4095,6 +4589,93 @@ index c0125ad996..a1ff077de2 100644
  #[tokio::test]
  async fn internal_guardian_sessions_require_managed_secondary_environments() {
      for (secondary_profile, expected_tools) in [
+@@ -2795,7 +2817,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
+ }
+ 
+ #[tokio::test]
+-async fn multi_agent_v2_message_schemas_are_encrypted() {
++async fn multi_agent_v2_custom_namespace_message_schemas_are_plaintext() {
+     let plan = probe(|turn| {
+         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+     })
+@@ -2812,6 +2834,41 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
+         }) else {
+             panic!("expected {tool_name} in {MULTI_AGENT_V2_NAMESPACE} namespace");
+         };
++        let properties = tool
++            .parameters
++            .properties
++            .as_ref()
++            .expect("tool should use object params");
++        assert_eq!(
++            properties
++                .get("message")
++                .and_then(|schema| schema.encrypted),
++            None
++        );
++    }
++}
++
++#[tokio::test]
++async fn multi_agent_v2_reserved_namespace_message_schemas_are_encrypted() {
++    let plan = probe(|turn| {
++        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
++        update_config(turn, |config| {
++            config.multi_agent_v2.tool_namespace = Some("collaboration".to_string());
++        });
++    })
++    .await;
++    let ToolSpec::Namespace(namespace) = plan.visible_spec("collaboration") else {
++        panic!("expected collaboration namespace");
++    };
++    for tool_name in ["spawn_agent", "send_message", "followup_task"] {
++        let Some(ResponsesApiNamespaceTool::Function(tool)) = namespace.tools.iter().find(|tool| {
++            matches!(
++                tool,
++                ResponsesApiNamespaceTool::Function(tool) if tool.name == tool_name
++            )
++        }) else {
++            panic!("expected {tool_name} in collaboration namespace");
++        };
+         let properties = tool
+             .parameters
+             .properties
+@@ -2847,7 +2904,7 @@ async fn multi_agent_v2_can_disable_wait_agent() {
+         ]
+     );
+     plan.assert_visible_lacks(&["clock"]);
+-    plan.assert_registered_lacks(&["collaboration.wait_agent", "clock.sleep"]);
++    plan.assert_registered_lacks(&["agentroute_collaboration.wait_agent", "clock.sleep"]);
+     assert!(plan.can_manage_children);
+ }
+ 
+diff --git a/codex-rs/core/src/tools/tool_dispatch_trace.rs b/codex-rs/core/src/tools/tool_dispatch_trace.rs
+index deb5fa02bc..3793d83e44 100644
+--- a/codex-rs/core/src/tools/tool_dispatch_trace.rs
++++ b/codex-rs/core/src/tools/tool_dispatch_trace.rs
+@@ -87,7 +87,7 @@ fn tool_dispatch_invocation(invocation: &ToolInvocation) -> Option<ToolDispatchI
+             .filter(|_| !invocation.tool_name.is_default_namespace())
+             .cloned(),
+         requester,
+-        payload: tool_dispatch_payload(&invocation.payload),
++        payload: tool_dispatch_payload(&invocation.payload, &invocation.source),
+     })
+ }
+ 
+@@ -109,7 +109,12 @@ fn tool_dispatch_result(
+     }
+ }
+ 
+-fn tool_dispatch_payload(payload: &ToolPayload) -> ToolDispatchPayload {
++fn tool_dispatch_payload(payload: &ToolPayload, source: &ToolCallSource) -> ToolDispatchPayload {
++    if matches!(source, ToolCallSource::DirectPlaintextMessage) {
++        return ToolDispatchPayload::Function {
++            arguments: "{}".to_string(),
++        };
++    }
+     match payload {
+         ToolPayload::Function { arguments } => ToolDispatchPayload::Function {
+             arguments: arguments.clone(),
 diff --git a/codex-rs/core/tests/responses_headers.rs b/codex-rs/core/tests/responses_headers.rs
 index be184753e7..0cf2ca3343 100644
 --- a/codex-rs/core/tests/responses_headers.rs
@@ -5469,6 +6050,645 @@ index ceeaa80e31..a03ae9e130 100644
      #[test]
      fn session_source_from_startup_arg_normalizes_custom_values() {
          assert_eq!(
+diff --git a/codex-rs/rollout-trace/src/inference.rs b/codex-rs/rollout-trace/src/inference.rs
+index 7cea4d0f97..f52f307447 100644
+--- a/codex-rs/rollout-trace/src/inference.rs
++++ b/codex-rs/rollout-trace/src/inference.rs
+@@ -26,6 +26,8 @@ use crate::raw_event::RawTraceEventPayload;
+ use crate::writer::TraceWriter;
+ 
+ const INFERENCE_CALL_ID_HEADER: &str = "x-codex-inference-call-id";
++const PLAINTEXT_DELEGATED_MESSAGE_PLACEHOLDER: &str = "[plaintext delegated message]";
++const MULTI_AGENT_V2_TOOL_NAMESPACE: &str = "agentroute_collaboration";
+ 
+ /// Turn-local inference tracing context.
+ ///
+@@ -175,10 +177,14 @@ impl InferenceTraceAttempt {
+         let InferenceTraceAttemptState::Enabled(attempt) = &self.state else {
+             return;
+         };
++        let Ok(mut request) = serde_json::to_value(request) else {
++            return;
++        };
++        sanitize_inference_request(&mut request);
+         let Some(request_payload) = write_json_payload_best_effort(
+             &attempt.context.writer,
+             RawPayloadKind::InferenceRequest,
+-            request,
++            &request,
+         ) else {
+             return;
+         };
+@@ -313,6 +319,80 @@ impl InferenceTraceAttempt {
+     }
+ }
+ 
++fn sanitize_inference_request(request: &mut JsonValue) {
++    let Some(input) = request.get_mut("input").and_then(JsonValue::as_array_mut) else {
++        return;
++    };
++
++    let mut plaintext_call_ids = Vec::new();
++    for item in input.iter_mut() {
++        let Some(object) = item.as_object_mut() else {
++            continue;
++        };
++        if object.get("type").and_then(JsonValue::as_str) != Some("function_call")
++            || object.get("namespace").and_then(JsonValue::as_str)
++                != Some(MULTI_AGENT_V2_TOOL_NAMESPACE)
++            || !matches!(
++                object.get("name").and_then(JsonValue::as_str),
++                Some("spawn_agent" | "send_message" | "followup_task")
++            )
++            || !encrypted_function_args_are_empty(object.get("encrypted_function_args"))
++        {
++            continue;
++        }
++
++        if let Some(call_id) = object.get("call_id").and_then(JsonValue::as_str) {
++            plaintext_call_ids.push(call_id.to_string());
++        }
++        object.insert(
++            "arguments".to_string(),
++            JsonValue::String("{}".to_string()),
++        );
++    }
++
++    for item in input.iter_mut() {
++        let Some(object) = item.as_object_mut() else {
++            continue;
++        };
++        if object.get("type").and_then(JsonValue::as_str) != Some("agent_message") {
++            continue;
++        }
++        let Some(message_id) = object.get("id").and_then(JsonValue::as_str) else {
++            continue;
++        };
++        if !plaintext_call_ids
++            .iter()
++            .any(|call_id| message_id == format!("amsg_{call_id}"))
++        {
++            continue;
++        }
++        let Some(content) = object.get("content").and_then(JsonValue::as_array) else {
++            continue;
++        };
++        if !content
++            .iter()
++            .any(|part| part.get("type").and_then(JsonValue::as_str) == Some("input_text"))
++        {
++            continue;
++        }
++        object.insert(
++            "content".to_string(),
++            serde_json::json!([{
++                "type": "input_text",
++                "text": PLAINTEXT_DELEGATED_MESSAGE_PLACEHOLDER,
++            }]),
++        );
++    }
++}
++
++fn encrypted_function_args_are_empty(encrypted_function_args: Option<&JsonValue>) -> bool {
++    match encrypted_function_args {
++        None | Some(JsonValue::Null) => true,
++        Some(JsonValue::Array(items)) => items.is_empty(),
++        Some(_) => false,
++    }
++}
++
+ /// Serializes a response item for trace evidence rather than future request construction.
+ ///
+ /// The protocol serializer intentionally omits some readable reasoning content
+@@ -389,6 +469,7 @@ fn append_with_context_best_effort(
+ 
+ #[cfg(test)]
+ mod tests {
++    use std::fs;
+     use std::sync::Arc;
+ 
+     use codex_protocol::ResponseItemId;
+@@ -494,6 +575,140 @@ mod tests {
+         Ok(())
+     }
+ 
++    #[test]
++    fn inference_trace_redacts_only_plaintext_collaboration_messages() -> anyhow::Result<()> {
++        let temp = TempDir::new()?;
++        let writer = Arc::new(TraceWriter::create(
++            temp.path(),
++            "trace-1".to_string(),
++            "rollout-1".to_string(),
++            "thread-root".to_string(),
++        )?);
++        writer.append(RawTraceEventPayload::ThreadStarted {
++            thread_id: "thread-root".to_string(),
++            agent_path: "/root".to_string(),
++            metadata_payload: None,
++        })?;
++        writer.append(RawTraceEventPayload::CodexTurnStarted {
++            codex_turn_id: "turn-1".to_string(),
++            thread_id: "thread-root".to_string(),
++        })?;
++        let context = InferenceTraceContext::enabled(
++            writer,
++            "thread-root".to_string(),
++            "turn-1".to_string(),
++            "gpt-test".to_string(),
++            "test-provider".to_string(),
++        );
++        let request = json!({
++            "model": "gpt-test",
++            "input": [
++                {
++                    "type": "function_call",
++                    "id": "fc-sensitive",
++                    "call_id": "call-sensitive",
++                    "name": "spawn_agent",
++                    "namespace": "agentroute_collaboration",
++                    "arguments": "{\"message\":\"trace secret\",\"task_name\":\"audit\"}"
++                },
++                {
++                    "type": "agent_message",
++                    "id": "amsg_call-sensitive",
++                    "author": "/root",
++                    "recipient": "/root/audit",
++                    "content": [{"type": "input_text", "text": "trace secret"}]
++                },
++                {
++                    "type": "function_call",
++                    "id": "fc-encrypted",
++                    "call_id": "call-encrypted",
++                    "name": "send_message",
++                    "namespace": "agentroute_collaboration",
++                    "arguments": "{\"message\":\"encrypted secret\"}",
++                    "encrypted_function_args": ["ciphertext"]
++                },
++                {
++                    "type": "function_call",
++                    "id": "fc-reserved",
++                    "call_id": "call-reserved",
++                    "name": "spawn_agent",
++                    "namespace": "collaboration",
++                    "arguments": "{\"message\":\"reserved secret\"}"
++                },
++                {
++                    "type": "function_call",
++                    "id": "fc-unrelated",
++                    "call_id": "call-unrelated",
++                    "name": "wait_agent",
++                    "namespace": "agentroute_collaboration",
++                    "arguments": "{\"ids\":[\"worker\"]}"
++                },
++                {
++                    "type": "agent_message",
++                    "id": "amsg_call-encrypted",
++                    "author": "/root",
++                    "recipient": "/root/worker",
++                    "content": [{
++                        "type": "encrypted_content",
++                        "encrypted_content": "encrypted message"
++                    }]
++                },
++                {
++                    "type": "agent_message",
++                    "id": "amsg_call-unrelated",
++                    "author": "/root",
++                    "recipient": "/root/worker",
++                    "content": [{"type": "input_text", "text": "ordinary message"}]
++                }
++            ]
++        });
++
++        let attempt = context.start_attempt();
++        attempt.record_started(&request);
++        attempt.record_completed("resp-1", Some("req-1"), &None, &[]);
++
++        let rollout = replay_bundle(temp.path())?;
++        let request_payload = rollout
++            .raw_payloads
++            .values()
++            .find(|payload| payload.kind == RawPayloadKind::InferenceRequest)
++            .expect("inference request payload");
++        let traced: JsonValue = serde_json::from_str(&fs::read_to_string(
++            temp.path().join(&request_payload.path),
++        )?)?;
++        let input = traced["input"].as_array().expect("request input array");
++
++        assert!(!traced.to_string().contains("trace secret"));
++        assert_eq!(
++            input[0],
++            json!({
++                "type": "function_call",
++                "id": "fc-sensitive",
++                "call_id": "call-sensitive",
++                "name": "spawn_agent",
++                "namespace": "agentroute_collaboration",
++                "arguments": "{}",
++            })
++        );
++        assert_eq!(
++            input[1],
++            json!({
++                "type": "agent_message",
++                "id": "amsg_call-sensitive",
++                "author": "/root",
++                "recipient": "/root/audit",
++                "content": [{
++                    "type": "input_text",
++                    "text": PLAINTEXT_DELEGATED_MESSAGE_PLACEHOLDER,
++                }]
++            })
++        );
++        assert_eq!(&input[2..], &request["input"].as_array().unwrap()[2..]);
++        assert_eq!(rollout.inference_calls.len(), 1);
++
++        Ok(())
++    }
++
+     #[test]
+     fn traced_response_item_preserves_reasoning_content_omitted_by_normal_serializer() {
+         let item = ResponseItem::Reasoning {
+diff --git a/codex-rs/rollout-trace/src/model/conversation.rs b/codex-rs/rollout-trace/src/model/conversation.rs
+index 0cb72e85ef..3c76bc9ae9 100644
+--- a/codex-rs/rollout-trace/src/model/conversation.rs
++++ b/codex-rs/rollout-trace/src/model/conversation.rs
+@@ -46,6 +46,9 @@ pub struct ConversationItem {
+ /// Sender and destination identities attached to a model-visible agent message.
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub struct AgentMessageMetadata {
++    /// Provider-visible response item id used to correlate a delivered message with its sender tool.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub id: Option<String>,
+     /// Agent path that authored the message.
+     pub author: AgentPath,
+     /// Agent path that received the message.
+diff --git a/codex-rs/rollout-trace/src/reducer/conversation/normalize.rs b/codex-rs/rollout-trace/src/reducer/conversation/normalize.rs
+index 142c1ea930..bf7ecc23a4 100644
+--- a/codex-rs/rollout-trace/src/reducer/conversation/normalize.rs
++++ b/codex-rs/rollout-trace/src/reducer/conversation/normalize.rs
+@@ -200,6 +200,7 @@ fn normalize_agent_message_item(
+             format!("failed to parse agent_message item in payload {raw_payload_id}")
+         })?;
+     let ResponseItem::AgentMessage {
++        id,
+         author,
+         recipient,
+         content,
+@@ -228,7 +229,11 @@ fn normalize_agent_message_item(
+         role: ConversationRole::Assistant,
+         channel: Some(ConversationChannel::Analysis),
+         kind: ConversationItemKind::Message,
+-        agent_message: Some(AgentMessageMetadata { author, recipient }),
++        agent_message: Some(AgentMessageMetadata {
++            id: id.map(String::from),
++            author,
++            recipient,
++        }),
+         body: ConversationBody { parts },
+         call_id: None,
+     })
+diff --git a/codex-rs/rollout-trace/src/reducer/conversation_tests.rs b/codex-rs/rollout-trace/src/reducer/conversation_tests.rs
+index 4c4f7ace97..974eb52dfc 100644
+--- a/codex-rs/rollout-trace/src/reducer/conversation_tests.rs
++++ b/codex-rs/rollout-trace/src/reducer/conversation_tests.rs
+@@ -164,6 +164,7 @@ fn agent_messages_preserve_routing_and_content() -> anyhow::Result<()> {
+                 Some(ConversationChannel::Analysis),
+                 ConversationItemKind::Message,
+                 Some(AgentMessageMetadata {
++                    id: None,
+                     author: "/root/worker".to_string(),
+                     recipient: "/root".to_string(),
+                 }),
+@@ -178,6 +179,7 @@ fn agent_messages_preserve_routing_and_content() -> anyhow::Result<()> {
+                 Some(ConversationChannel::Analysis),
+                 ConversationItemKind::Message,
+                 Some(AgentMessageMetadata {
++                    id: None,
+                     author: "/root".to_string(),
+                     recipient: "/root/worker".to_string(),
+                 }),
+diff --git a/codex-rs/rollout-trace/src/reducer/tool/agents.rs b/codex-rs/rollout-trace/src/reducer/tool/agents.rs
+index 7c71ddef7d..4620c81fa9 100644
+--- a/codex-rs/rollout-trace/src/reducer/tool/agents.rs
++++ b/codex-rs/rollout-trace/src/reducer/tool/agents.rs
+@@ -34,7 +34,8 @@ pub(in crate::reducer) struct PendingAgentInteractionEdge {
+     pub(in crate::reducer) source: TraceAnchor,
+     pub(in crate::reducer) target_thread_id: String,
+     pub(in crate::reducer) message_author: String,
+-    pub(in crate::reducer) message_content: String,
++    pub(in crate::reducer) communication_id: Option<String>,
++    pub(in crate::reducer) message_content: Option<String>,
+     /// Spawn-only fallback for children that fail before their task message is model-visible.
+     pub(in crate::reducer) unresolved_spawn_thread_id: Option<String>,
+     pub(in crate::reducer) started_at_unix_ms: i64,
+@@ -257,7 +258,9 @@ impl TraceReducer {
+         })?;
+         let started_at_unix_ms = tool_call.execution.started_at_unix_ms;
+         let message_author = self.agent_path_for_thread(&tool_call.thread_id)?;
+-        let message_content = self.agent_message_content_from_invocation(tool_call_id)?;
++        let message_content = self
++            .agent_message_content_from_invocation(tool_call_id)
++            .ok();
+         let carried_raw_payload_ids = self.agent_tool_payload_ids(tool_call_id)?;
+         self.queue_or_resolve_agent_interaction_edge(PendingAgentInteractionEdge {
+             edge_id,
+@@ -267,6 +270,7 @@ impl TraceReducer {
+             },
+             target_thread_id,
+             message_author,
++            communication_id: Some(agent_message_id(tool_call_id)),
+             message_content,
+             unresolved_spawn_thread_id,
+             started_at_unix_ms,
+@@ -368,7 +372,8 @@ impl TraceReducer {
+             },
+             target_thread_id: child_thread_id.clone(),
+             message_author,
+-            message_content: payload.prompt.clone(),
++            communication_id: None,
++            message_content: Some(payload.prompt.clone()),
+             unresolved_spawn_thread_id: Some(child_thread_id),
+             started_at_unix_ms: tool_call.execution.started_at_unix_ms,
+             ended_at_unix_ms: Some(wall_time_unix_ms),
+@@ -410,7 +415,8 @@ impl TraceReducer {
+             },
+             target_thread_id,
+             message_author,
+-            message_content,
++            communication_id: None,
++            message_content: Some(message_content),
+             unresolved_spawn_thread_id: None,
+             started_at_unix_ms: tool_call.execution.started_at_unix_ms,
+             ended_at_unix_ms,
+@@ -502,7 +508,8 @@ impl TraceReducer {
+             source,
+             target_thread_id: observed.parent_thread_id,
+             message_author,
+-            message_content: observed.message,
++            communication_id: None,
++            message_content: Some(observed.message),
+             unresolved_spawn_thread_id: None,
+             started_at_unix_ms: observed.wall_time_unix_ms,
+             ended_at_unix_ms: Some(observed.wall_time_unix_ms),
+@@ -521,7 +528,7 @@ impl TraceReducer {
+         if self.is_interaction_edge_target_item(item_id) {
+             return Ok(());
+         }
+-        let Some((thread_id, message_author, message_content)) =
++        let Some((thread_id, communication_id, message_author, message_content)) =
+             self.inter_agent_message_item(item_id)
+         else {
+             return Ok(());
+@@ -532,7 +539,11 @@ impl TraceReducer {
+             .position(|pending| {
+                 pending.target_thread_id == thread_id
+                     && pending.message_author == message_author
+-                    && pending.message_content == message_content
++                    && pending_agent_message_matches(
++                        pending,
++                        communication_id.as_deref(),
++                        &message_content,
++                    )
+             })
+         else {
+             return Ok(());
+@@ -548,7 +559,8 @@ impl TraceReducer {
+         if let Some(item_id) = self.find_unlinked_inter_agent_message_item(
+             &pending.target_thread_id,
+             &pending.message_author,
+-            &pending.message_content,
++            pending.communication_id.as_deref(),
++            pending.message_content.as_deref(),
+         ) {
+             return self.upsert_agent_interaction_edge_for_item(pending, item_id);
+         }
+@@ -562,6 +574,7 @@ impl TraceReducer {
+                 || existing.source != pending.source
+                 || existing.target_thread_id != pending.target_thread_id
+                 || existing.message_author != pending.message_author
++                || existing.communication_id != pending.communication_id
+                 || existing.message_content != pending.message_content
+                 || existing.unresolved_spawn_thread_id != pending.unresolved_spawn_thread_id
+             {
+@@ -681,7 +694,8 @@ impl TraceReducer {
+         &self,
+         thread_id: &str,
+         message_author: &str,
+-        message_content: &str,
++        communication_id: Option<&str>,
++        message_content: Option<&str>,
+     ) -> Option<String> {
+         self.rollout
+             .threads
+@@ -690,16 +704,22 @@ impl TraceReducer {
+             .iter()
+             .find(|item_id| {
+                 !self.is_interaction_edge_target_item(item_id)
+-                    && self
+-                        .inter_agent_message_item(item_id)
+-                        .is_some_and(|(_, author, content)| {
+-                            author == message_author && content == message_content
+-                        })
++                    && self.inter_agent_message_item(item_id).is_some_and(
++                        |(_, item_id, author, content)| {
++                            author == message_author
++                                && (communication_id
++                                    .is_some_and(|expected| item_id.as_deref() == Some(expected))
++                                    || message_content.is_some_and(|expected| content == expected))
++                        },
++                    )
+             })
+             .cloned()
+     }
+ 
+-    fn inter_agent_message_item(&self, item_id: &str) -> Option<(String, String, String)> {
++    fn inter_agent_message_item(
++        &self,
++        item_id: &str,
++    ) -> Option<(String, Option<String>, String, String)> {
+         let item = self.rollout.conversation_items.get(item_id)?;
+         let (author_agent_path, recipient_agent_path, message_content) =
+             inter_agent_message_fields(item)?;
+@@ -707,7 +727,14 @@ impl TraceReducer {
+         if recipient_agent_path != thread.agent_path {
+             return None;
+         }
+-        Some((item.thread_id.clone(), author_agent_path, message_content))
++        Some((
++            item.thread_id.clone(),
++            item.agent_message
++                .as_ref()
++                .and_then(|message| message.id.clone()),
++            author_agent_path,
++            message_content,
++        ))
+     }
+ 
+     fn agent_path_for_thread(&self, thread_id: &str) -> Result<String> {
+@@ -757,6 +784,25 @@ fn tool_edge_id(tool_call_id: &str) -> String {
+     format!("edge:tool:{tool_call_id}")
+ }
+ 
++fn agent_message_id(tool_call_id: &str) -> String {
++    format!("amsg_{tool_call_id}")
++}
++
++fn pending_agent_message_matches(
++    pending: &PendingAgentInteractionEdge,
++    communication_id: Option<&str>,
++    message_content: &str,
++) -> bool {
++    pending
++        .communication_id
++        .as_deref()
++        .is_some_and(|expected| communication_id == Some(expected))
++        || pending
++            .message_content
++            .as_deref()
++            .is_some_and(|expected| message_content == expected)
++}
++
+ fn tool_call_source_matches(anchor: &TraceAnchor, tool_call_id: &str) -> bool {
+     matches!(anchor, TraceAnchor::ToolCall { tool_call_id: source } if source == tool_call_id)
+ }
+diff --git a/codex-rs/rollout-trace/src/reducer/tool/agents_tests.rs b/codex-rs/rollout-trace/src/reducer/tool/agents_tests.rs
+index f5a4648f80..3a9f3cf2b6 100644
+--- a/codex-rs/rollout-trace/src/reducer/tool/agents_tests.rs
++++ b/codex-rs/rollout-trace/src/reducer/tool/agents_tests.rs
+@@ -253,15 +253,13 @@ fn sub_agent_started_activity_creates_spawn_edge() -> anyhow::Result<()> {
+         "inference-child-1",
+         vec![json!({
+             "type": "agent_message",
++            "id": "amsg_call-spawn-v2",
+             "author": "/root",
+             "recipient": "/root/reviewer",
+-            "content": [
+-                {
+-                    "type": "input_text",
+-                    "text": "Message Type: NEW_TASK\nTask name: /root/reviewer\nSender: /root\nPayload:\n"
+-                },
+-                {"type": "encrypted_content", "encrypted_content": "review this"}
+-            ]
++            "content": [{
++                "type": "input_text",
++                "text": "[plaintext delegated message]"
++            }]
+         })],
+     )?;
+ 
+@@ -275,6 +273,17 @@ fn sub_agent_started_activity_creates_spawn_edge() -> anyhow::Result<()> {
+         replayed.conversation_items[target_item_id].thread_id,
+         child_thread_id
+     );
++    assert_eq!(
++        replayed.conversation_items[target_item_id]
++            .agent_message
++            .as_ref()
++            .and_then(|message| message.id.as_deref()),
++        Some("amsg_call-spawn-v2")
++    );
++    assert_eq!(
++        text_body(&replayed.conversation_items[target_item_id]),
++        "[plaintext delegated message]"
++    );
+     assert_eq!(
+         edge.carried_raw_payload_ids,
+         vec![
+@@ -443,18 +452,21 @@ fn send_message_activity_targets_delivered_child_message() -> anyhow::Result<()>
+     )?;
+     start_thread(&writer, child_thread_id, "/root/child")?;
+     start_turn_for_thread(&writer, child_thread_id, "turn-child-1")?;
+-    let delivered = inter_agent_message(
+-        "/root",
+-        "/root/child",
+-        "hello again",
+-        /*trigger_turn*/ false,
+-    );
+     append_inference_request(
+         &writer,
+         child_thread_id,
+         "turn-child-1",
+         "inference-child-1",
+-        vec![message("assistant", &delivered)],
++        vec![json!({
++            "type": "agent_message",
++            "id": "amsg_call-send-v2",
++            "author": "/root",
++            "recipient": "/root/child",
++            "content": [{
++                "type": "input_text",
++                "text": "[plaintext delegated message]"
++            }]
++        })],
+     )?;
+ 
+     let replayed = replay_bundle(temp.path())?;
+@@ -466,6 +478,17 @@ fn send_message_activity_targets_delivered_child_message() -> anyhow::Result<()>
+         replayed.conversation_items[target_item_id].thread_id,
+         child_thread_id
+     );
++    assert_eq!(
++        replayed.conversation_items[target_item_id]
++            .agent_message
++            .as_ref()
++            .and_then(|message| message.id.as_deref()),
++        Some("amsg_call-send-v2")
++    );
++    assert_eq!(
++        text_body(&replayed.conversation_items[target_item_id]),
++        "[plaintext delegated message]"
++    );
+     assert_eq!(
+         edge.carried_raw_payload_ids,
+         vec![
+@@ -529,18 +552,21 @@ fn followup_activity_targets_delivered_child_message() -> anyhow::Result<()> {
+     )?;
+     start_thread(&writer, child_thread_id, "/root/child")?;
+     start_turn_for_thread(&writer, child_thread_id, "turn-child-1")?;
+-    let delivered = inter_agent_message(
+-        "/root",
+-        "/root/child",
+-        "continue",
+-        /*trigger_turn*/ true,
+-    );
+     append_inference_request(
+         &writer,
+         child_thread_id,
+         "turn-child-1",
+         "inference-child-1",
+-        vec![message("assistant", &delivered)],
++        vec![json!({
++            "type": "agent_message",
++            "id": "amsg_call-followup-v2",
++            "author": "/root",
++            "recipient": "/root/child",
++            "content": [{
++                "type": "input_text",
++                "text": "[plaintext delegated message]"
++            }]
++        })],
+     )?;
+ 
+     let replayed = replay_bundle(temp.path())?;
+@@ -552,6 +578,17 @@ fn followup_activity_targets_delivered_child_message() -> anyhow::Result<()> {
+         replayed.conversation_items[target_item_id].thread_id,
+         child_thread_id
+     );
++    assert_eq!(
++        replayed.conversation_items[target_item_id]
++            .agent_message
++            .as_ref()
++            .and_then(|message| message.id.as_deref()),
++        Some("amsg_call-followup-v2")
++    );
++    assert_eq!(
++        text_body(&replayed.conversation_items[target_item_id]),
++        "[plaintext delegated message]"
++    );
+     assert_eq!(
+         edge.carried_raw_payload_ids,
+         vec![
 diff --git a/codex-rs/tui/src/chatwidget.rs b/codex-rs/tui/src/chatwidget.rs
 index 3cbe36586e..a008c935cc 100644
 --- a/codex-rs/tui/src/chatwidget.rs

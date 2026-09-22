@@ -64,11 +64,32 @@ def test_native_patch_is_packaged():
     assert "routing_model_explicit" in content
     assert "make_inter_agent_input_portable_for_provider" not in content
     assert "cross_provider_inter_agent_input_converts_payload_to_plaintext" not in content
-    assert "plaintext_v2_collaboration_calls_are_redacted_without_encryption_metadata" in content
+    assert 'DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE: &str = "agentroute_collaboration"' in content
+    assert "spawn_agent_tool_v2_requires_task_name_and_lists_visible_models" in content
+    assert "if self.namespace == DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE" in content
+    assert '"spawn_agent" | "send_message" | "followup_task"' in content
+    assert "message.encrypted = None;" in content
+    assert "plaintext_v2_custom_namespace_calls_are_redacted_without_encryption_metadata" in content
     assert "encrypted_v2_collaboration_calls_remain_encrypted" in content
+    assert "reserved_collaboration_calls_without_metadata_remain_provider_managed" in content
+    assert "multi_agent_v2_reserved_namespace_message_schemas_are_encrypted" in content
     assert ".is_none_or(Vec::is_empty)" in content
     assert "plaintext_communication_renders_exact_task_for_cross_provider_delivery" in content
     assert "Payload:\\nReply with exactly: deepseek child ok" in content
+    assert "provider_capabilities" in content
+    assert ".namespace_tools" in content
+    assert 'format!("functions.{namespace}.spawn_agent")' in content
+    assert '"functions.spawn_agent".to_string()' in content
+    assert "fn tool_dispatch_payload(payload: &ToolPayload, source: &ToolCallSource)" in content
+    assert "matches!(source, ToolCallSource::DirectPlaintextMessage)" in content
+    assert 'arguments: "{}".to_string()' in content
+    assert "ToolDispatchPayload::Function" in content
+    assert "AgentMessageMetadata" in content
+    assert "communication_id: Some(agent_message_id(tool_call_id))" in content
+    assert "fn agent_message_id(tool_call_id: &str) -> String" in content
+    assert 'format!("amsg_{tool_call_id}")' in content
+    assert "sanitize_inference_request" in content
+    assert "inference_trace_redacts_only_plaintext_collaboration_messages" in content
     assert '"backend".to_string()' not in content
     assert "+    backend: Option<String>," not in content
     assert "properties.keys().map(String::as_str).collect::<Vec<_>>()" in content
@@ -90,6 +111,21 @@ def test_native_patch_is_packaged():
 
 def test_primary_patch_path_is_backwards_compatible():
     assert patch_path() == patch_paths()[0]
+
+
+def test_release_metadata_uses_v0541_runtime_v36():
+    root = Path(__file__).parents[1]
+    package = (root / "pyproject.toml").read_text(encoding="utf-8")
+    lock = (root / "uv.lock").read_text(encoding="utf-8")
+    public_api = (root / "src/agentroute/__init__.py").read_text(encoding="utf-8")
+    installer = (root / "scripts/install.sh").read_text(encoding="utf-8")
+    doctor = (root / "src/agentroute/doctor.py").read_text(encoding="utf-8")
+
+    assert 'version = "0.5.41"' in package
+    assert 'version = "0.5.41"' in lock
+    assert '__version__ = "0.5.41"' in public_api
+    assert "provider-routing-v36" in installer
+    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v36"' in doctor
 
 
 def test_install_binary_atomically_replaces_destination(tmp_path, monkeypatch):
@@ -139,10 +175,9 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v35" in installer
+    assert "provider-routing-v36" in installer
     assert "chatgpt_profile_home" in installer
     assert "ordinary_usage_allowed" in installer
-    assert "codex-desktop-route-notice.patch" in installer
     assert "codex-package-version.patch" in installer
     assert "routed_turn_model_provider" in "\n".join(
         path.read_text() for path in patch_paths()
