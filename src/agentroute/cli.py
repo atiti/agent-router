@@ -827,7 +827,7 @@ def label_command(
     notes: str | None = None,
 ) -> None:
     """Label a routing outcome for later calibration."""
-    allowed = {"correct", "too-low", "too-high", "overridden", "failed"}
+    allowed = {"correct", "too-low", "too-high", "changed-task", "failed", "overridden"}
     if outcome not in allowed:
         raise typer.BadParameter(f"outcome must be one of: {', '.join(sorted(allowed))}")
     if not AuditStore().label(decision_id, outcome, notes):
@@ -859,6 +859,15 @@ def audit_report_command(limit: int = 500) -> None:
         counts[label] = counts.get(label, 0) + 1
     for label, count in sorted(counts.items()):
         console.print(f"  {label}: {count}")
+    override_signals = [row for row in automatic if row["next_manual_override_tier"]]
+    stronger = sum(
+        Tier.parse(str(row["next_manual_override_tier"])) > Tier.parse(str(row["selected_tier"]))
+        for row in override_signals
+    )
+    console.print(
+        f"Next-turn manual tier signals: {len(override_signals)} ({stronger} stronger). "
+        "These are navigation signals, not quality labels."
+    )
     llm = [
         row
         for row in automatic
@@ -965,6 +974,7 @@ def analytics_command(
             "duration": asdict(report.duration),
             "reconciliation": asdict(report.reconciliation),
             "capacity": asdict(report.capacity),
+            "calibration": asdict(report.calibration),
             "longest_turns": [asdict(item) for item in report.longest_turns],
         }
         console.print_json(json.dumps(payload, sort_keys=True))
@@ -994,7 +1004,8 @@ def analytics_command(
         f"metered {reconciliation.completed_metered}; "
         f"completed without receipt {reconciliation.completed_unmetered}; "
         f"pending {reconciliation.pending}; stale {reconciliation.stale_unreconciled}; "
-        f"failed {reconciliation.failed}; interrupted {reconciliation.interrupted}"
+        f"failed {reconciliation.failed}; interrupted {reconciliation.interrupted}; "
+        f"superseded {reconciliation.superseded}"
     )
     capacity = report.capacity
     console.print(
@@ -1007,6 +1018,37 @@ def analytics_command(
         console.print(
             "Fallback routes: "
             + ", ".join(f"{route}={count}" for route, count in capacity.by_route.items())
+        )
+    calibration = report.calibration
+    console.print(
+        "Calibration: "
+        f"explicit labels {calibration.labeled_turns}/{calibration.automatic_turns}; "
+        f"correct {calibration.explicit_correct}; too low {calibration.too_low}; "
+        f"too high {calibration.too_high}; execution failed {calibration.execution_failed}; "
+        f"next-turn manual tier signals {calibration.next_manual_override_signals} "
+        f"({calibration.stronger_next_override_signals} stronger)"
+    )
+    console.print(
+        "Reasoning effort: "
+        + ", ".join(f"{effort}={count}" for effort, count in calibration.reasoning_efforts.items())
+        + "; source "
+        + ", ".join(
+            f"{source}={count}" for source, count in calibration.reasoning_effort_sources.items()
+        )
+    )
+    if calibration.task_types:
+        console.print(
+            "Classifier task types: "
+            + ", ".join(
+                f"{task_type}={count}"
+                for task_type, count in list(calibration.task_types.items())[:12]
+            )
+        )
+        console.print(
+            "Classifier confidence: "
+            + ", ".join(
+                f"{band}={count}" for band, count in calibration.confidence_bands.items()
+            )
         )
     console.print(
         f"Routed answer cost: {currency} {report.overall.actual_cost:.4f}; "

@@ -11,8 +11,9 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -21,29 +22,54 @@ from .models import RouteContext, Tier
 
 JSON_FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
 
-CLASSIFIER_SYSTEM_PROMPT = """You route coding-agent turns to the cheapest sufficient tier.
+CLASSIFIER_SYSTEM_PROMPT = """You route coding-agent turns to the cheapest sufficient model tier
+and choose its reasoning effort independently.
 Judge the resolved task, not the length of the latest message.
-FAST: bounded retrieval, status, formatting, renames, or trivial edits.
-FAST also includes a bounded reply, post, comment, email, or Slack message when the needed facts
-already exist in prior context. The complexity of work being summarized does not raise the tier of
-the communication action itself.
-NORMAL: routine explanation or implementation with limited uncertainty.
+FAST: greetings, acknowledgments, no-op/status checks, exact retrieval, deterministic formatting,
+renames, or typo fixes. Do not select FAST for authored communication, explanation, analysis,
+implementation, tool orchestration, or judgment even when the latest message is short.
+NORMAL: routine communication, explanation, analysis, or implementation with limited uncertainty.
 SMART: debugging, production operations, security, architecture, substantial judgment, or
 multi-step tool orchestration.
 MAX: exceptional cross-cutting reasoning where SMART is materially likely to fail.
-Return JSON only with: tier (FAST|NORMAL|SMART|MAX), confidence (0..1),
-task_type (short snake_case), and reason (one sentence). Confidence measures certainty that this
-is the cheapest sufficient tier.
+Reasoning effort is separate from model tier. Choose LOW for deterministic work, MEDIUM for routine
+judgment, HIGH for difficult reasoning, and XHIGH only when unusually deep reasoning is material.
+Return JSON only with: tier (FAST|NORMAL|SMART|MAX), reasoning_effort
+(LOW|MEDIUM|HIGH|XHIGH), confidence (0..1), task_type (one of greeting, acknowledgment,
+no_op, status, retrieval, formatting, communication, explanation, analysis, implementation,
+debugging, operations, architecture, security, research, orchestration, other), and reason
+(one sentence). Confidence measures certainty that this is the cheapest sufficient tier and effort.
 Treat a confirmation as approval of the task described in prior assistant context. Otherwise,
 classify the action requested by the latest message; use prior assistant context only as supporting
 facts, not as work that must be repeated.
 """
 
 
+class ClassifierTaskType(str, Enum):
+    GREETING = "greeting"
+    ACKNOWLEDGMENT = "acknowledgment"
+    NO_OP = "no_op"
+    STATUS = "status"
+    RETRIEVAL = "retrieval"
+    FORMATTING = "formatting"
+    COMMUNICATION = "communication"
+    EXPLANATION = "explanation"
+    ANALYSIS = "analysis"
+    IMPLEMENTATION = "implementation"
+    DEBUGGING = "debugging"
+    OPERATIONS = "operations"
+    ARCHITECTURE = "architecture"
+    SECURITY = "security"
+    RESEARCH = "research"
+    ORCHESTRATION = "orchestration"
+    OTHER = "other"
+
+
 class ClassifierResult(BaseModel):
     tier: Tier
+    reasoning_effort: Literal["low", "medium", "high", "xhigh"] | None = None
     confidence: float = Field(ge=0, le=1)
-    task_type: str = Field(pattern=r"^[a-z0-9_]{1,80}$")
+    task_type: ClassifierTaskType
     reason: str = Field(min_length=1, max_length=500)
 
     @classmethod
@@ -52,11 +78,47 @@ class ClassifierResult(BaseModel):
             raise ValueError("classifier response must be an object")
         normalized = dict(payload)
         normalized["tier"] = Tier.parse(str(normalized.get("tier", "")))
+        if normalized.get("reasoning_effort") is not None:
+            normalized["reasoning_effort"] = str(normalized["reasoning_effort"]).lower()
+        normalized["task_type"] = normalize_task_type(str(normalized.get("task_type", "")))
         return cls.model_validate(normalized)
 
     @property
     def reason_hash(self) -> str:
         return hashlib.sha256(self.reason.encode("utf-8")).hexdigest()
+
+
+def normalize_task_type(value: str) -> ClassifierTaskType:
+    """Map classifier wording onto a stable, low-cardinality audit taxonomy."""
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+    exact = {item.value: item for item in ClassifierTaskType}
+    if normalized in exact:
+        return exact[normalized]
+    keyword_groups = (
+        (ClassifierTaskType.SECURITY, ("security", "auth", "permission", "credential")),
+        (ClassifierTaskType.ARCHITECTURE, ("architecture", "design", "migration")),
+        (ClassifierTaskType.DEBUGGING, ("debug", "troubleshoot", "root_cause", "fix")),
+        (ClassifierTaskType.OPERATIONS, ("production", "deploy", "release", "merge", "operation")),
+        (ClassifierTaskType.ORCHESTRATION, ("orchestrat", "subagent", "multi_agent", "workflow")),
+        (ClassifierTaskType.IMPLEMENTATION, ("implement", "build", "code", "change")),
+        (ClassifierTaskType.RESEARCH, ("research", "investigat", "audit", "review")),
+        (ClassifierTaskType.ANALYSIS, ("analy", "evaluate", "compare", "forecast")),
+        (ClassifierTaskType.EXPLANATION, ("explain", "question", "clarif")),
+        (ClassifierTaskType.COMMUNICATION, ("reply", "message", "email", "slack", "communicat")),
+        (ClassifierTaskType.RETRIEVAL, ("retriev", "lookup", "fetch", "file_reference")),
+        (ClassifierTaskType.FORMATTING, ("format", "rewrite", "rename", "typo")),
+        (ClassifierTaskType.STATUS, ("status", "confirmation", "identifier")),
+        (
+            ClassifierTaskType.ACKNOWLEDGMENT,
+            ("acknowledg", "confirm_proceed", "continue_conversation"),
+        ),
+        (ClassifierTaskType.GREETING, ("greeting", "hello")),
+        (ClassifierTaskType.NO_OP, ("no_op", "empty")),
+    )
+    for task_type, keywords in keyword_groups:
+        if any(keyword in normalized for keyword in keywords):
+            return task_type
+    return ClassifierTaskType.OTHER
 
 
 class TierClassifier(Protocol):
@@ -210,6 +272,7 @@ class OpenAICompatibleClassifier:
             "previous_assistant_context": previous,
             "current_tier": str(context.current_tier),
             "candidate_tiers": ["FAST", "NORMAL", "SMART", "MAX"],
+            "candidate_reasoning_efforts": ["LOW", "MEDIUM", "HIGH", "XHIGH"],
         }
         classifier_input_json = json.dumps(
             classifier_input, sort_keys=True, separators=(",", ":")

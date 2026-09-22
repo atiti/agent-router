@@ -4,7 +4,7 @@ requires-python = ">=3.10"
 
 [[package]]
 name = "agentroute"
-version = "0.5.41"
+version = "0.5.42"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },

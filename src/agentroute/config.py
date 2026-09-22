@@ -79,6 +79,8 @@ class RoutingConfig(BaseModel):
     mode: Literal["heuristic", "hybrid", "llm"] = "hybrid"
     switching: SwitchingConfig = Field(default_factory=SwitchingConfig)
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
+    fast_quality_floor: bool = True
+    continuation_capability_floor: bool = True
     backend_by_tier: dict[str, str] = Field(
         default_factory=lambda: {
             "fast": "gpt",

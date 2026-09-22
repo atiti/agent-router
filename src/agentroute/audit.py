@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     classification_source TEXT NOT NULL DEFAULT 'heuristic',
     classifier_confidence REAL,
     classifier_task_type TEXT,
+    classifier_reasoning_effort TEXT,
+    reasoning_effort_source TEXT NOT NULL DEFAULT 'tier_default',
     classifier_reason_hash TEXT,
     proposed_tier TEXT,
     comparison_tier TEXT,
@@ -58,6 +60,8 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     selection_receipt_hash TEXT,
     outcome_label TEXT,
     outcome_notes TEXT,
+    next_manual_override_tier TEXT,
+    next_manual_override_at TEXT,
     answer_model TEXT,
     answer_input_tokens INTEGER,
     answer_cached_input_tokens INTEGER,
@@ -98,6 +102,8 @@ MIGRATIONS = {
     "classification_source": "TEXT NOT NULL DEFAULT 'heuristic'",
     "classifier_confidence": "REAL",
     "classifier_task_type": "TEXT",
+    "classifier_reasoning_effort": "TEXT",
+    "reasoning_effort_source": "TEXT NOT NULL DEFAULT 'tier_default'",
     "classifier_reason_hash": "TEXT",
     "proposed_tier": "TEXT",
     "comparison_tier": "TEXT",
@@ -116,6 +122,8 @@ MIGRATIONS = {
     "selection_receipt_hash": "TEXT",
     "outcome_label": "TEXT",
     "outcome_notes": "TEXT",
+    "next_manual_override_tier": "TEXT",
+    "next_manual_override_at": "TEXT",
     "answer_model": "TEXT",
     "answer_input_tokens": "INTEGER",
     "answer_cached_input_tokens": "INTEGER",
@@ -200,6 +208,31 @@ class AuditStore:
                 "WHERE classification_source = 'heuristic_fallback' "
                 "AND classifier_status = 'skipped'"
             )
+            # Older releases treated a next-turn manual tier choice as proof that the
+            # previous route was wrong. Preserve it as a behavioral signal instead.
+            connection.execute(
+                "UPDATE routing_decisions SET "
+                "next_manual_override_tier = substr(outcome_notes, 29), "
+                "next_manual_override_at = COALESCE(next_manual_override_at, created_at), "
+                "outcome_label = NULL "
+                "WHERE outcome_label = 'overridden' "
+                "AND outcome_notes LIKE 'next turn manually selected %' "
+                "AND next_manual_override_tier IS NULL"
+            )
+            # A newer prompt in the same route proves the older turn is no longer active,
+            # but it does not prove an exact completion time. Keep latency unknown instead
+            # of inflating it with user idle time.
+            connection.execute(
+                "UPDATE routing_decisions AS old SET turn_outcome = 'superseded', "
+                "completion_source = COALESCE(completion_source, 'next_prompt'), "
+                "usage_status = 'missing' WHERE turn_outcome = 'pending' "
+                "AND turn_completed_at IS NULL AND EXISTS ("
+                "SELECT 1 FROM routing_decisions AS newer WHERE newer.id > old.id "
+                "AND newer.session_id = old.session_id "
+                "AND newer.route_scope = old.route_scope "
+                "AND (newer.agent_id = old.agent_id OR "
+                "(newer.agent_id IS NULL AND old.agent_id IS NULL)))"
+            )
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -218,24 +251,30 @@ class AuditStore:
         prompt: str | None = None,
     ) -> int:
         with self.connection() as connection:
+            route_predicate = "agent_id IS NULL" if decision.agent_id is None else "agent_id = ?"
+            route_params: tuple[object, ...] = (decision.session_id, decision.route_scope)
+            if decision.agent_id is not None:
+                route_params += (decision.agent_id,)
             previous = connection.execute(
-                "SELECT * FROM routing_decisions WHERE session_id = ? ORDER BY id DESC LIMIT 1",
-                (decision.session_id,),
+                "SELECT * FROM routing_decisions WHERE session_id = ? AND route_scope = ? "
+                f"AND {route_predicate} ORDER BY id DESC LIMIT 1",
+                route_params,
             ).fetchone()
             if (
                 decision.manual_override
                 and previous is not None
                 and not previous["manual_override"]
-                and previous["outcome_label"] is None
             ):
                 connection.execute(
-                    "UPDATE routing_decisions SET outcome_label = ?, outcome_notes = ? "
-                    "WHERE id = ?",
-                    (
-                        "overridden",
-                        f"next turn manually selected {decision.tier}",
-                        previous["id"],
-                    ),
+                    "UPDATE routing_decisions SET next_manual_override_tier = ?, "
+                    "next_manual_override_at = ? WHERE id = ?",
+                    (str(decision.tier), datetime.now(timezone.utc).isoformat(), previous["id"]),
+                )
+            if previous is not None and previous["turn_outcome"] == "pending":
+                connection.execute(
+                    "UPDATE routing_decisions SET turn_outcome = 'superseded', "
+                    "completion_source = 'next_prompt', usage_status = 'missing' WHERE id = ?",
+                    (previous["id"],),
                 )
             cursor = connection.execute(
                 """
@@ -251,12 +290,13 @@ class AuditStore:
                     classifier_error_type, risk_floor_applied,
                     agent_requested_tier, agent_request_reason_hash,
                     classification_source, classifier_confidence, classifier_task_type,
+                    classifier_reasoning_effort, reasoning_effort_source,
                     classifier_reason_hash, selection_receipt, selection_receipt_hash
                     ,capacity_status, capacity_detail, capacity_trigger,
                     capacity_requested_backend, capacity_account_id, capacity_blocked
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -304,6 +344,8 @@ class AuditStore:
                     decision.classification_source,
                     decision.classifier_confidence,
                     decision.classifier_task_type,
+                    decision.classifier_reasoning_effort,
+                    decision.reasoning_effort_source,
                     decision.classifier_reason_hash,
                     json.dumps(decision.selection_receipt, sort_keys=True, separators=(",", ":")),
                     decision.selection_receipt_hash,
@@ -419,6 +461,12 @@ class AuditStore:
         with self.connection() as connection:
             return connection.execute(query, params).fetchone()
 
+    def latest_route(
+        self, session_id: str, route_scope: str = "root", agent_id: str | None = None
+    ) -> sqlite3.Row | None:
+        """Return the latest decision for one root or subagent route."""
+        return self._latest_for_route(session_id, route_scope, agent_id)
+
     def history(self, session_id: str | None = None, limit: int = 20) -> list[sqlite3.Row]:
         query = "SELECT * FROM routing_decisions"
         params: tuple[object, ...]
@@ -480,6 +528,12 @@ class AuditStore:
     ) -> str | None:
         row = self._latest_for_route(session_id, route_scope, agent_id)
         return str(row["backend"]) if row and row["backend"] else None
+
+    def previous_reasoning_effort(
+        self, session_id: str, route_scope: str = "root", agent_id: str | None = None
+    ) -> str | None:
+        row = self._latest_for_route(session_id, route_scope, agent_id)
+        return str(row["reasoning_effort"]) if row and row["reasoning_effort"] else None
 
     def route_preference(
         self, session_id: str, route_scope: str = "root", agent_id: str | None = None

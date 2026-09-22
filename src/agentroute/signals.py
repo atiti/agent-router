@@ -123,7 +123,7 @@ def extract_signals(context: RouteContext) -> list[ScoreContribution]:
         output,
         bool(BOUNDED_COMMUNICATION.search(prompt)),
         ReasonCode.BOUNDED_COMMUNICATION,
-        -2,
+        -0.25,
         "bounded communication action",
     )
     _add(

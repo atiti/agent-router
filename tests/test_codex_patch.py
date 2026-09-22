@@ -121,9 +121,9 @@ def test_release_metadata_uses_v0541_runtime_v36():
     installer = (root / "scripts/install.sh").read_text(encoding="utf-8")
     doctor = (root / "src/agentroute/doctor.py").read_text(encoding="utf-8")
 
-    assert 'version = "0.5.41"' in package
-    assert 'version = "0.5.41"' in lock
-    assert '__version__ = "0.5.41"' in public_api
+    assert 'version = "0.5.42"' in package
+    assert 'version = "0.5.42"' in lock
+    assert '__version__ = "0.5.42"' in public_api
     assert "provider-routing-v36" in installer
     assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v36"' in doctor
 

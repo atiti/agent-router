@@ -78,7 +78,11 @@ def _apply_profile_selection(
     decision.backend = "gpt"
     decision.model_provider = backend.codex_provider
     decision.model = target.model
-    decision.reasoning_effort = decision.requested_reasoning_effort or target.reasoning_effort
+    decision.reasoning_effort = (
+        decision.requested_reasoning_effort
+        or decision.reasoning_effort
+        or target.reasoning_effort
+    )
     decision.capacity_status = selection.selected.capacity.status
     decision.capacity_detail = (
         f"account {selection.selected.name}: {selection.selected.capacity.detail}"
@@ -141,7 +145,11 @@ def codex_user_prompt_submit(
         session_id = str(payload["session_id"])
         prompt = str(payload.get("prompt", ""))
         route_scope, agent_id = _subagent_identity(payload)
+        previous_route = store.latest_route(session_id, route_scope, agent_id)
         previous_tier = store.previous_tier(session_id, route_scope, agent_id)
+        previous_reasoning_effort = store.previous_reasoning_effort(
+            session_id, route_scope, agent_id
+        )
         tier_override, backend_override, reasoning_effort_override, routed_prompt = route_overrides(
             prompt, config.backends
         )
@@ -235,6 +243,7 @@ def codex_user_prompt_submit(
             current_model=current_model,
             current_tier=current_tier,
             previous_task_tier=previous_tier,
+            previous_reasoning_effort=previous_reasoning_effort,
             task_definition=task_definition,
             agent_requested_tier=(Tier.parse(agent_request.tier) if agent_request else None),
             agent_request_reason_hash=(
@@ -405,6 +414,16 @@ def codex_user_prompt_submit(
                     else ""
                 )
             )
+            if (
+                decision.manual_override
+                and previous_route is not None
+                and not bool(previous_route["manual_override"])
+            ):
+                model_route_message += (
+                    f"\n◆ ROUTE FEEDBACK · previous #{previous_route['id']}: "
+                    f"agentroute label {previous_route['id']} "
+                    "too-low|too-high|changed-task|correct"
+                )
             if profile_selection is not None and profile_selection.selected is not None:
                 unavailable = (
                     profile_selection.current is not None

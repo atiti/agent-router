@@ -74,6 +74,9 @@ def test_usage_analytics_groups_models_and_days(tmp_path):
     assert report.classifiers[0].total_tokens == 220
     assert report.reconciliation.completed_metered == 2
     assert report.reconciliation.completed_unmetered == 0
+    assert report.reconciliation.superseded == 0
+    assert report.calibration.automatic_turns == 2
+    assert report.calibration.reasoning_efforts == {"low": 2}
 
 
 def test_reconciliation_distinguishes_pending_stale_and_unmetered(tmp_path):
@@ -96,9 +99,31 @@ def test_reconciliation_distinguishes_pending_stale_and_unmetered(tmp_path):
 
     report = usage_analytics(store.rows_since(), config.pricing, "gpt-6-astra")
 
-    assert report.reconciliation.pending == 1
-    assert report.reconciliation.stale_unreconciled == 1
+    assert report.reconciliation.pending == 0
+    assert report.reconciliation.stale_unreconciled == 0
     assert report.reconciliation.completed_unmetered == 1
+    assert report.reconciliation.superseded == 2
+
+
+def test_calibration_separates_manual_override_signal_from_quality_label(tmp_path):
+    config = default_config()
+    store = AuditStore(tmp_path / "audit.db")
+    automatic = Router(config).route(
+        RouteContext(session_id="s", turn_id="one", latest_prompt="routine work")
+    )
+    automatic_id = store.record(automatic, Tier.NORMAL)
+    manual = Router(config).route(
+        RouteContext(session_id="s", turn_id="two", latest_prompt="@smart continue")
+    )
+    store.record(manual, Tier.NORMAL)
+    store.label(automatic_id, "too-low", "Luna missed important context")
+
+    report = usage_analytics(store.rows_since(), config.pricing, "gpt-6-astra")
+
+    assert report.calibration.labeled_turns == 1
+    assert report.calibration.too_low == 1
+    assert report.calibration.next_manual_override_signals == 1
+    assert report.calibration.stronger_next_override_signals == 1
 
 
 def test_usage_analytics_rejects_unknown_bucket(tmp_path):
