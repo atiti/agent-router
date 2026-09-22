@@ -29,6 +29,27 @@ AgentRoute supports the interactive Codex CLI, `codex exec`, locally rebuilt Cod
 multiple ChatGPT subscription profiles, Azure OpenAI, and tool-compatible DeepSeek endpoints. See
 [Install](#install) for prerequisites and the review-before-running flow.
 
+## Prompt tags
+
+Run `agentroute help` in a terminal to show the currently enabled tag reference. Tags may be
+combined in any order; AgentRoute removes them before your task is sent to the model.
+
+| Group | Tags | Purpose |
+|---|---|---|
+| Tier | `@fast` `@normal` `@smart` `@max` | Select the capability tier. |
+| Automatic | `@auto` | Clear a manual tier/backend preference and return to automatic routing. |
+| Backend | `@gpt` `@azure` `@deepseek` `@qwen` | Select an enabled backend. Custom backend names use the same `@name` form. |
+| Reasoning | `@none` `@minimal` `@low` `@medium` `@high` `@xhigh` `@ultra` `@persistent` | Request reasoning effort independently of tier. |
+
+Examples:
+
+```text
+@azure @max @ultra implement this end to end
+@gpt @normal @medium explain this architecture
+@qwen @normal @low fix this focused test failure
+@auto continue
+```
+
 > **Alpha:** Codex does not currently accept model overrides from `UserPromptSubmit` hooks. The
 > installer builds a narrowly patched Codex from the pinned upstream commit documented below.
 > This makes routing native to the active session instead of launching a new process per turn.

@@ -16,6 +16,17 @@ from agentroute.profiles import ProfileStatus
 runner = CliRunner()
 
 
+def test_help_lists_prompt_tags(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(tmp_path / "config.yaml"))
+
+    result = runner.invoke(app, ["help"])
+
+    assert result.exit_code == 0
+    assert "AgentRoute prompt tags" in result.output
+    assert "Tier: @fast @normal @smart @max @auto" in result.output
+    assert "Reasoning: @none @minimal @low @medium @high @xhigh @ultra @persistent" in result.output
+
+
 def test_launch_codex_forwards_subcommands_and_arguments():
     with patch("agentroute.cli.launch_codex") as launch:
         result = runner.invoke(

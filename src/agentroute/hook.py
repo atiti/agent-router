@@ -21,6 +21,37 @@ from .signals import continues_previous_task, is_confirmation, route_overrides
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
 
 
+def _prompt_help(config: AppConfig) -> str:
+    """Render the configured prompt-tag reference for the terminal CLI."""
+    enabled_backends = ["gpt"]
+    enabled_backends.extend(
+        name
+        for name, backend in config.backends.items()
+        if name != "gpt" and backend.enabled
+    )
+    backend_tags = ", ".join(f"@{name}" for name in dict.fromkeys(enabled_backends))
+    return "\n".join(
+        [
+            "AgentRoute prompt tags",
+            "",
+            "Tier: @fast @normal @smart @max @auto",
+            f"Backend (enabled): {backend_tags}",
+            "Reasoning: @none @minimal @low @medium @high @xhigh @ultra @persistent",
+            "",
+            "Use at most one tier, backend, and reasoning tag in any order.",
+            "Examples:",
+            "  @azure @max @ultra implement this end to end",
+            "  @gpt @normal @medium explain this architecture",
+            "  @qwen @normal @low fix this focused test failure",
+            "  @auto continue",
+            "",
+            "Prefixes are removed before the model receives the task. @auto clears a",
+            "manual tier/backend preference and returns routing to AgentRoute.",
+            "For the full reference: https://github.com/atiti/agent-router#prompt-tags",
+        ]
+    )
+
+
 def _runtime_label() -> str | None:
     """Return a compact, non-sensitive label for the managed Codex runtime."""
     build_id = os.environ.get("AGENTROUTE_RUNTIME_BUILD_ID")
