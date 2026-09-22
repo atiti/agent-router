@@ -1,0 +1,42 @@
+diff --git a/codex-rs/core/src/context_manager/normalize.rs b/codex-rs/core/src/context_manager/normalize.rs
+--- a/codex-rs/core/src/context_manager/normalize.rs
++++ b/codex-rs/core/src/context_manager/normalize.rs
+@@ -87,9 +87,8 @@
+                 if !custom_tool_output_ids.contains(call_id.as_str()) =>
+             {
+-                error_or_panic(format!(
+-                    "Custom tool call output is missing for call id: {call_id}"
+-                ));
++                // Recover interrupted custom calls in debug builds too.
++                info!("Custom tool call output is missing for call id: {call_id}");
+                 missing_outputs_to_insert.push((
+                     idx,
+                     ResponseItemEnvelope::new(ResponseItem::CustomToolCallOutput {
+diff --git a/codex-rs/core/src/context_manager/history_tests.rs b/codex-rs/core/src/context_manager/history_tests.rs
+--- a/codex-rs/core/src/context_manager/history_tests.rs
++++ b/codex-rs/core/src/context_manager/history_tests.rs
+@@ -1868,7 +1868,6 @@
+-#[cfg(not(debug_assertions))]
+ #[test]
+ fn normalize_adds_missing_output_for_custom_tool_call() {
+     let items = vec![ResponseItem::CustomToolCall {
+@@ -2237,10 +2237,8 @@
+-#[cfg(debug_assertions)]
+ #[test]
+-#[should_panic]
+-fn normalize_adds_missing_output_for_custom_tool_call_panics_in_debug() {
++fn normalize_adds_missing_output_for_custom_tool_call_is_idempotent() {
+     let items = vec![ResponseItem::CustomToolCall {
+         id: None,
+         status: None,
+@@ -2252,8 +2250,11 @@
+         internal_chat_message_metadata_passthrough: None,
+     }];
+     let mut h = create_history_with_items(items);
+     h.normalize_history(&default_input_modalities());
++    let recovered = raw_items(&h);
++    h.normalize_history(&default_input_modalities());
++    assert_eq!(raw_items(&h), recovered);
+ }
+ 
+ #[cfg(debug_assertions)]

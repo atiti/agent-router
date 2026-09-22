@@ -179,6 +179,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "chatgpt_profile_home" in installer
     assert "ordinary_usage_allowed" in installer
     assert "codex-package-version.patch" in installer
+    assert "codex-history-recovery.patch" in installer
     assert "routed_turn_model_provider" in "\n".join(
         path.read_text() for path in patch_paths()
     )
@@ -195,6 +196,9 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
         path.read_text() for path in patch_paths()
     )
     assert "0.155.0-alpha.2.6" in "\n".join(
+        path.read_text() for path in patch_paths()
+    )
+    assert "Recover interrupted custom calls in debug builds too." in "\n".join(
         path.read_text() for path in patch_paths()
     )
     assert "apply --recount" in installer

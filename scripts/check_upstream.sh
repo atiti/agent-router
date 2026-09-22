@@ -14,7 +14,8 @@ git -C "$CHECK_ROOT/codex" fetch --depth 1 origin "$UPSTREAM_REF"
 git -C "$CHECK_ROOT/codex" checkout --detach FETCH_HEAD
 for patch in \
     "$PROJECT_ROOT/patches/codex-user-prompt-model-override.patch" \
-    "$PROJECT_ROOT/patches/codex-package-version.patch"
+    "$PROJECT_ROOT/patches/codex-package-version.patch" \
+    "$PROJECT_ROOT/patches/codex-history-recovery.patch"
 do
     git -C "$CHECK_ROOT/codex" apply --recount --check "$patch"
     git -C "$CHECK_ROOT/codex" apply --recount "$patch"

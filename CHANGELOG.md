@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Recover missing custom-tool results as aborted during Codex history normalization, including
+  debug builds, rather than panicking when reopening an interrupted thread.
+
 ## 0.5.42 — 2026-09-22
 
 - Classify model tier and reasoning effort independently, persist the selected effort and its

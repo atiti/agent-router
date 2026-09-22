@@ -14,6 +14,7 @@ AGENTROUTE_BUILD_ID_FILE="$AGENTROUTE_HOME_DIR/build-id"
 AGENTROUTE_PATCHES="
 $AGENTROUTE_PROJECT_ROOT/src/agentroute/patches/codex-user-prompt-model-override.patch
 $AGENTROUTE_PROJECT_ROOT/patches/codex-package-version.patch
+$AGENTROUTE_PROJECT_ROOT/patches/codex-history-recovery.patch
 "
 
 for command_name in git cargo uv npm; do
@@ -94,6 +95,8 @@ if grep -F 'Route the turn before pre-sampling compaction' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/step_activation.rs" >/dev/null 2>&1 \
     && grep -F 'compatibility: Option<ToolCompatibility>' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/step_activation.rs" >/dev/null 2>&1 \
+    && grep -F 'Recover interrupted custom calls in debug builds too.' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/context_manager/normalize.rs" >/dev/null 2>&1 \
     && ! grep -F '"routing_prompt".to_string()' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/tools/handlers/multi_agents_spec.rs" >/dev/null 2>&1 \
     && grep -F 'version = "0.155.0-alpha.2.6"' \
