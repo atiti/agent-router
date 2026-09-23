@@ -251,8 +251,8 @@ class AppConfig(BaseModel):
 
 def default_config() -> AppConfig:
     gpt_tiers = {
-        "fast": ModelTarget(model="gpt-6-luna", reasoning_effort="medium"),
-        "normal": ModelTarget(model="gpt-6-luna", reasoning_effort="high"),
+        "fast": ModelTarget(model="gpt-6-luna", reasoning_effort="xhigh"),
+        "normal": ModelTarget(model="gpt-6-luna", reasoning_effort="xhigh"),
         "smart": ModelTarget(model="gpt-6-sol", reasoning_effort="high"),
         "max": ModelTarget(model="gpt-6-astra", reasoning_effort="xhigh"),
     }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 
 from .capacity import backend_state, fallback_chain
 from .classifier import (
@@ -48,6 +49,15 @@ REASONING_EFFORT_RANK = {
 def _stronger_reasoning_effort(*values: str | None) -> str | None:
     available = [value for value in values if value]
     return max(available, key=lambda value: REASONING_EFFORT_RANK.get(value, -1), default=None)
+
+
+def _minimum_model_reasoning_effort(backend: str, model: str) -> str | None:
+    """Keep GPT-6 Luna on GPT/Azure at the operator-requested xhigh floor."""
+    if backend in {"gpt", "azure", "azure-direct"} and re.search(
+        r"(?:^|[-_/])luna(?:$|[-_/])", model, re.I
+    ):
+        return "xhigh"
+    return None
 
 
 def tier_from_score(score: float) -> Tier:
@@ -566,17 +576,36 @@ class Router:
             if classifier_reasoning_effort or inherited_effort
             else target.reasoning_effort
         )
-        reasoning_effort_source = (
-            "manual"
-            if reasoning_effort_override
-            else "classifier+inheritance"
-            if classifier_reasoning_effort and inherited_effort
-            else "classifier"
-            if classifier_reasoning_effort
-            else "inheritance"
-            if inherited and context.previous_reasoning_effort
-            else "tier_default"
+        minimum_reasoning_effort = _minimum_model_reasoning_effort(
+            backend_name, target.model
         )
+        if minimum_reasoning_effort and REASONING_EFFORT_RANK.get(
+            selected_reasoning_effort or "none", -1
+        ) < REASONING_EFFORT_RANK[minimum_reasoning_effort]:
+            selected_reasoning_effort = minimum_reasoning_effort
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.MODEL_REASONING_FLOOR,
+                    weight=0,
+                    detail=(
+                        f"{backend_name} Luna models require at least "
+                        f"{minimum_reasoning_effort} reasoning"
+                    ),
+                )
+            )
+            reasoning_effort_source = "model_floor"
+        else:
+            reasoning_effort_source = (
+                "manual"
+                if reasoning_effort_override
+                else "classifier+inheritance"
+                if classifier_reasoning_effort and inherited_effort
+                else "classifier"
+                if classifier_reasoning_effort
+                else "inheritance"
+                if inherited and context.previous_reasoning_effort
+                else "tier_default"
+            )
         digest = hashlib.sha256(context.latest_prompt.encode("utf-8")).hexdigest()
         comparison_tier = context.previous_task_tier or context.current_tier
         classifier_config = self.config.routing.classifier
@@ -658,6 +687,12 @@ class Router:
                 candidate_backend_name = "gpt"
                 candidate_backend = self.config.backends[candidate_backend_name]
             candidate_target = candidate_backend.target(candidate_tier)
+            candidate_minimum_effort = _minimum_model_reasoning_effort(
+                candidate_backend_name, candidate_target.model
+            )
+            candidate_effort = _stronger_reasoning_effort(
+                candidate_target.reasoning_effort, candidate_minimum_effort
+            )
             candidate_capabilities = model_capabilities(
                 self.config, candidate_backend_name, candidate_target.model
             )
@@ -676,7 +711,7 @@ class Router:
                     "model": candidate_target.model,
                     "backend": candidate_backend_name,
                     "model_provider": candidate_backend.codex_provider,
-                    "reasoning_effort": candidate_target.reasoning_effort,
+                    "reasoning_effort": candidate_effort,
                     "capabilities": candidate_capabilities.model_dump(
                         mode="json", exclude_none=True
                     ),
@@ -744,6 +779,7 @@ class Router:
                 "reasoning_effort_override": reasoning_effort_override,
                 "classifier_reasoning_effort": classifier_reasoning_effort,
                 "reasoning_effort_source": reasoning_effort_source,
+                "minimum_model_reasoning_effort": minimum_reasoning_effort,
             },
             "context": {
                 "previous_context_sent": previous_context_sent,
