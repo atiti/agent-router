@@ -5,7 +5,12 @@ import json
 import math
 
 from .capacity import backend_state, fallback_chain
-from .classifier import OpenAICompatibleClassifier, TierClassifier, catalog_age_seconds
+from .classifier import (
+    JevShadowClassifier,
+    OpenAICompatibleClassifier,
+    TierClassifier,
+    catalog_age_seconds,
+)
 from .config import AppConfig, load_config, model_capabilities
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
 from .providers import backend_readiness
@@ -18,7 +23,7 @@ from .signals import (
     route_overrides,
 )
 
-CLASSIFIER_VERSION = "hybrid-v8"
+CLASSIFIER_VERSION = "hybrid-v9"
 
 FAST_SAFE_TASK_TYPES = {
     "greeting",
@@ -69,14 +74,31 @@ class Router:
         self,
         config: AppConfig | None = None,
         classifier: TierClassifier | None = None,
+        fallback_classifier: TierClassifier | None = None,
     ) -> None:
         self.config = config or load_config()
         classifier_config = self.config.routing.classifier
         self.classifier = classifier
         if self.classifier is None and classifier_config.enabled:
-            self.classifier = OpenAICompatibleClassifier(classifier_config)
+            self.classifier = (
+                JevShadowClassifier(classifier_config.jev_shadow)
+                if classifier_config.engine == "jev"
+                else OpenAICompatibleClassifier(classifier_config)
+            )
+        self.fallback_classifier = fallback_classifier
+        if (
+            self.fallback_classifier is None
+            and classifier_config.enabled
+            and classifier_config.engine == "jev"
+            and classifier_config.jev_shadow.llm_fallback_enabled
+        ):
+            self.fallback_classifier = OpenAICompatibleClassifier(classifier_config)
+        self._last_classifier: TierClassifier | None = None
+        self._jev_low_confidence: dict[str, object] | None = None
 
     def route(self, context: RouteContext) -> RouteDecision:
+        self._last_classifier = None
+        self._jev_low_confidence = None
         override, backend_override, parsed_reasoning_effort, _ = route_overrides(
             context.latest_prompt, self.config.backends
         )
@@ -199,7 +221,16 @@ class Router:
         if (
             not manual
             and self.config.routing.fast_quality_floor
-            and classification_source in {"local_llm", "private_llm", "cloud_llm"}
+            and classification_source
+            in {
+                "local_llm",
+                "private_llm",
+                "cloud_llm",
+                "local_llm_fallback",
+                "private_llm_fallback",
+                "cloud_llm_fallback",
+                "local_jev",
+            }
             and proposed is Tier.FAST
             and classifier_task_type not in FAST_SAFE_TASK_TYPES
         ):
@@ -554,36 +585,56 @@ class Router:
             "local_llm",
             "private_llm",
             "cloud_llm",
+            "local_llm_fallback",
+            "private_llm_fallback",
+            "cloud_llm_fallback",
+            "local_jev",
+            "heuristic_jev_low_confidence",
             "heuristic_fallback",
         }
         classifier_latency_ms = (
-            getattr(self.classifier, "last_latency_ms", None) if classifier_attempted else None
+            getattr(self._last_classifier, "last_latency_ms", None)
+            if classifier_attempted
+            else None
         )
         classifier_request_hash = (
-            getattr(self.classifier, "last_request_hash", None) if classifier_attempted else None
+            getattr(self._last_classifier, "last_request_hash", None)
+            if classifier_attempted
+            else None
         )
         classifier_usage = (
-            getattr(self.classifier, "last_usage", {}) if classifier_attempted else {}
+            getattr(self._last_classifier, "last_usage", {}) if classifier_attempted else {}
         )
         default_classifier_status = (
             "succeeded"
-            if classification_source in {"local_llm", "private_llm", "cloud_llm"}
+            if classification_source
+            in {
+                "local_llm",
+                "private_llm",
+                "cloud_llm",
+                "local_llm_fallback",
+                "private_llm_fallback",
+                "cloud_llm_fallback",
+                "local_jev",
+                "heuristic_jev_low_confidence",
+            }
             else "error"
         )
         classifier_status = (
-            getattr(self.classifier, "last_status", default_classifier_status)
+            getattr(self._last_classifier, "last_status", default_classifier_status)
             if classifier_attempted
             else "skipped"
         )
         if classifier_status == "started":
             classifier_status = "error"
         classifier_error_type = (
-            getattr(self.classifier, "last_error_type", None) if classifier_attempted else None
+            getattr(self._last_classifier, "last_error_type", None)
+            if classifier_attempted
+            else None
         )
         previous_context_sent = bool(
             classifier_request_hash
-            and classifier_config.include_previous_assistant
-            and context.task_definition
+            and getattr(self._last_classifier, "last_previous_context_chars", 0)
         )
         task_context_used = resolved_task_inherited or previous_context_sent
         catalog_age = catalog_age_seconds(classifier_config)
@@ -643,19 +694,30 @@ class Router:
             "classifier": {
                 "policy_version": CLASSIFIER_VERSION,
                 "source": classification_source,
-                "model": classifier_config.model if classifier_attempted else None,
+                "model": (
+                    getattr(self._last_classifier, "config", classifier_config).model
+                    if classifier_attempted
+                    else None
+                ),
+                "acceptance_threshold": (
+                    classifier_config.jev_shadow.acceptance_threshold
+                    if classifier_config.engine == "jev"
+                    else None
+                ),
                 "status": classifier_status,
                 "error_type": classifier_error_type,
                 "catalog_hash": classifier_config.catalog_hash,
                 "catalog_checked_at": classifier_config.catalog_checked_at,
                 "catalog_status": catalog_status,
-                "provider_response": getattr(self.classifier, "last_response_metadata", {}),
+                "provider_response": getattr(
+                    self._last_classifier, "last_response_metadata", {}
+                ),
                 "request_hash": classifier_request_hash,
                 "latency_ms": classifier_latency_ms,
                 "usage": classifier_usage,
                 "previous_context_sent": previous_context_sent,
                 "previous_context_chars": getattr(
-                    self.classifier, "last_previous_context_chars", 0
+                    self._last_classifier, "last_previous_context_chars", 0
                 ),
             },
             "resolved_task_hash": hashlib.sha256(resolved_task.encode("utf-8")).hexdigest(),
@@ -688,6 +750,8 @@ class Router:
                 "resolved_task_inherited": resolved_task_inherited,
             },
         }
+        if self._jev_low_confidence is not None:
+            receipt["jev_first_pass"] = self._jev_low_confidence
         receipt_hash = hashlib.sha256(
             json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
@@ -766,15 +830,21 @@ class Router:
             context.task_definition
         ):
             return proposed, confidence, "heuristic_sensitive", None, None, None, None
-        if routing.mode == "hybrid" and confidence >= routing.classifier.ambiguity_threshold:
+        if (
+            routing.mode == "hybrid"
+            and routing.classifier.engine != "jev"
+            and confidence >= routing.classifier.ambiguity_threshold
+        ):
             return proposed, confidence, "heuristic", None, None, None, None
         try:
             result = self.classifier.classify(context)
+            self._last_classifier = self.classifier
         except Exception as error:
             if getattr(self.classifier, "last_status", None) in {None, "started"}:
                 self.classifier.last_status = "error"
             if getattr(self.classifier, "last_error_type", None) is None:
                 self.classifier.last_error_type = type(error).__name__
+            self._last_classifier = self.classifier
             contributions.append(
                 ScoreContribution(
                     code=ReasonCode.CLASSIFIER_FALLBACK,
@@ -783,9 +853,88 @@ class Router:
                 )
             )
             return proposed, confidence, "heuristic_fallback", None, None, None, None
+        if (
+            self.classifier.source == "local_jev"
+            and result.confidence
+            < self.config.routing.classifier.jev_shadow.acceptance_threshold
+        ):
+            self._jev_low_confidence = {
+                "tier": str(result.tier),
+                "confidence": result.confidence,
+                "task_type": result.task_type.value,
+                "acceptance_threshold": (
+                    self.config.routing.classifier.jev_shadow.acceptance_threshold
+                ),
+            }
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.JEV_LOW_CONFIDENCE,
+                    weight=0,
+                    detail=(
+                        f"local JEV confidence {result.confidence:.0%} below "
+                        f"{self.config.routing.classifier.jev_shadow.acceptance_threshold:.0%}; "
+                        "requesting configured local LLM fallback"
+                        if self.fallback_classifier is not None
+                        else "retained heuristic route"
+                    ),
+                )
+            )
+            if self.fallback_classifier is not None:
+                try:
+                    fallback_result = self.fallback_classifier.classify(context)
+                    self._last_classifier = self.fallback_classifier
+                except Exception as error:
+                    if getattr(self.fallback_classifier, "last_status", None) in {None, "started"}:
+                        self.fallback_classifier.last_status = "error"
+                    if getattr(self.fallback_classifier, "last_error_type", None) is None:
+                        self.fallback_classifier.last_error_type = type(error).__name__
+                    self._last_classifier = self.fallback_classifier
+                    contributions.append(
+                        ScoreContribution(
+                            code=ReasonCode.CLASSIFIER_FALLBACK,
+                            weight=0,
+                            detail=(
+                                "local JEV was low confidence and LLM fallback was unavailable "
+                                f"({type(error).__name__}); used heuristic"
+                            ),
+                        )
+                    )
+                    return proposed, confidence, "heuristic_fallback", None, None, None, None
+                contributions.append(
+                    ScoreContribution(
+                        code=ReasonCode.LLM_CLASSIFIER,
+                        weight=0,
+                        detail=(
+                            f"{self.fallback_classifier.source} selected "
+                            f"{fallback_result.tier.name} after low-confidence local JEV"
+                        ),
+                    )
+                )
+                return (
+                    fallback_result.tier,
+                    fallback_result.confidence,
+                    f"{self.fallback_classifier.source}_fallback",
+                    fallback_result.confidence,
+                    fallback_result.task_type.value,
+                    fallback_result.reason_hash,
+                    fallback_result.reasoning_effort,
+                )
+            return (
+                proposed,
+                confidence,
+                "heuristic_jev_low_confidence",
+                result.confidence,
+                result.task_type.value,
+                result.reason_hash,
+                None,
+            )
         contributions.append(
             ScoreContribution(
-                code=ReasonCode.LLM_CLASSIFIER,
+                code=(
+                    ReasonCode.JEV_CLASSIFIER
+                    if self.classifier.source == "local_jev"
+                    else ReasonCode.LLM_CLASSIFIER
+                ),
                 weight=0,
                 detail=f"{self.classifier.source} selected {result.tier.name}",
             )

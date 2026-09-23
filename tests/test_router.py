@@ -19,7 +19,9 @@ class FakeClassifier:
         confidence=0.84,
         reasoning_effort="high",
         task_type="implementation",
+        source="cloud_llm",
     ):
+        self.source = source
         self.tier = tier
         self.confidence = confidence
         self.reasoning_effort = reasoning_effort
@@ -52,6 +54,10 @@ def hybrid_route(prompt: str, classifier, **kwargs):
     )
 
 
+def test_public_classifier_default_is_gpt_luna():
+    assert default_config().routing.classifier.model == "gpt-5.6-luna"
+
+
 def test_hybrid_uses_llm_for_ambiguous_prompt():
     classifier = FakeClassifier()
     decision = hybrid_route("Please handle this", classifier, current_tier=Tier.NORMAL)
@@ -66,7 +72,7 @@ def test_hybrid_uses_llm_for_ambiguous_prompt():
     assert len(decision.classifier_reason_hash or "") == 64
     assert ReasonCode.LLM_CLASSIFIER in decision.reason_codes
     assert len(decision.selection_receipt_hash or "") == 64
-    assert decision.selection_receipt["classifier"]["model"] == "gpt-5-mini"
+    assert decision.selection_receipt["classifier"]["model"] == "gpt-5.6-luna"
     candidates = decision.selection_receipt["candidates"]
     assert next(item for item in candidates if item["tier"] == "max")["eligible"] is False
 
@@ -112,8 +118,43 @@ def test_hybrid_fails_back_to_heuristic():
     assert decision.classification_source == "heuristic_fallback"
     assert decision.classifier_status == "error"
     assert decision.classifier_error_type == "TimeoutError"
-    assert decision.selection_receipt["classifier"]["model"] == "gpt-5-mini"
+    assert decision.selection_receipt["classifier"]["model"] == "gpt-5.6-luna"
     assert ReasonCode.CLASSIFIER_FALLBACK in decision.reason_codes
+
+
+def test_low_confidence_jev_uses_local_llm_fallback_and_audits_both_steps():
+    config = default_config()
+    config.routing.classifier.enabled = True
+    config.routing.classifier.engine = "jev"
+    config.routing.mode = "llm"
+    config.routing.classifier.jev_shadow.acceptance_threshold = 0.55
+    decision = Router(
+        config,
+        classifier=FakeClassifier(
+            tier=Tier.SMART,
+            confidence=0.20,
+            reasoning_effort="high",
+            task_type="debugging",
+            source="local_jev",
+        ),
+        fallback_classifier=FakeClassifier(
+            tier=Tier.SMART,
+            confidence=0.84,
+            reasoning_effort="high",
+            task_type="debugging",
+            source="local_llm",
+        ),
+    ).route(RouteContext(session_id="test-session", latest_prompt="Please handle this"))
+
+    assert decision.tier is Tier.SMART
+    assert decision.reasoning_effort == "high"
+    assert decision.reasoning_effort_source == "classifier"
+    assert decision.classification_source == "local_llm_fallback"
+    assert decision.classifier_confidence == 0.84
+    assert decision.classifier_task_type == "debugging"
+    assert ReasonCode.JEV_LOW_CONFIDENCE in decision.reason_codes
+    assert ReasonCode.LLM_CLASSIFIER in decision.reason_codes
+    assert decision.selection_receipt["classifier"]["status"] == "succeeded"
 
 
 def test_confirmation_with_appended_question_uses_previous_task():
@@ -133,7 +174,7 @@ def test_mechanical_task_downgrades_to_fast():
     decision = route("Rename the label and fix the typo", current_tier=Tier.NORMAL)
 
     assert decision.tier is Tier.FAST
-    assert decision.model == "gpt-5.6-luna"
+    assert decision.model == "gpt-6-luna"
     assert ReasonCode.MECHANICAL_TASK in decision.reason_codes
 
 
@@ -218,7 +259,7 @@ def test_architecture_and_migration_proposes_max_with_safe_fallback():
 
     assert decision.proposed_tier is Tier.MAX
     assert decision.tier is Tier.SMART
-    assert decision.model == "gpt-5.6-sol"
+    assert decision.model == "gpt-6-sol"
 
 
 def test_security_has_smart_risk_floor():

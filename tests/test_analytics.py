@@ -76,7 +76,7 @@ def test_usage_analytics_groups_models_and_days(tmp_path):
     assert report.reconciliation.completed_unmetered == 0
     assert report.reconciliation.superseded == 0
     assert report.calibration.automatic_turns == 2
-    assert report.calibration.reasoning_efforts == {"low": 2}
+    assert report.calibration.reasoning_efforts == {"medium": 2}
 
 
 def test_reconciliation_distinguishes_pending_stale_and_unmetered(tmp_path):

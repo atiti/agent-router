@@ -703,15 +703,15 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path, 
     first = invoke(config, store, "@smart investigate")
     second = invoke(config, store, "go ahead")
 
-    assert first["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert first["hookSpecificOutput"]["model"] == "gpt-6-sol"
     assert first["hookSpecificOutput"]["reasoningEffort"] == "high"
     assert first["hookSpecificOutput"]["routeMessage"] == (
         "◆ ACCOUNT ROUTE · default · account match\n"
-        "◆ MODEL ROUTE · SMART → gpt-5.6-sol · high reasoning "
+        "◆ MODEL ROUTE · SMART → gpt-6-sol · high reasoning "
         "· backend gpt/openai · scope root · source MANUAL "
         "· rule confidence 100% · rule score -0.5"
     )
-    assert second["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert second["hookSpecificOutput"]["model"] == "gpt-6-sol"
     assert len(store.history("same-thread")) == 2
 
 
@@ -821,7 +821,7 @@ def test_subagent_task_is_independently_routed_and_audited(tmp_path):
     )
     row = store.latest("same-thread")
 
-    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-luna"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6-luna"
     assert output["hookSpecificOutput"]["modelProvider"] == "openai"
     assert "scope subagent" in output["hookSpecificOutput"]["routeMessage"]
     assert row["route_scope"] == "subagent"
@@ -968,14 +968,14 @@ def test_explicit_subagent_model_can_cross_from_inherited_azure_to_gpt(
         config,
         AuditStore(tmp_path / "audit.db"),
         "Review the implementation",
-        model="gpt-5.6-sol",
+        model="gpt-6-sol",
         model_provider="agentroute-azure",
         spawn_model_explicit=True,
         flat_agent_id="child-gpt",
     )
 
     assert output["hookSpecificOutput"]["modelProvider"] == "openai"
-    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6-sol"
 
 
 def test_ambiguous_subagent_model_preserves_inherited_provider(tmp_path, monkeypatch):
@@ -1179,8 +1179,8 @@ def test_opaque_subagent_followup_inherits_its_own_route(tmp_path):
         flat_agent_id="child-b",
     )
 
-    assert child_a_followup["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
-    assert child_b_followup["hookSpecificOutput"]["model"] == "gpt-5.6-luna"
+    assert child_a_followup["hookSpecificOutput"]["model"] == "gpt-6-sol"
+    assert child_b_followup["hookSpecificOutput"]["model"] == "gpt-6-luna"
     child_rows = [row for row in store.history("same-thread") if row["agent_id"]]
     assert child_rows[0]["classification_source"] == "session_affinity"
     assert child_rows[1]["classification_source"] == "session_affinity"
@@ -1268,6 +1268,40 @@ def test_hook_surfaces_llm_classifier_confidence_and_audits_hash(tmp_path, monke
     assert row["classifier_latency_ms"] is not None
     assert len(row["classifier_request_hash"]) == 64
     assert json.loads(row["classifier_usage"])["total_tokens"] == 120
+
+
+def test_jev_shadow_is_audited_but_cannot_change_a_live_route(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agentroute.classifier.urllib.request.urlopen",
+        lambda request, timeout: FakeClassifierResponse()
+        if request.full_url.endswith("/chat/completions")
+        else type("JevResponse", (), {
+            "__enter__": lambda self: self,
+            "__exit__": lambda self, *args: None,
+            "read": lambda self: json.dumps({
+                "model": "nli-deberta-large",
+                "answers": {
+                    "tier": {"choice": "fast", "confidence": 0.9},
+                    "reasoning_effort": {"choice": "low", "confidence": 0.9},
+                    "task_type": {"choice": "formatting", "confidence": 0.9},
+                },
+            }).encode(),
+        })(),
+    )
+    config = default_config()
+    config.enabled = True
+    config.routing.classifier.enabled = True
+    config.routing.classifier.endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+    config.routing.classifier.jev_shadow.enabled = True
+    store = AuditStore(tmp_path / "audit.db")
+
+    output = invoke(config, store, "Please handle this")
+    receipt = json.loads(store.latest("same-thread")["selection_receipt"])
+
+    assert output["hookSpecificOutput"]["model"] == "gpt-6-sol"
+    assert receipt["shadow_jev"]["status"] == "succeeded"
+    assert receipt["shadow_jev"]["tier"] == "fast"
+    assert receipt["shadow_jev"]["agreement"]["selected_tier"] is False
 
 
 def test_llm_context_telemetry_distinguishes_sent_from_inherited(tmp_path, monkeypatch):

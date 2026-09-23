@@ -19,12 +19,12 @@ def test_audit_defaults_to_prompt_hash_only(tmp_path):
     assert row["prompt"] is None
     assert len(row["prompt_hash"]) == 64
     assert store.previous_tier("session-1") is Tier.SMART
-    assert row["classifier_version"] == "hybrid-v8"
+    assert row["classifier_version"] == "hybrid-v9"
     assert row["classification_source"] == "manual"
     assert row["comparison_tier"] == "normal"
     assert len(row["selection_receipt_hash"]) == 64
     receipt = json.loads(row["selection_receipt"])
-    assert receipt["selected"]["model"] == "gpt-5.6-sol"
+    assert receipt["selected"]["model"] == "gpt-6-sol"
     assert receipt["version"] == "selection-v1"
 
 

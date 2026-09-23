@@ -1196,9 +1196,12 @@ def classifier_status_command() -> None:
         except (OSError, RuntimeError) as error:
             credential_detail = str(error)
     console.print(f"Mode: {routing.mode}")
-    console.print(f"Classifier: {'enabled' if classifier.enabled else 'disabled'} ({backend})")
-    console.print(f"Model: {classifier.model}")
-    console.print(f"Endpoint: {classifier.endpoint}")
+    engine = classifier.engine
+    active_model = classifier.jev_shadow.model if engine == "jev" else classifier.model
+    active_endpoint = classifier.jev_shadow.endpoint if engine == "jev" else classifier.endpoint
+    console.print(f"Classifier: {'enabled' if classifier.enabled else 'disabled'} ({engine})")
+    console.print(f"Model: {active_model}")
+    console.print(f"Endpoint: {active_endpoint}")
     console.print(f"Remote prompt egress: {'allowed' if classifier.allow_remote else 'blocked'}")
     credential_source = classifier.api_key_file or classifier.api_key_env
     console.print(f"Credential {credential_source}: {credential_detail}")
@@ -1218,6 +1221,154 @@ def classifier_status_command() -> None:
         f"Catalog: {catalog_status}; checked: {classifier.catalog_checked_at or 'never'}; "
         f"models: {len(classifier.catalog_models)}"
     )
+    shadow = classifier.jev_shadow
+    console.print(
+        "JEV shadow: "
+        + ("enabled" if shadow.enabled else "disabled")
+        + f" ({shadow.model} · {shadow.endpoint} · {shadow.timeout_seconds:g}s timeout)"
+    )
+    if engine == "jev":
+        console.print(
+            "JEV acceptance threshold: "
+            f"{classifier.jev_shadow.acceptance_threshold:.0%} "
+            + (
+                "(lower-confidence selections use the configured local LLM fallback)"
+                if classifier.jev_shadow.llm_fallback_enabled
+                else "(lower-confidence selections retain the heuristic route)"
+            )
+        )
+
+
+@app.command("classifier-jev-enable")
+def classifier_jev_enable_command(
+    endpoint: str = typer.Option(
+        "http://127.0.0.1:8091/v1/systemone", help="Loopback local-jev System 1 endpoint."
+    ),
+    model: str = typer.Option("nli-deberta-large", help="Installed local-jev model name."),
+    timeout_seconds: float = typer.Option(
+        0.75, "--timeout", min=0.05, max=10, help="Per-turn ceiling in seconds."
+    ),
+    acceptance_threshold: float = typer.Option(
+        0.55,
+        "--acceptance-threshold",
+        min=0.0,
+        max=1.0,
+        help="Minimum JEV tier confidence required to override heuristics.",
+    ),
+) -> None:
+    """Make local JEV the live classifier; retain deterministic safety fallback."""
+    if not is_loopback_endpoint(endpoint) or not endpoint.startswith("http://"):
+        raise typer.BadParameter("JEV accepts loopback HTTP endpoints only")
+    if not endpoint.rstrip("/").endswith("/v1/systemone"):
+        raise typer.BadParameter("JEV endpoint must end with /v1/systemone")
+    config = load_config()
+    shadow = config.routing.classifier.jev_shadow
+    shadow.enabled = False
+    shadow.endpoint = endpoint
+    shadow.model = model
+    shadow.timeout_seconds = timeout_seconds
+    shadow.acceptance_threshold = acceptance_threshold
+    config.routing.classifier.engine = "jev"
+    config.routing.classifier.enabled = True
+    config.routing.mode = "llm"
+    save_config(config)
+    console.print(
+        f"Enabled local JEV ({model}) as the live classifier. Low-confidence selections use "
+        "the configured local Qwen fallback; manual tags, policy floors, and heuristic fallback "
+        "remain active."
+    )
+
+
+@app.command("classifier-llm-enable")
+def classifier_llm_enable_command() -> None:
+    """Restore the configured OpenAI-compatible classifier as the live engine."""
+    config = load_config()
+    config.routing.classifier.engine = "llm"
+    config.routing.classifier.enabled = True
+    save_config(config)
+    console.print("Restored the configured LLM classifier as the live engine.")
+
+
+@app.command("classifier-jev-shadow-enable")
+def classifier_jev_shadow_enable_command(
+    endpoint: str = typer.Option(
+        "http://127.0.0.1:8091/v1/systemone", help="Loopback local-jev System 1 endpoint."
+    ),
+    model: str = typer.Option("nli-deberta-large", help="Installed local-jev model name."),
+    timeout_seconds: float = typer.Option(
+        0.75, "--timeout", min=0.05, max=10, help="Non-blocking per-turn ceiling in seconds."
+    ),
+) -> None:
+    """Record local JEV comparisons beside successful LLM classifications."""
+    if not is_loopback_endpoint(endpoint) or not endpoint.startswith("http://"):
+        raise typer.BadParameter("JEV shadow accepts loopback HTTP endpoints only")
+    if not endpoint.rstrip("/").endswith("/v1/systemone"):
+        raise typer.BadParameter("JEV shadow endpoint must end with /v1/systemone")
+    config = load_config()
+    shadow = config.routing.classifier.jev_shadow
+    shadow.enabled = True
+    shadow.endpoint = endpoint
+    shadow.model = model
+    shadow.timeout_seconds = timeout_seconds
+    save_config(config)
+    console.print(
+        f"Enabled non-authoritative JEV shadow ({model}). "
+        "It records only alongside successful LLM classifications and never changes a route."
+    )
+
+
+@app.command("classifier-jev-shadow-disable")
+def classifier_jev_shadow_disable_command() -> None:
+    """Stop JEV shadow requests without changing the live classifier."""
+    config = load_config()
+    config.routing.classifier.jev_shadow.enabled = False
+    save_config(config)
+    console.print("JEV shadow disabled; existing audit observations were retained.")
+
+
+@app.command("classifier-jev-shadow-report")
+def classifier_jev_shadow_report_command(
+    limit: int = typer.Option(500, min=1, max=10_000, help="Most recent audit rows to inspect."),
+) -> None:
+    """Summarize agreement and latency from local JEV shadow observations."""
+    with AuditStore().connection() as connection:
+        rows = connection.execute(
+            "SELECT selection_receipt FROM routing_decisions ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    observations: list[dict[str, object]] = []
+    for row in rows:
+        try:
+            receipt = json.loads(row["selection_receipt"] or "{}")
+            shadow = receipt.get("shadow_jev")
+            if isinstance(shadow, dict):
+                observations.append(shadow)
+        except (TypeError, json.JSONDecodeError):
+            continue
+    succeeded = [item for item in observations if item.get("status") == "succeeded"]
+    if not observations:
+        console.print("No JEV shadow observations yet. Keep using Codex on LLM-classified turns.")
+        return
+    failures = len(observations) - len(succeeded)
+    if not succeeded:
+        console.print(f"JEV shadow: {len(observations)} observations; {failures} did not complete.")
+        return
+    def percentage(key: str) -> str:
+        matches = sum(
+            bool(item.get("agreement", {}).get(key))
+            for item in succeeded
+            if isinstance(item.get("agreement"), dict)
+        )
+        return f"{matches / len(succeeded):.0%}"
+    latencies = sorted(float(item["latency_ms"]) for item in succeeded)
+    p50 = latencies[(len(latencies) - 1) // 2]
+    p95 = latencies[min(len(latencies) - 1, round((len(latencies) - 1) * 0.95))]
+    console.print(
+        f"JEV shadow: {len(succeeded)} completed / {len(observations)} observed · "
+        f"tier agreement {percentage('selected_tier')} · "
+        f"effort agreement {percentage('reasoning_effort')} · "
+        f"task-type agreement {percentage('task_type')} · "
+        f"latency p50 {p50:.0f}ms / p95 {p95:.0f}ms"
+    )
 
 
 @app.command("classifier-enable")
@@ -1225,7 +1376,7 @@ def classifier_enable_command(
     endpoint: str = typer.Option(
         "https://api.openai.com/v1/chat/completions", help="OpenAI-compatible endpoint."
     ),
-    model: str = typer.Option("gpt-5-mini", help="Classifier model name."),
+    model: str = typer.Option("gpt-5.6-luna", help="Classifier model name."),
     api_key_env: str = typer.Option(
         "AGENTROUTE_CLASSIFIER_API_KEY", help="Environment variable containing the API key."
     ),

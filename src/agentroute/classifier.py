@@ -17,7 +17,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from .config import ClassifierConfig
+from .config import ClassifierConfig, JevShadowConfig
 from .models import RouteContext, Tier
 
 JSON_FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
@@ -86,6 +86,19 @@ class ClassifierResult(BaseModel):
     @property
     def reason_hash(self) -> str:
         return hashlib.sha256(self.reason.encode("utf-8")).hexdigest()
+
+
+class JevShadowResult(BaseModel):
+    """A typed, local-only System 1 observation; never a routing authority."""
+
+    tier: Tier
+    reasoning_effort: Literal["low", "medium", "high", "xhigh"]
+    task_type: ClassifierTaskType
+    tier_confidence: float = Field(ge=0, le=1)
+    reasoning_effort_confidence: float = Field(ge=0, le=1)
+    task_type_confidence: float = Field(ge=0, le=1)
+    latency_ms: float = Field(ge=0)
+    model: str
 
 
 def normalize_task_type(value: str) -> ClassifierTaskType:
@@ -339,3 +352,148 @@ class OpenAICompatibleClassifier:
             raise
         self.last_status = "succeeded"
         return result
+
+
+class JevShadowClassifier:
+    """Call local-jev's System 1 endpoint with bounded, typed choices.
+
+    This intentionally has no dependency on the production classifier path.  It
+    is only used to collect calibration evidence in an audit receipt.
+    """
+
+    def __init__(self, config: JevShadowConfig) -> None:
+        self.config = config
+        parsed = urllib.parse.urlparse(config.endpoint)
+        if parsed.scheme != "http" or not is_loopback_endpoint(config.endpoint):
+            raise ValueError("Jev shadow endpoint must use loopback HTTP")
+        if not parsed.path.rstrip("/").endswith("/v1/systemone"):
+            raise ValueError("Jev shadow endpoint must end with /v1/systemone")
+        self.last_status = "idle"
+        self.last_error_type: str | None = None
+        self.source = "local_jev"
+        self.last_response_metadata: dict[str, object] = {}
+        self.last_request_hash: str | None = None
+        self.last_latency_ms: float | None = None
+        self.last_usage: dict[str, int | float] = {}
+        self.last_previous_context_chars = 0
+
+    def evaluate(self, context: RouteContext) -> JevShadowResult:
+        self.last_status = "started"
+        self.last_error_type = None
+        self.last_response_metadata = {}
+        self.last_request_hash = None
+        self.last_latency_ms = None
+        self.last_usage = {}
+        previous = context.task_definition or ""
+        if not self.config.include_previous_assistant:
+            previous = ""
+        previous = previous[-self.config.max_context_chars :]
+        self.last_previous_context_chars = len(previous)
+        state = context.latest_prompt
+        if previous:
+            state = f"Latest user request:\n{state}\n\nPrior task context:\n{previous}"
+        payload = {
+            "model": self.config.model,
+            "state": state,
+            "questions": {
+                "tier": {
+                    "type": "choice",
+                    "instructions": "Choose the cheapest sufficient coding-agent tier.",
+                    "criteria": {
+                        "fast": "Exact retrieval, status, no-op, formatting, rename, or typo fix.",
+                        "normal": (
+                            "Routine communication, explanation, analysis, or implementation."
+                        ),
+                        "smart": (
+                            "Debugging, operations, architecture, security, or multi-step work."
+                        ),
+                        "max": (
+                            "Unusually deep cross-cutting reasoning where smart is materially "
+                            "insufficient."
+                        ),
+                    },
+                },
+                "reasoning_effort": {
+                    "type": "choice",
+                    "instructions": "Choose reasoning effort independently from tier.",
+                    "criteria": {
+                        "low": "Deterministic or exact work.",
+                        "medium": "Routine judgment.",
+                        "high": "Difficult reasoning or meaningful uncertainty.",
+                        "xhigh": "Unusually deep reasoning is materially needed.",
+                    },
+                },
+                "task_type": {
+                    "type": "choice",
+                    "instructions": "Choose the best matching task type.",
+                    "criteria": {
+                        item.value: item.value.replace("_", " ")
+                        for item in ClassifierTaskType
+                    },
+                },
+            },
+        }
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.last_request_hash = hashlib.sha256(body).hexdigest()
+        request = urllib.request.Request(
+            self.config.endpoint,
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": "agentroute/0.5"},
+            method="POST",
+        )
+        started = time.perf_counter()
+        try:
+            with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
+                response_payload = json.loads(response.read())
+        except Exception as error:
+            timed_out = isinstance(error, (TimeoutError, socket.timeout)) or "timed out" in str(
+                error
+            ).lower()
+            self.last_status = "timeout" if timed_out else "error"
+            self.last_error_type = "timeout" if timed_out else type(error).__name__
+            raise
+        latency_ms = round((time.perf_counter() - started) * 1_000, 1)
+        self.last_latency_ms = latency_ms
+        try:
+            answers = response_payload["answers"]
+            tier = Tier.parse(str(answers["tier"]["choice"]))
+            reasoning_effort = str(answers["reasoning_effort"]["choice"]).lower()
+            task_type = normalize_task_type(str(answers["task_type"]["choice"]))
+            result = JevShadowResult(
+                tier=tier,
+                reasoning_effort=reasoning_effort,
+                task_type=task_type,
+                tier_confidence=float(answers["tier"]["confidence"]),
+                reasoning_effort_confidence=float(answers["reasoning_effort"]["confidence"]),
+                task_type_confidence=float(answers["task_type"]["confidence"]),
+                latency_ms=latency_ms,
+                model=str(response_payload.get("model") or self.config.model),
+            )
+            self.last_response_metadata = {"model": result.model}
+            usage = response_payload.get("usage")
+            self.last_usage = (
+                {
+                    str(key): value
+                    for key, value in usage.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                }
+                if isinstance(usage, dict)
+                else {}
+            )
+        except Exception as error:
+            self.last_status = "error"
+            self.last_error_type = type(error).__name__
+            raise
+        self.last_status = "succeeded"
+        return result
+
+    def classify(self, context: RouteContext) -> ClassifierResult:
+        """Adapt typed local-jev choices to AgentRoute's live classifier contract."""
+        result = self.evaluate(context)
+        return ClassifierResult(
+            tier=result.tier,
+            reasoning_effort=result.reasoning_effort,
+            confidence=result.tier_confidence,
+            task_type=result.task_type,
+            reason="local JEV System 1 typed classification",
+        )

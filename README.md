@@ -122,10 +122,10 @@ apply. The requested tier and a SHA-256 hash of the reason are audited; the reas
 
 | Tier | Default Codex target | Typical work |
 |---|---|---|
-| FAST | `gpt-5.6-luna`, low | greetings, exact retrieval, status checks, formatting, mechanical edits |
-| NORMAL | `gpt-5.6-terra`, medium | routine implementation |
-| SMART | `gpt-5.6-sol`, high | debugging, security, complex changes |
-| MAX | `gpt-6-astra`, high | architecture and high-risk cross-cutting work |
+| FAST | `gpt-6-luna`, medium | greetings, exact retrieval, status checks, formatting, mechanical edits |
+| NORMAL | `gpt-6-luna`, high | routine communication, analysis, and implementation |
+| SMART | `gpt-6-sol`, high | debugging, security, complex changes, and tool orchestration |
+| MAX | `gpt-6-astra`, xhigh | exceptional architecture and high-risk cross-cutting work |
 
 All mappings, thresholds, and risk floors are editable in `~/.agentroute/config.yaml`.
 
@@ -304,8 +304,8 @@ agentroute account add work --select
 agentroute account login work
 
 # Keep MAX on Astra where this account supports it, and use Sol where it does not.
-agentroute account model default max gpt-6-astra --reasoning-effort high
-agentroute account model work max gpt-5.6-sol --reasoning-effort high
+agentroute account model default max gpt-6-astra --reasoning-effort xhigh
+agentroute account model work max gpt-6-sol --reasoning-effort high
 
 # Use an account for new threads. Existing threads preserve account affinity.
 agentroute account use default
@@ -349,7 +349,7 @@ machine:
 export AGENTROUTE_CLASSIFIER_API_KEY="..."
 agentroute classifier-enable --allow-remote \
   --endpoint https://api.openai.com/v1/chat/completions \
-  --model gpt-5-mini
+  --model gpt-5.6-luna
 agentroute classifier-status
 ```
 
@@ -388,6 +388,24 @@ agentroute classifier-enable \
 ```
 
 Use `agentroute classifier-disable` to return to deterministic-only routing.
+
+### Optional local JEV cascade
+
+If you run a loopback-compatible [local-JEV](https://github.com/amithgc/local-jev)
+service, AgentRoute can use its typed System One classification as a fast first pass:
+
+```sh
+agentroute classifier-jev-enable \
+  --endpoint http://127.0.0.1:8091/v1/systemone \
+  --model nli-deberta-large \
+  --timeout 3 \
+  --acceptance-threshold 0.55
+```
+
+Manual prompt tags and policy safeguards always take precedence. JEV selections at or above the
+acceptance threshold are used directly; lower-confidence selections fall through to the configured
+LLM classifier (GPT Luna by default), then to deterministic heuristics if either local service is
+unavailable. `agentroute classifier-llm-enable` restores the normal LLM-only classifier.
 
 ## Install
 

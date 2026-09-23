@@ -55,10 +55,24 @@ class SwitchingConfig(BaseModel):
     switch_penalty: float = 0.35
 
 
+class JevShadowConfig(BaseModel):
+    """Local, non-authoritative System 1 classifier experiment settings."""
+
+    enabled: bool = False
+    endpoint: str = "http://127.0.0.1:8091/v1/systemone"
+    model: str = "nli-deberta-large"
+    timeout_seconds: float = Field(default=0.75, ge=0.05, le=10)
+    acceptance_threshold: float = Field(default=0.55, ge=0, le=1)
+    llm_fallback_enabled: bool = True
+    max_context_chars: int = Field(default=1_000, ge=0, le=10_000)
+    include_previous_assistant: bool = False
+
+
 class ClassifierConfig(BaseModel):
+    engine: Literal["llm", "jev"] = "llm"
     enabled: bool = False
     endpoint: str = "https://api.openai.com/v1/chat/completions"
-    model: str = "gpt-5-mini"
+    model: str = "gpt-5.6-luna"
     api_key_env: str = "AGENTROUTE_CLASSIFIER_API_KEY"
     api_key_file: str | None = None
     allow_remote: bool = False
@@ -73,6 +87,7 @@ class ClassifierConfig(BaseModel):
     catalog_checked_at: str | None = None
     catalog_hash: str | None = None
     catalog_models: list[str] = Field(default_factory=list)
+    jev_shadow: JevShadowConfig = Field(default_factory=JevShadowConfig)
 
 
 class RoutingConfig(BaseModel):
@@ -170,7 +185,7 @@ class CapabilityConfig(BaseModel):
 class PricingConfig(BaseModel):
     currency: str = "USD"
     baseline_model: str = "gpt-6-astra"
-    source_checked_at: str = "2026-09-17"
+    source_checked_at: str = "2026-09-22"
     models: dict[str, ModelPrice] = Field(
         default_factory=lambda: {
             "gpt-5.6-luna": ModelPrice(
@@ -187,6 +202,16 @@ class PricingConfig(BaseModel):
                 input_per_million=4.00,
                 cached_input_per_million=0.40,
                 output_per_million=20.00,
+            ),
+            "gpt-6-luna": ModelPrice(
+                input_per_million=0.10,
+                cached_input_per_million=0.01,
+                output_per_million=0.50,
+            ),
+            "gpt-6-sol": ModelPrice(
+                input_per_million=2.00,
+                cached_input_per_million=0.20,
+                output_per_million=10.00,
             ),
             "gpt-6-astra": ModelPrice(
                 input_per_million=10.00,
@@ -225,10 +250,10 @@ class AppConfig(BaseModel):
 
 def default_config() -> AppConfig:
     gpt_tiers = {
-        "fast": ModelTarget(model="gpt-5.6-luna", reasoning_effort="low"),
-        "normal": ModelTarget(model="gpt-5.6-terra", reasoning_effort="medium"),
-        "smart": ModelTarget(model="gpt-5.6-sol", reasoning_effort="high"),
-        "max": ModelTarget(model="gpt-6-astra", reasoning_effort="high"),
+        "fast": ModelTarget(model="gpt-6-luna", reasoning_effort="medium"),
+        "normal": ModelTarget(model="gpt-6-luna", reasoning_effort="high"),
+        "smart": ModelTarget(model="gpt-6-sol", reasoning_effort="high"),
+        "max": ModelTarget(model="gpt-6-astra", reasoning_effort="xhigh"),
     }
     config = AppConfig(
         providers={
@@ -294,6 +319,14 @@ def default_config() -> AppConfig:
         "gpt-5.6-sol": ModelCapabilities(
             tool_calling="full", reasoning=True, vision=True,
             pricing_model="gpt-5.6-sol",
+        ),
+        "gpt-6-luna": ModelCapabilities(
+            tool_calling="full", reasoning=True, vision=True,
+            pricing_model="gpt-6-luna",
+        ),
+        "gpt-6-sol": ModelCapabilities(
+            tool_calling="full", reasoning=True, vision=True,
+            pricing_model="gpt-6-sol",
         ),
         "gpt-6-astra": ModelCapabilities(
             tool_calling="full", reasoning=True, vision=True,

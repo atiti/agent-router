@@ -8,6 +8,7 @@ from typing import Any, TextIO
 
 from .audit import AuditStore
 from .capacity import backend_spend, subscription_state
+from .classifier import JevShadowClassifier
 from .config import AppConfig, load_config
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
 from .profiles import (
@@ -151,6 +152,49 @@ def _apply_profile_selection(
         "account_hash": selection.selected.account_hash,
         "source": selection.source,
     }
+    decision.selection_receipt_hash = hashlib.sha256(
+        json.dumps(
+            decision.selection_receipt, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _record_jev_shadow(decision: RouteDecision, context: RouteContext, config: AppConfig) -> None:
+    """Add a best-effort local JEV observation to the receipt, never the route."""
+    shadow_config = config.routing.classifier.jev_shadow
+    if not shadow_config.enabled:
+        return
+    if decision.classifier_confidence is None:
+        return
+    if ReasonCode.CREDENTIAL_EXPOSURE in decision.reason_codes:
+        return
+    try:
+        result = JevShadowClassifier(shadow_config).evaluate(context)
+        decision.selection_receipt["shadow_jev"] = {
+            "status": "succeeded",
+            "model": result.model,
+            "latency_ms": result.latency_ms,
+            "tier": str(result.tier),
+            "reasoning_effort": result.reasoning_effort,
+            "task_type": result.task_type.value,
+            "confidence": {
+                "tier": result.tier_confidence,
+                "reasoning_effort": result.reasoning_effort_confidence,
+                "task_type": result.task_type_confidence,
+            },
+            "agreement": {
+                "selected_tier": str(result.tier) == str(decision.tier),
+                "reasoning_effort": result.reasoning_effort
+                == decision.classifier_reasoning_effort,
+                "task_type": result.task_type.value == decision.classifier_task_type,
+            },
+        }
+    except Exception as error:
+        # Shadow measurement must have zero availability impact on Codex.
+        decision.selection_receipt["shadow_jev"] = {
+            "status": "timeout" if isinstance(error, TimeoutError) else "error",
+            "error_type": type(error).__name__,
+        }
     decision.selection_receipt_hash = hashlib.sha256(
         json.dumps(
             decision.selection_receipt, sort_keys=True, separators=(",", ":")
@@ -316,6 +360,7 @@ def codex_user_prompt_submit(
         # @auto clears affinity even though the router's ordinary backend choice may be GPT.
         if tier_override == "auto":
             decision.sticky_backend = None
+        _record_jev_shadow(decision, context, config)
         store.record(
             decision,
             current_tier,
@@ -326,6 +371,7 @@ def codex_user_prompt_submit(
         confidence_kind = (
             "classifier confidence"
             if decision.classifier_confidence is not None
+            and decision.classification_source != "heuristic_jev_low_confidence"
             else "rule confidence"
         )
         route_source = (
@@ -334,6 +380,12 @@ def codex_user_prompt_submit(
             else "DETERMINISTIC/FALLBACK"
             if decision.classification_source == "heuristic_fallback"
             else f"{decision.classification_source.upper()}"
+        )
+        jev_first_pass = decision.selection_receipt.get("jev_first_pass", {})
+        jev_confidence = (
+            float(jev_first_pass.get("confidence", 0))
+            if isinstance(jev_first_pass, dict)
+            else 0.0
         )
         output: dict[str, Any] = {
             "continue": not decision.capacity_blocked,
@@ -429,6 +481,13 @@ def codex_user_prompt_submit(
                 + (
                     " · CLASSIFIER FALLBACK"
                     if ReasonCode.CLASSIFIER_FALLBACK in decision.reason_codes
+                    else ""
+                )
+                + (
+                    " · JEV "
+                    f"{jev_confidence:.0%} "
+                    "below acceptance threshold; used local LLM fallback"
+                    if ReasonCode.JEV_LOW_CONFIDENCE in decision.reason_codes
                     else ""
                 )
                 + (

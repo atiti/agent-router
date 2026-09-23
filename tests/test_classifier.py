@@ -3,8 +3,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from agentroute.classifier import OpenAICompatibleClassifier, read_api_key
-from agentroute.config import ClassifierConfig
+from agentroute.classifier import JevShadowClassifier, OpenAICompatibleClassifier, read_api_key
+from agentroute.config import ClassifierConfig, JevShadowConfig
 from agentroute.models import RouteContext, Tier
 
 
@@ -20,6 +20,46 @@ class FakeResponse:
 
     def read(self):
         return json.dumps(self.payload).encode()
+
+
+def test_jev_shadow_is_loopback_only_and_parses_typed_answers(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return FakeResponse(
+            {
+                "model": "nli-deberta-large",
+                "answers": {
+                    "tier": {"choice": "smart", "confidence": 0.44},
+                    "reasoning_effort": {"choice": "high", "confidence": 0.30},
+                    "task_type": {"choice": "debugging", "confidence": 0.52},
+                },
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    classifier = JevShadowClassifier(JevShadowConfig(timeout_seconds=0.75))
+    result = classifier.evaluate(
+        RouteContext(session_id="s", latest_prompt="diagnose the production outage")
+    )
+
+    assert result.tier is Tier.SMART
+    assert result.reasoning_effort == "high"
+    assert result.task_type.value == "debugging"
+    assert result.tier_confidence == 0.44
+    assert captured["timeout"] == 0.75
+    body = json.loads(captured["request"].data)
+    assert body["model"] == "nli-deberta-large"
+    assert set(body["questions"]) == {
+        "tier",
+        "reasoning_effort",
+        "task_type",
+    }
+
+    with pytest.raises(ValueError, match="loopback"):
+        JevShadowClassifier(JevShadowConfig(endpoint="http://example.com/v1/systemone"))
 
 
 def test_remote_classifier_requires_explicit_prompt_egress():
