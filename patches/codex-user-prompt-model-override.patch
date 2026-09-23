@@ -2275,48 +2275,42 @@ index e3407cd1d6..2ea985e13b 100644
 +        {
 +            TurnSettingsUpdateOutcome::Applied => {
 +                outcome.settings_updated = true;
-+                if matches!(turn_context.session_source, SessionSource::VSCode) {
-+                    if let Some(message) = route_notice {
-+                        // App-server forwards Warning notifications, but Codex Desktop does not
-+                        // render them in the conversation. Emit a display-only route commentary
-+                        // item so desktop and VS Code users can verify the selected provider and
-+                        // model. This event is not added to the model's input history.
-+                        let item_id = format!("agentroute-route-{}", turn_context.sub_id);
-+                        let agent_message = AgentMessageItem {
-+                            id: item_id.clone(),
-+                            content: vec![AgentMessageContent::Text {
-+                                text: message.clone(),
-+                            }],
-+                            phase: Some(MessagePhase::Commentary),
-+                            memory_citation: None,
-+                            delivery: None,
-+                            questions: None,
-+                        };
-+                        let started_item = TurnItem::AgentMessage(AgentMessageItem {
-+                            content: Vec::new(),
-+                            ..agent_message.clone()
-+                        });
-+                        sess.emit_turn_item_started(turn_context, &started_item)
-+                            .await;
-+                        sess.send_event(
-+                            turn_context,
-+                            EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
-+                                thread_id: sess.thread_id.to_string(),
-+                                turn_id: turn_context.sub_id.clone(),
-+                                item_id,
-+                                delta: message,
-+                            }),
-+                        )
++                if let Some(message) = route_notice {
++                    // Keep routing notices out of the warning channel. The TUI renders this
++                    // display-only commentary as a dedicated colored transcript cell and updates
++                    // its per-turn status bar; the model never receives it as prompt context.
++                    let item_id = format!("agentroute-route-{}", turn_context.sub_id);
++                    let agent_message = AgentMessageItem {
++                        id: item_id.clone(),
++                        content: vec![AgentMessageContent::Text {
++                            text: message.clone(),
++                        }],
++                        phase: Some(MessagePhase::Commentary),
++                        memory_citation: None,
++                        delivery: None,
++                        questions: None,
++                    };
++                    let started_item = TurnItem::AgentMessage(AgentMessageItem {
++                        content: Vec::new(),
++                        ..agent_message.clone()
++                    });
++                    sess.emit_turn_item_started(turn_context, &started_item)
 +                        .await;
-+                        sess.emit_turn_item_completed(
-+                            turn_context,
-+                            TurnItem::AgentMessage(agent_message),
-+                        )
-+                        .await;
-+                    }
-+                } else if let Some(message) = route_notice {
-+                    sess.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
-+                        .await;
++                    sess.send_event(
++                        turn_context,
++                        EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
++                            thread_id: sess.thread_id.to_string(),
++                            turn_id: turn_context.sub_id.clone(),
++                            item_id,
++                            delta: message,
++                        }),
++                    )
++                    .await;
++                    sess.emit_turn_item_completed(
++                        turn_context,
++                        TurnItem::AgentMessage(agent_message),
++                    )
++                    .await;
 +                }
 +            }
 +            TurnSettingsUpdateOutcome::TargetUnavailable => {
@@ -6882,6 +6876,16 @@ index 57591c4017..f60c339fd1 100644
      backend_banner_notice_model: Option<String>,
      // Remember the account's Reserve entry notice across chats and transient banner refreshes.
      luna_reserve_notice_account_id: Option<String>,
+@@ -456,7 +460,8 @@
+ mod tui_mode_picker;
+ mod usage_history;
+ use self::transcript::TranscriptState;
+ mod turn_lifecycle;
+ mod turn_runtime;
++pub(crate) use self::turn_runtime::parse_model_route;
+ use self::turn_lifecycle::TurnLifecycleState;
+ mod usage;
+ mod user_messages;
 diff --git a/codex-rs/tui/src/chatwidget/constructor.rs b/codex-rs/tui/src/chatwidget/constructor.rs
 index 00d6329dbb..c4762a2e11 100644
 --- a/codex-rs/tui/src/chatwidget/constructor.rs
@@ -7056,7 +7060,7 @@ index d473394efe..ff0f00abde 100644
      "This content was flagged for possible biological risk.";
 +const MODEL_ROUTE_PREFIX: &str = "◆ MODEL ROUTE · ";
 +
-+fn parse_model_route(message: &str) -> Option<(String, Option<String>, ReasoningEffortConfig)> {
++pub(crate) fn parse_model_route(message: &str) -> Option<(String, Option<String>, ReasoningEffortConfig)> {
 +    let details = message
 +        .lines()
 +        .find_map(|line| line.strip_prefix(MODEL_ROUTE_PREFIX))?;
@@ -7103,21 +7107,16 @@ index d473394efe..ff0f00abde 100644
          if !self.warning_display_state.should_display(&message) {
              return;
          }
-+        let route = parse_model_route(&message);
-+        let is_model_route = route.is_some();
-+        if let Some((model, model_provider, effort)) = route {
++        if let Some((model, model_provider, effort)) = parse_model_route(&message) {
 +            self.routed_turn_model = Some(model);
 +            self.routed_turn_model_provider = model_provider;
 +            self.routed_turn_reasoning_effort = Some(effort);
 +            self.refresh_status_surfaces();
++            self.add_to_history(history_cell::new_agentroute_route_event(message));
++            self.request_redraw();
++            return;
 +        }
--        self.add_to_history(history_cell::new_warning_event(message));
-+        let warning = if is_model_route {
-+            history_cell::new_agentroute_route_event(message)
-+        } else {
-+            history_cell::new_warning_event(message)
-+        };
-+        self.add_to_history(warning);
+         self.add_to_history(history_cell::new_warning_event(message));
          self.request_redraw();
      }
 @@ -550,3 +591,46 @@ impl ChatWidget {
@@ -7167,6 +7166,64 @@ index d473394efe..ff0f00abde 100644
 +        );
 +    }
 +}
+diff --git a/codex-rs/tui/src/chatwidget/protocol.rs b/codex-rs/tui/src/chatwidget/protocol.rs
+--- a/codex-rs/tui/src/chatwidget/protocol.rs
++++ b/codex-rs/tui/src/chatwidget/protocol.rs
+@@ -109,10 +109,11 @@ impl ChatWidget {
+             ServerNotification::AgentMessageDelta(notification) => {
+                 self.restore_realtime_transcripts_before_turn(&notification.turn_id);
+-                if !self.is_realtime_delegated_reasoning_turn(&notification.turn_id)
++                if !notification.item_id.starts_with("agentroute-route-")
++                    && !self.is_realtime_delegated_reasoning_turn(&notification.turn_id)
+                     && (from_replay
+                         || !self.is_realtime_delegated_agent_item(
+                             &notification.turn_id,
+                             &notification.item_id,
+                         ))
+                 {
+                     self.on_agent_message_delta(notification.delta);
+                 }
+diff --git a/codex-rs/tui/src/chatwidget/streaming.rs b/codex-rs/tui/src/chatwidget/streaming.rs
+--- a/codex-rs/tui/src/chatwidget/streaming.rs
++++ b/codex-rs/tui/src/chatwidget/streaming.rs
+@@ -421,6 +421,20 @@ impl ChatWidget {
+         for content in &item.content {
+             match content {
+                 AgentMessageContent::Text { text } => message.push_str(text),
+             }
+         }
++        if item.id.starts_with("agentroute-route-") {
++            if let Some((model, model_provider, effort)) = super::parse_model_route(&message) {
++                self.routed_turn_model = Some(model);
++                self.routed_turn_model_provider = model_provider;
++                self.routed_turn_reasoning_effort = Some(effort);
++                self.refresh_status_surfaces();
++            }
++            self.add_to_history(history_cell::new_agentroute_route_event(message));
++            self.request_redraw();
++            return;
++        }
+         let parsed = parse_assistant_markdown(&message, self.config.cwd.as_path());
+         if from_replay && self.stream_controller.is_none() && !parsed.visible_markdown.is_empty() {
+             self.prepare_assistant_message();
+diff --git a/codex-rs/tui/src/history_cell/warnings_tests.rs b/codex-rs/tui/src/history_cell/warnings_tests.rs
+--- a/codex-rs/tui/src/history_cell/warnings_tests.rs
++++ b/codex-rs/tui/src/history_cell/warnings_tests.rs
+@@ -88,6 +88,17 @@ fn warning_count_deduplicates_messages_mcp_summaries_and_composites() {
+     assert!(cells.iter().all(|cell| !cell.raw_lines().is_empty()));
+ }
++
++#[test]
++fn agentroute_route_notices_are_transcript_cells_not_warnings() {
++    let notice = Arc::new(new_agentroute_route_event(
++        "◆ MODEL ROUTE · NORMAL → gpt-6-luna · xhigh reasoning · backend gpt/openai".into(),
++    ));
++    let cells: Vec<Arc<dyn HistoryCell>> = vec![notice.clone()];
++
++    assert_eq!(warning_count(&cells), 0);
++    assert!(warning_entries(&cells).is_empty());
++    assert!(!notice.display_lines(100).is_empty());
++}
 diff --git a/codex-rs/tui/src/history_cell/notices.rs b/codex-rs/tui/src/history_cell/notices.rs
 index a786340..e3a4dc6 100644
 --- a/codex-rs/tui/src/history_cell/notices.rs
@@ -7186,7 +7243,12 @@ index a786340..e3a4dc6 100644
      }
  }
 +
-+pub(crate) fn new_agentroute_route_event(message: String) -> WarningHistoryCell {
++#[derive(Debug)]
++pub(crate) struct AgentRouteNoticeHistoryCell {
++    details: PrefixedWrappedHistoryCell,
++}
++
++pub(crate) fn new_agentroute_route_event(message: String) -> AgentRouteNoticeHistoryCell {
 +    let lines = message
 +        .lines()
 +        .map(|line| {
@@ -7233,12 +7295,22 @@ index a786340..e3a4dc6 100644
 +            Line::from(spans)
 +        })
 +        .collect::<Vec<_>>();
-+    WarningHistoryCell {
-+        server_version_notice: false,
-+        visible_in_transcript: true,
-+        key: message.clone(),
-+        diagnostic: message,
++    AgentRouteNoticeHistoryCell {
 +        details: PrefixedWrappedHistoryCell::new(Text::from(lines), "  ", "  "),
++    }
++}
++
++impl HistoryCell for AgentRouteNoticeHistoryCell {
++    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
++        self.details.display_lines(width)
++    }
++
++    fn raw_lines(&self) -> Vec<Line<'static>> {
++        self.details.raw_lines()
++    }
++
++    fn transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
++        self.details.transcript_hyperlink_lines(width)
 +    }
 +}
  
