@@ -13,8 +13,10 @@ It is deliberately boring infrastructure: rules are inspectable, decisions are a
 `@fast`, `@normal`, `@smart`, or `@max` always gives the human control. Prefix `@none`, `@minimal`,
 `@low`, `@medium`, `@high`, `@xhigh`, `@ultra`, or `@persistent` to override the request reasoning
 effort independently of the selected model tier and backend—for example, `@azure @ultra investigate
-this incident`. An optional LLM classifier
-can resolve ambiguous turns; it is disabled until explicitly configured.
+this incident`. General answer turns using GPT-6 Luna on GPT or Azure have a minimum `xhigh` floor,
+so lower requested efforts are raised to `xhigh`. This does not raise the separate routing
+classifier's effort; its default remains `low`. An optional LLM classifier can resolve ambiguous
+turns; it is disabled until explicitly configured.
 
 ![AgentRoute routing three Codex tasks across GPT, Azure, and DeepSeek](assets/terminal-demo.svg)
 
@@ -122,12 +124,13 @@ apply. The requested tier and a SHA-256 hash of the reason are audited; the reas
 
 | Tier | Default Codex target | Typical work |
 |---|---|---|
-| FAST | `gpt-6-luna`, medium | greetings, exact retrieval, status checks, formatting, mechanical edits |
-| NORMAL | `gpt-6-luna`, high | routine communication, analysis, and implementation |
+| FAST | `gpt-6-luna`, xhigh | greetings, exact retrieval, status checks, formatting, mechanical edits |
+| NORMAL | `gpt-6-luna`, xhigh | routine communication, analysis, and implementation |
 | SMART | `gpt-6-sol`, high | debugging, security, complex changes, and tool orchestration |
 | MAX | `gpt-6-astra`, xhigh | exceptional architecture and high-risk cross-cutting work |
 
-All mappings, thresholds, and risk floors are editable in `~/.agentroute/config.yaml`.
+Mappings, thresholds, and risk floors are editable in `~/.agentroute/config.yaml`. The GPT/Azure
+Luna `xhigh` minimum is a model-safety floor and cannot be lowered by tier defaults or prompt tags.
 
 ## Execution backends
 
@@ -579,9 +582,11 @@ original bundle identifier for frontend compatibility, changes the visible name,
 updates, signs nested code inside the copied bundle, verifies the complete signature, and smoke-tests
 the embedded app-server before publishing the destination. The official app is never uploaded,
 packaged, or redistributed.
-The installer also refuses a stock/routed Codex version mismatch by default, because that can make
-mobile remote clients report that the Desktop app must be updated. `agentroute desktop status`
-shows all three versions before any change is made.
+The installer requires the stock app and routed binary to report the same Codex
+`major.minor.patch` release (for example, `0.155.0`); prerelease suffixes may differ. This is a
+release-line guard, not proof that two custom binaries have identical code or that every mobile
+remote workflow is compatible. `agentroute desktop status` reports both release-line compatibility
+and exact version-string equality before any change is made.
 
 After updating the official ChatGPT app or AgentRoute, rebuild with an automatic rollback copy:
 
@@ -637,7 +642,8 @@ The hybrid classifier chooses model tier and reasoning effort independently. FAS
 quality floor: authored communication, explanation, analysis, implementation, debugging, and
 orchestration use at least NORMAL even if the classifier proposes FAST. Continuations retain the
 previous task's model tier and strongest known reasoning effort. Explicit prefixes such as
-`@normal @high` always win.
+`@normal @high` normally win, except that a model-specific minimum reasoning floor (currently
+`xhigh` for GPT/Azure Luna) is enforced and recorded in the route receipt.
 
 ## Native Codex patch
 
@@ -690,14 +696,15 @@ A weekly GitHub Actions job applies all patches to the latest upstream Codex rel
 the CLI. Failures open one actionable compatibility issue; automation never publishes an unreviewed
 Codex upgrade. AgentRoute is not affiliated with or endorsed by OpenAI.
 
-The routed Codex CLI's visible version remains `0.155.0-alpha.2.6` for Desktop compatibility.
-AgentRoute has separate versioning: `agentroute version` reports the AgentRoute release, routing
-runtime, and compatible Codex version; route notices include the AgentRoute release. The routed
+The routed Codex CLI reports `0.155.0-alpha.2.6` within the pinned `0.155.0` Codex release line.
+Desktop rebuilds allow a different prerelease suffix within that same line. AgentRoute has separate
+versioning: `agentroute version` reports the AgentRoute release, routing runtime, and compatible
+Codex version; route notices include the AgentRoute release. The routed
 Desktop bundle records the AgentRoute version in its own metadata without changing Codex's app-server
-version, bundle identifier, or compatibility handshake. Use `agentroute doctor` and
-`agentroute desktop status` to verify the source build ID (`b412ff32…-provider-routing-v38`) and
-Desktop binary agreement; matching version banners alone do not establish that two installations
-contain the same patches.
+version or bundle identifier. Use `agentroute doctor` and `agentroute desktop status` to verify the
+source build ID (`b412ff32…-provider-routing-v39`), release-line compatibility, and whether the
+Codex version strings match exactly. Neither a shared release line nor matching version banners
+prove that two installations contain the same patches or guarantee mobile remote compatibility.
 
 ## Development
 

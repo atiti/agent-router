@@ -1,12 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.5.44 — 2026-09-23
 
-- Show a colorful, transcript-visible `MODEL ROUTE` banner in the Codex TUI, with tier, model,
-  provider, and reasoning effort visually distinguished. The route remains available in warnings.
+- Show model-route notices as colored transcript items instead of warnings, so per-turn routing
+  does not inflate the warning count; retain model, provider, and reasoning in the CLI status bar.
+
+- Allow Desktop rebuilds when the official app and routed CLI share the same Codex
+  `major.minor.patch` release line, even if prerelease suffixes differ; `desktop status` now
+  reports release-line compatibility separately from exact version-string equality.
+
+- Enforce a minimum `xhigh` reasoning effort whenever GPT-6 Luna is selected on GPT or Azure,
+  including classifier-selected answer routes, inherited routes, and lower explicit-effort routes.
+  The independent classifier call retains its configured low effort. Record the floor in the
+  routing receipt and show the actual applied effort in the route banner.
 
 - Port the complete routed Codex patch stack to upstream `rust-v0.156.1`
-  (`b412ff32`, routing runtime v37), including its GPT-6 model catalog.
+  (`b412ff32`, routing runtime v39), including its GPT-6 model catalog.
 - Preserve same-provider Azure compaction checkpoints, including after resume,
   while still dropping encrypted state across provider/account boundaries.
   Normalize requests only at the shared client boundary.

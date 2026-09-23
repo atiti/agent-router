@@ -12,8 +12,10 @@ credentials, user configuration, transcripts, or audit data.
    automatic approval review; a subagent route; compaction; and a resumed mixed-provider session.
 4. Run `agentroute desktop rebuild`, verify the route banner in Desktop, and verify mobile remote
    connection against the routed app-server.
-5. Confirm `codex --version` matches the Desktop compatibility version in
-   `codex-package-version.patch`.
+5. Confirm the routed binary and bundled Desktop CLI report the same Codex
+   `major.minor.patch` release line; prerelease/build suffixes may differ. Then verify the mobile
+   remote connection against the rebuilt Desktop app, since matching release lines alone do not
+   guarantee app-server protocol compatibility.
 6. Update the AgentRoute version and changelog, commit, and tag `vX.Y.Z`.
 
 Pushing the tag builds Linux and macOS payloads for arm64 and x64, creates SHA-256 files, emits
