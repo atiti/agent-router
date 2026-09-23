@@ -1,8 +1,8 @@
 diff --git a/codex-rs/app-server/src/request_processors/account_processor.rs b/codex-rs/app-server/src/request_processors/account_processor.rs
-index 8327cdf7ce..dfad5256f5 100644
+index 30d1ff7ab0..0f86219b1a 100644
 --- a/codex-rs/app-server/src/request_processors/account_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/account_processor.rs
-@@ -1202,11 +1202,21 @@ impl AccountRequestProcessor {
+@@ -1193,11 +1193,21 @@ impl AccountRequestProcessor {
          let rate_limit_upsell = response
              .rate_limit_upsell
              .filter(|_| matches_active_account);
@@ -27,11 +27,21 @@ index 8327cdf7ce..dfad5256f5 100644
              rate_limits: rate_limits.into(),
              rate_limits_by_limit_id: Some(
                  rate_limits_by_limit_id
+diff --git a/codex-rs/chatgpt/src/lib.rs b/codex-rs/chatgpt/src/lib.rs
+index 057478db18..5589621149 100644
+--- a/codex-rs/chatgpt/src/lib.rs
++++ b/codex-rs/chatgpt/src/lib.rs
+@@ -1,3 +1,5 @@
++#![recursion_limit = "256"]
++
+ pub mod apply_command;
+ mod chatgpt_client;
+ pub mod connectors;
 diff --git a/codex-rs/config/src/thread_config/remote.rs b/codex-rs/config/src/thread_config/remote.rs
-index 8d5b8febe4..6718019d03 100644
+index 16a937b414..7cfa80e551 100644
 --- a/codex-rs/config/src/thread_config/remote.rs
 +++ b/codex-rs/config/src/thread_config/remote.rs
-@@ -192,6 +192,8 @@ fn model_provider_from_proto(
+@@ -194,6 +194,8 @@ fn model_provider_from_proto(
          requires_openai_auth: provider.requires_openai_auth,
          supports_websockets: provider.supports_websockets,
          supports_standalone_web_search: provider.supports_standalone_web_search,
@@ -40,7 +50,7 @@ index 8d5b8febe4..6718019d03 100644
      };
      Ok((id, info))
  }
-@@ -220,6 +222,8 @@ fn model_provider_to_proto(
+@@ -224,6 +226,8 @@ fn model_provider_to_proto(
          requires_openai_auth,
          supports_websockets,
          supports_standalone_web_search,
@@ -49,28 +59,230 @@ index 8d5b8febe4..6718019d03 100644
      } = provider;
  
      proto::ModelProvider {
-@@ -568,6 +572,8 @@ mod tests {
-             requires_openai_auth: false,
+@@ -578,6 +582,8 @@ mod tests {
              supports_websockets: true,
              supports_standalone_web_search: true,
+             gateway_oauth: None,
 +            tool_compatibility: None,
 +            approval_review_model: None,
              aws: None,
          }
      }
+diff --git a/codex-rs/core/src/agent/child_config.rs b/codex-rs/core/src/agent/child_config.rs
+index dbde75b867..98d33997ce 100644
+--- a/codex-rs/core/src/agent/child_config.rs
++++ b/codex-rs/core/src/agent/child_config.rs
+@@ -45,6 +45,7 @@ pub(crate) struct SpawnConfigOptions<'a> {
+ pub(crate) struct PreparedSpawnConfig {
+     pub(crate) config: Config,
+     pub(crate) role_name: Option<String>,
++    pub(crate) requested_backend: Option<String>,
+ }
+ 
+ /// Resolves child settings before starting the thread, retaining the invoking tool's precedence.
+@@ -59,7 +60,7 @@ pub(crate) async fn prepare_agent_spawn_config(
+     if options.version == SpawnConfigVersion::V1 && options.full_history_fork {
+         reject_full_fork_agent_type_override(options.role_name)?;
+     }
+-    apply_requested_spawn_agent_model_overrides(
++    let requested_backend = apply_requested_spawn_agent_model_overrides(
+         session,
+         step_context,
+         &mut config,
+@@ -96,7 +97,11 @@ pub(crate) async fn prepare_agent_spawn_config(
+             .then_some(DEFAULT_ROLE_NAME)
+         })
+         .map(str::to_owned);
+-    Ok(PreparedSpawnConfig { config, role_name })
++    Ok(PreparedSpawnConfig {
++        config,
++        role_name,
++        requested_backend,
++    })
+ }
+ 
+ /// Builds the base config snapshot for a newly spawned sub-agent.
+@@ -135,7 +140,8 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
+     // Fresh child startup restores configured preferences from the retained snapshot.
+     config.token_budget = turn.configured_token_budget.clone();
+     config.model = Some(turn.model_info().slug.clone());
+-    config.model_provider = turn.provider.info().clone();
++    config.model_provider_id = turn.model_provider_id();
++    config.model_provider = turn.model_provider().info().clone();
+     config.model_reasoning_effort = turn
+         .reasoning_effort()
+         .or(turn.model_info().default_reasoning_level.as_ref())
+@@ -199,16 +205,56 @@ async fn apply_requested_spawn_agent_model_overrides(
+     config: &mut Config,
+     requested_model: Option<&str>,
+     requested_reasoning_effort: Option<ReasoningEffort>,
+-) -> Result<(), String> {
++) -> Result<Option<String>, String> {
+     let turn = step_context.turn.as_ref();
+     let requested_model = requested_model.or(turn.config.agent_default_subagent_model.as_deref());
+     let requested_reasoning_effort = requested_reasoning_effort
+         .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone());
+     if requested_model.is_none() && requested_reasoning_effort.is_none() {
+-        return Ok(());
++        return Ok(None);
+     }
+ 
+     if let Some(requested_model) = requested_model {
++        let requested_model =
++            parse_spawn_agent_model_override(requested_model, &config.model_providers)?;
++        let requested_backend = requested_model
++            .provider_id
++            .as_deref()
++            .map(spawn_agent_backend_for_provider);
++        let provider_changed = requested_model
++            .provider_id
++            .as_deref()
++            .is_some_and(|provider_id| provider_id != config.model_provider_id);
++        if let Some(provider_id) = requested_model.provider_id.as_deref() {
++            let provider = config
++                .model_providers
++                .get(provider_id)
++                .cloned()
++                .ok_or_else(|| format!("Unknown model provider `{provider_id}` for spawn_agent"))?;
++            config.model_provider_id = provider_id.to_string();
++            config.model_provider = provider;
++        }
++        if provider_changed {
++            let selected_model_info = session
++                .services
++                .models_manager
++                .get_model_info(&requested_model.model, &config.to_models_manager_config())
++                .await;
++            config.model = Some(requested_model.model.clone());
++            if let Some(reasoning_effort) = requested_reasoning_effort {
++                if !selected_model_info.used_fallback_model_metadata {
++                    validate_spawn_agent_reasoning_effort(
++                        &requested_model.model,
++                        &selected_model_info.supported_reasoning_levels,
++                        &reasoning_effort,
++                    )?;
++                }
++                config.model_reasoning_effort = Some(reasoning_effort);
++            } else if !selected_model_info.used_fallback_model_metadata {
++                config.model_reasoning_effort = selected_model_info.default_reasoning_level;
++            }
++            return Ok(requested_backend);
++        }
+         let available_models = session
+             .services
+             .models_manager
+@@ -216,7 +262,7 @@ async fn apply_requested_spawn_agent_model_overrides(
+             .await;
+         let selected_model_name = find_spawn_agent_model_name(
+             &available_models,
+-            requested_model,
++            &requested_model.model,
+             turn.multi_agent_version,
+         )?;
+         let selected_model_info = session
+@@ -237,7 +283,7 @@ async fn apply_requested_spawn_agent_model_overrides(
+             config.model_reasoning_effort = selected_model_info.default_reasoning_level;
+         }
+ 
+-        return Ok(());
++        return Ok(requested_backend);
+     }
+ 
+     if let Some(reasoning_effort) = requested_reasoning_effort {
+@@ -249,7 +295,54 @@ async fn apply_requested_spawn_agent_model_overrides(
+         config.model_reasoning_effort = Some(reasoning_effort);
+     }
+ 
+-    Ok(())
++    Ok(None)
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++struct SpawnAgentModelOverride {
++    provider_id: Option<String>,
++    model: String,
++}
++
++fn parse_spawn_agent_model_override(
++    requested_model: &str,
++    model_providers: &std::collections::HashMap<
++        String,
++        codex_model_provider_info::ModelProviderInfo,
++    >,
++) -> Result<SpawnAgentModelOverride, String> {
++    let requested_model = requested_model.trim();
++    if requested_model.is_empty() {
++        return Err("Model override for spawn_agent cannot be empty".to_string());
++    }
++    if let Some((provider_id, model)) = requested_model.split_once('/')
++        && model_providers.contains_key(provider_id.trim())
++    {
++        let model = model.trim();
++        if model.is_empty() {
++            return Err(
++                "Provider-qualified spawn_agent models must use `<provider>/<model>`".to_string(),
++            );
++        }
++        return Ok(SpawnAgentModelOverride {
++            provider_id: Some(provider_id.trim().to_string()),
++            model: model.to_string(),
++        });
++    }
++    Ok(SpawnAgentModelOverride {
++        provider_id: None,
++        model: requested_model.to_string(),
++    })
++}
++
++fn spawn_agent_backend_for_provider(provider_id: &str) -> String {
++    match provider_id {
++        "openai" => "gpt".to_string(),
++        provider_id => provider_id
++            .strip_prefix("agentroute-")
++            .unwrap_or(provider_id)
++            .to_string(),
++    }
+ }
+ 
+ pub(crate) async fn apply_spawn_agent_service_tier(
+diff --git a/codex-rs/core/src/agent/control/delivery.rs b/codex-rs/core/src/agent/control/delivery.rs
+index 0d84f14cae..0c49f822e4 100644
+--- a/codex-rs/core/src/agent/control/delivery.rs
++++ b/codex-rs/core/src/agent/control/delivery.rs
+@@ -48,6 +48,20 @@ impl AgentMessage {
+                 .render();
+                 InterAgentCommunication::new(author, recipient, Vec::new(), content, trigger_turn)
+             }
++            Self::Routed {
++                message,
++                routing_prompt,
++                inherited_model_provider,
++                requested_backend,
++                model_explicit,
++            } => message
++                .into_communication(author, recipient, mode)
++                .with_routing_prompt(routing_prompt)
++                .with_routing_provider_context(
++                    inherited_model_provider,
++                    requested_backend,
++                    model_explicit,
++                ),
+         }
+     }
+ }
 diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
-index 3da7924509..4897ed725c 100644
+index cfd5020634..3deb9cc644 100644
 --- a/codex-rs/core/src/agent/control/spawn.rs
 +++ b/codex-rs/core/src/agent/control/spawn.rs
-@@ -17,6 +17,7 @@ use codex_context_fragments::set_annotated_content;
+@@ -23,6 +23,7 @@ use codex_context_fragments::set_annotated_content;
  use codex_context_fragments::to_annotated_content;
  use codex_extension_api::ExtensionDataInit;
  use codex_history::ResponseItemEnvelope;
 +use codex_model_provider::create_model_provider;
+ use codex_prompts::ResolvedModelMessages;
  use codex_protocol::intersect_effective_permission_profiles;
  use codex_protocol::protocol::EnvironmentConfigState;
- use codex_utils_path_uri::PathUri;
-@@ -910,22 +911,24 @@ impl AgentControl {
+@@ -928,22 +929,24 @@ impl LocalAgentControl {
              forked_rollout_items =
                  truncate_rollout_to_last_n_fork_turns(forked_rollout_items, *last_n_turns);
          }
@@ -79,7 +291,7 @@ index 3da7924509..4897ed725c 100644
 -                let parent_config = parent_thread.session.get_config().await;
 -                let parent_usage_hints = resolve_usage_hints(
 -                    &parent_config.multi_agent_v2,
--                    /*catalog*/ None,
+-                    ResolvedModelMessages::bundled().multi_agent(),
 -                    !parent_config.update_plan_enabled,
 -                );
 -                [parent_usage_hints.root, parent_usage_hints.subagent]
@@ -96,7 +308,7 @@ index 3da7924509..4897ed725c 100644
 +            let parent_config = parent_thread.session.get_config().await;
 +            let parent_usage_hints = resolve_usage_hints(
 +                &parent_config.multi_agent_v2,
-+                /*catalog*/ None,
++                ResolvedModelMessages::bundled().multi_agent(),
 +                !parent_config.update_plan_enabled,
 +                create_model_provider(parent_config.model_provider.clone(), None).capabilities(),
 +            );
@@ -111,19 +323,19 @@ index 3da7924509..4897ed725c 100644
          let mut preserve_reference_context_item =
              matches!(fork_mode, SpawnAgentForkMode::FullHistory);
          if preserve_reference_context_item {
-@@ -1105,6 +1108,7 @@ impl AgentControl {
+@@ -1130,6 +1133,7 @@ impl LocalAgentControl {
                          &config.multi_agent_v2,
-                         /*catalog*/ None,
+                         ResolvedModelMessages::bundled().multi_agent(),
                          !config.update_plan_enabled,
 +                        create_model_provider(config.model_provider.clone(), None).capabilities(),
                      )
                      .subagent
                  })
 diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
-index 2981b13b0a..5631a5072b 100644
+index a55a8bbbc5..312c5575de 100644
 --- a/codex-rs/core/src/agent/control_tests.rs
 +++ b/codex-rs/core/src/agent/control_tests.rs
-@@ -966,7 +966,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
+@@ -992,7 +992,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
                  .session
                  .new_default_turn()
                  .await
@@ -132,8 +344,34 @@ index 2981b13b0a..5631a5072b 100644
                  .info()
                  .clone(),
          ),
+@@ -2438,6 +2438,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(
+         max_concurrency: 2,
+         wait_agent_enabled: false,
+         expose_model_overrides: false,
++        tool_namespace: None,
+     };
+     let parent_task = InterAgentCommunication::new(
+         AgentPath::root(),
+diff --git a/codex-rs/core/src/agent/types.rs b/codex-rs/core/src/agent/types.rs
+index 81dcd5354e..ee82bc075a 100644
+--- a/codex-rs/core/src/agent/types.rs
++++ b/codex-rs/core/src/agent/types.rs
+@@ -64,6 +64,13 @@ pub enum MessageDeliveryMode {
+ pub enum AgentMessage {
+     Plaintext(String),
+     Encrypted(String),
++    Routed {
++        message: Box<AgentMessage>,
++        routing_prompt: Option<String>,
++        inherited_model_provider: Option<String>,
++        requested_backend: Option<String>,
++        model_explicit: bool,
++    },
+ }
+ 
+ /// Holds a backend-owned reservation until the turn ends or is cancelled.
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 9e4cf7df6f..355137fce1 100644
+index 1c5b49353a..f2e2f15935 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -26,6 +26,7 @@
@@ -144,7 +382,7 @@ index 9e4cf7df6f..355137fce1 100644
  use std::sync::Arc;
  use std::sync::Mutex as StdMutex;
  use std::sync::OnceLock;
-@@ -82,6 +83,7 @@ use codex_protocol::ThreadId;
+@@ -84,6 +85,7 @@ use codex_protocol::ThreadId;
  use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
  use codex_protocol::config_types::Verbosity as VerbosityConfig;
  use codex_protocol::models::ResponseItem;
@@ -152,7 +390,7 @@ index 9e4cf7df6f..355137fce1 100644
  use codex_protocol::openai_models::ModelInfo;
  use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
  use codex_protocol::protocol::AuthRecoveryEvent;
-@@ -140,6 +142,7 @@ use codex_model_provider::create_model_provider;
+@@ -145,6 +147,7 @@ use codex_model_provider::create_model_provider;
  #[cfg(test)]
  use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
  use codex_model_provider_info::ModelProviderInfo;
@@ -160,7 +398,16 @@ index 9e4cf7df6f..355137fce1 100644
  use codex_model_provider_info::WireApi;
  use codex_protocol::error::CodexErr;
  use codex_protocol::error::Result;
-@@ -281,6 +284,8 @@ pub struct ModelClientSession {
+@@ -198,7 +201,7 @@ fn session_telemetry_for_request(
+ struct ModelClientState {
+     thread_id: ThreadId,
+     provider: SharedModelProvider,
+-    workspace_routing: WorkspaceRoutingContext,
++    workspace_routing: Arc<WorkspaceRoutingContext>,
+     auth_env_telemetry: AuthEnvTelemetry,
+     session_source: SessionSource,
+     originator: String,
+@@ -296,6 +299,8 @@ pub struct ModelClientSession {
      /// appends, or continuation requests), and must not send it between different turns.
      /// An auth ownership change clears it so the new owner gets fresh routing state.
      turn_state: Arc<OnceLock<String>>,
@@ -169,8 +416,8 @@ index 9e4cf7df6f..355137fce1 100644
  }
  
  #[derive(Debug, Clone)]
-@@ -301,6 +306,139 @@ struct WebsocketSession {
-     connection_reused: StdMutex<bool>,
+@@ -324,6 +329,147 @@ struct WebsocketSession {
+     continuation_reset_reason: Option<&'static str>,
  }
  
 +/// Remove provider-owned state at the final shared request boundary.
@@ -248,8 +495,6 @@ index 9e4cf7df6f..355137fce1 100644
 +                | ResponseItem::ToolSearchOutput { .. }
 +                | ResponseItem::WebSearchCall { .. }
 +                | ResponseItem::ImageGenerationCall { .. }
-+                | ResponseItem::Compaction { .. }
-+                | ResponseItem::ContextCompaction { .. }
 +                | ResponseItem::AgentMessage { .. } => false,
 +                ResponseItem::CustomToolCall { name, .. } => name == "apply_patch",
 +                ResponseItem::CustomToolCallOutput { call_id, .. } => {
@@ -258,7 +503,12 @@ index 9e4cf7df6f..355137fce1 100644
 +                _ => true,
 +            });
 +            for item in input.iter_mut() {
-+                item.set_id(None);
++                if !matches!(
++                    item,
++                    ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
++                ) {
++                    item.set_id(None);
++                }
 +            }
 +        }
 +        None if provider.is_openai() => {
@@ -282,7 +532,9 @@ index 9e4cf7df6f..355137fce1 100644
 +                    id.as_ref().is_some_and(|id| id.starts_with("encitem_"))
 +                        && content.as_ref().is_none_or(Vec::is_empty)
 +                }
-+                ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. } => false,
++                // Same-provider compaction is the surviving conversation memory.
++                // Foreign/unattributed ciphertext was filtered above, before IDs
++                // are normalized. Tool compatibility is not an ownership boundary.
 +                _ => true,
 +            });
 +            for item in input.iter_mut() {
@@ -297,6 +549,9 @@ index 9e4cf7df6f..355137fce1 100644
 +                    item,
 +                    ResponseItem::Reasoning { id: Some(id), .. }
 +                        if id.starts_with("encitem_")
++                ) || matches!(
++                    item,
++                    ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
 +                );
 +                if !preserve_affinity_id {
 +                    item.set_id(None);
@@ -307,9 +562,18 @@ index 9e4cf7df6f..355137fce1 100644
 +}
 +
  // This is intentionally not a `PartialEq` implementation: request equality includes `input` and
- // `client_metadata`, while websocket reuse compares the input separately and ignores metadata.
+ // `client_metadata`, while websocket reuse compares input and late tool-result metadata separately.
  // Access programs are authorized per response, including continuations, without replaying input.
-@@ -536,9 +674,63 @@ impl ModelClient {
+@@ -509,7 +655,7 @@ impl ModelClient {
+             state: Arc::new(ModelClientState {
+                 thread_id,
+                 provider: model_provider,
+-                workspace_routing,
++                workspace_routing: Arc::new(workspace_routing),
+                 auth_env_telemetry,
+                 session_source,
+                 originator,
+@@ -598,9 +744,66 @@ impl ModelClient {
              client: self.clone(),
              websocket_session,
              turn_state: Arc::new(OnceLock::new()),
@@ -333,11 +597,13 @@ index 9e4cf7df6f..355137fce1 100644
 +            state: Arc::new(ModelClientState {
 +                thread_id: self.state.thread_id,
 +                provider,
++                workspace_routing: self.state.workspace_routing.clone(),
 +                auth_env_telemetry,
 +                session_source: self.state.session_source.clone(),
 +                originator: self.state.originator.clone(),
 +                model_verbosity: self.state.model_verbosity,
 +                content_item_kinds_enabled: self.state.content_item_kinds_enabled,
++                reasoning_effort_override_enabled: self.state.reasoning_effort_override_enabled,
 +                enable_request_compression: self.state.enable_request_compression,
 +                include_timing_metrics: self.state.include_timing_metrics,
 +                beta_features_header: self.state.beta_features_header.clone(),
@@ -352,9 +618,10 @@ index 9e4cf7df6f..355137fce1 100644
 +            }),
 +            agent_identity_policy: self.agent_identity_policy,
 +            prompt_cache_key_override: self.prompt_cache_key_override.clone(),
-+            free_guardian_enabled: self.free_guardian_enabled,
++            codex_responses_headers: self.codex_responses_headers.clone(),
 +            event_sender: self.event_sender.clone(),
 +            http_client_factory: self.http_client_factory.clone(),
++            restored_history: self.restored_history,
 +        };
 +        client.new_session()
 +    }
@@ -373,7 +640,7 @@ index 9e4cf7df6f..355137fce1 100644
      pub(crate) fn auth_manager(&self) -> Option<Arc<AuthManager>> {
          self.state.provider.auth_manager()
      }
-@@ -919,7 +1111,18 @@ impl ModelClient {
+@@ -1004,7 +1207,18 @@ impl ModelClient {
          }
      }
  
@@ -393,7 +660,7 @@ index 9e4cf7df6f..355137fce1 100644
          for item in input {
              if item.id().is_some_and(|id| !id.is_prefixed()) {
                  item.set_id(/*new_id*/ None);
-@@ -1568,8 +1771,11 @@ impl ModelClientSession {
+@@ -1698,8 +1912,11 @@ impl ModelClientSession {
                  client_setup.auth.as_ref(),
                  prompt.cyber_access_program,
              );
@@ -407,7 +674,7 @@ index 9e4cf7df6f..355137fce1 100644
              if crate::guardian::is_basic_session_source(&self.client.state.session_source) {
                  crate::guardian::observe_guardian_request(session_telemetry, &request);
              }
-@@ -1774,6 +1980,11 @@ impl ModelClientSession {
+@@ -1911,6 +2128,11 @@ impl ModelClientSession {
              if let Some(turn_state) = self.turn_state.get() {
                  client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
              }
@@ -416,11 +683,11 @@ index 9e4cf7df6f..355137fce1 100644
 +                &self.foreign_provider_state_ids,
 +                self.strip_unattributed_provider_state,
 +            );
-             let (incremental_request, previous_response_id_from_untraced_warmup) =
-                 self.prepare_websocket_request(&request);
-             let inference_trace_attempt = if warmup {
-@@ -1794,20 +2005,13 @@ impl ModelClientSession {
-                 Some((response_id, items)) => (Some(response_id), Some(items)),
+             let continuation = self.prepare_websocket_request(&request);
+             let (mode, reason) = if continuation.is_some() {
+                 ("incremental", "incremental")
+@@ -1949,20 +2171,13 @@ impl ModelClientSession {
+                 Some(continuation) => (Some(continuation.response_id), Some(continuation.items)),
                  None => (None, None),
              };
 -            let original_item_ids = if let Some(incremental_items) = &mut incremental_items {
@@ -447,7 +714,7 @@ index 9e4cf7df6f..355137fce1 100644
              let mut ws_payload = ResponseCreateWsRequest {
                  previous_response_id,
                  input: incremental_items.as_deref().unwrap_or(&request.input),
-@@ -1843,11 +2047,6 @@ impl ModelClientSession {
+@@ -2007,11 +2222,6 @@ impl ModelClientSession {
                      Some(Arc::clone(&self.turn_state)),
                  )
                  .await;
@@ -460,7 +727,7 @@ index 9e4cf7df6f..355137fce1 100644
              self.websocket_session.last_response_from_untraced_warmup = warmup;
              let stream_result = stream_result.map_err(|err| {
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index 8936f5afab..d486174867 100644
+index 24b785a6fa..a0ab5775d5 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
 @@ -8,6 +8,7 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
@@ -471,7 +738,7 @@ index 8936f5afab..d486174867 100644
  use crate::AttestationContext;
  use crate::AttestationProvider;
  use crate::GenerateAttestationFuture;
-@@ -34,15 +35,18 @@ use codex_model_provider::SharedModelProvider;
+@@ -34,14 +35,17 @@ use codex_model_provider::SharedModelProvider;
  use codex_model_provider::create_model_provider;
  use codex_model_provider_info::CHATGPT_CODEX_BASE_URL;
  use codex_model_provider_info::ModelProviderInfo;
@@ -485,11 +752,10 @@ index 8936f5afab..d486174867 100644
  use codex_protocol::auth::AuthMode;
  use codex_protocol::error::CodexErr;
  use codex_protocol::error::CodexErrorDetails;
- use codex_protocol::models::BaseInstructions;
 +use codex_protocol::models::AgentMessageInputContent;
+ use codex_protocol::models::BaseInstructions;
  use codex_protocol::models::ContentItem;
  use codex_protocol::models::ExecutedToolCall;
- use codex_protocol::models::FunctionCallOutputPayload;
 @@ -69,6 +73,7 @@ use futures::StreamExt;
  use pretty_assertions::assert_eq;
  use serde_json::json;
@@ -498,10 +764,74 @@ index 8936f5afab..d486174867 100644
  use std::collections::VecDeque;
  use std::path::PathBuf;
  use std::pin::Pin;
-@@ -78,6 +83,151 @@ use std::sync::atomic::AtomicUsize;
+@@ -78,6 +83,215 @@ use std::sync::atomic::AtomicUsize;
  use std::sync::atomic::Ordering;
  use std::task::Context;
  use std::task::Poll;
++
++#[test]
++fn compaction_survives_same_provider_but_not_provider_or_account_switch() {
++    let azure = ModelProviderInfo {
++        name: "azure".to_string(),
++        base_url: Some("https://resource.openai.azure.com/openai/v1".to_string()),
++        ..Default::default()
++    };
++    let mut restricted = azure.clone();
++    restricted.tool_compatibility = Some(ToolCompatibility::FunctionsAndApplyPatch);
++    let openai = ModelProviderInfo::create_openai_provider(None);
++    for provider in [azure, restricted, openai] {
++        for checkpoint in [
++            ResponseItem::Compaction {
++                id: Some(ResponseItemId::with_suffix("cmp", "checkpoint")),
++                encrypted_content: "same-provider-memory".to_string(),
++                internal_chat_message_metadata_passthrough: None,
++            },
++            ResponseItem::ContextCompaction {
++                id: Some(ResponseItemId::with_suffix("cmp", "checkpoint")),
++                encrypted_content: Some("same-provider-memory".to_string()),
++                internal_chat_message_metadata_passthrough: None,
++            },
++        ] {
++            // Also cover tool continuations after a mixed-provider turn: a new
++            // destination checkpoint must survive even while old state is stripped.
++            for mixed_history in [false, true] {
++                let mut input = vec![checkpoint.clone()];
++                normalize_response_items_for_provider(
++                    &mut input,
++                    &provider,
++                    &HashSet::new(),
++                    mixed_history,
++                );
++                // Websocket continuation preparation also normalizes its delta.
++                normalize_response_items_for_provider(
++                    &mut input,
++                    &provider,
++                    &HashSet::new(),
++                    mixed_history,
++                );
++                assert_eq!(input.len(), 1);
++                input[0].set_id(None);
++                let mut expected = checkpoint.clone();
++                expected.set_id(None);
++                assert_eq!(input, vec![expected]);
++            }
++            // Provider/profile switches mark the prior checkpoint as foreign.
++            let mut input = vec![checkpoint.clone()];
++            let foreign = HashSet::from([checkpoint.id().unwrap().clone()]);
++            normalize_response_items_for_provider(&mut input, &provider, &foreign, true);
++            assert!(input.is_empty());
++
++            let mut unattributed = checkpoint;
++            unattributed.set_id(None);
++            let mut input = vec![unattributed.clone()];
++            normalize_response_items_for_provider(&mut input, &provider, &HashSet::new(), false);
++            assert_eq!(input, vec![unattributed.clone()]);
++            let mut input = vec![unattributed];
++            normalize_response_items_for_provider(&mut input, &provider, &HashSet::new(), true);
++            assert!(input.is_empty());
++        }
++    }
++}
 +
 +#[test]
 +fn final_request_boundary_drops_third_party_encrypted_state() {
@@ -651,10 +981,10 @@ index 8936f5afab..d486174867 100644
  use tempfile::TempDir;
  use tokio::sync::Notify;
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
-index 76c5ad7df9..80b8f0746b 100644
+index 88ced2da01..1e03ae166b 100644
 --- a/codex-rs/core/src/codex_thread.rs
 +++ b/codex-rs/core/src/codex_thread.rs
-@@ -228,6 +228,12 @@ impl CodexThread {
+@@ -232,6 +232,12 @@ impl CodexThread {
          self.io.submit(op).await
      }
  
@@ -668,18 +998,18 @@ index 76c5ad7df9..80b8f0746b 100644
      pub fn session_telemetry(&self) -> SessionTelemetry {
          self.session.services.session_telemetry.clone()
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 77e28b85e5..a86d344377 100644
+index e102da28b4..d16c78aaee 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
-@@ -86,6 +86,7 @@ pub(crate) struct CompactedHistoryMetadata {
-     pub(crate) window_ids: AutoCompactWindowIds,
+@@ -87,6 +87,7 @@ pub(crate) struct CompactedHistoryMetadata {
      pub(crate) compaction_response_id: Option<String>,
      pub(crate) compaction_model_hash: Option<String>,
+     pub(crate) reviewer_compaction_hash: Option<String>,
 +    pub(crate) model_provider_id: String,
  }
  
  pub(crate) async fn build_compaction_initial_context(
-@@ -112,11 +113,13 @@ pub(crate) async fn build_compaction_initial_context(
+@@ -113,11 +114,13 @@ pub(crate) async fn build_compaction_initial_context(
  
  pub(crate) async fn run_inline_auto_compact_task(
      sess: Arc<Session>,
@@ -694,7 +1024,7 @@ index 77e28b85e5..a86d344377 100644
      let prompt = turn_context
          .config
          .compact_prompt
-@@ -132,6 +135,8 @@ pub(crate) async fn run_inline_auto_compact_task(
+@@ -133,6 +136,8 @@ pub(crate) async fn run_inline_auto_compact_task(
      run_compact_task_inner(
          sess,
          turn_context,
@@ -703,7 +1033,7 @@ index 77e28b85e5..a86d344377 100644
          input,
          initial_context_injection,
          CompactionTrigger::Auto,
-@@ -148,9 +153,15 @@ pub(crate) async fn run_compact_task(
+@@ -149,9 +154,15 @@ pub(crate) async fn run_compact_task(
      input: Vec<UserInput>,
  ) -> CodexResult<()> {
      sess.emit_turn_started(&turn_context).await;
@@ -719,7 +1049,7 @@ index 77e28b85e5..a86d344377 100644
          input,
          InitialContextInjection::DoNotInject,
          CompactionTrigger::Manual,
-@@ -164,6 +175,8 @@ pub(crate) async fn run_compact_task(
+@@ -165,6 +176,8 @@ pub(crate) async fn run_compact_task(
  async fn run_compact_task_inner(
      sess: Arc<Session>,
      turn_context: Arc<TurnContext>,
@@ -728,7 +1058,7 @@ index 77e28b85e5..a86d344377 100644
      input: Vec<UserInput>,
      initial_context_injection: InitialContextInjection,
      trigger: CompactionTrigger,
-@@ -200,6 +213,8 @@ async fn run_compact_task_inner(
+@@ -201,6 +214,8 @@ async fn run_compact_task_inner(
      let result = run_compact_task_inner_impl(
          Arc::clone(&sess),
          Arc::clone(&turn_context),
@@ -737,7 +1067,7 @@ index 77e28b85e5..a86d344377 100644
          input,
          initial_context_injection,
          compaction_metadata,
-@@ -235,6 +250,8 @@ async fn run_compact_task_inner(
+@@ -250,6 +265,8 @@ async fn run_compact_task_inner(
  async fn run_compact_task_inner_impl(
      sess: Arc<Session>,
      turn_context: Arc<TurnContext>,
@@ -746,7 +1076,7 @@ index 77e28b85e5..a86d344377 100644
      input: Vec<UserInput>,
      initial_context_injection: InitialContextInjection,
      compaction_metadata: CompactionTurnMetadata,
-@@ -245,14 +262,17 @@ async fn run_compact_task_inner_impl(
+@@ -260,14 +277,17 @@ async fn run_compact_task_inner_impl(
      let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
  
      let mut history = sess.clone_history().await;
@@ -767,9 +1097,9 @@ index 77e28b85e5..a86d344377 100644
      // Reuse one client session so turn-scoped state (sticky routing, websocket incremental
      // request tracking)
      // survives retries within this compact turn.
-@@ -262,9 +282,7 @@ async fn run_compact_task_inner_impl(
+@@ -277,9 +297,7 @@ async fn run_compact_task_inner_impl(
  
-     let compaction_response_id = loop {
+     let compaction_response = loop {
          // Clone is required because of the loop
 -        let mut turn_input = history
 -            .clone()
@@ -777,8 +1107,8 @@ index 77e28b85e5..a86d344377 100644
 +        let mut turn_input = history.clone().for_prompt(&model_info.input_modalities);
          sess.services
              .executed_tool_calls
-             .strip_disabled_direct_metadata(&mut turn_input);
-@@ -277,7 +295,8 @@ async fn run_compact_task_inner_impl(
+             .attach_to_compaction_prompt(&mut turn_input);
+@@ -292,7 +310,8 @@ async fn run_compact_task_inner_impl(
          let attempt_result = drain_to_completed(
              &sess,
              turn_context.as_ref(),
@@ -787,25 +1117,27 @@ index 77e28b85e5..a86d344377 100644
 +            request_step_context.as_deref(),
              &responses_metadata,
              &prompt,
-         )
-@@ -387,7 +406,8 @@ async fn run_compact_task_inner_impl(
+             compaction_metadata.phase(),
+@@ -396,8 +415,9 @@ async fn run_compact_task_inner_impl(
              window_number,
              window_ids,
-             compaction_response_id: Some(compaction_response_id),
+             compaction_response_id: Some(compaction_response.response_id),
 -            compaction_model_hash: turn_context.model_info().comp_hash.clone(),
 +            compaction_model_hash: model_info.comp_hash.clone(),
+             reviewer_compaction_hash: None,
 +            model_provider_id: turn_context.model_provider_id(),
          },
      )
      .await;
-@@ -757,21 +777,34 @@ async fn drain_to_completed(
+@@ -772,22 +792,35 @@ async fn drain_to_completed(
      sess: &Session,
      turn_context: &TurnContext,
      client_session: &mut ModelClientSession,
 +    request_step_context: Option<&StepContext>,
      responses_metadata: &CodexResponsesMetadata,
      prompt: &Prompt,
- ) -> CodexResult<String> {
+     phase: CompactionPhase,
+ ) -> CodexResult<CompactionResponse> {
 +    let (model_info, session_telemetry, request_settings) = request_step_context
 +        .map(|step_context| {
 +            (
@@ -842,20 +1174,20 @@ index 77e28b85e5..a86d344377 100644
              responses_metadata,
              // Rollout tracing currently models remote compaction only; local compaction streams
              // are left untraced until the reducer has a first-class local compaction lifecycle.
-@@ -789,7 +822,7 @@ async fn drain_to_completed(
-             Ok(ResponseEvent::OutputItemDone(item)) => {
-                 sess.record_conversation_items(
-                     turn_context,
--                    turn_context.model_info(),
-+                    model_info,
-                     std::slice::from_ref(&item),
-                 )
-                 .await;
+@@ -811,7 +844,7 @@ async fn drain_to_completed(
+                 } else {
+                     sess.record_conversation_items(
+                         turn_context,
+-                        turn_context.model_info(),
++                        model_info,
+                         std::slice::from_ref(&item),
+                     )
+                     .await;
 diff --git a/codex-rs/core/src/compact_remote_v2.rs b/codex-rs/core/src/compact_remote_v2.rs
-index b367ba4bea..ae219e3e1a 100644
+index a6436d15f7..51e1c44ab5 100644
 --- a/codex-rs/core/src/compact_remote_v2.rs
 +++ b/codex-rs/core/src/compact_remote_v2.rs
-@@ -230,7 +230,7 @@ async fn run_remote_compact_task_inner_impl(
+@@ -235,7 +235,7 @@ async fn run_remote_compact_task_inner_impl(
          turn_context.sub_id.as_str(),
          compaction_id.as_str(),
          turn_context.model_info().slug.as_str(),
@@ -864,7 +1196,7 @@ index b367ba4bea..ae219e3e1a 100644
      );
      let compaction_item = TurnItem::ContextCompaction(context_compaction_item);
      sess.emit_turn_item_started(turn_context, &compaction_item)
-@@ -262,7 +262,7 @@ async fn run_remote_compact_task_inner_impl(
+@@ -267,7 +267,7 @@ async fn run_remote_compact_task_inner_impl(
                      fallback_turn_context.sub_id.as_str(),
                      compaction_id.as_str(),
                      fallback_turn_context.model_info().slug.as_str(),
@@ -873,15 +1205,15 @@ index b367ba4bea..ae219e3e1a 100644
                  );
              let fallback_result = run_remote_compact_v2_attempt(
                  sess,
-@@ -347,6 +347,7 @@ async fn run_remote_compact_task_inner_impl(
-             window_ids: new_window_ids,
+@@ -368,6 +368,7 @@ async fn run_remote_compact_task_inner_impl(
              compaction_response_id: Some(compaction_response_id),
              compaction_model_hash: compaction_turn_context.model_info().comp_hash.clone(),
+             reviewer_compaction_hash,
 +            model_provider_id: compaction_turn_context.model_provider_id(),
          },
      )
      .await;
-@@ -372,7 +373,7 @@ async fn run_remote_compaction_request_v2(
+@@ -393,7 +394,7 @@ async fn run_remote_compaction_request_v2(
  ) -> CodexResult<RemoteCompactionV2Output> {
      let turn_context = &step_context.turn;
      let max_retries = turn_context
@@ -891,10 +1223,10 @@ index b367ba4bea..ae219e3e1a 100644
          .stream_max_retries()
          .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
 diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
-index cafb0ff6fe..22479fed4b 100644
+index 0bf3dcf638..c9e57a0df6 100644
 --- a/codex-rs/core/src/config/config_tests.rs
 +++ b/codex-rs/core/src/config/config_tests.rs
-@@ -11758,6 +11758,10 @@ enabled = true
+@@ -11936,6 +11936,10 @@ enabled = true
          config.multi_agent_v2,
          resolve_multi_agent_v2_config(&ConfigToml::default())
      );
@@ -905,21 +1237,21 @@ index cafb0ff6fe..22479fed4b 100644
      assert_eq!(
          (
              config.agent_max_threads,
-@@ -11786,7 +11790,10 @@ max_concurrent_threads_per_session = 17
+@@ -11965,7 +11969,10 @@ max_concurrent_threads_per_session = 17
          let mut config = config.clone();
          config.wait_agent_enabled = wait_agent_enabled;
          let usage_hints = resolve_usage_hints(
--            &config, /*catalog*/ None, /*omit_update_plan_instructions*/ false,
+-            &config, messages, /*omit_update_plan_instructions*/ false,
 +            &config,
-+            /*catalog*/ None,
++            messages,
 +            /*omit_update_plan_instructions*/ false,
 +            ProviderCapabilities::default(),
          );
          for hint in [usage_hints.root, usage_hints.subagent] {
              let hint = hint.expect("default usage hints should be present").body();
-@@ -11805,10 +11812,45 @@ max_concurrent_threads_per_session = 17
-             subagent: Some(String::new()),
-         }),
+@@ -11984,10 +11991,45 @@ max_concurrent_threads_per_session = 17
+         &config,
+         empty_messages,
          /*omit_update_plan_instructions*/ false,
 +        ProviderCapabilities::default(),
      );
@@ -932,13 +1264,13 @@ index cafb0ff6fe..22479fed4b 100644
 +
 +    let namespaced = resolve_usage_hints(
 +        &config,
-+        /*catalog*/ None,
++        ResolvedModelMessages::bundled().multi_agent(),
 +        /*omit_update_plan_instructions*/ false,
 +        ProviderCapabilities::default(),
 +    );
 +    let direct = resolve_usage_hints(
 +        &config,
-+        /*catalog*/ None,
++        ResolvedModelMessages::bundled().multi_agent(),
 +        /*omit_update_plan_instructions*/ false,
 +        ProviderCapabilities {
 +            namespace_tools: false,
@@ -955,7 +1287,7 @@ index cafb0ff6fe..22479fed4b 100644
 +    }
 +    for hint in [direct.root, direct.subagent] {
 +        let hint = hint.expect("default usage hints should be present").body();
-+        assert!(hint.contains("to=functions.spawn_agent"));
++        assert!(hint.contains("to=functions.collaboration.spawn_agent"));
 +        assert!(!hint.contains("functions.agentroute_collaboration.spawn_agent"));
 +    }
 +}
@@ -963,47 +1295,51 @@ index cafb0ff6fe..22479fed4b 100644
  #[test]
  fn multi_agent_v2_model_override_exposure_preserves_configured_usage_hints() {
      let config_toml = toml::from_str(
-@@ -11838,6 +11880,7 @@ expose_spawn_agent_model_overrides = true
-             subagent: Some("Catalog subagent base.".to_string()),
-         }),
-         /*omit_update_plan_instructions*/ true,
+@@ -12014,7 +12056,10 @@ expose_spawn_agent_model_overrides = true
+     messages.root = ResolvedMessage::Catalog("Catalog root base.");
+     messages.subagent = ResolvedMessage::Catalog("Catalog subagent base.");
+     let usage_hints = resolve_usage_hints(
+-        &config, messages, /*omit_update_plan_instructions*/ true,
++        &config,
++        messages,
++        /*omit_update_plan_instructions*/ true,
 +        ProviderCapabilities::default(),
      );
      assert_eq!(
          (
-@@ -11859,11 +11902,17 @@ fn multi_agent_v2_exposes_model_overrides_by_default() {
-     let mut config = resolve_multi_agent_v2_config(&config_toml);
+@@ -12037,11 +12082,17 @@ fn multi_agent_v2_exposes_model_overrides_by_default() {
      assert!(config.expose_spawn_agent_model_overrides);
+     let messages = ResolvedModelMessages::bundled().multi_agent();
      let usage_hints = resolve_usage_hints(
--        &config, /*catalog*/ None, /*omit_update_plan_instructions*/ false,
+-        &config, messages, /*omit_update_plan_instructions*/ false,
 +        &config,
-+        /*catalog*/ None,
++        messages,
 +        /*omit_update_plan_instructions*/ false,
 +        ProviderCapabilities::default(),
      );
      config.expose_spawn_agent_model_overrides = false;
      let usage_hints_without_model_overrides = resolve_usage_hints(
--        &config, /*catalog*/ None, /*omit_update_plan_instructions*/ false,
+-        &config, messages, /*omit_update_plan_instructions*/ false,
 +        &config,
-+        /*catalog*/ None,
++        messages,
 +        /*omit_update_plan_instructions*/ false,
 +        ProviderCapabilities::default(),
      );
  
      for (hint, hint_without_model_overrides) in [
-@@ -11980,6 +12029,7 @@ subagent_usage_hint_text = ""
-             subagent: Some("catalog subagent".to_string()),
-         }),
+@@ -12158,6 +12209,7 @@ subagent_usage_hint_text = ""
+         &config.multi_agent_v2,
+         messages,
          /*omit_update_plan_instructions*/ false,
 +        ProviderCapabilities::default(),
      );
      assert_eq!(
          (
 diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
-index 12a1472ac4..eb295d825c 100644
+index e71ad88dde..9d9f812e99 100644
 --- a/codex-rs/core/src/config/mod.rs
 +++ b/codex-rs/core/src/config/mod.rs
-@@ -252,7 +252,7 @@ pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION: usiz
+@@ -253,7 +253,7 @@ pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION: usiz
  pub(crate) const DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
  pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
  pub(crate) const DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
@@ -1012,11 +1348,23 @@ index 12a1472ac4..eb295d825c 100644
  
  pub(crate) const HARD_MIN_MULTI_AGENT_V2_TIMEOUT_MS: i64 = 0;
  pub(crate) const HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS: i64 =
+diff --git a/codex-rs/core/src/context/world_state/multi_agent_mode_tests.rs b/codex-rs/core/src/context/world_state/multi_agent_mode_tests.rs
+index 21fe2f82b0..566aaf86c0 100644
+--- a/codex-rs/core/src/context/world_state/multi_agent_mode_tests.rs
++++ b/codex-rs/core/src/context/world_state/multi_agent_mode_tests.rs
+@@ -98,6 +98,7 @@ fn catalog_role_updates_remain_separate_from_active_mode() {
+         max_concurrency: 2,
+         wait_agent_enabled: false,
+         expose_model_overrides: false,
++        tool_namespace: None,
+     };
+     let previous_hint = MultiAgentUsageHintState::new(catalog_role("Previous role."));
+     let previous_mode =
 diff --git a/codex-rs/core/src/guardian/mod.rs b/codex-rs/core/src/guardian/mod.rs
-index a4e0e1429a..32c05a6b9a 100644
+index c8765943a5..b5a88d0e84 100644
 --- a/codex-rs/core/src/guardian/mod.rs
 +++ b/codex-rs/core/src/guardian/mod.rs
-@@ -23,6 +23,7 @@ mod runtime;
+@@ -24,6 +24,7 @@ mod runtime;
  pub(crate) mod test_host;
  
  use codex_protocol::items::ModelInvocationContext;
@@ -1024,7 +1372,7 @@ index a4e0e1429a..32c05a6b9a 100644
  use std::sync::Arc;
  
  use codex_protocol::config_types::ApprovalsReviewer;
-@@ -76,6 +77,31 @@ const GUARDIAN_MAX_TOOL_ENTRY_TOKENS: usize = codex_guardian_context::ContextPro
+@@ -72,6 +73,31 @@ const GUARDIAN_MAX_TOOL_ENTRY_TOKENS: usize = codex_guardian_context::ContextPro
  pub(crate) const GUARDIAN_MAX_ROOT_MESSAGE_TOKENS: usize = 900;
  pub(crate) const GUARDIAN_MAX_NODE_REPL_TOOL_RESULT_TOKENS: usize = 6_000;
  
@@ -1057,10 +1405,10 @@ index a4e0e1429a..32c05a6b9a 100644
  /// Background network approvals and Unix interception use the active task's resolved settings.
  /// Startup reviewer prewarming intentionally uses turn-only inputs because it has no issuing step.
 diff --git a/codex-rs/core/src/guardian/review.rs b/codex-rs/core/src/guardian/review.rs
-index fc7960d547..41cc35c537 100644
+index 56ae527025..9fc5f114ad 100644
 --- a/codex-rs/core/src/guardian/review.rs
 +++ b/codex-rs/core/src/guardian/review.rs
-@@ -41,6 +41,7 @@ use super::GUARDIAN_REVIEWER_NAME;
+@@ -36,6 +36,7 @@ use super::GUARDIAN_REVIEWER_NAME;
  use super::GuardianApprovalRequest;
  use super::GuardianAssessmentOutcome;
  use super::GuardianReviewContext;
@@ -1068,62 +1416,23 @@ index fc7960d547..41cc35c537 100644
  use super::approval_request::format_guardian_action_pretty;
  use super::approval_request::guardian_assessment_action;
  use super::approval_request::guardian_request_target_item_id;
-@@ -225,7 +226,25 @@ pub(super) async fn guardian_review_session_config(
-             turn.config.http_client_factory(),
-         )
-         .await;
--    let default_review_model_id = turn.provider.approval_review_preferred_model();
+@@ -143,8 +144,12 @@ pub(super) async fn guardian_review_session_config(
+         .get::<codex_guardian_reviewer::ReviewerConfig<crate::config::Config>>()
+         .ok_or_else(|| anyhow::anyhow!("Guardian reviewer configuration is not installed"))?;
+     let model_messages = ResolvedModelMessages::from_model(&guardian_model_info);
 +    let provider = turn.model_provider();
-+    let uses_openai_reviewer = provider.info().is_openai();
-+    let provider_parent_model = if uses_openai_reviewer {
-+        None
-+    } else {
-+        let mut model = context.model_info.as_ref().clone();
-+        // Catalog metadata can advertise a backend-private reviewer model. A
-+        // compatible provider must keep review traffic on a model it serves.
-+        model.auto_review_model_override = provider.info().approval_review_model.clone();
-+        Some(model)
-+    };
-+    let review_parent_model = provider_parent_model
-+        .as_ref()
-+        .unwrap_or(context.model_info.as_ref());
-+    let default_review_model_id = if uses_openai_reviewer {
-+        provider.approval_review_preferred_model()
-+    } else {
-+        review_parent_model.slug.as_str()
-+    };
-     let codex_guardian_reviewer::ReviewModel {
-         model: guardian_model,
-         reasoning_effort: guardian_reasoning_effort,
-@@ -234,7 +253,7 @@ pub(super) async fn guardian_review_session_config(
-         model_overridden: guardian_review_model_overridden,
-         model_override: guardian_review_model_override,
-     } = codex_guardian_reviewer::select_review_model(
--        &context.model_info,
-+        review_parent_model,
-         context.reasoning_effort.as_ref(),
-         default_review_model_id,
-         &available_models,
-@@ -257,8 +276,15 @@ pub(super) async fn guardian_review_session_config(
-                     .await,
-             )
-         };
-+    // UserPromptSubmit routing updates the live turn provider after the immutable
-+    // turn configuration was captured. Guardian must inherit that routed provider,
-+    // not the stale provider from turn startup, or its review session can cross an
-+    // encryption authority while replaying provider-owned Responses state.
 +    let mut routed_parent_config = turn.config.as_ref().clone();
 +    routed_parent_config.model_provider_id = turn.model_provider_id();
 +    routed_parent_config.model_provider = provider.info().clone();
      let mut spawn_config = build_guardian_review_session_config(
--        turn.config.as_ref(),
-+        &routed_parent_config,
+-        (reviewer_config.0)(turn.config.as_ref())?,
++        (reviewer_config.0)(&routed_parent_config)?,
          live_network_config,
-         guardian_model.as_str(),
-         guardian_reasoning_effort.clone(),
-@@ -266,6 +292,23 @@ pub(super) async fn guardian_review_session_config(
+         review_model.model.as_str(),
+         review_model.reasoning_effort.clone(),
+@@ -152,6 +157,23 @@ pub(super) async fn guardian_review_session_config(
          context.personality,
-         guardian_model_info.model_messages.as_ref(),
+         model_messages,
      )?;
 +    if provider.info().tool_compatibility.is_some() {
 +        // Provider-compatible reviewers keep the same read-only Guardian authority, but expose
@@ -1145,7 +1454,7 @@ index fc7960d547..41cc35c537 100644
      if context.model_info.computer_use_review_required() {
          spawn_config
              .features
-@@ -312,6 +355,7 @@ pub(super) async fn guardian_review_session_config(
+@@ -191,6 +213,7 @@ pub(super) async fn guardian_review_session_config(
  async fn run_guardian_review_session_before_deadline(
      session: Arc<Session>,
      context: GuardianReviewContext,
@@ -1153,7 +1462,7 @@ index fc7960d547..41cc35c537 100644
      request: GuardianApprovalRequest,
      reasons: ApprovalRequestReasons,
      schema: serde_json::Value,
-@@ -341,6 +385,8 @@ async fn run_guardian_review_session_before_deadline(
+@@ -220,6 +243,8 @@ async fn run_guardian_review_session_before_deadline(
              GuardianReviewSessionParams {
                  parent_session: Arc::clone(&session),
                  parent_context: context.clone(),
@@ -1162,7 +1471,7 @@ index fc7960d547..41cc35c537 100644
                  parent_history: session.clone_history().await,
                  spawn_config: session_config.spawn_config,
                  node_repl_policy: session_config.node_repl_policy,
-@@ -405,6 +451,14 @@ async fn run_guardian_review_session_with_retry_before_deadline(
+@@ -279,6 +304,14 @@ async fn run_guardian_review_session_with_retry_before_deadline(
          run_guardian_review_session_before_deadline(
              Arc::clone(&session),
              context.clone(),
@@ -1178,12 +1487,12 @@ index fc7960d547..41cc35c537 100644
              reasons.clone(),
              schema.clone(),
 diff --git a/codex-rs/core/src/guardian/review_request.rs b/codex-rs/core/src/guardian/review_request.rs
-index ce6c9c3f64..edd23f5b6a 100644
+index 3ac5138301..b9c7ea4e8a 100644
 --- a/codex-rs/core/src/guardian/review_request.rs
 +++ b/codex-rs/core/src/guardian/review_request.rs
-@@ -1,10 +1,14 @@
- //! Captures and reports one review on the host's original action and authorization state.
- //! Guardian's extension owns orchestration; this adapter preserves event and evidence behavior.
+@@ -1,13 +1,19 @@
+ //! Captures a review on the host's original action and authorization state.
+ //! The extension chooses effects; this adapter supplies evidence, validation and publication.
  
 +use super::super::GuardianReviewerFallbackState;
 +use super::super::GuardianReviewerIdentity;
@@ -1193,10 +1502,15 @@ index ce6c9c3f64..edd23f5b6a 100644
  use codex_guardian_reviewer::ReviewHost;
  use codex_protocol::approvals::GuardianReviewReason;
 +use codex_protocol::protocol::CodexErrorInfo;
++use codex_protocol::protocol::WarningEvent;
  
  pub(in crate::guardian) struct PreparedApproval {
      request: GuardianApprovalRequest,
-@@ -18,6 +22,7 @@ pub(in crate::guardian) struct PreparedApproval {
++    turn: Arc<crate::session::turn_context::TurnContext>,
+     root_authorization_version: Option<GuardianAuthorizationVersion>,
+     user_message_revision: u64,
+     review_evidence: Option<(
+@@ -16,6 +22,7 @@ pub(in crate::guardian) struct PreparedApproval {
          GuardianAuthorizationVersion,
          Option<GuardianAuthorizationVersion>,
      )>,
@@ -1204,54 +1518,55 @@ index ce6c9c3f64..edd23f5b6a 100644
  }
  
  impl ReviewHost for super::super::runtime::ReviewRuntime {
-@@ -165,11 +170,28 @@ impl ReviewHost for super::super::runtime::ReviewRuntime {
-         drop(history);
-         Ok(PreparedApproval {
-             request,
--            turn,
-+            turn: Arc::clone(&turn),
-             report,
-             root_authorization_version,
-             user_message_revision,
-             review_evidence,
-+            reviewer_profiles: tokio::sync::Mutex::new(GuardianReviewerFallbackState {
-+                active: GuardianReviewerIdentity {
-+                    name: turn
+@@ -135,9 +142,27 @@ impl ReviewHost for super::super::runtime::ReviewRuntime {
+         Ok((
+             PreparedApproval {
+                 request,
++                turn: Arc::clone(&turn),
+                 root_authorization_version,
+                 user_message_revision,
+                 review_evidence,
++                reviewer_profiles: tokio::sync::Mutex::new(GuardianReviewerFallbackState {
++                    active: GuardianReviewerIdentity {
++                        name: turn
++                            .extension_data
++                            .get::<GuardianReviewerProfiles>()
++                            .and_then(|profiles| profiles.current_name.clone()),
++                        auth_manager: turn
++                            .model_provider()
++                            .auth_manager()
++                            .or_else(|| Some(Arc::clone(&session.services.auth_manager))),
++                    },
++                    fallbacks: turn
 +                        .extension_data
 +                        .get::<GuardianReviewerProfiles>()
-+                        .and_then(|profiles| profiles.current_name.clone()),
-+                    auth_manager: turn
-+                        .model_provider()
-+                        .auth_manager()
-+                        .or_else(|| Some(Arc::clone(&session.services.auth_manager))),
-+                },
-+                fallbacks: turn
-+                    .extension_data
-+                    .get::<GuardianReviewerProfiles>()
-+                    .map(|profiles| profiles.fallbacks.iter().cloned().collect())
-+                    .unwrap_or_default(),
-+            }),
-         })
-     }
- 
-@@ -178,16 +200,79 @@ impl ReviewHost for super::super::runtime::ReviewRuntime {
-         prepared: &PreparedApproval,
++                        .map(|profiles| profiles.fallbacks.iter().cloned().collect())
++                        .unwrap_or_default(),
++                }),
+             },
+             report,
+         ))
+@@ -149,9 +174,11 @@ impl ReviewHost for super::super::runtime::ReviewRuntime {
          deadline: Instant,
+         cancellation: &CancellationToken,
      ) -> (GuardianReviewOutcome, GuardianReviewAnalyticsResult) {
--        run_guardian_review_session_before_deadline(
 +        let reviewer = prepared.reviewer_profiles.lock().await.active.clone();
-+        let (outcome, analytics) = run_guardian_review_session_before_deadline(
+         let (mut outcome, analytics) = run_guardian_review_session_before_deadline(
              Arc::clone(&self.session),
              self.context.clone(),
 +            reviewer,
              prepared.request.clone(),
              self.reasons.clone(),
              guardian_output_schema(),
-             self.options.external_cancel.clone(),
-             deadline,
-         )
--        .await
-+        .await;
+@@ -179,11 +206,68 @@ impl ReviewHost for super::super::runtime::ReviewRuntime {
+                 || self.history_reset.is_cancelled()
+                 || cancellation.is_cancelled())
+         {
+-            // A completed approval cannot outlive the owning-session or root evidence
+-            // it evaluated, including when either changed before prompt construction.
+             outcome = GuardianReviewOutcome::Error(GuardianReviewError::Cancelled);
+         }
+-
 +        if !matches!(
 +            &outcome,
 +            GuardianReviewOutcome::Error(GuardianReviewError::Session {
@@ -1312,20 +1627,11 @@ index ce6c9c3f64..edd23f5b6a 100644
 +                analytics,
 +            );
 +        }
-+        (outcome, analytics)
+         (outcome, analytics)
      }
  
-     async fn complete(
-@@ -203,6 +288,7 @@ impl ReviewHost for super::super::runtime::ReviewRuntime {
-             root_authorization_version,
-             user_message_revision,
-             review_evidence,
-+            reviewer_profiles: _,
-         } = prepared;
-         let session = Arc::clone(&self.session);
-         if matches!(&outcome, GuardianReviewOutcome::Completed(assessment) if assessment.outcome == GuardianAssessmentOutcome::Allow)
 diff --git a/codex-rs/core/src/guardian/review_session.rs b/codex-rs/core/src/guardian/review_session.rs
-index 397f1eb635..c9201f50e1 100644
+index b186804af7..c7ea7cfec9 100644
 --- a/codex-rs/core/src/guardian/review_session.rs
 +++ b/codex-rs/core/src/guardian/review_session.rs
 @@ -98,6 +98,7 @@ use super::review::guardian_review_session_config;
@@ -1345,7 +1651,7 @@ index 397f1eb635..c9201f50e1 100644
      // Checkpoint selection and thread-owned prompt evidence must use the same history.
      pub(crate) parent_history: ContextManager,
      pub(crate) spawn_config: Config,
-@@ -208,6 +211,7 @@ pub struct GuardianReviewSessionReuseKey {
+@@ -203,6 +206,7 @@ pub struct GuardianReviewSessionReuseKey {
      zsh_path: Option<PathBuf>,
      features: ManagedFeatures,
      environment_ids: Vec<String>,
@@ -1353,7 +1659,7 @@ index 397f1eb635..c9201f50e1 100644
  }
  
  impl GuardianReviewSessionReuseKey {
-@@ -252,6 +256,7 @@ impl GuardianReviewSessionReuseKey {
+@@ -247,6 +251,7 @@ impl GuardianReviewSessionReuseKey {
              zsh_path: spawn_config.zsh_path.clone(),
              features: spawn_config.features.clone(),
              environment_ids: Vec::new(),
@@ -1362,10 +1668,10 @@ index 397f1eb635..c9201f50e1 100644
      }
  
 diff --git a/codex-rs/core/src/guardian/review_session_setup.rs b/codex-rs/core/src/guardian/review_session_setup.rs
-index edf191bfe0..5a40345479 100644
+index 5108bcd487..84055eadde 100644
 --- a/codex-rs/core/src/guardian/review_session_setup.rs
 +++ b/codex-rs/core/src/guardian/review_session_setup.rs
-@@ -10,6 +10,7 @@ pub struct PreparedGuardianContext {
+@@ -9,6 +9,7 @@ pub struct PreparedGuardianContext {
      parent: Arc<Session>,
      context: GuardianReviewContext,
      config: Config,
@@ -1373,7 +1679,7 @@ index edf191bfe0..5a40345479 100644
      context_policy: ReviewContextPolicy,
      key: GuardianReviewSessionReuseKey,
      parent_compaction: Option<ResponseItem>,
-@@ -21,6 +22,8 @@ impl PreparedGuardianContext {
+@@ -20,6 +21,8 @@ impl PreparedGuardianContext {
          parent: Arc<Session>,
          context: GuardianReviewContext,
          config: Config,
@@ -1406,8 +1712,8 @@ index edf191bfe0..5a40345479 100644
 +                    .unwrap_or_else(|| Arc::clone(&self.parent.services.auth_manager)),
                  agent_control: self.parent.services.agent_control.clone(),
                  originator: self.context.turn().originator.clone(),
-                 inherited_instructions: Some(self.parent.inherited_instructions().await),
-@@ -223,6 +231,8 @@ pub(super) async fn prepare_review(
+                 // Review the same applied instructions captured by the reuse key.
+@@ -220,6 +228,8 @@ pub(super) async fn prepare_review(
          Arc::clone(&params.parent_session),
          params.parent_context.clone(),
          params.spawn_config.clone(),
@@ -1416,7 +1722,7 @@ index edf191bfe0..5a40345479 100644
          &params.parent_history,
          &params.node_repl_policy,
          params.compaction_model_hash.as_deref(),
-@@ -251,13 +261,15 @@ pub(super) fn prepare_prewarm(
+@@ -248,13 +258,15 @@ pub(super) fn prepare_prewarm(
      turn: Arc<TurnContext>,
  ) -> BoxFuture<'static, anyhow::Result<PreparedGuardianContext>> {
      Box::pin(async move {
@@ -1434,27 +1740,27 @@ index edf191bfe0..5a40345479 100644
              &config.node_repl_policy,
              config.compaction_model_hash.as_deref(),
 diff --git a/codex-rs/core/src/guardian/review_session_tests.rs b/codex-rs/core/src/guardian/review_session_tests.rs
-index 6616a291b3..0ac5cc39cc 100644
+index eb9944e49e..5e241e01e2 100644
 --- a/codex-rs/core/src/guardian/review_session_tests.rs
 +++ b/codex-rs/core/src/guardian/review_session_tests.rs
-@@ -91,6 +91,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
-                 window_ids,
+@@ -96,6 +96,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
                  compaction_response_id: None,
                  compaction_model_hash: Some("matching".to_owned()),
+                 reviewer_compaction_hash: Some("matching".to_owned()),
 +                model_provider_id: turn.model_provider_id(),
              },
          )
          .await;
-@@ -222,6 +223,8 @@ async fn test_review_params() -> GuardianReviewSessionParams {
+@@ -228,6 +229,8 @@ async fn test_review_params() -> GuardianReviewSessionParams {
          parent_history: session.clone_history().await,
          parent_session: Arc::new(session),
          parent_context: GuardianReviewContext::from(Arc::new(turn)),
 +        reviewer_profile_name: None,
 +        reviewer_auth_manager: None,
          spawn_config,
-         node_repl_policy: GuardianNodeReplPolicy::from_model_messages(/*messages*/ None),
+         node_repl_policy: GuardianNodeReplPolicy::from_messages(ResolvedModelMessages::bundled()),
          request: GuardianApprovalRequest::ExecCommand {
-@@ -347,6 +350,14 @@ async fn guardian_review_session_config_change_invalidates_cached_session() {
+@@ -370,6 +373,14 @@ async fn guardian_review_session_config_change_invalidates_cached_session() {
          PathUri::from_abs_path(&cached_spawn_config.cwd)
      );
      assert_ne!(cached_reuse_key, next_reuse_key);
@@ -1469,11 +1775,52 @@ index 6616a291b3..0ac5cc39cc 100644
      assert_eq!(
          cached_reuse_key,
          GuardianReviewSessionReuseKey::from_spawn_config(
+diff --git a/codex-rs/core/src/guardian/reviewer_config.rs b/codex-rs/core/src/guardian/reviewer_config.rs
+index bd3a2f6288..55608ab1af 100644
+--- a/codex-rs/core/src/guardian/reviewer_config.rs
++++ b/codex-rs/core/src/guardian/reviewer_config.rs
+@@ -22,6 +22,8 @@ pub fn build_guardian_review_session_config(
+     personality: Option<codex_protocol::config_types::Personality>,
+     model_messages: ResolvedModelMessages<'_>,
+ ) -> anyhow::Result<Config> {
++    guardian_config.developer_instructions = None;
++    guardian_config.notify = None;
+     guardian_config.model = Some(active_model.to_owned());
+     guardian_config.model_reasoning_effort = reasoning_effort;
+     guardian_config.model_reasoning_summary = Some(reasoning_summary);
+@@ -76,9 +78,25 @@ pub(crate) async fn resolve_review_model(
+             turn.config.http_client_factory(),
+         )
+         .await;
+-    let default_review_model_id = turn.provider.approval_review_preferred_model();
++    let provider = turn.model_provider();
++    let uses_openai_reviewer = provider.info().is_openai();
++    let mut provider_parent_model = context.model_info.as_ref().clone();
++    if !uses_openai_reviewer {
++        provider_parent_model.auto_review_model_override =
++            provider.info().approval_review_model.clone();
++    }
++    let review_parent_model = if uses_openai_reviewer {
++        context.model_info.as_ref()
++    } else {
++        &provider_parent_model
++    };
++    let default_review_model_id = if uses_openai_reviewer {
++        provider.approval_review_preferred_model()
++    } else {
++        review_parent_model.slug.as_str()
++    };
+     let review_model = codex_guardian_reviewer::select_review_model(
+-        &context.model_info,
++        review_parent_model,
+         context.reasoning_effort.as_ref(),
+         default_review_model_id,
+         &available_models,
 diff --git a/codex-rs/core/src/guardian/tests.rs b/codex-rs/core/src/guardian/tests.rs
-index cf191851bf..6c0f97c900 100644
+index 544cf4112d..f45922ca20 100644
 --- a/codex-rs/core/src/guardian/tests.rs
 +++ b/codex-rs/core/src/guardian/tests.rs
-@@ -181,8 +181,10 @@ async fn guardian_test_session_turn_and_rx(
+@@ -178,8 +178,10 @@ async fn guardian_test_session_turn_and_rx(
      crate::guardian::test_host::install(&session, &config);
      let turn_mut = Arc::get_mut(&mut turn).expect("turn should be uniquely owned");
      turn_mut.config = Arc::clone(&config);
@@ -1486,7 +1833,7 @@ index cf191851bf..6c0f97c900 100644
  
      (session, turn, rx)
  }
-@@ -243,7 +245,10 @@ async fn guardian_test_session_and_turn_with_base_url(
+@@ -240,7 +242,10 @@ async fn guardian_test_session_and_turn_with_base_url(
      session.services.models_manager = models_manager;
      crate::guardian::test_host::install(&session, &config);
      turn.config = Arc::clone(&config);
@@ -1498,7 +1845,7 @@ index cf191851bf..6c0f97c900 100644
  
      (Arc::new(session), Arc::new(turn))
  }
-@@ -1988,7 +1993,10 @@ async fn guardian_request_model_for_auto_review(
+@@ -1929,7 +1934,10 @@ async fn guardian_request_model_for_auto_review(
          },
      );
      let parent_model = turn.model_info().slug.clone();
@@ -1510,7 +1857,7 @@ index cf191851bf..6c0f97c900 100644
      let parent_turn_id = turn.sub_id.clone();
      seed_guardian_parent_history(&session, &turn).await;
  
-@@ -2214,7 +2222,10 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
+@@ -2155,7 +2163,10 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
      )?;
      session.services.skills_service.clear_cache();
      turn.config = Arc::clone(&config);
@@ -1522,7 +1869,7 @@ index cf191851bf..6c0f97c900 100644
      update_turn_settings_for_test(&mut turn, |settings| {
          Arc::make_mut(&mut settings.model_info).auto_review_model_override =
              Some("codex-auto-review".to_string());
-@@ -3029,8 +3040,10 @@ async fn guardian_review_surfaces_responses_api_errors_in_rejection_reason() ->
+@@ -2933,8 +2944,10 @@ async fn guardian_review_surfaces_responses_api_errors_in_rejection_reason() ->
      crate::guardian::test_host::install(&session, &config);
      let turn_mut = Arc::get_mut(&mut turn).expect("turn should be uniquely owned");
      turn_mut.config = Arc::clone(&config);
@@ -1535,7 +1882,7 @@ index cf191851bf..6c0f97c900 100644
  
      seed_guardian_parent_history(&session, &turn).await;
  
-@@ -3917,6 +3930,52 @@ async fn guardian_review_session_config_preserves_context_overrides_for_same_eff
+@@ -3821,6 +3834,100 @@ async fn guardian_review_session_config_preserves_context_overrides_for_same_eff
      );
  }
  
@@ -1553,7 +1900,7 @@ index cf191851bf..6c0f97c900 100644
 +        ),
 +        ..Default::default()
 +    };
-+    let auth_manager = turn.auth_manager.clone();
++    let auth_manager = turn.model_provider().auth_manager();
 +    Arc::get_mut(&mut turn)
 +        .expect("turn should be unique")
 +        .set_model_provider(
@@ -1585,11 +1932,59 @@ index cf191851bf..6c0f97c900 100644
 +    assert!(!guardian_config.features.enabled(Feature::CodeModeHost));
 +}
 +
++#[tokio::test]
++async fn guardian_review_session_config_clears_parent_developer_instructions() {
++    let mut parent_config = test_config().await;
++    parent_config.developer_instructions =
++        Some("parent or managed config should not replace guardian policy".to_string());
++
++    let guardian_config = build_guardian_review_session_config_for_test(
++        parent_config,
++        /*live_network_config*/ None,
++        "active-model",
++        /*reasoning_effort*/ None,
++        ReasoningSummary::default(),
++        /*personality*/ None,
++        ResolvedModelMessages::bundled(),
++    )
++    .expect("guardian config");
++
++    assert_eq!(guardian_config.developer_instructions, None);
++    assert!(
++        guardian_config
++            .base_instructions
++            .as_deref()
++            .is_some_and(|text| !text.is_empty())
++    );
++}
++
++#[tokio::test]
++async fn guardian_review_session_config_clears_legacy_notify() {
++    let mut parent_config = test_config().await;
++    parent_config.notify = Some(vec![
++        "/path/to/notify".to_string(),
++        "turn-ended".to_string(),
++    ]);
++
++    let guardian_config = build_guardian_review_session_config_for_test(
++        parent_config,
++        /*live_network_config*/ None,
++        "active-model",
++        /*reasoning_effort*/ None,
++        ReasoningSummary::default(),
++        /*personality*/ None,
++        ResolvedModelMessages::bundled(),
++    )
++    .expect("guardian config");
++
++    assert_eq!(guardian_config.notify, None);
++}
++
  #[tokio::test]
- async fn guardian_review_session_config_clears_parent_developer_instructions() {
+ async fn guardian_review_session_config_uses_live_network_proxy_state() {
      let mut parent_config = test_config().await;
 diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
-index 4e276868ce..648d17a606 100644
+index e3407cd1d6..2ea985e13b 100644
 --- a/codex-rs/core/src/hook_runtime.rs
 +++ b/codex-rs/core/src/hook_runtime.rs
 @@ -29,11 +29,15 @@ use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
@@ -2120,10 +2515,10 @@ index 4e276868ce..648d17a606 100644
      async fn hook_lifecycle_notifications_hide_builtin_and_async_runs_but_preserve_metrics() {
          let metrics = MetricsClient::new(
 diff --git a/codex-rs/core/src/mcp_tool_call_tests.rs b/codex-rs/core/src/mcp_tool_call_tests.rs
-index 2e7fee3950..701c6a4453 100644
+index 34bd4b7816..4969a7e36f 100644
 --- a/codex-rs/core/src/mcp_tool_call_tests.rs
 +++ b/codex-rs/core/src/mcp_tool_call_tests.rs
-@@ -2629,9 +2629,12 @@ async fn guardian_mode_skips_auto_when_annotations_do_not_require_approval() {
+@@ -2799,9 +2799,12 @@ async fn guardian_mode_skips_auto_when_annotations_do_not_require_approval() {
      );
      session.services.models_manager = models_manager;
      turn_context.config = Arc::clone(&config);
@@ -2139,7 +2534,7 @@ index 2e7fee3950..701c6a4453 100644
      );
  
      let session = Arc::new(session);
-@@ -2941,9 +2944,12 @@ async fn strict_auto_review_forces_guardian_for_mcp_policy_skip() {
+@@ -3111,9 +3114,12 @@ async fn strict_auto_review_forces_guardian_for_mcp_policy_skip() {
      );
      session.services.models_manager = models_manager;
      turn_context.config = Arc::clone(&config);
@@ -2155,7 +2550,7 @@ index 2e7fee3950..701c6a4453 100644
      );
  
      let active_turn = ActiveTurn::default();
-@@ -3297,9 +3303,12 @@ async fn approve_mode_skips_guardian_in_every_permission_mode() {
+@@ -3467,9 +3473,12 @@ async fn approve_mode_skips_guardian_in_every_permission_mode() {
          );
          session.services.models_manager = models_manager;
          turn_context.config = Arc::clone(&config);
@@ -2172,10 +2567,10 @@ index 2e7fee3950..701c6a4453 100644
  
          let session = Arc::new(session);
 diff --git a/codex-rs/core/src/responses_retry.rs b/codex-rs/core/src/responses_retry.rs
-index 462bb95ba8..611aaa91e9 100644
+index 03acba415c..c498924627 100644
 --- a/codex-rs/core/src/responses_retry.rs
 +++ b/codex-rs/core/src/responses_retry.rs
-@@ -69,7 +69,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
+@@ -72,7 +72,7 @@ pub(crate) async fn handle_response_stream_error(
          && matches!(request, ResponsesStreamRequest::Sampling)
          && matches!(err.details(), CodexErrorDetails::ConnectionFailed(_))
          && !turn_context.session_source.is_internal()
@@ -2185,10 +2580,10 @@ index 462bb95ba8..611aaa91e9 100644
          let retry_delay = retry_state.connection_retry_delay;
          warn!(
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index affecf42d5..86847150d7 100644
+index a4b4ba0032..d8d54ade4f 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
-@@ -697,9 +697,16 @@ impl Session {
+@@ -711,9 +711,16 @@ impl Session {
          // 1. config.base_instructions override
          // 2. conversation history => session_meta.base_instructions
          // 3. rendered instructions_template for current model
@@ -2206,7 +2601,7 @@ index affecf42d5..86847150d7 100644
          let auth = auth_manager.auth_cached();
          // Forked subagents keep their parent's activation with the copied history.
          // Fresh children restore configured preferences before applying startup defaults.
-@@ -3591,6 +3598,11 @@ impl Session {
+@@ -3543,6 +3550,11 @@ impl Session {
          let policy: codex_utils_output_truncation::TruncationPolicy =
              model_info.truncation_policy.into();
          for envelope in &mut items {
@@ -2218,7 +2613,7 @@ index affecf42d5..86847150d7 100644
              if matches!(
                  envelope.item,
                  ResponseItem::FunctionCallOutput { .. } | ResponseItem::CustomToolCallOutput { .. }
-@@ -3986,6 +3998,11 @@ impl Session {
+@@ -3958,6 +3970,11 @@ impl Session {
      ) {
          for envelope in &mut items {
              Self::assign_missing_response_item_id(&mut envelope.item);
@@ -2228,17 +2623,17 @@ index affecf42d5..86847150d7 100644
 +                .model_provider_id
 +                .get_or_insert_with(|| metadata.model_provider_id.clone());
          }
-         if self.guardian_context_mode == GuardianContextMode::ThreadOwned
-             && let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
-@@ -4488,6 +4505,7 @@ impl Session {
-                 window_ids,
+         if let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
+             matches!(
+@@ -4461,6 +4478,7 @@ impl Session {
                  compaction_response_id: None,
                  compaction_model_hash: None,
+                 reviewer_compaction_hash: None,
 +                model_provider_id: turn_context.model_provider_id(),
              },
          )
          .await;
-@@ -4744,6 +4762,16 @@ impl Session {
+@@ -4717,6 +4735,16 @@ impl Session {
          }
      }
  
@@ -2256,51 +2651,28 @@ index affecf42d5..86847150d7 100644
          let state = self.state.lock().await;
          state.mcp_dependency_prompted()
 diff --git a/codex-rs/core/src/session/multi_agents.rs b/codex-rs/core/src/session/multi_agents.rs
-index 19d0cb95e5..d2ec0a7952 100644
+index 9cec8ae35a..223bc693c1 100644
 --- a/codex-rs/core/src/session/multi_agents.rs
 +++ b/codex-rs/core/src/session/multi_agents.rs
-@@ -1,6 +1,7 @@
+@@ -2,6 +2,7 @@ use crate::agent::types::ResolvedMultiAgentV2UsageHints;
  use crate::config::MultiAgentV2Config;
  use crate::context::MultiAgentRoleInstructions;
  use crate::session::step_context::StepContext;
 +use codex_model_provider::ProviderCapabilities;
- use codex_protocol::config_types::MultiAgentMode;
- use codex_protocol::openai_models::MultiAgentRoleMessages;
- use codex_protocol::openai_models::ReasoningEffort;
-@@ -50,13 +51,20 @@ You may also see them addressed as to=/root/..., which indicates your identity i
- const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"` or a positive integer string.";
- const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str =
-     "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
--const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
-+fn default_multi_agent_v2_shared_usage_hint_text(tool_namespace: Option<&str>) -> String {
-+    let spawn_agent_recipient = tool_namespace
-+        .map(|namespace| format!("functions.{namespace}.spawn_agent"))
-+        .unwrap_or_else(|| "functions.spawn_agent".to_string());
-+    format!(
-+        r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to={spawn_agent_recipient}`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
- 
- All agents share the same directory. In detail:
- - All agents have access to the same container and filesystem as you.
- - All agents use the same current working directory.
- - As a result, edits made by one agent are immediately visible to all other agents.
--"#;
-+"#
-+    )
-+}
- 
- #[derive(Clone, Debug, Default)]
- pub(crate) struct ResolvedMultiAgentV2UsageHints {
-@@ -84,6 +92,7 @@ pub(super) fn usage_hint_text(
+ use codex_prompts::ResolvedMessage;
+ use codex_prompts::ResolvedModelMessages;
+ use codex_prompts::ResolvedMultiAgentMessages;
+@@ -23,6 +24,7 @@ pub(super) fn usage_hint_text(step_context: &StepContext) -> Option<MultiAgentRo
          &turn_context.config.multi_agent_v2,
-         catalog,
+         multi_agent_messages,
          !turn_context.config.update_plan_enabled && turn_context.config.model_catalog.is_none(),
 +        turn_context.model_provider().capabilities(),
      );
-     match session_source {
+     match &turn_context.session_source {
          SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) => snapshot.subagent,
-@@ -101,7 +110,12 @@ pub(crate) fn resolve_usage_hints(
+@@ -40,7 +42,12 @@ pub(crate) fn resolve_usage_hints(
      config: &MultiAgentV2Config,
-     catalog: Option<&MultiAgentRoleMessages>,
+     multi_agent_messages: ResolvedMultiAgentMessages<'_>,
      omit_update_plan_instructions: bool,
 +    provider_capabilities: ProviderCapabilities,
  ) -> ResolvedMultiAgentV2UsageHints {
@@ -2308,25 +2680,22 @@ index 19d0cb95e5..d2ec0a7952 100644
 +        .namespace_tools
 +        .then_some(config.tool_namespace.as_deref())
 +        .flatten();
-     let resolve_role = |configured: Option<&str>, catalog: Option<&str>, bundled: &str| {
+     let resolve_role = |configured: Option<&str>, message: ResolvedMessage<'_>| {
          // Configured roles take precedence; empty configured or catalog roles suppress fallback.
          if let Some(configured) = configured {
-@@ -125,8 +139,9 @@ pub(crate) fn resolve_usage_hints(
-         } else {
-             String::new()
-         };
-+        let shared_usage_hint_text = default_multi_agent_v2_shared_usage_hint_text(tool_namespace);
-         let mut text = format!(
--            "{base}\n{DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT}\n{wait_agent_guidance}There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."
-+            "{base}\n{shared_usage_hint_text}\n{wait_agent_guidance}There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."
-         );
-         if config.expose_spawn_agent_model_overrides {
-             text.push_str("\n\n");
+@@ -59,6 +66,7 @@ pub(crate) fn resolve_usage_hints(
+             max_concurrency: config.max_concurrent_threads_per_session,
+             wait_agent_enabled: config.wait_agent_enabled,
+             expose_model_overrides: config.expose_spawn_agent_model_overrides,
++            tool_namespace: tool_namespace.map(str::to_owned),
+         })
+     };
+ 
 diff --git a/codex-rs/core/src/session/review.rs b/codex-rs/core/src/session/review.rs
-index ea078a451e..cfee96aca7 100644
+index df65e13704..3094b9bb9a 100644
 --- a/codex-rs/core/src/session/review.rs
 +++ b/codex-rs/core/src/session/review.rs
-@@ -42,7 +42,7 @@ pub(super) async fn spawn_review_thread(
+@@ -43,7 +43,7 @@ pub(super) async fn spawn_review_thread(
      );
  
      let review_prompt = resolved.prompt.clone();
@@ -2335,9 +2704,9 @@ index ea078a451e..cfee96aca7 100644
      let auth_manager = parent_turn_context.auth_manager.clone();
      let model_info = review_model_info.clone();
      let mut selected = parent_turn_context.initial_settings.selected().clone();
-@@ -150,7 +150,8 @@ pub(super) async fn spawn_review_thread(
-         disabled_plugin_ids: parent_turn_context.disabled_plugin_ids.clone(),
-         current_settings: ArcSwap::from(step_settings),
+@@ -167,7 +167,8 @@ pub(super) async fn spawn_review_thread(
+             environments: parent_turn_context.initial_environments.clone(),
+         }),
          session_telemetry: session_telemetry_for_context,
 -        provider: provider_for_context,
 +        provider: std::sync::RwLock::new(provider_for_context),
@@ -2346,16 +2715,17 @@ index ea078a451e..cfee96aca7 100644
          history_mode: parent_turn_context.history_mode,
          parent_thread_id: parent_turn_context.parent_thread_id,
 diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
-index 8dc090315a..e72b861acc 100644
+index 1086d937b8..31a96c0887 100644
 --- a/codex-rs/core/src/session/step_activation.rs
 +++ b/codex-rs/core/src/session/step_activation.rs
-@@ -12,12 +12,18 @@ use crate::context::GuardianNodeReplPolicy;
+@@ -11,13 +11,19 @@ use crate::config::Config;
+ use crate::config::ConstraintResult;
  use crate::exec_policy::AllowPrefixRules;
- use crate::guardian::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
  use codex_features::Feature;
 +use codex_login::AuthManager;
 +use codex_model_provider::create_model_provider;
 +use codex_model_provider_info::ToolCompatibility;
+ use codex_prompts::ResolvedModelMessages;
 +use codex_protocol::openai_models::ApplyPatchToolType;
  use codex_protocol::openai_models::GuardianV2ModelConfig;
  use codex_protocol::openai_models::GuardianV2TranscriptModelConfig;
@@ -2380,9 +2750,9 @@ index 8dc090315a..e72b861acc 100644
 +    // long as every model-owned authority checked below remains identical to
 +    // the admitted turn. The active model still requires trusted metadata.
      let retained_models = [admitted, current];
-     // guardian::review::record_guardian_denial still selects its circuit-breaker
+     // The Guardian reviewer extension still selects its circuit-breaker
      // policy from the admitted model's Cyber classification.
-@@ -233,13 +240,28 @@ impl Session {
+@@ -222,13 +229,28 @@ impl Session {
          clippy::await_holding_invalid_type,
          reason = "the final managed-policy check and active settings publication must remain atomic"
      )]
@@ -2412,7 +2782,7 @@ index 8dc090315a..e72b861acc 100644
              && update.effort.is_none()
              && update.summary.is_none()
              && update.service_tier.is_none();
-@@ -277,6 +299,77 @@ impl Session {
+@@ -266,6 +288,77 @@ impl Session {
              summary,
              service_tier,
          } = update;
@@ -2490,7 +2860,7 @@ index 8dc090315a..e72b861acc 100644
          let update = StepSettingsUpdate {
              approvals_reviewer,
              model,
-@@ -305,10 +398,17 @@ impl Session {
+@@ -294,10 +387,17 @@ impl Session {
          {
              return TurnSettingsUpdateOutcome::TargetUnavailable;
          }
@@ -2501,7 +2871,7 @@ index 8dc090315a..e72b861acc 100644
          };
 +        if let Some((_, tool_compatibility, _)) = requested_provider.as_ref() {
 +            destination.model_info = Arc::new(model_info_for_provider_compatibility(
-+                &current.model_info,
++                &current.settings.model_info,
 +                &destination.model_info,
 +                *tool_compatibility,
 +            ));
@@ -2509,17 +2879,17 @@ index 8dc090315a..e72b861acc 100644
          // Managed requirements can change during resolution. Keep the live
          // authorization and safety checks atomic with publication under state
          // and active_turn; no asynchronous preparation runs under these locks.
-@@ -341,6 +441,9 @@ impl Session {
-         task.turn_context
-             .current_settings
-             .store(Arc::new(destination));
+@@ -333,6 +433,9 @@ impl Session {
+                 settings: Arc::new(destination),
+                 environments: current.environments.clone(),
+             }));
 +        if let Some((provider_id, _, provider)) = requested_provider {
 +            task.turn_context.set_model_provider(provider_id, provider);
 +        }
          TurnSettingsUpdateOutcome::Applied
      }
  
-@@ -405,6 +508,34 @@ impl Session {
+@@ -396,6 +499,48 @@ impl Session {
      }
  }
  
@@ -2528,15 +2898,30 @@ index 8dc090315a..e72b861acc 100644
 +    destination: &ModelInfo,
 +    compatibility: Option<ToolCompatibility>,
 +) -> ModelInfo {
-+    // Start with the admitted metadata so a provider switch cannot change local
-+    // approval, Guardian, reviewer, or Node REPL authority. Only model identity
-+    // and wire-level tool capabilities are provider-specific here.
-+    let mut model_info = admitted.clone();
-+    model_info.slug.clone_from(&destination.slug);
++    // Limits, compaction policy, modalities and model guidance belong to the
++    // destination. Retain only the authority captured by the admitted turn:
++    // switching providers must not silently alter local approval requirements.
++    let mut model_info = destination.clone();
++    model_info.guardian.clone_from(&admitted.guardian);
 +    model_info
-+        .display_name
-+        .clone_from(&destination.display_name);
-+    model_info.description.clone_from(&destination.description);
++        .model_specialty
++        .clone_from(&admitted.model_specialty);
++    model_info.node_repl_auto_review_required = admitted.node_repl_auto_review_required;
++    model_info.node_repl_disabled = admitted.node_repl_disabled;
++    model_info
++        .auto_review_model_override
++        .clone_from(&admitted.auto_review_model_override);
++    if model_info.model_messages.is_some() || admitted.model_messages.is_some() {
++        let messages = model_info.model_messages.get_or_insert_default();
++        messages.auto_review = admitted
++            .model_messages
++            .as_ref()
++            .and_then(|m| m.auto_review.clone());
++        messages.guardian_v2 = admitted
++            .model_messages
++            .as_ref()
++            .and_then(|m| m.guardian_v2.clone());
++    }
 +    match compatibility {
 +        Some(ToolCompatibility::FunctionsAndApplyPatch) => {
 +            model_info.tool_mode = Some(ToolMode::Direct);
@@ -2547,7 +2932,6 @@ index 8dc090315a..e72b861acc 100644
 +        }
 +        None => {}
 +    }
-+    model_info.used_fallback_model_metadata = false;
 +    model_info
 +}
 +
@@ -2555,10 +2939,10 @@ index 8dc090315a..e72b861acc 100644
  #[path = "step_activation_tests.rs"]
  mod tests;
 diff --git a/codex-rs/core/src/session/step_activation_tests.rs b/codex-rs/core/src/session/step_activation_tests.rs
-index dcaa598eb6..9c9310a3cc 100644
+index 27b9a31d4b..4a2354dfa2 100644
 --- a/codex-rs/core/src/session/step_activation_tests.rs
 +++ b/codex-rs/core/src/session/step_activation_tests.rs
-@@ -24,6 +24,7 @@ use codex_extension_api::ThreadInstructionsProvider;
+@@ -23,6 +23,7 @@ use codex_extension_api::ThreadInstructionsProvider;
  use codex_extension_api::UserInstructionsProvider;
  use codex_http_client::HttpClientFactory;
  use codex_login::AuthManager;
@@ -2566,7 +2950,7 @@ index dcaa598eb6..9c9310a3cc 100644
  use codex_models_manager::ModelsManagerConfig;
  use codex_models_manager::bundled_models_response;
  use codex_models_manager::manager::ModelsManager;
-@@ -817,6 +818,85 @@ async fn delayed_activation_does_not_retarget_a_task(change: TaskChangeDuringLoo
+@@ -815,6 +816,85 @@ async fn delayed_activation_does_not_retarget_a_task(change: TaskChangeDuringLoo
      session.abort_all_tasks(TurnAbortReason::Replaced).await;
  }
  
@@ -2652,12 +3036,15 @@ index dcaa598eb6..9c9310a3cc 100644
  #[derive(Clone, Copy)]
  enum ManagedAuthorizationChange {
      ApprovalPolicy,
-@@ -1137,6 +1217,41 @@ fn parent_review_messages(model: &mut ModelInfo) -> &mut AutoReviewMessages {
+@@ -1135,6 +1215,108 @@ fn parent_review_messages(model: &mut ModelInfo) -> &mut AutoReviewMessages {
          })
  }
  
-+#[test]
-+fn provider_tool_compatibility_preserves_admitted_safety_authority() {
++#[test_case(None; "native_tools")]
++#[test_case(Some(ToolCompatibility::FunctionsAndApplyPatch); "function_tools")]
++fn provider_tool_compatibility_preserves_admitted_safety_authority(
++    compatibility: Option<ToolCompatibility>,
++) {
 +    let (mut admitted, mut destination) = safety_models();
 +    admitted.node_repl_disabled = true;
 +    admitted.auto_review_model_override = Some("reviewer-model".to_string());
@@ -2665,36 +3052,100 @@ index dcaa598eb6..9c9310a3cc 100644
 +    destination.slug = "external-model".to_string();
 +    destination.display_name = "External model".to_string();
 +    destination.used_fallback_model_metadata = true;
++    admitted.context_window = Some(272_000);
++    admitted.max_context_window = Some(272_000);
++    admitted.auto_compact_token_limit = Some(250_000);
++    destination.context_window = Some(128_000);
++    destination.max_context_window = Some(128_000);
++    destination.auto_compact_token_limit = Some(100_000);
++    destination.effective_context_window_percent = 80;
++    destination.comp_hash = Some("destination-compaction".to_string());
++    destination.input_modalities.truncate(1);
++    let messages = destination.model_messages.get_or_insert_default();
++    messages.instructions_template = Some("Destination model guidance".to_string());
++    messages.token_budget = Some(ModelTokenBudgetConfig {
++        enabled: true,
++        use_history_notes_extension: true,
++        reminder_threshold_tokens: 2_000,
++        reminder_message_template: "{n_remaining} tokens remain.".to_string(),
++        guidance_message: "Destination budget guidance".to_string(),
++        auto_compact_fallback_prompt: "Save destination state".to_string(),
++        auto_compact_fallback_buffer_tokens: 4_000,
++    });
 +
-+    let compatible = model_info_for_provider_compatibility(
-+        &admitted,
-+        &destination,
-+        Some(ToolCompatibility::FunctionsAndApplyPatch),
-+    );
++    let compatible = model_info_for_provider_compatibility(&admitted, &destination, compatibility);
 +
 +    assert_eq!(compatible.slug, destination.slug);
 +    assert_eq!(compatible.display_name, destination.display_name);
 +    assert_eq!(compatible.guardian, admitted.guardian);
-+    assert_eq!(compatible.model_messages, admitted.model_messages);
++    assert_eq!(
++        compatible
++            .model_messages
++            .as_ref()
++            .and_then(|m| m.auto_review.as_ref()),
++        admitted
++            .model_messages
++            .as_ref()
++            .and_then(|m| m.auto_review.as_ref())
++    );
++    assert_eq!(compatible.context_window, destination.context_window);
++    assert_eq!(
++        compatible.max_context_window,
++        destination.max_context_window
++    );
++    assert_eq!(
++        compatible.auto_compact_token_limit,
++        destination.auto_compact_token_limit
++    );
++    assert_eq!(
++        compatible.effective_context_window_percent,
++        destination.effective_context_window_percent
++    );
++    assert_eq!(compatible.comp_hash, destination.comp_hash);
++    assert_eq!(compatible.input_modalities, destination.input_modalities);
++    assert_eq!(
++        compatible
++            .model_messages
++            .as_ref()
++            .and_then(|m| m.instructions_template.as_ref()),
++        destination
++            .model_messages
++            .as_ref()
++            .and_then(|m| m.instructions_template.as_ref())
++    );
++    assert_eq!(
++        compatible
++            .model_messages
++            .as_ref()
++            .and_then(|m| m.token_budget.as_ref()),
++        destination
++            .model_messages
++            .as_ref()
++            .and_then(|m| m.token_budget.as_ref())
++    );
 +    assert_eq!(compatible.node_repl_disabled, admitted.node_repl_disabled);
 +    assert_eq!(
 +        compatible.auto_review_model_override,
 +        admitted.auto_review_model_override
 +    );
-+    assert_eq!(compatible.tool_mode, Some(ToolMode::Direct));
-+    assert_eq!(
-+        compatible.apply_patch_tool_type,
-+        Some(ApplyPatchToolType::Freeform)
-+    );
-+    assert!(!compatible.supports_search_tool);
-+    assert!(!compatible.use_responses_lite);
-+    assert!(!compatible.used_fallback_model_metadata);
++    if compatibility.is_some() {
++        assert_eq!(compatible.tool_mode, Some(ToolMode::Direct));
++        assert_eq!(
++            compatible.apply_patch_tool_type,
++            Some(ApplyPatchToolType::Freeform)
++        );
++        assert!(!compatible.supports_search_tool);
++        assert!(!compatible.use_responses_lite);
++    } else {
++        assert_eq!(compatible.tool_mode, destination.tool_mode);
++    }
++    assert!(compatible.used_fallback_model_metadata);
 +}
 +
  #[derive(Clone, Copy)]
  enum ModelSafetyChange {
      Cyber,
-@@ -1175,7 +1290,7 @@ async fn model_safety_changes_must_match_the_admitted_authority(
+@@ -1173,7 +1355,7 @@ async fn model_safety_changes_must_match_the_admitted_authority(
  }
  
  #[tokio::test]
@@ -2703,7 +3154,7 @@ index dcaa598eb6..9c9310a3cc 100644
      let (_, turn) = make_session_and_context().await;
      let (admitted, destination) = safety_models();
      let mut fallback = admitted.clone();
-@@ -1193,18 +1308,17 @@ async fn model_safety_rejects_fallback_metadata() {
+@@ -1191,18 +1373,17 @@ async fn model_safety_rejects_fallback_metadata() {
              &destination,
              "the active model has only fallback metadata",
          ),
@@ -2728,10 +3179,10 @@ index dcaa598eb6..9c9310a3cc 100644
  
  #[test_case(None, None, false; "both catalog policies")]
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index f2d047d0ea..d7dd1c7adb 100644
+index fc1df5abf7..2e3a4f12d0 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
-@@ -56,6 +56,7 @@ use codex_login::CodexAuth;
+@@ -60,6 +60,7 @@ use codex_login::CodexAuth;
  use codex_login::auth::AgentIdentityAuthPolicy;
  use codex_model_provider::create_model_provider;
  use codex_model_provider_info::ModelProviderInfo;
@@ -2739,7 +3190,7 @@ index f2d047d0ea..d7dd1c7adb 100644
  use codex_model_provider_info::built_in_model_providers;
  use codex_models_manager::model_info;
  use codex_models_manager::test_support::construct_model_info_offline_for_tests;
-@@ -77,6 +78,7 @@ use codex_protocol::models::ImageDetail;
+@@ -82,6 +83,7 @@ use codex_protocol::models::ImageDetail;
  use codex_protocol::models::ImageReference;
  use codex_protocol::models::PermissionProfile;
  use codex_protocol::models::SandboxEnforcement;
@@ -2747,7 +3198,7 @@ index f2d047d0ea..d7dd1c7adb 100644
  use codex_protocol::openai_models::ModelServiceTier;
  use codex_protocol::openai_models::ToolMode;
  use codex_protocol::permissions::FileSystemAccessMode;
-@@ -1347,6 +1349,47 @@ async fn danger_full_access_turns_do_not_expose_managed_network_proxy() -> anyho
+@@ -1470,6 +1472,47 @@ async fn danger_full_access_turns_do_not_expose_managed_network_proxy() -> anyho
      Ok(())
  }
  
@@ -2795,7 +3246,7 @@ index f2d047d0ea..d7dd1c7adb 100644
  #[tokio::test]
  async fn danger_full_access_tool_attempts_do_not_enforce_managed_network() -> anyhow::Result<()> {
      #[derive(Default)]
-@@ -5353,7 +5396,7 @@ async fn session_configuration_apply_preserves_absolute_cwd_write_root_on_cwd_up
+@@ -5492,7 +5535,7 @@ async fn session_configuration_apply_preserves_absolute_cwd_write_root_on_cwd_up
  
  #[tokio::test]
  async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
@@ -2804,19 +3255,19 @@ index f2d047d0ea..d7dd1c7adb 100644
          CodexAuth::from_api_key("Test API Key"),
          Vec::new(),
          |config| {
-@@ -5399,6 +5442,7 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
-                 window_ids,
+@@ -5539,6 +5582,7 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
                  compaction_response_id: None,
                  compaction_model_hash: None,
+                 reviewer_compaction_hash: None,
 +                model_provider_id: turn_context.model_provider_id(),
              },
          ),
      ));
 diff --git a/codex-rs/core/src/session/tests/guardian_tests.rs b/codex-rs/core/src/session/tests/guardian_tests.rs
-index 72ae069562..b36296aaf7 100644
+index a2888d782b..eff37ffe23 100644
 --- a/codex-rs/core/src/session/tests/guardian_tests.rs
 +++ b/codex-rs/core/src/session/tests/guardian_tests.rs
-@@ -225,9 +225,12 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
+@@ -226,9 +226,12 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
      session.services.models_manager = models_manager;
      crate::guardian::test_host::install(&session, &config);
      turn_context_raw.config = Arc::clone(&config);
@@ -2832,7 +3283,7 @@ index 72ae069562..b36296aaf7 100644
      );
      let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
      let evidence = session
-@@ -426,9 +429,12 @@ async fn request_permissions_guardian_review_stops_when_cancelled() {
+@@ -440,9 +443,12 @@ async fn request_permissions_guardian_review_stops_when_cancelled(
          .models_manager = models_manager;
      crate::guardian::test_host::install(&session, &config);
      turn_context_raw.config = Arc::clone(&config);
@@ -2848,7 +3299,7 @@ index 72ae069562..b36296aaf7 100644
      );
  
      let requested_permissions = RequestPermissionProfile {
-@@ -553,9 +559,12 @@ async fn guardian_allows_exec_command_additional_permissions_requests_past_polic
+@@ -589,9 +595,12 @@ async fn guardian_allows_exec_command_additional_permissions_requests_past_polic
      session.services.models_manager = models_manager;
      crate::guardian::test_host::install(&session, &config);
      turn_context_raw.config = Arc::clone(&config);
@@ -2864,7 +3315,7 @@ index 72ae069562..b36296aaf7 100644
      );
      let session = Arc::new(session);
      let turn_context = Arc::new(turn_context_raw);
-@@ -673,9 +682,12 @@ async fn strict_auto_review_turn_grant_forces_guardian_for_exec_command_policy_s
+@@ -709,9 +718,12 @@ async fn strict_auto_review_turn_grant_forces_guardian_for_exec_command_policy_s
      session.services.models_manager = models_manager;
      crate::guardian::test_host::install(&session, &config);
      turn_context_raw.config = Arc::clone(&config);
@@ -2881,7 +3332,7 @@ index 72ae069562..b36296aaf7 100644
      let session = Arc::new(session);
      let turn_context = Arc::new(turn_context_raw);
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 8ab44553be..b24a2ffb98 100644
+index 360607f3f4..bf08745fe6 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -15,6 +15,7 @@ use crate::context::ContextualUserFragment;
@@ -2892,16 +3343,7 @@ index 8ab44553be..b24a2ffb98 100644
  use crate::hook_runtime::drain_async_hook_results;
  use crate::hook_runtime::inspect_pending_input;
  use crate::hook_runtime::record_additional_contexts;
-@@ -78,6 +79,8 @@ use codex_file_system::FindUpErrorPolicy;
- use codex_file_system::find_nearest_ancestor_with_markers;
- use codex_login::CodexAuth;
- use codex_model_provider::RemoteCompactionSupport;
-+use codex_model_provider_info::ModelProviderInfo;
-+use codex_model_provider_info::ToolCompatibility;
- use codex_protocol::ResponseItemId;
- use codex_protocol::config_types::AutoCompactTokenLimitScope;
- use codex_protocol::config_types::ModeKind;
-@@ -174,8 +177,66 @@ pub(crate) async fn run_turn(
+@@ -174,8 +175,66 @@ pub(crate) async fn run_turn(
      // Record results from hooks that finished after the previous turn before this turn's user prompt.
      drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ true).await;
  
@@ -2970,7 +3412,7 @@ index 8ab44553be..b24a2ffb98 100644
      // TODO(ccunningham): Pre-turn compaction runs before context updates and the
      // new user message are recorded. Estimate pending incoming items (context
      // diffs/full reinjection + user input) and trigger compaction preemptively
-@@ -184,16 +245,18 @@ pub(crate) async fn run_turn(
+@@ -184,16 +243,18 @@ pub(crate) async fn run_turn(
          &sess,
          &turn_context,
          &mut client_session,
@@ -2990,7 +3432,7 @@ index 8ab44553be..b24a2ffb98 100644
              PersistContext::Standard,
          )
          .await;
-@@ -208,7 +271,11 @@ pub(crate) async fn run_turn(
+@@ -208,7 +269,11 @@ pub(crate) async fn run_turn(
              .await;
          // Publish the failure only after prompt hooks finish, so clients cannot react to
          // an error by steering follow-up input into a turn still preserving its prompt.
@@ -3003,7 +3445,7 @@ index 8ab44553be..b24a2ffb98 100644
              RemoteCompactionSupport::V2 => Some("Error running remote compact task".to_string()),
              RemoteCompactionSupport::Unsupported => None,
          };
-@@ -238,11 +305,12 @@ pub(crate) async fn run_turn(
+@@ -238,11 +303,12 @@ pub(crate) async fn run_turn(
          {
              Ok(requirements) => requirements,
              Err(err) => {
@@ -3017,7 +3459,7 @@ index 8ab44553be..b24a2ffb98 100644
                      PersistContext::Standard,
                  )
                  .await;
-@@ -266,11 +334,12 @@ pub(crate) async fn run_turn(
+@@ -266,11 +332,12 @@ pub(crate) async fn run_turn(
      {
          Ok(step_context) => step_context,
          Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
@@ -3031,7 +3473,7 @@ index 8ab44553be..b24a2ffb98 100644
                  PersistContext::Standard,
              )
              .await;
-@@ -363,11 +432,12 @@ pub(crate) async fn run_turn(
+@@ -363,11 +430,12 @@ pub(crate) async fn run_turn(
          .await?;
      }
      let mut can_drain_pending_input = input.is_empty();
@@ -3045,7 +3487,7 @@ index 8ab44553be..b24a2ffb98 100644
          PersistContext::TurnStart,
      )
      .await
-@@ -387,8 +457,8 @@ pub(crate) async fn run_turn(
+@@ -387,8 +455,8 @@ pub(crate) async fn run_turn(
      sess.merge_connector_selection(explicitly_enabled_connectors.clone())
          .await;
      sess.set_previous_turn_settings(Some(PreviousTurnSettings {
@@ -3056,26 +3498,7 @@ index 8ab44553be..b24a2ffb98 100644
          realtime_active: Some(turn_context.realtime_active),
      }))
      .await;
-@@ -508,13 +578,17 @@ pub(crate) async fn run_turn(
-                 .await;
- 
-             // Construct the input that we will send to the model.
--            let sampling_request_input: Vec<ResponseItem> = async {
-+            let mut sampling_request_input: Vec<ResponseItem> = async {
-                 sess.clone_history()
-                     .await
-                     .for_prompt(&step_context.settings.model_info.input_modalities)
-             }
-             .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
-             .await;
-+            normalize_prompt_for_provider(
-+                &mut sampling_request_input,
-+                turn_context.model_provider().info(),
-+            );
- 
-             let responses_metadata = sess
-                 .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
-@@ -812,6 +886,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -846,6 +914,38 @@ pub(crate) async fn run_hooks_and_record_inputs(
      model_info: &ModelInfo,
      input: &[TurnInput],
      persist_context: PersistContext,
@@ -3114,7 +3537,7 @@ index 8ab44553be..b24a2ffb98 100644
  ) -> bool {
      // Cancellation can reach this path before Guardian's tools and context are
      // resolved. Only finalized evidence may enter reusable reviewer history.
-@@ -825,8 +931,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -859,8 +959,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
      }
      let mut blocked_input = false;
      let mut accepted_user_input = false;
@@ -3124,7 +3547,7 @@ index 8ab44553be..b24a2ffb98 100644
          if hook_outcome.should_stop {
              blocked_input = true;
              record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
-@@ -842,11 +947,15 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -876,11 +975,15 @@ pub(crate) async fn run_hooks_and_record_inputs(
              } else {
                  persist_context
              };
@@ -3141,7 +3564,7 @@ index 8ab44553be..b24a2ffb98 100644
                  hook_outcome.additional_contexts,
                  input_persist_context,
              )
-@@ -856,6 +965,48 @@ pub(crate) async fn run_hooks_and_record_inputs(
+@@ -890,6 +993,48 @@ pub(crate) async fn run_hooks_and_record_inputs(
      blocked_input && !accepted_user_input
  }
  
@@ -3190,7 +3613,7 @@ index 8ab44553be..b24a2ffb98 100644
  fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
      input
          .iter()
-@@ -1240,10 +1391,21 @@ async fn run_pre_sampling_compact(
+@@ -1275,10 +1420,21 @@ async fn run_pre_sampling_compact(
      sess: &Arc<Session>,
      turn_context: &Arc<TurnContext>,
      client_session: &mut ModelClientSession,
@@ -3213,7 +3636,7 @@ index 8ab44553be..b24a2ffb98 100644
      let token_status =
          super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
              .await;
-@@ -1290,7 +1452,7 @@ async fn capture_current_model_fallback_step_context(
+@@ -1325,7 +1481,7 @@ async fn capture_current_model_fallback_step_context(
          .as_deref()
          .is_some_and(codex_login::AuthManager::current_auth_uses_codex_backend);
      if !uses_codex_backend
@@ -3222,7 +3645,7 @@ index 8ab44553be..b24a2ffb98 100644
          || previous_model == turn_context.model_info().slug
      {
          return Ok(None);
-@@ -1425,7 +1587,11 @@ async fn run_auto_compact(
+@@ -1466,7 +1622,11 @@ async fn run_auto_compact(
          return Ok(());
      }
  
@@ -3235,7 +3658,7 @@ index 8ab44553be..b24a2ffb98 100644
          RemoteCompactionSupport::V2 => {
              emit_compact_metric(
                  &sess.services.session_telemetry,
-@@ -1451,7 +1617,8 @@ async fn run_auto_compact(
+@@ -1492,7 +1652,8 @@ async fn run_auto_compact(
              );
              run_inline_auto_compact_task(
                  Arc::clone(sess),
@@ -3245,94 +3668,7 @@ index 8ab44553be..b24a2ffb98 100644
                  initial_context_injection,
                  reason,
                  phase,
-@@ -1533,6 +1700,86 @@ pub(crate) fn build_prompt(
-     }
- }
- 
-+fn normalize_prompt_for_provider(input: &mut Vec<ResponseItem>, provider: &ModelProviderInfo) {
-+    match provider.tool_compatibility {
-+        Some(ToolCompatibility::FunctionsAndApplyPatch) => {
-+            let unsupported_custom_calls = input
-+                .iter()
-+                .filter_map(|item| match item {
-+                    ResponseItem::CustomToolCall { call_id, name, .. } if name != "apply_patch" => {
-+                        Some(call_id.clone())
-+                    }
-+                    _ => None,
-+                })
-+                .collect::<HashSet<_>>();
-+            input.retain(|item| match item {
-+                ResponseItem::Reasoning { .. }
-+                | ResponseItem::AdditionalTools { .. }
-+                | ResponseItem::LocalShellCall { .. }
-+                | ResponseItem::ToolSearchCall { .. }
-+                | ResponseItem::ToolSearchOutput { .. }
-+                | ResponseItem::WebSearchCall { .. }
-+                | ResponseItem::ImageGenerationCall { .. }
-+                | ResponseItem::Compaction { .. }
-+                | ResponseItem::ContextCompaction { .. } => false,
-+                ResponseItem::CustomToolCall { name, .. } => name == "apply_patch",
-+                ResponseItem::CustomToolCallOutput { call_id, .. } => {
-+                    !unsupported_custom_calls.contains(call_id)
-+                }
-+                _ => true,
-+            });
-+            // Response item IDs are provider-owned and are not portable across
-+            // OpenAI-compatible implementations. Call IDs remain intact so
-+            // function/custom output pairing is preserved.
-+            for item in input.iter_mut() {
-+                item.set_id(None);
-+            }
-+        }
-+        None if provider.is_openai() => {
-+            input.retain(|item| match item {
-+                // OpenAI reasoning items have an `rs_` ID and no plaintext
-+                // reasoning content. Third-party Responses implementations may
-+                // return plaintext here, which OpenAI rejects when replayed.
-+                ResponseItem::Reasoning { id, content, .. } => {
-+                    id.as_ref().is_some_and(|id| id.starts_with("rs_"))
-+                        && content.as_ref().is_none_or(Vec::is_empty)
-+                }
-+                _ => true,
-+            });
-+            for item in input.iter_mut() {
-+                if item.id().is_some_and(|id| !id.is_prefixed()) {
-+                    item.set_id(None);
-+                }
-+            }
-+        }
-+        None => {
-+            // OpenAI-compatible API providers can support the same tool wire
-+            // format while belonging to a different encryption authority.
-+            // Reasoning and compaction ciphertext, encrypted function args,
-+            // and response item IDs are bound to the organization/deployment
-+            // that produced them and must not cross that boundary.
-+            input.retain(|item| {
-+                !matches!(
-+                    item,
-+                    ResponseItem::Reasoning { .. }
-+                        | ResponseItem::Compaction { .. }
-+                        | ResponseItem::ContextCompaction { .. }
-+                )
-+            });
-+            for item in input.iter_mut() {
-+                if let ResponseItem::FunctionCall {
-+                    encrypted_function_args,
-+                    ..
-+                } = item
-+                {
-+                    *encrypted_function_args = None;
-+                }
-+                item.set_id(None);
-+            }
-+        }
-+    }
-+}
-+
- #[allow(clippy::too_many_arguments)]
- #[allow(deprecated)]
- #[instrument(level = "trace",
-@@ -1566,7 +1813,7 @@ async fn run_sampling_request(
+@@ -1607,7 +1768,7 @@ async fn run_sampling_request(
          Arc::clone(&step_context),
          Arc::clone(&turn_diff_tracker),
      );
@@ -3341,15 +3677,7 @@ index 8ab44553be..b24a2ffb98 100644
      let mut retry_state = ResponsesStreamRetryState::default();
      let mut initial_input = Some(input);
      let mut original_input = None;
-@@ -1582,6 +1829,7 @@ async fn run_sampling_request(
-                 .for_prompt(&step_context.settings.model_info.input_modalities)
-         };
-         let mut prompt_input = prompt_input;
-+        normalize_prompt_for_provider(&mut prompt_input, turn_context.model_provider().info());
-         sess.services
-             .executed_tool_calls
-             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
-@@ -2435,14 +2683,14 @@ async fn try_run_sampling_request(
+@@ -2474,14 +2635,14 @@ async fn try_run_sampling_request(
      let inference_trace = sess.services.rollout_thread_trace.inference_trace_context(
          turn_context.sub_id.as_str(),
          step_context.settings.model_info.slug.as_str(),
@@ -3367,11 +3695,11 @@ index 8ab44553be..b24a2ffb98 100644
          .stream(
              prompt,
 diff --git a/codex-rs/core/src/session/turn_context.rs b/codex-rs/core/src/session/turn_context.rs
-index 9f86627a45..83f150934b 100644
+index 165be62947..4b0344831b 100644
 --- a/codex-rs/core/src/session/turn_context.rs
 +++ b/codex-rs/core/src/session/turn_context.rs
-@@ -301,7 +301,8 @@ pub struct TurnContext {
-     pub(super) current_settings: ArcSwap<ResolvedStepSettings>,
+@@ -325,7 +325,8 @@ pub struct TurnContext {
+     pub(super) next_step_input: ArcSwap<StepInputs>,
      /// Turn-wide telemetry; model-attributed step work should use `StepContext::session_telemetry`.
      pub(crate) session_telemetry: SessionTelemetry,
 -    pub(crate) provider: SharedModelProvider,
@@ -3380,7 +3708,7 @@ index 9f86627a45..83f150934b 100644
      pub(crate) session_source: SessionSource,
      pub(crate) history_mode: ThreadHistoryMode,
      pub(crate) parent_thread_id: Option<ThreadId>,
-@@ -341,6 +342,31 @@ enum TurnMultiAgentRuntime {
+@@ -379,6 +380,31 @@ enum TurnContextBuildMode {
  }
  
  impl TurnContext {
@@ -3411,10 +3739,10 @@ index 9f86627a45..83f150934b 100644
 +
      /// Captures current model metadata without preparing a step.
      pub(crate) fn capture_current_model_info(&self) -> Arc<ModelInfo> {
-         Arc::clone(&self.current_settings.load().model_info)
-@@ -599,7 +625,8 @@ impl TurnContext {
-             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
-             current_settings: ArcSwap::from(step_settings),
+         Arc::clone(&self.next_step_input.load().settings.model_info)
+@@ -697,7 +723,8 @@ impl TurnContext {
+                 environments: self.initial_environments.clone(),
+             }),
              session_telemetry,
 -            provider: self.provider.clone(),
 +            provider: std::sync::RwLock::new(self.model_provider()),
@@ -3422,17 +3750,17 @@ index 9f86627a45..83f150934b 100644
              session_source: self.session_source.clone(),
              history_mode: self.history_mode,
              parent_thread_id: self.parent_thread_id,
-@@ -839,6 +866,7 @@ impl Session {
-             per_turn_config.permissions.approval_policy.value(),
-             per_turn_config.approvals_reviewer,
-         );
+@@ -978,6 +1005,7 @@ impl Session {
+                     &PathUri::from_abs_path(&cwd),
+                 )
+             });
 +        let model_provider_id = per_turn_config.model_provider_id.clone();
          let per_turn_config = Arc::new(per_turn_config);
          let turn_metadata_state = Arc::new(TurnMetadataState::new(
              session_id.to_string(),
-@@ -873,7 +901,8 @@ impl Session {
-             disabled_plugin_ids: session_configuration.disabled_plugin_ids.clone(),
-             current_settings: ArcSwap::from(step_settings),
+@@ -1016,7 +1044,8 @@ impl Session {
+                 environments: environments.clone(),
+             }),
              session_telemetry: session_telemetry_for_context,
 -            provider,
 +            provider: std::sync::RwLock::new(provider),
@@ -3440,8 +3768,8 @@ index 9f86627a45..83f150934b 100644
              session_source,
              history_mode: session_configuration.history_mode,
              parent_thread_id: session_configuration.parent_thread_id,
-@@ -1021,6 +1050,17 @@ impl Session {
-                 self.features.enabled(Feature::Personality),
+@@ -1181,6 +1210,17 @@ impl Session {
+                 &session_configuration.model_info_overrides,
              )
              .await;
 +        let model_info = if let Some(tool_compatibility) =
@@ -3455,14 +3783,24 @@ index 9f86627a45..83f150934b 100644
 +        } else {
 +            model_info
 +        };
-         let multi_agent_version = match multi_agent_runtime {
-             TurnMultiAgentRuntime::ResolveAndStore => {
+         let multi_agent_version = match build_mode {
+             TurnContextBuildMode::Full | TurnContextBuildMode::InjectItems => {
                  // A background preview must not overwrite a newer turn's model metadata.
 diff --git a/codex-rs/core/src/session/turn_tests.rs b/codex-rs/core/src/session/turn_tests.rs
-index e43fb6a2ae..7c042ead8c 100644
+index 40faa0bd78..ea1171d3e3 100644
 --- a/codex-rs/core/src/session/turn_tests.rs
 +++ b/codex-rs/core/src/session/turn_tests.rs
-@@ -108,3 +108,121 @@ fn realtime_user_verification_notice_excludes_request_payload() {
+@@ -1,6 +1,9 @@
+ use super::*;
++use crate::client::normalize_response_items_for_provider;
+ use codex_extension_api::ExtensionData;
+ use codex_extension_api::TurnItemContributor;
++use codex_model_provider_info::ModelProviderInfo;
++use codex_model_provider_info::ToolCompatibility;
+ use codex_protocol::ResponseItemId;
+ use codex_protocol::items::AgentMessageContent;
+ use pretty_assertions::assert_eq;
+@@ -109,3 +112,122 @@ fn realtime_user_verification_notice_excludes_request_payload() {
          )),
      );
  }
@@ -3490,7 +3828,7 @@ index e43fb6a2ae..7c042ead8c 100644
 +    };
 +    let mut input = vec![native.clone(), foreign, assistant_output_text("answer")];
 +
-+    normalize_prompt_for_provider(&mut input, &provider);
++    normalize_response_items_for_provider(&mut input, &provider, &HashSet::new(), false);
 +
 +    assert_eq!(input, vec![native, assistant_output_text("answer")]);
 +}
@@ -3522,7 +3860,7 @@ index e43fb6a2ae..7c042ead8c 100644
 +        assistant_output_text("answer"),
 +    ];
 +
-+    normalize_prompt_for_provider(&mut input, &provider);
++    normalize_response_items_for_provider(&mut input, &provider, &HashSet::new(), false);
 +
 +    let mut expected_apply_patch = apply_patch;
 +    expected_apply_patch.set_id(None);
@@ -3569,7 +3907,8 @@ index e43fb6a2ae..7c042ead8c 100644
 +        assistant_output_text("answer"),
 +    ];
 +
-+    normalize_prompt_for_provider(&mut input, &provider);
++    let foreign_ids = input.iter().filter_map(|item| item.id().cloned()).collect();
++    normalize_response_items_for_provider(&mut input, &provider, &foreign_ids, true);
 +
 +    let mut expected_function_call = function_call;
 +    expected_function_call.set_id(None);
@@ -3585,11 +3924,11 @@ index e43fb6a2ae..7c042ead8c 100644
 +    assert_eq!(input, vec![expected_function_call, expected_message]);
 +}
 diff --git a/codex-rs/core/src/state/session.rs b/codex-rs/core/src/state/session.rs
-index b3ea977da0..201128b1d4 100644
+index e3ddd2cc24..966458a355 100644
 --- a/codex-rs/core/src/state/session.rs
 +++ b/codex-rs/core/src/state/session.rs
 @@ -76,6 +76,9 @@ pub(crate) struct SessionState {
-     /// Cancels work bound to discarded history. Appends and compaction preserve it.
+     /// Cancels work bound to discarded history or a superseded Guardian evidence policy.
      pub(crate) history_reset: CancellationToken,
      pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
 +    /// Latest authoritative permission returned by `account/rateLimits/read` for this login.
@@ -3598,7 +3937,7 @@ index b3ea977da0..201128b1d4 100644
      pub(crate) latest_token_usage_record: Option<TokenUsageRecord>,
      pub(crate) server_reasoning_included: bool,
      pub(crate) mcp_dependency_prompted: HashSet<String>,
-@@ -122,6 +125,7 @@ impl SessionState {
+@@ -125,6 +128,7 @@ impl SessionState {
              history,
              history_reset: CancellationToken::new(),
              latest_rate_limits: None,
@@ -3606,7 +3945,7 @@ index b3ea977da0..201128b1d4 100644
              latest_token_usage_record: None,
              server_reasoning_included: false,
              mcp_dependency_prompted: HashSet::new(),
-@@ -331,12 +335,22 @@ impl SessionState {
+@@ -342,12 +346,22 @@ impl SessionState {
          ));
      }
  
@@ -3666,259 +4005,8 @@ index 14913d95c8..0f8f5f52b0 100644
              RemoteCompactionSupport::V2 => {
                  emit_compact_metric(
                      &session.services.session_telemetry,
-diff --git a/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs b/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
-index a9615aeca8..0d42693e51 100644
---- a/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
-+++ b/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
-@@ -94,7 +94,7 @@ async fn handle_spawn_agent(
-     if args.fork_context {
-         reject_full_fork_agent_type_override(role_name)?;
-     }
--    apply_requested_spawn_agent_model_overrides(
-+    let _requested_backend = apply_requested_spawn_agent_model_overrides(
-         &session,
-         turn.as_ref(),
-         &mut config,
-diff --git a/codex-rs/core/src/tools/handlers/multi_agents_common.rs b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
-index 9cbe72df88..74ecafb157 100644
---- a/codex-rs/core/src/tools/handlers/multi_agents_common.rs
-+++ b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
-@@ -199,7 +199,8 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
-     // Fresh child startup restores configured preferences from the retained snapshot.
-     config.token_budget = turn.configured_token_budget.clone();
-     config.model = Some(turn.model_info().slug.clone());
--    config.model_provider = turn.provider.info().clone();
-+    config.model_provider = turn.model_provider().info().clone();
-+    config.model_provider_id = turn.model_provider_id();
-     config.model_reasoning_effort = turn
-         .reasoning_effort()
-         .or(turn.model_info().default_reasoning_level.as_ref())
-@@ -270,15 +271,63 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
-     config: &mut Config,
-     requested_model: Option<&str>,
-     requested_reasoning_effort: Option<ReasoningEffort>,
--) -> Result<(), FunctionCallError> {
-+) -> Result<Option<String>, FunctionCallError> {
-     let requested_model = requested_model.or(turn.config.agent_default_subagent_model.as_deref());
-     let requested_reasoning_effort = requested_reasoning_effort
-         .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone());
-     if requested_model.is_none() && requested_reasoning_effort.is_none() {
--        return Ok(());
-+        return Ok(None);
-     }
- 
-     if let Some(requested_model) = requested_model {
-+        let requested_model =
-+            parse_spawn_agent_model_override(requested_model, &config.model_providers)?;
-+        let requested_backend = requested_model
-+            .provider_id
-+            .as_deref()
-+            .map(spawn_agent_backend_for_provider);
-+        let provider_changed = requested_model
-+            .provider_id
-+            .as_deref()
-+            .is_some_and(|provider_id| provider_id != config.model_provider_id);
-+        if let Some(provider_id) = requested_model.provider_id.as_deref() {
-+            let provider = config.model_providers.get(provider_id).cloned().ok_or_else(|| {
-+                let mut available = config.model_providers.keys().cloned().collect::<Vec<_>>();
-+                available.sort();
-+                FunctionCallError::RespondToModel(format!(
-+                    "Unknown model provider `{provider_id}` for spawn_agent. Available providers: {}",
-+                    available.join(", ")
-+                ))
-+            })?;
-+            config.model_provider_id = provider_id.to_string();
-+            config.model_provider = provider;
-+        }
-+
-+        if provider_changed {
-+            let selected_model_info = session
-+                .services
-+                .models_manager
-+                .get_model_info(
-+                    requested_model.model.as_str(),
-+                    &config.to_models_manager_config(),
-+                )
-+                .await;
-+            config.model = Some(requested_model.model.clone());
-+            if let Some(reasoning_effort) = requested_reasoning_effort {
-+                if !selected_model_info.used_fallback_model_metadata {
-+                    validate_spawn_agent_reasoning_effort(
-+                        requested_model.model.as_str(),
-+                        &selected_model_info.supported_reasoning_levels,
-+                        &reasoning_effort,
-+                    )?;
-+                }
-+                config.model_reasoning_effort = Some(reasoning_effort);
-+            } else if !selected_model_info.used_fallback_model_metadata {
-+                config.model_reasoning_effort = selected_model_info.default_reasoning_level;
-+            }
-+            return Ok(requested_backend);
-+        }
-+
-         let available_models = session
-             .services
-             .models_manager
-@@ -286,7 +335,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
-             .await;
-         let selected_model_name = find_spawn_agent_model_name(
-             &available_models,
--            requested_model,
-+            requested_model.model.as_str(),
-             turn.multi_agent_version,
-         )?;
-         let selected_model_info = session
-@@ -307,7 +356,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
-             config.model_reasoning_effort = selected_model_info.default_reasoning_level;
-         }
- 
--        return Ok(());
-+        return Ok(requested_backend);
-     }
- 
-     if let Some(reasoning_effort) = requested_reasoning_effort {
-@@ -319,7 +368,138 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
-         config.model_reasoning_effort = Some(reasoning_effort);
-     }
- 
--    Ok(())
-+    Ok(None)
-+}
-+
-+#[derive(Debug, Clone, PartialEq, Eq)]
-+struct SpawnAgentModelOverride {
-+    provider_id: Option<String>,
-+    model: String,
-+}
-+
-+fn parse_spawn_agent_model_override(
-+    requested_model: &str,
-+    model_providers: &std::collections::HashMap<
-+        String,
-+        codex_model_provider_info::ModelProviderInfo,
-+    >,
-+) -> Result<SpawnAgentModelOverride, FunctionCallError> {
-+    let requested_model = requested_model.trim();
-+    if requested_model.is_empty() {
-+        return Err(FunctionCallError::RespondToModel(
-+            "Model override for spawn_agent cannot be empty".to_string(),
-+        ));
-+    }
-+    let Some((provider_id, model)) = requested_model.split_once('/') else {
-+        return Ok(SpawnAgentModelOverride {
-+            provider_id: None,
-+            model: requested_model.to_string(),
-+        });
-+    };
-+    let provider_id = provider_id.trim();
-+    if !model_providers.contains_key(provider_id) {
-+        return Ok(SpawnAgentModelOverride {
-+            provider_id: None,
-+            model: requested_model.to_string(),
-+        });
-+    }
-+    let model = model.trim();
-+    if model.is_empty() {
-+        return Err(FunctionCallError::RespondToModel(
-+            "Provider-qualified spawn_agent models must use `<provider>/<model>`".to_string(),
-+        ));
-+    }
-+    Ok(SpawnAgentModelOverride {
-+        provider_id: Some(provider_id.to_string()),
-+        model: model.to_string(),
-+    })
-+}
-+
-+fn spawn_agent_backend_for_provider(provider_id: &str) -> String {
-+    match provider_id {
-+        "openai" => "gpt".to_string(),
-+        provider_id => provider_id
-+            .strip_prefix("agentroute-")
-+            .unwrap_or(provider_id)
-+            .to_string(),
-+    }
-+}
-+
-+#[cfg(test)]
-+mod provider_qualified_model_tests {
-+    use super::*;
-+    use codex_model_provider_info::built_in_model_providers;
-+
-+    fn model_providers()
-+    -> std::collections::HashMap<String, codex_model_provider_info::ModelProviderInfo> {
-+        let mut providers = built_in_model_providers(/*openai_base_url*/ None);
-+        providers.insert(
-+            "agentroute-deepseek".to_string(),
-+            codex_model_provider_info::ModelProviderInfo::default(),
-+        );
-+        providers
-+    }
-+
-+    #[test]
-+    fn parses_provider_qualified_model() {
-+        assert_eq!(
-+            parse_spawn_agent_model_override(
-+                "agentroute-deepseek/deepseek-v4-pro",
-+                &model_providers(),
-+            )
-+            .expect("qualified model should parse"),
-+            SpawnAgentModelOverride {
-+                provider_id: Some("agentroute-deepseek".to_string()),
-+                model: "deepseek-v4-pro".to_string(),
-+            }
-+        );
-+    }
-+
-+    #[test]
-+    fn plain_model_keeps_inherited_provider() {
-+        assert_eq!(
-+            parse_spawn_agent_model_override("dev-gpt-6-astra", &model_providers())
-+                .expect("plain model should parse"),
-+            SpawnAgentModelOverride {
-+                provider_id: None,
-+                model: "dev-gpt-6-astra".to_string(),
-+            }
-+        );
-+    }
-+
-+    #[test]
-+    fn namespaced_model_with_unknown_prefix_remains_a_model() {
-+        assert_eq!(
-+            parse_spawn_agent_model_override("vendor/model-name", &model_providers())
-+                .expect("namespaced model should parse"),
-+            SpawnAgentModelOverride {
-+                provider_id: None,
-+                model: "vendor/model-name".to_string(),
-+            }
-+        );
-+    }
-+
-+    #[test]
-+    fn rejects_empty_model_and_incomplete_configured_provider() {
-+        assert!(parse_spawn_agent_model_override("", &model_providers()).is_err());
-+        assert!(
-+            parse_spawn_agent_model_override("agentroute-deepseek/", &model_providers()).is_err()
-+        );
-+    }
-+
-+    #[test]
-+    fn maps_provider_ids_to_agentroute_backends() {
-+        assert_eq!(spawn_agent_backend_for_provider("openai"), "gpt");
-+        assert_eq!(
-+            spawn_agent_backend_for_provider("agentroute-azure"),
-+            "azure"
-+        );
-+        assert_eq!(
-+            spawn_agent_backend_for_provider("agentroute-deepseek"),
-+            "deepseek"
-+        );
-+        assert_eq!(spawn_agent_backend_for_provider("ollama"), "ollama");
-+    }
- }
- 
- pub(crate) async fn apply_spawn_agent_service_tier(
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
-index 2e11d899b7..26b02b4ded 100644
+index 52c24f8f06..4239a51e8b 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
 @@ -16,8 +16,7 @@ const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and manag
@@ -3931,7 +4019,7 @@ index 2e11d899b7..26b02b4ded 100644
  const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
  
  #[derive(Debug, Clone)]
-@@ -119,7 +118,6 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
+@@ -122,7 +121,6 @@ pub fn create_spawn_agent_tool_v2(
                  .to_string(),
          )),
      );
@@ -3939,7 +4027,7 @@ index 2e11d899b7..26b02b4ded 100644
      ToolSpec::Function(ResponsesApiTool {
          name: "spawn_agent".to_string(),
          description: spawn_agent_tool_description_v2(
-@@ -234,7 +232,11 @@ pub fn create_followup_task_tool() -> ToolSpec {
+@@ -238,7 +236,11 @@ pub fn create_followup_task_tool() -> ToolSpec {
              .to_string(),
          strict: false,
          defer_loading: None,
@@ -3953,10 +4041,10 @@ index 2e11d899b7..26b02b4ded 100644
      })
  }
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
-index 888a11376a..d3d10c5e13 100644
+index e2f943c7ab..94aaba39be 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
-@@ -95,6 +95,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
+@@ -98,6 +98,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
      assert!(!description.contains("disabled-model"));
      assert!(properties.contains_key("task_name"));
      assert!(properties.contains_key("message"));
@@ -3964,7 +4052,7 @@ index 888a11376a..d3d10c5e13 100644
      assert_eq!(
          properties
              .get("message")
-@@ -102,6 +103,17 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
+@@ -105,6 +106,17 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
          Some(true)
      );
      assert!(properties.contains_key("fork_turns"));
@@ -3982,7 +4070,7 @@ index 888a11376a..d3d10c5e13 100644
      assert!(!properties.contains_key("items"));
      assert!(!properties.contains_key("fork_context"));
      assert_eq!(
-@@ -159,6 +171,7 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
+@@ -203,6 +215,7 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
  
      assert!(properties.contains_key("fork_context"));
      assert!(!properties.contains_key("fork_turns"));
@@ -3990,7 +4078,7 @@ index 888a11376a..d3d10c5e13 100644
      assert_eq!(
          properties.get("agent_type"),
          Some(&JsonSchema::string(Some(format!(
-@@ -366,6 +379,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
+@@ -419,6 +432,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
          .expect("followup_task should use object params");
      assert!(properties.contains_key("target"));
      assert!(properties.contains_key("message"));
@@ -3999,10 +4087,23 @@ index 888a11376a..d3d10c5e13 100644
          properties
              .get("message")
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
-index 1f34d69085..820a59e723 100644
+index e4e027cc8b..00d7b4f073 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
-@@ -301,7 +301,10 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
+@@ -1,9 +1,12 @@
+ use super::*;
+ use crate::StartThreadOptions;
+ use crate::ThreadManager;
++use crate::agent::child_config::SpawnConfigOptions;
++use crate::agent::child_config::SpawnConfigVersion;
+ use crate::agent::child_config::apply_spawn_agent_service_tier;
+ use crate::agent::child_config::build_agent_resume_config;
+ use crate::agent::child_config::build_agent_spawn_config;
++use crate::agent::child_config::prepare_agent_spawn_config;
+ use crate::config::AgentRoleConfig;
+ use crate::config::DEFAULT_AGENT_MAX_DEPTH;
+ use crate::config::PermissionProfileSnapshot;
+@@ -307,7 +310,10 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
          .approval_policy
          .set(AskForApproval::OnRequest)
          .expect("approval policy should be set");
@@ -4014,16 +4115,16 @@ index 1f34d69085..820a59e723 100644
      turn.config = Arc::new(config);
  
      let invocation = invocation(
-@@ -4496,7 +4499,7 @@ async fn build_agent_spawn_config_uses_turn_context_values(parent_enabled: bool)
+@@ -4529,7 +4535,7 @@ async fn build_agent_spawn_config_uses_captured_step_settings_and_turn_context_v
      expected.base_instructions_provenance = base_instructions.provenance.clone();
      expected.base_instructions = Some(base_instructions.text);
-     expected.model = Some(turn.model_info().slug.clone());
+     expected.model = Some("captured-step-model".to_string());
 -    expected.model_provider = turn.provider.info().clone();
 +    expected.model_provider = turn.model_provider().info().clone();
-     expected.model_reasoning_effort = turn.reasoning_effort().cloned();
-     expected.model_reasoning_summary = Some(turn.reasoning_summary());
+     expected.model_reasoning_effort = Some(ReasoningEffort::High);
+     expected.model_reasoning_summary = Some(ReasoningSummary::Detailed);
      expected.developer_instructions = turn.developer_instructions.clone();
-@@ -4549,7 +4552,7 @@ async fn build_agent_resume_config_clears_base_instructions() {
+@@ -4582,7 +4588,7 @@ async fn build_agent_resume_config_clears_base_instructions() {
      expected.base_instructions = None;
      expected.base_instructions_provenance = None;
      expected.model = Some(turn.model_info().slug.clone());
@@ -4032,7 +4133,7 @@ index 1f34d69085..820a59e723 100644
      expected.model_reasoning_effort = turn.reasoning_effort().cloned();
      expected.model_reasoning_summary = Some(turn.reasoning_summary());
      expected.developer_instructions = turn.developer_instructions.clone();
-@@ -4564,3 +4567,51 @@ async fn build_agent_resume_config_clears_base_instructions() {
+@@ -4597,3 +4603,56 @@ async fn build_agent_resume_config_clears_base_instructions() {
          .expect("approval policy set");
      assert_eq!(config, expected);
  }
@@ -4063,17 +4164,22 @@ index 1f34d69085..820a59e723 100644
 +        create_model_provider(azure_provider, turn.auth_manager.clone()),
 +    );
 +
-+    let mut child_config = build_agent_spawn_config(&session.get_base_instructions().await, &turn)
-+        .expect("spawn config");
-+    let requested_backend = apply_requested_spawn_agent_model_overrides(
++    let step_context = StepContext::for_test(Arc::new(turn));
++    let prepared = prepare_agent_spawn_config(
 +        &session,
-+        &turn,
-+        &mut child_config,
-+        Some("agentroute-deepseek/deepseek-v4-pro"),
-+        Some(ReasoningEffort::High),
++        step_context.as_ref(),
++        SpawnConfigOptions {
++            version: SpawnConfigVersion::V2,
++            full_history_fork: false,
++            role_name: None,
++            model: Some("agentroute-deepseek/deepseek-v4-pro"),
++            reasoning_effort: Some(ReasoningEffort::High),
++        },
 +    )
 +    .await
 +    .expect("provider-qualified model override");
++    let child_config = prepared.config;
++    let requested_backend = prepared.requested_backend;
 +
 +    assert_eq!(child_config.model_provider_id, "agentroute-deepseek");
 +    assert_eq!(child_config.model_provider, deepseek_provider);
@@ -4085,96 +4191,36 @@ index 1f34d69085..820a59e723 100644
 +    assert_eq!(requested_backend.as_deref(), Some("deepseek"));
 +}
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
-index b82bdd6a0b..39b9a409ae 100644
+index ea44c0a427..ca2840a978 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2.rs
-@@ -15,6 +15,7 @@ use crate::tools::handlers::parse_arguments;
- use crate::tools::registry::CoreToolRuntime;
- use crate::tools::registry::ToolExecutor;
- use codex_protocol::AgentPath;
-+use codex_protocol::ResponseItemId;
- use codex_protocol::items::CollabAgentTool;
- use codex_protocol::items::CollabAgentToolCallItem;
- use codex_protocol::items::CollabAgentToolCallStatus;
-@@ -56,30 +57,120 @@ pub(crate) async fn emit_sub_agent_activity(
+@@ -64,3 +64,86 @@ fn agent_message_from_tool(
+         AgentMessage::Encrypted(message)
+     }
  }
- 
- fn communication_from_tool_message(
-+    call_id: &str,
-     author: AgentPath,
-     recipient: AgentPath,
-     message: String,
-+    routing_prompt: Option<String>,
-+    inherited_model_provider: Option<String>,
-+    requested_backend: Option<String>,
-+    model_explicit: bool,
-     source: &crate::tools::context::ToolCallSource,
-     trigger_turn: bool,
- ) -> InterAgentCommunication {
--    if !matches!(
-+    let mut communication = if !matches!(
-         source,
-         crate::tools::context::ToolCallSource::DirectPlaintextMessage
-     ) {
--        return InterAgentCommunication::new_encrypted(
--            author,
--            recipient,
--            Vec::new(),
--            message,
--            trigger_turn,
--        );
--    }
--    let message_type = if trigger_turn {
--        InterAgentMessageType::NewTask
-+        InterAgentCommunication::new_encrypted(author, recipient, Vec::new(), message, trigger_turn)
-+            .with_routing_prompt(routing_prompt)
-+            .with_routing_provider_context(
-+                inherited_model_provider,
-+                requested_backend,
-+                model_explicit,
-+            )
-     } else {
--        InterAgentMessageType::Message
-+        let message_type = if trigger_turn {
-+            InterAgentMessageType::NewTask
-+        } else {
-+            InterAgentMessageType::Message
-+        };
-+        let content =
-+            InterAgentMessage::new(message_type, recipient.clone(), author.clone(), message)
-+                .render();
-+        InterAgentCommunication::new(author, recipient, Vec::new(), content, trigger_turn)
-+            .with_routing_prompt(routing_prompt)
-+            .with_routing_provider_context(
-+                inherited_model_provider,
-+                requested_backend,
-+                model_explicit,
-+            )
-     };
--    let content =
--        InterAgentMessage::new(message_type, recipient.clone(), author.clone(), message).render();
--    InterAgentCommunication::new(author, recipient, Vec::new(), content, trigger_turn)
-+    communication.id = Some(ResponseItemId::with_suffix("amsg", call_id));
-+    communication
-+}
 +
 +#[cfg(test)]
 +mod routing_prompt_tests {
 +    use super::*;
++    use crate::agent::types::MessageDeliveryMode;
++    use codex_protocol::AgentPath;
 +
 +    #[test]
 +    fn encrypted_communication_keeps_ephemeral_routing_prompt_in_memory() {
-+        let communication = communication_from_tool_message(
-+            "call-spawn",
++        let communication = AgentMessage::Routed {
++            message: Box::new(agent_message_from_tool(
++                "encrypted payload".to_string(),
++                &crate::tools::context::ToolCallSource::Direct,
++            )),
++            routing_prompt: Some("Analyze a high-risk database migration".to_string()),
++            inherited_model_provider: Some("agentroute-azure".to_string()),
++            requested_backend: Some("deepseek".to_string()),
++            model_explicit: true,
++        }
++        .into_communication(
 +            AgentPath::root(),
 +            AgentPath::root().join("worker").expect("recipient path"),
-+            "encrypted payload".to_string(),
-+            Some("Analyze a high-risk database migration".to_string()),
-+            Some("agentroute-azure".to_string()),
-+            Some("deepseek".to_string()),
-+            true,
-+            &crate::tools::context::ToolCallSource::Direct,
-+            true,
++            MessageDeliveryMode::TriggerTurn,
 +        );
 +
 +        assert_eq!(communication.content, "");
@@ -4199,17 +4245,20 @@ index b82bdd6a0b..39b9a409ae 100644
 +
 +    #[test]
 +    fn plaintext_communication_renders_exact_task_for_cross_provider_delivery() {
-+        let communication = communication_from_tool_message(
-+            "call-spawn",
++        let communication = AgentMessage::Routed {
++            message: Box::new(agent_message_from_tool(
++                "Reply with exactly: deepseek child ok".to_string(),
++                &crate::tools::context::ToolCallSource::DirectPlaintextMessage,
++            )),
++            routing_prompt: Some("Reply with exactly: deepseek child ok".to_string()),
++            inherited_model_provider: Some("agentroute-azure".to_string()),
++            requested_backend: Some("deepseek".to_string()),
++            model_explicit: true,
++        }
++        .into_communication(
 +            AgentPath::root(),
 +            AgentPath::root().join("worker").expect("recipient path"),
-+            "Reply with exactly: deepseek child ok".to_string(),
-+            Some("Reply with exactly: deepseek child ok".to_string()),
-+            Some("agentroute-azure".to_string()),
-+            Some("deepseek".to_string()),
-+            true,
-+            &crate::tools::context::ToolCallSource::DirectPlaintextMessage,
-+            true,
++            MessageDeliveryMode::TriggerTurn,
 +        );
 +
 +        assert!(communication.encrypted_content.is_none());
@@ -4231,9 +4280,9 @@ index b82bdd6a0b..39b9a409ae 100644
 +        );
 +        assert!(communication.routing_model_explicit);
 +    }
- }
++}
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs
-index 19de4d842f..48515b9d37 100644
+index fa129704a0..bae1cc55f8 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/followup_task.rs
 @@ -43,6 +43,7 @@ impl Handler {
@@ -4245,10 +4294,10 @@ index 19de4d842f..48515b9d37 100644
          )
          .await
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs
-index a88c765125..a4bcae587b 100644
+index 26d329fa0e..487726a79b 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs
-@@ -55,6 +55,7 @@ pub(super) async fn handle_message_string_tool(
+@@ -44,6 +44,7 @@ pub(super) async fn handle_message_string_tool(
      mode: MessageDeliveryMode,
      target: String,
      message: String,
@@ -4256,23 +4305,23 @@ index a88c765125..a4bcae587b 100644
      analytics: &mut ToolCallAnalytics,
  ) -> Result<FunctionToolOutput, FunctionCallError> {
      let message = message_content(message)?;
-@@ -97,9 +98,14 @@ pub(super) async fn handle_message_string_tool(
-         .get_agent_path()
-         .unwrap_or_else(AgentPath::root);
-     let communication = communication_from_tool_message(
-+        &call_id,
-         author,
-         receiver_agent_path.clone(),
-         message,
-+        routing_prompt,
-+        None,
-+        None,
-+        false,
-         &source,
-         mode.trigger_turn(),
-     );
+@@ -66,7 +67,13 @@ pub(super) async fn handle_message_string_tool(
+             target: AgentTarget::Id(receiver_thread_id),
+             resume_config,
+             input: AgentInput::Message {
+-                message: agent_message_from_tool(message, &source),
++                message: AgentMessage::Routed {
++                    message: Box::new(agent_message_from_tool(message, &source)),
++                    routing_prompt,
++                    inherited_model_provider: None,
++                    requested_backend: None,
++                    model_explicit: false,
++                },
+                 mode,
+             },
+             start_options: TurnStartOptions {
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs
-index 70fc7d4350..59bdd1442f 100644
+index 7713f01103..4ef9038cd2 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/send_message.rs
 @@ -43,6 +43,7 @@ impl Handler {
@@ -4284,18 +4333,18 @@ index 70fc7d4350..59bdd1442f 100644
          )
          .await
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
-index 41d394243f..b9594ab0e9 100644
+index 3de9822882..f7c985f86c 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
-@@ -12,6 +12,7 @@ use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
+@@ -16,6 +16,7 @@ use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
  use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
  use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
  use crate::turn_timing::now_unix_timestamp_ms;
 +use codex_model_provider::create_model_provider;
+ use codex_prompts::ResolvedModelMessages;
  use codex_protocol::AgentPath;
  use codex_protocol::ThreadId;
- use codex_protocol::protocol::MultiAgentVersion;
-@@ -114,6 +115,9 @@ async fn handle_spawn_agent(
+@@ -126,6 +127,9 @@ async fn handle_spawn_agent(
      let args: SpawnAgentArgs = parse_arguments(&arguments)?;
      let fork_mode = args.fork_mode()?;
      let message = message_content(args.message)?;
@@ -4305,33 +4354,37 @@ index 41d394243f..b9594ab0e9 100644
      let role_name = args
          .agent_type
          .as_deref()
-@@ -125,7 +129,7 @@ async fn handle_spawn_agent(
-     let mut config =
-         build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
+@@ -147,6 +151,7 @@ async fn handle_spawn_agent(
+     )
+     .await
+     .map_err(FunctionCallError::RespondToModel)?;
++    let requested_backend = prepared.requested_backend.clone();
+     let config = prepared.config;
      let is_full_history_fork = matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory));
--    apply_requested_spawn_agent_model_overrides(
-+    let requested_backend = apply_requested_spawn_agent_model_overrides(
-         &session,
-         turn.as_ref(),
-         &mut config,
-@@ -170,9 +174,14 @@ async fn handle_spawn_agent(
+     let spawn_source = thread_spawn_source(
+@@ -165,11 +170,14 @@ async fn handle_spawn_agent(
+         .session_source
          .get_agent_path()
          .unwrap_or_else(AgentPath::root);
-     let communication = communication_from_tool_message(
-+        &call_id,
-         author,
-         new_agent_path.clone(),
-         message,
-+        routing_prompt,
-+        inherited_model_provider,
-+        requested_backend,
-+        model_explicit,
-         &source,
-         /*trigger_turn*/ true,
-     );
-@@ -200,6 +209,11 @@ async fn handle_spawn_agent(
+-    let communication = agent_message_from_tool(message, &source).into_communication(
+-        author,
+-        new_agent_path.clone(),
+-        MessageDeliveryMode::TriggerTurn,
+-    );
++    let communication = agent_message_from_tool(message, &source)
++        .into_communication(
++            author,
++            new_agent_path.clone(),
++            MessageDeliveryMode::TriggerTurn,
++        )
++        .with_routing_prompt(routing_prompt)
++        .with_routing_provider_context(inherited_model_provider, requested_backend, model_explicit);
+     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
+     let multi_agent_v2_usage_hints =
+         if is_full_history_fork && turn.multi_agent_version == MultiAgentVersion::V2 {
+@@ -191,6 +199,11 @@ async fn handle_spawn_agent(
                  &config.multi_agent_v2,
-                 child_catalog,
+                 child_multi_agent_messages,
                  !config.update_plan_enabled && config.model_catalog.is_none(),
 +                create_model_provider(
 +                    config.model_provider.clone(),
@@ -4341,8 +4394,42 @@ index 41d394243f..b9594ab0e9 100644
              ))
          } else {
              None
+diff --git a/codex-rs/core/src/tools/multi_agent_tool.rs b/codex-rs/core/src/tools/multi_agent_tool.rs
+index 8ea4a69eed..2df4e84ba7 100644
+--- a/codex-rs/core/src/tools/multi_agent_tool.rs
++++ b/codex-rs/core/src/tools/multi_agent_tool.rs
+@@ -1,6 +1,7 @@
+ //! Applies captured Multi-Agent V2 catalog overrides and namespaces to tool specifications.
+ //! Parameter schemas retain harness-owned encryption annotations; execution is unchanged.
+ 
++use crate::config::DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE;
+ use crate::session::session::Session;
+ use crate::tools::context::ToolInvocation;
+ use crate::tools::registry::CoreToolRuntime;
+@@ -92,7 +93,20 @@ impl ToolExecutor<ToolInvocation> for MultiAgentV2ToolOverrides {
+             }
+         }
+         match (&self.namespace, spec) {
+-            (Some(namespace), ToolSpec::Function(tool)) => {
++            (Some(namespace), ToolSpec::Function(mut tool)) => {
++                if namespace == DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE
++                    && matches!(
++                        tool.name.as_str(),
++                        "spawn_agent" | "send_message" | "followup_task"
++                    )
++                    && let Some(message) = tool
++                        .parameters
++                        .properties
++                        .as_mut()
++                        .and_then(|properties| properties.get_mut("message"))
++                {
++                    message.encrypted = None;
++                }
+                 ToolSpec::Namespace(ResponsesApiNamespace {
+                     name: namespace.clone(),
+                     description: MULTI_AGENT_V2_NAMESPACE_DESCRIPTION.to_string(),
 diff --git a/codex-rs/core/src/tools/router.rs b/codex-rs/core/src/tools/router.rs
-index c3526fee10..6ac160f686 100644
+index 7111483348..e57e4e8bbc 100644
 --- a/codex-rs/core/src/tools/router.rs
 +++ b/codex-rs/core/src/tools/router.rs
 @@ -1,3 +1,4 @@
@@ -4433,17 +4520,10 @@ index 05a1e2e65a..a0a8acfcdf 100644
      fn tools(
          &self,
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
-index 1f308ab5f3..6af56f19a6 100644
+index f5c88e3b92..f3affb4ca4 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
 +++ b/codex-rs/core/src/tools/spec_plan.rs
-@@ -1,5 +1,6 @@
- use crate::agent::exceeds_thread_spawn_depth_limit;
- use crate::agent::next_thread_spawn_depth;
-+use crate::config::DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE;
- use crate::environment_selection::TurnEnvironmentSnapshot;
- use crate::image_preparation::unified_image_budget_enabled;
- use crate::session::session::Session;
-@@ -611,7 +612,7 @@ fn hosted_model_tool_specs(
+@@ -606,7 +606,7 @@ fn hosted_model_tool_specs(
      // `Some(Cached/Live/Disabled)` are the options for mode when standalone search is unavailable
      // and the provider supports hosted search. `None` prevents emitting a hosted search tool.
      let web_search_mode = (!standalone_web_search_available
@@ -4452,7 +4532,7 @@ index 1f308ab5f3..6af56f19a6 100644
          .then_some(turn_context.config.web_search_mode.value());
      let web_search_config = web_search_mode
          .as_ref()
-@@ -638,7 +639,7 @@ pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
+@@ -633,7 +633,7 @@ pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
  }
  
  fn namespace_tools_enabled(turn_context: &TurnContext) -> bool {
@@ -4461,7 +4541,7 @@ index 1f308ab5f3..6af56f19a6 100644
  }
  
  fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
-@@ -716,7 +717,8 @@ fn image_generation_available(turn_context: &TurnContext, model_info: &ModelInfo
+@@ -711,7 +711,8 @@ fn image_generation_available(turn_context: &TurnContext, model_info: &ModelInfo
          return false;
      }
  
@@ -4471,7 +4551,7 @@ index 1f308ab5f3..6af56f19a6 100644
      if !capabilities.image_generation || !capabilities.namespace_tools {
          return false;
      }
-@@ -725,9 +727,9 @@ fn image_generation_available(turn_context: &TurnContext, model_info: &ModelInfo
+@@ -720,9 +721,9 @@ fn image_generation_available(turn_context: &TurnContext, model_info: &ModelInfo
          return false;
      }
  
@@ -4484,7 +4564,7 @@ index 1f308ab5f3..6af56f19a6 100644
              && turn_context
                  .auth_manager
                  .as_deref()
-@@ -1037,7 +1039,7 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
+@@ -990,7 +991,7 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
  
  fn standalone_web_search_enabled(turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
      namespace_tools_enabled(turn_context)
@@ -4493,43 +4573,11 @@ index 1f308ab5f3..6af56f19a6 100644
          && (model_info.use_responses_lite
              || turn_context
                  .config
-@@ -1478,11 +1480,26 @@ impl ToolExecutor<ToolInvocation> for MultiAgentV2NamespaceOverride {
- 
-     fn spec(&self) -> ToolSpec {
-         match self.handler.spec() {
--            ToolSpec::Function(tool) => ToolSpec::Namespace(ResponsesApiNamespace {
--                name: self.namespace.clone(),
--                description: MULTI_AGENT_V2_NAMESPACE_DESCRIPTION.to_string(),
--                tools: vec![ResponsesApiNamespaceTool::Function(tool)],
--            }),
-+            ToolSpec::Function(mut tool) => {
-+                if self.namespace == DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE
-+                    && matches!(
-+                        tool.name.as_str(),
-+                        "spawn_agent" | "send_message" | "followup_task"
-+                    )
-+                    && let Some(message) = tool
-+                        .parameters
-+                        .properties
-+                        .as_mut()
-+                        .and_then(|properties| properties.get_mut("message"))
-+                {
-+                    message.encrypted = None;
-+                }
-+                ToolSpec::Namespace(ResponsesApiNamespace {
-+                    name: self.namespace.clone(),
-+                    description: MULTI_AGENT_V2_NAMESPACE_DESCRIPTION.to_string(),
-+                    tools: vec![ResponsesApiNamespaceTool::Function(tool)],
-+                })
-+            }
-             spec => spec,
-         }
-     }
 diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
-index c0125ad996..32acdb5e84 100644
+index 1518558409..6b3e1a9635 100644
 --- a/codex-rs/core/src/tools/spec_plan_tests.rs
 +++ b/codex-rs/core/src/tools/spec_plan_tests.rs
-@@ -64,7 +64,7 @@ use crate::tools::router::ToolSuggestPresentation;
+@@ -63,7 +63,7 @@ use crate::tools::router::ToolSuggestPresentation;
  use crate::tools::spec_plan::append_source_tools;
  use crate::tools::spec_plan::build_core_tool_registry;
  
@@ -4538,7 +4586,7 @@ index c0125ad996..32acdb5e84 100644
  
  #[derive(Default)]
  struct ToolPlanInputs {
-@@ -313,9 +313,12 @@ fn use_chatgpt_auth(turn: &mut TurnContext) {
+@@ -312,9 +312,12 @@ fn use_chatgpt_auth(turn: &mut TurnContext) {
      turn.auth_manager = Some(AuthManager::from_auth_for_testing(
          CodexAuth::create_dummy_chatgpt_auth_for_testing(),
      ));
@@ -4554,7 +4602,7 @@ index c0125ad996..32acdb5e84 100644
      );
  }
  
-@@ -325,7 +328,10 @@ fn use_bedrock_provider(turn: &mut TurnContext) {
+@@ -324,7 +327,10 @@ fn use_bedrock_provider(turn: &mut TurnContext) {
          config.model_provider_id = AMAZON_BEDROCK_PROVIDER_ID.to_string();
          config.model_provider = provider_info.clone();
      });
@@ -4566,7 +4614,7 @@ index c0125ad996..32acdb5e84 100644
  }
  
  struct TestNamespaceExtensionTool {
-@@ -641,6 +647,22 @@ async fn internal_guardian_sessions_preserve_code_mode() {
+@@ -630,6 +636,22 @@ async fn reviewer_tool_policy_exclude_optional_core_tools() {
      );
  }
  
@@ -4587,9 +4635,9 @@ index c0125ad996..32acdb5e84 100644
 +}
 +
  #[tokio::test]
- async fn internal_guardian_sessions_require_managed_secondary_environments() {
-     for (secondary_profile, expected_tools) in [
-@@ -2795,7 +2817,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
+ async fn reviewer_tool_policy_respect_managed_shell_restrictions() {
+     for (disabled_feature, shell_type) in [
+@@ -2877,7 +2899,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
  }
  
  #[tokio::test]
@@ -4598,7 +4646,7 @@ index c0125ad996..32acdb5e84 100644
      let plan = probe(|turn| {
          set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
      })
-@@ -2812,6 +2834,41 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
+@@ -2894,6 +2916,41 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
          }) else {
              panic!("expected {tool_name} in {MULTI_AGENT_V2_NAMESPACE} namespace");
          };
@@ -4640,7 +4688,7 @@ index c0125ad996..32acdb5e84 100644
          let properties = tool
              .parameters
              .properties
-@@ -2847,7 +2904,7 @@ async fn multi_agent_v2_can_disable_wait_agent() {
+@@ -2929,7 +2986,7 @@ async fn multi_agent_v2_can_disable_wait_agent() {
          ]
      );
      plan.assert_visible_lacks(&["clock"]);
@@ -4677,10 +4725,10 @@ index deb5fa02bc..3793d83e44 100644
          ToolPayload::Function { arguments } => ToolDispatchPayload::Function {
              arguments: arguments.clone(),
 diff --git a/codex-rs/core/tests/responses_headers.rs b/codex-rs/core/tests/responses_headers.rs
-index be184753e7..0cf2ca3343 100644
+index 0b1b91dec3..fab73ba73a 100644
 --- a/codex-rs/core/tests/responses_headers.rs
 +++ b/codex-rs/core/tests/responses_headers.rs
-@@ -90,6 +90,8 @@ async fn responses_stream_includes_subagent_header_on_review() {
+@@ -92,6 +92,8 @@ async fn responses_stream_includes_subagent_header_on_review() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
@@ -4689,7 +4737,7 @@ index be184753e7..0cf2ca3343 100644
      };
  
      let codex_home = TempDir::new().expect("failed to create TempDir");
-@@ -227,6 +229,8 @@ async fn responses_stream_includes_subagent_header_on_other() {
+@@ -233,6 +235,8 @@ async fn responses_stream_includes_subagent_header_on_other() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
@@ -4698,7 +4746,7 @@ index be184753e7..0cf2ca3343 100644
      };
  
      let codex_home = TempDir::new().expect("failed to create TempDir");
-@@ -345,6 +349,8 @@ async fn responses_respects_model_info_overrides_from_config() {
+@@ -355,6 +359,8 @@ async fn responses_respects_model_info_overrides_from_config() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
@@ -4708,10 +4756,10 @@ index be184753e7..0cf2ca3343 100644
  
      let codex_home = TempDir::new().expect("failed to create TempDir");
 diff --git a/codex-rs/core/tests/suite/client.rs b/codex-rs/core/tests/suite/client.rs
-index 79d0eb4f6d..517b13b4ae 100644
+index ce0ce86784..87b211ff6b 100644
 --- a/codex-rs/core/tests/suite/client.rs
 +++ b/codex-rs/core/tests/suite/client.rs
-@@ -1528,6 +1528,8 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
+@@ -1622,6 +1622,8 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
@@ -4720,7 +4768,7 @@ index 79d0eb4f6d..517b13b4ae 100644
      };
  
      send_request_with_provider(provider).await;
-@@ -3026,6 +3028,8 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
+@@ -3124,6 +3126,8 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
@@ -4729,7 +4777,7 @@ index 79d0eb4f6d..517b13b4ae 100644
      };
  
      let codex_home = TempDir::new().unwrap();
-@@ -3658,6 +3662,8 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
+@@ -3760,6 +3764,8 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
@@ -4738,7 +4786,7 @@ index 79d0eb4f6d..517b13b4ae 100644
      };
  
      // Init session
-@@ -3742,6 +3748,8 @@ async fn env_var_overrides_loaded_auth() {
+@@ -3846,6 +3852,8 @@ async fn env_var_overrides_loaded_auth() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
@@ -4748,10 +4796,10 @@ index 79d0eb4f6d..517b13b4ae 100644
  
      // Init session
 diff --git a/codex-rs/core/tests/suite/client_websockets.rs b/codex-rs/core/tests/suite/client_websockets.rs
-index 4d2ba3c926..901516dc25 100755
+index b9a0492e1a..06ec548bf1 100755
 --- a/codex-rs/core/tests/suite/client_websockets.rs
 +++ b/codex-rs/core/tests/suite/client_websockets.rs
-@@ -2691,6 +2691,8 @@ fn websocket_provider_with_connect_timeout(
+@@ -2739,6 +2739,8 @@ fn websocket_provider_with_connect_timeout(
          requires_openai_auth: false,
          supports_websockets: true,
          supports_standalone_web_search: false,
@@ -4760,11 +4808,85 @@ index 4d2ba3c926..901516dc25 100755
      }
  }
  
+diff --git a/codex-rs/core/tests/suite/compact_remote.rs b/codex-rs/core/tests/suite/compact_remote.rs
+index f7dc16e13d..c3d02449a0 100644
+--- a/codex-rs/core/tests/suite/compact_remote.rs
++++ b/codex-rs/core/tests/suite/compact_remote.rs
+@@ -267,8 +267,14 @@ fn assert_compact_request_omits_harness_metadata(request: &responses::ResponsesR
+     }
+ }
+ 
++#[test_case(false, false; "openai")]
++#[test_case(true, false; "azure")]
++#[test_case(true, true; "azure_function_compatibility")]
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+-async fn remote_compact_v2_retains_metadata_from_resumed_history() -> Result<()> {
++async fn remote_compact_v2_retains_metadata_from_resumed_history(
++    azure: bool,
++    restricted: bool,
++) -> Result<()> {
+     skip_if_no_network!(Ok(()));
+ 
+     let server = wiremock::MockServer::start().await;
+@@ -295,7 +301,21 @@ async fn remote_compact_v2_retains_metadata_from_resumed_history() -> Result<()>
+     )
+     .await;
+ 
+-    let builder = || test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
++    let builder = || {
++        test_codex()
++            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
++            .with_config(move |config| {
++                if azure {
++                    config.model_provider_id = "agentroute-azure".to_string();
++                    config.model_provider.name = "Azure".to_string();
++                    if restricted {
++                        config.model_provider.tool_compatibility = Some(
++                            codex_model_provider_info::ToolCompatibility::FunctionsAndApplyPatch,
++                        );
++                    }
++                }
++            })
++    };
+     let initial = builder()
+         .with_pre_build_hook(|home| {
+             fs::write(
+@@ -324,6 +344,19 @@ async fn remote_compact_v2_retains_metadata_from_resumed_history() -> Result<()>
+     resumed.submit_turn("continue after compaction").await?;
+     resumed.codex.shutdown_and_wait().await?;
+ 
++    // Repeat after another restart so persisted provenance, not just the
++    // compaction turn's in-memory client, protects the summary.
++    let resumed_again = builder()
++        .resume(&server, resumed.home.clone(), rollout_path.clone())
++        .await?;
++    let final_mock = responses::mount_sse_once(
++        &server,
++        sse(vec![responses::ev_completed("response-final")]),
++    )
++    .await;
++    resumed_again.submit_turn("continue after restart").await?;
++    resumed_again.codex.shutdown_and_wait().await?;
++
+     let requests = response_mock.requests();
+     let compact_request = &requests[1];
+     assert_eq!(
+@@ -337,6 +370,10 @@ async fn remote_compact_v2_retains_metadata_from_resumed_history() -> Result<()>
+         "ANNOTATED_V2_COMPACTION_SUMMARY"
+     );
+     assert!(requests[2].body_contains_text("continue after compaction"));
++    assert_eq!(
++        final_mock.single_request().inputs_of_type("compaction")[0]["encrypted_content"],
++        "ANNOTATED_V2_COMPACTION_SUMMARY"
++    );
+ 
+     Ok(())
+ }
 diff --git a/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs b/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs
-index 32ebbf2979..ad1e943bae 100644
+index e46734522f..ac6a3f8f57 100644
 --- a/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs
 +++ b/codex-rs/core/tests/suite/stream_error_allows_next_turn.rs
-@@ -82,6 +82,8 @@ async fn continue_after_stream_error() {
+@@ -84,6 +84,8 @@ async fn continue_after_stream_error() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
@@ -4774,10 +4896,10 @@ index 32ebbf2979..ad1e943bae 100644
  
      let TestCodex { codex, .. } = test_codex()
 diff --git a/codex-rs/core/tests/suite/stream_no_completed.rs b/codex-rs/core/tests/suite/stream_no_completed.rs
-index d9741d0381..136d616c43 100644
+index 676b5a9b3b..7ba214a9d4 100644
 --- a/codex-rs/core/tests/suite/stream_no_completed.rs
 +++ b/codex-rs/core/tests/suite/stream_no_completed.rs
-@@ -68,6 +68,8 @@ async fn retries_on_early_close() {
+@@ -70,6 +70,8 @@ async fn retries_on_early_close() {
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
@@ -4787,10 +4909,10 @@ index d9741d0381..136d616c43 100644
  
      let TestCodex { codex, .. } = test_codex()
 diff --git a/codex-rs/ext/guardian-reviewer/src/completion.rs b/codex-rs/ext/guardian-reviewer/src/completion.rs
-index e9ecd3d4b5..ad150f10cf 100644
+index dd91971430..53dd6979aa 100644
 --- a/codex-rs/ext/guardian-reviewer/src/completion.rs
 +++ b/codex-rs/ext/guardian-reviewer/src/completion.rs
-@@ -130,6 +130,7 @@ pub fn complete_review(
+@@ -110,6 +110,7 @@ pub fn complete_review(
                  }
                  GuardianReviewError::InputBudgetExceeded
                  | GuardianReviewError::PromptBuild { .. }
@@ -4798,7 +4920,7 @@ index e9ecd3d4b5..ad150f10cf 100644
                  | GuardianReviewError::Session { .. }
                  | GuardianReviewError::Parse { .. } => {
                      let message = match &error {
-@@ -137,6 +138,22 @@ pub fn complete_review(
+@@ -117,6 +118,22 @@ pub fn complete_review(
                          GuardianReviewError::PromptBuild { message }
                          | GuardianReviewError::Session { message, .. }
                          | GuardianReviewError::Parse { message } => message,
@@ -4850,7 +4972,7 @@ index 2e53da5ca6..35d9625fa0 100644
              Self::Timeout => GuardianReviewFailureReason::Timeout,
              Self::Cancelled => GuardianReviewFailureReason::Cancelled,
 diff --git a/codex-rs/ext/guardian-reviewer/src/retry.rs b/codex-rs/ext/guardian-reviewer/src/retry.rs
-index 79d516215b..44ce60f16e 100644
+index e1af53f466..6ac0ca883e 100644
 --- a/codex-rs/ext/guardian-reviewer/src/retry.rs
 +++ b/codex-rs/ext/guardian-reviewer/src/retry.rs
 @@ -82,6 +82,7 @@ async fn wait_before_guardian_retry(
@@ -4862,7 +4984,7 @@ index 79d516215b..44ce60f16e 100644
          GuardianReviewOutcome::Error(GuardianReviewError::Session {
              error_info: Some(error),
 diff --git a/codex-rs/ext/guardian-reviewer/src/retry_tests.rs b/codex-rs/ext/guardian-reviewer/src/retry_tests.rs
-index ce335db96f..1817328b33 100644
+index cdc80f2490..4e00995285 100644
 --- a/codex-rs/ext/guardian-reviewer/src/retry_tests.rs
 +++ b/codex-rs/ext/guardian-reviewer/src/retry_tests.rs
 @@ -71,6 +71,13 @@ fn guardian_review_retry_only_retries_transient_session_and_parse_errors() {
@@ -4879,25 +5001,11 @@ index ce335db96f..1817328b33 100644
          (
              GuardianReviewOutcome::Error(GuardianReviewError::InputBudgetExceeded),
              false,
-@@ -92,6 +99,13 @@ fn guardian_review_retry_only_retries_transient_session_and_parse_errors() {
-             )),
-             false,
-         ),
-+        (
-+            GuardianReviewOutcome::Error(GuardianReviewError::session_with_error_info(
-+                anyhow::anyhow!("subscription exhausted"),
-+                CodexErrorInfo::UsageLimitExceeded,
-+            )),
-+            false,
-+        ),
-         (
-             GuardianReviewOutcome::Error(GuardianReviewError::parse(anyhow::anyhow!("parse"))),
-             true,
 diff --git a/codex-rs/history/src/lib.rs b/codex-rs/history/src/lib.rs
-index 2be359013b..92281c7c48 100644
+index 278d8dc839..e7dc078caa 100644
 --- a/codex-rs/history/src/lib.rs
 +++ b/codex-rs/history/src/lib.rs
-@@ -67,6 +67,11 @@ pub struct CodexHarnessMetadata {
+@@ -75,6 +75,11 @@ pub struct CodexHarnessMetadata {
      #[serde(default, skip_serializing_if = "Option::is_none")]
      pub compaction_model_hash: Option<String>,
  
@@ -5797,10 +5905,10 @@ index 9927a604a1..9a6d1f292c 100644
  #[serial(codex_auth_env)]
  async fn shared_from_config_prefers_workload_identity_to_explicit_access_token() {
 diff --git a/codex-rs/login/src/auth/manager.rs b/codex-rs/login/src/auth/manager.rs
-index baf243faf6..4aa6142e33 100644
+index e67b152973..b4e2c469f9 100644
 --- a/codex-rs/login/src/auth/manager.rs
 +++ b/codex-rs/login/src/auth/manager.rs
-@@ -2749,6 +2749,19 @@ impl AuthManager {
+@@ -2744,6 +2744,19 @@ impl AuthManager {
          Self::shared_from_auth_config(auth_config_from(config), enable_codex_api_key_env).await
      }
  
@@ -5821,10 +5929,10 @@ index baf243faf6..4aa6142e33 100644
      pub async fn shared_from_auth_config(
          auth_config: AuthConfig,
 diff --git a/codex-rs/login/src/auth_env_telemetry.rs b/codex-rs/login/src/auth_env_telemetry.rs
-index 86cbbfd8fe..030e1aea85 100644
+index b2d83bf175..0553d964eb 100644
 --- a/codex-rs/login/src/auth_env_telemetry.rs
 +++ b/codex-rs/login/src/auth_env_telemetry.rs
-@@ -77,6 +77,8 @@ mod tests {
+@@ -79,6 +79,8 @@ mod tests {
              requires_openai_auth: false,
              supports_websockets: false,
              supports_standalone_web_search: false,
@@ -5834,10 +5942,10 @@ index 86cbbfd8fe..030e1aea85 100644
  
          let telemetry =
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
-index 9c27b15cc4..b86fc3764f 100644
+index 3be93a6830..272c1410c0 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
 +++ b/codex-rs/model-provider-info/src/lib.rs
-@@ -94,6 +94,14 @@ impl<'de> Deserialize<'de> for WireApi {
+@@ -128,6 +128,14 @@ impl<'de> Deserialize<'de> for WireApi {
      }
  }
  
@@ -5852,7 +5960,7 @@ index 9c27b15cc4..b86fc3764f 100644
  /// Serializable representation of a provider definition.
  #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, JsonSchema)]
  #[schemars(deny_unknown_fields)]
-@@ -152,6 +160,12 @@ pub struct ModelProviderInfo {
+@@ -191,6 +199,12 @@ pub struct ModelProviderInfo {
      /// Whether this provider supports the standalone web-search endpoint.
      #[serde(default)]
      pub supports_standalone_web_search: bool,
@@ -5865,7 +5973,7 @@ index 9c27b15cc4..b86fc3764f 100644
  }
  
  /// AWS SigV4 auth configuration for a model provider.
-@@ -495,6 +509,8 @@ other non-default provider fields are not supported"
+@@ -546,6 +560,8 @@ other non-default provider fields are not supported"
              requires_openai_auth: true,
              supports_websockets: true,
              supports_standalone_web_search: true,
@@ -5874,7 +5982,7 @@ index 9c27b15cc4..b86fc3764f 100644
          }
      }
  
-@@ -531,6 +547,8 @@ other non-default provider fields are not supported"
+@@ -584,6 +600,8 @@ other non-default provider fields are not supported"
              requires_openai_auth: false,
              supports_websockets: false,
              supports_standalone_web_search: false,
@@ -5883,7 +5991,7 @@ index 9c27b15cc4..b86fc3764f 100644
          }
      }
  
-@@ -702,6 +720,8 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
+@@ -757,6 +775,8 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
          requires_openai_auth: false,
          supports_websockets: false,
          supports_standalone_web_search: false,
@@ -5892,11 +6000,84 @@ index 9c27b15cc4..b86fc3764f 100644
      }
  }
  
+diff --git a/codex-rs/prompts/src/multi_agent_instructions.rs b/codex-rs/prompts/src/multi_agent_instructions.rs
+index b9ed30e9b7..ff12d9b865 100644
+--- a/codex-rs/prompts/src/multi_agent_instructions.rs
++++ b/codex-rs/prompts/src/multi_agent_instructions.rs
+@@ -8,13 +8,20 @@ use codex_protocol::models::ContentItemKind;
+ const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"` or a positive integer string.";
+ const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str =
+     "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
+-const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
++fn shared_usage_hint_text(tool_namespace: Option<&str>) -> String {
++    let spawn_agent_recipient = tool_namespace
++        .map(|namespace| format!("functions.{namespace}.spawn_agent"))
++        .unwrap_or_else(|| "functions.collaboration.spawn_agent".to_string());
++    format!(
++        r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to={spawn_agent_recipient}`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
+ 
+ All agents share the same directory. In detail:
+ - All agents have access to the same container and filesystem as you.
+ - All agents use the same current working directory.
+ - As a result, edits made by one agent are immediately visible to all other agents.
+-"#;
++"#
++    )
++}
+ 
+ /// Multi-agent role text and the captured capabilities used to render its context segment.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+@@ -29,6 +36,7 @@ pub enum MultiAgentRoleInstructions {
+         max_concurrency: usize,
+         wait_agent_enabled: bool,
+         expose_model_overrides: bool,
++        tool_namespace: Option<String>,
+     },
+ }
+ 
+@@ -65,6 +73,7 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
+                 max_concurrency,
+                 wait_agent_enabled,
+                 expose_model_overrides,
++                tool_namespace,
+                 ..
+             } => {
+                 let base = if *omit_update_plan_instructions {
+@@ -77,7 +86,7 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
+                 } else {
+                     String::new()
+                 };
+-                let shared = DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT;
++                let shared = shared_usage_hint_text(tool_namespace.as_deref());
+                 let mut text = format!(
+                     "{base}\n{shared}\n{wait_agent_guidance}There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."
+                 );
+diff --git a/codex-rs/prompts/src/multi_agent_instructions_tests.rs b/codex-rs/prompts/src/multi_agent_instructions_tests.rs
+index 82fbb871ad..ea01b6285a 100644
+--- a/codex-rs/prompts/src/multi_agent_instructions_tests.rs
++++ b/codex-rs/prompts/src/multi_agent_instructions_tests.rs
+@@ -7,7 +7,7 @@ use pretty_assertions::assert_eq;
+ 
+ #[test]
+ fn role_segment_filters_base_and_appends_bundled_guidance() {
+-    let shared = DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT;
++    let shared = shared_usage_hint_text(None);
+     let wait = DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT;
+     let model_override = DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT;
+     let expected_body = format!(
+@@ -22,6 +22,7 @@ fn role_segment_filters_base_and_appends_bundled_guidance() {
+             max_concurrency: 2,
+             wait_agent_enabled: true,
+             expose_model_overrides: true,
++            tool_namespace: None,
+         };
+         let expected_text = if marked {
+             format!("<multi_agent_role>{expected_body}</multi_agent_role>")
 diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
-index ceeaa80e31..a03ae9e130 100644
+index 787d3e48a8..488910294f 100644
 --- a/codex-rs/protocol/src/protocol.rs
 +++ b/codex-rs/protocol/src/protocol.rs
-@@ -495,6 +495,7 @@ pub struct TurnSettingsUpdate {
+@@ -496,6 +496,7 @@ pub struct TurnSettingsUpdate {
      /// Changes the reviewer for subsequent approval requests, not pending reviews.
      pub approvals_reviewer: Option<ApprovalsReviewer>,
      pub model: Option<String>,
@@ -5904,7 +6085,7 @@ index ceeaa80e31..a03ae9e130 100644
      /// `None` preserves the selection; `Some(None)` clears it.
      pub effort: Option<Option<ReasoningEffortConfig>>,
      pub summary: Option<ReasoningSummaryConfig>,
-@@ -815,6 +816,30 @@ pub struct InterAgentCommunication {
+@@ -816,6 +817,30 @@ pub struct InterAgentCommunication {
      #[serde(default, skip_serializing_if = "Option::is_none")]
      #[ts(optional)]
      pub encrypted_content: Option<String>,
@@ -5935,7 +6116,7 @@ index ceeaa80e31..a03ae9e130 100644
      #[serde(default, skip_serializing_if = "Option::is_none")]
      #[ts(optional)]
      pub internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
-@@ -836,6 +861,10 @@ impl InterAgentCommunication {
+@@ -837,6 +862,10 @@ impl InterAgentCommunication {
              other_recipients,
              content,
              encrypted_content: None,
@@ -5946,7 +6127,7 @@ index ceeaa80e31..a03ae9e130 100644
              internal_chat_message_metadata_passthrough: None,
              trigger_turn,
          }
-@@ -855,11 +884,34 @@ impl InterAgentCommunication {
+@@ -856,11 +885,34 @@ impl InterAgentCommunication {
              other_recipients,
              content: String::new(),
              encrypted_content: Some(encrypted_content),
@@ -5981,7 +6162,7 @@ index ceeaa80e31..a03ae9e130 100644
      pub fn set_turn_id_if_missing(&mut self, turn_id: &str) {
          InternalChatMessageMetadataPassthrough::set_turn_id_if_missing(
              &mut self.internal_chat_message_metadata_passthrough,
-@@ -870,6 +922,10 @@ impl InterAgentCommunication {
+@@ -871,6 +923,10 @@ impl InterAgentCommunication {
      pub fn to_response_input_item(&self) -> ResponseInputItem {
          let mut communication = self.clone();
          communication.id = None;
@@ -5992,7 +6173,7 @@ index ceeaa80e31..a03ae9e130 100644
          communication.internal_chat_message_metadata_passthrough = None;
          ResponseInputItem::Message {
              role: "assistant".to_string(),
-@@ -4650,6 +4706,10 @@ mod tests {
+@@ -4705,6 +4761,10 @@ mod tests {
              other_recipients: vec![AgentPath::root().join("worker").expect("recipient path")],
              content: "review the diff".to_string(),
              encrypted_content: None,
@@ -6003,7 +6184,7 @@ index ceeaa80e31..a03ae9e130 100644
              internal_chat_message_metadata_passthrough: None,
              trigger_turn: true,
          };
-@@ -4679,6 +4739,15 @@ mod tests {
+@@ -4734,6 +4794,15 @@ mod tests {
              Vec::new(),
              "encrypted payload".to_string(),
              /*trigger_turn*/ false,
@@ -6019,7 +6200,7 @@ index ceeaa80e31..a03ae9e130 100644
          );
  
          assert_eq!(
-@@ -4701,6 +4770,30 @@ mod tests {
+@@ -4756,6 +4825,30 @@ mod tests {
          );
      }
  
@@ -6051,7 +6232,7 @@ index ceeaa80e31..a03ae9e130 100644
      fn session_source_from_startup_arg_normalizes_custom_values() {
          assert_eq!(
 diff --git a/codex-rs/rollout-trace/src/inference.rs b/codex-rs/rollout-trace/src/inference.rs
-index 7cea4d0f97..f52f307447 100644
+index 7cea4d0f97..9a6a71393c 100644
 --- a/codex-rs/rollout-trace/src/inference.rs
 +++ b/codex-rs/rollout-trace/src/inference.rs
 @@ -26,6 +26,8 @@ use crate::raw_event::RawTraceEventPayload;
@@ -6079,7 +6260,7 @@ index 7cea4d0f97..f52f307447 100644
          ) else {
              return;
          };
-@@ -313,6 +319,80 @@ impl InferenceTraceAttempt {
+@@ -313,6 +319,77 @@ impl InferenceTraceAttempt {
      }
  }
  
@@ -6108,10 +6289,7 @@ index 7cea4d0f97..f52f307447 100644
 +        if let Some(call_id) = object.get("call_id").and_then(JsonValue::as_str) {
 +            plaintext_call_ids.push(call_id.to_string());
 +        }
-+        object.insert(
-+            "arguments".to_string(),
-+            JsonValue::String("{}".to_string()),
-+        );
++        object.insert("arguments".to_string(), JsonValue::String("{}".to_string()));
 +    }
 +
 +    for item in input.iter_mut() {
@@ -6160,7 +6338,7 @@ index 7cea4d0f97..f52f307447 100644
  /// Serializes a response item for trace evidence rather than future request construction.
  ///
  /// The protocol serializer intentionally omits some readable reasoning content
-@@ -389,6 +469,7 @@ fn append_with_context_best_effort(
+@@ -389,6 +466,7 @@ fn append_with_context_best_effort(
  
  #[cfg(test)]
  mod tests {
@@ -6168,7 +6346,7 @@ index 7cea4d0f97..f52f307447 100644
      use std::sync::Arc;
  
      use codex_protocol::ResponseItemId;
-@@ -494,6 +575,140 @@ mod tests {
+@@ -494,6 +572,140 @@ mod tests {
          Ok(())
      }
  
@@ -6690,11 +6868,11 @@ index f5a4648f80..3a9f3cf2b6 100644
          edge.carried_raw_payload_ids,
          vec![
 diff --git a/codex-rs/tui/src/chatwidget.rs b/codex-rs/tui/src/chatwidget.rs
-index 3cbe36586e..a008c935cc 100644
+index 57591c4017..f60c339fd1 100644
 --- a/codex-rs/tui/src/chatwidget.rs
 +++ b/codex-rs/tui/src/chatwidget.rs
-@@ -627,6 +627,10 @@ pub(crate) struct ChatWidget {
-     rate_limit_warnings: RateLimitWarningState,
+@@ -632,6 +632,10 @@ pub(crate) struct ChatWidget {
+     usage_notice_state: usage_notice::UsageNoticeState,
      backend_banner_state: backend_banners::BackendBannerState,
      automatic_model_switch_state: backend_banners::AutomaticModelSwitchState,
 +    /// Accepted per-turn route shown in status surfaces without mutating thread defaults.
@@ -6705,11 +6883,11 @@ index 3cbe36586e..a008c935cc 100644
      // Remember the account's Reserve entry notice across chats and transient banner refreshes.
      luna_reserve_notice_account_id: Option<String>,
 diff --git a/codex-rs/tui/src/chatwidget/constructor.rs b/codex-rs/tui/src/chatwidget/constructor.rs
-index 3ed23be896..d9043d92ea 100644
+index 00d6329dbb..c4762a2e11 100644
 --- a/codex-rs/tui/src/chatwidget/constructor.rs
 +++ b/codex-rs/tui/src/chatwidget/constructor.rs
-@@ -162,6 +162,9 @@ impl ChatWidget {
-             rate_limit_warnings: RateLimitWarningState::default(),
+@@ -164,6 +164,9 @@ impl ChatWidget {
+             usage_notice_state: usage_notice::UsageNoticeState::default(),
              backend_banner_state: backend_banners::BackendBannerState::default(),
              automatic_model_switch_state: backend_banners::AutomaticModelSwitchState::default(),
 +            routed_turn_model: None,
@@ -6719,13 +6897,13 @@ index 3ed23be896..d9043d92ea 100644
              luna_reserve_notice_account_id: None,
              warning_display_state: WarningDisplayState::default(),
 diff --git a/codex-rs/tui/src/chatwidget/settings.rs b/codex-rs/tui/src/chatwidget/settings.rs
-index 78dac65a9d..ab122279ad 100644
+index a9c2d1932d..1763cea8ca 100644
 --- a/codex-rs/tui/src/chatwidget/settings.rs
 +++ b/codex-rs/tui/src/chatwidget/settings.rs
 @@ -545,7 +545,10 @@ impl ChatWidget {
      }
  
-     pub(super) fn model_display_name(&self) -> &str {
+     pub(crate) fn model_display_name(&self) -> &str {
 -        let model = self.current_model();
 +        let model = self
 +            .routed_turn_model
@@ -6735,10 +6913,10 @@ index 78dac65a9d..ab122279ad 100644
              DEFAULT_MODEL_DISPLAY_NAME
          } else {
 diff --git a/codex-rs/tui/src/chatwidget/status_surfaces.rs b/codex-rs/tui/src/chatwidget/status_surfaces.rs
-index af547ce968..0eca880aca 100644
+index f84f8758f9..487b96b92c 100644
 --- a/codex-rs/tui/src/chatwidget/status_surfaces.rs
 +++ b/codex-rs/tui/src/chatwidget/status_surfaces.rs
-@@ -706,8 +706,10 @@ impl ChatWidget {
+@@ -708,8 +708,10 @@ impl ChatWidget {
      /// git metadata.
      pub(super) fn status_line_value(&mut self, item: StatusLineItem) -> Option<String> {
          match item {
@@ -6751,7 +6929,7 @@ index af547ce968..0eca880aca 100644
              StatusLineItem::Reasoning => Some(self.reasoning_display_name()),
              StatusLineItem::CurrentDir => {
                  Some(format_directory_display(
-@@ -959,10 +961,47 @@ impl ChatWidget {
+@@ -961,10 +963,47 @@ impl ChatWidget {
      }
  
      fn reasoning_display_name(&self) -> String {
@@ -6801,10 +6979,10 @@ index af547ce968..0eca880aca 100644
          let label = self.reasoning_display_name();
          let service_tier_label = self
 diff --git a/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs b/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
-index 6f5e038a32..f11b016492 100644
+index 1c2308a4d1..0815439543 100644
 --- a/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
 +++ b/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
-@@ -4004,7 +4004,9 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
+@@ -4009,7 +4009,9 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
  
      assert_eq!(
          status_line_text(&chat),
@@ -6815,7 +6993,7 @@ index 6f5e038a32..f11b016492 100644
      );
  
      chat.set_model("gpt-5.2");
-@@ -4067,19 +4069,49 @@ async fn status_line_model_with_reasoning_updates_on_mode_switch_without_manual_
+@@ -4075,19 +4077,49 @@ async fn status_line_model_with_reasoning_updates_on_mode_switch_without_manual_
      chat.local_settings.tui.status_line = Some(vec!["model-with-reasoning".to_string()]);
      chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
  
@@ -6869,7 +7047,7 @@ index 6f5e038a32..f11b016492 100644
  
  #[tokio::test]
 diff --git a/codex-rs/tui/src/chatwidget/turn_runtime.rs b/codex-rs/tui/src/chatwidget/turn_runtime.rs
-index 6d7c32cecc..0de5e553d0 100644
+index d473394efe..ff0f00abde 100644
 --- a/codex-rs/tui/src/chatwidget/turn_runtime.rs
 +++ b/codex-rs/tui/src/chatwidget/turn_runtime.rs
 @@ -9,6 +9,38 @@ const LEGACY_SAFETY_ACCESS_BLOCK_PREFIX: &str =
@@ -6911,17 +7089,17 @@ index 6d7c32cecc..0de5e553d0 100644
  
  fn is_safety_access_block_message(message: &str) -> bool {
      message.starts_with(LEGACY_SAFETY_ACCESS_BLOCK_PREFIX)
-@@ -74,6 +106,9 @@ impl ChatWidget {
-     // Raw reasoning uses the same flow as summarized reasoning
+@@ -75,6 +107,9 @@ impl ChatWidget {
  
      pub(super) fn on_task_started(&mut self) {
+         self.bottom_pane.dismiss_composer_sparkle();
 +        self.routed_turn_model = None;
 +        self.routed_turn_model_provider = None;
 +        self.routed_turn_reasoning_effort = None;
          self.clear_context_compaction();
          self.input_queue.user_turn_pending_start = false;
          self.reset_safety_buffering_for_turn_start();
-@@ -507,6 +542,12 @@ impl ChatWidget {
+@@ -513,6 +548,12 @@ impl ChatWidget {
          if !self.warning_display_state.should_display(&message) {
              return;
          }
@@ -6934,7 +7112,7 @@ index 6d7c32cecc..0de5e553d0 100644
          self.add_to_history(history_cell::new_warning_event(message));
          self.request_redraw();
      }
-@@ -544,3 +585,46 @@ impl ChatWidget {
+@@ -550,3 +591,46 @@ impl ChatWidget {
          "Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.".to_string()
      }
  }

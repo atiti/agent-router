@@ -679,12 +679,21 @@ AgentRoute deliberately leaves same-provider encrypted item identifiers intact s
 can work. This preserves reasoning continuity without attempting to decrypt or copy provider-private
 state across trust boundaries.
 
-The installer pins OpenAI Codex commit `b0af519c39766c173191fc39b341808619b51c74`. The maintained
-patches are `patches/codex-user-prompt-model-override.patch` and
-`patches/codex-package-version.patch`.
+Remote compaction checkpoints from the active provider are preserved, including on Azure and
+after resuming a thread. Routing uses the destination model's context window and compaction
+limits; retained approval requirements do not overwrite those limits.
+
+The installer pins OpenAI Codex `rust-v0.156.1` at commit `b412ff32c417f855c2b2d1581b77058eed87c84b`. The maintained
+patches are `patches/codex-user-prompt-model-override.patch`,
+`patches/codex-package-version.patch`, and `patches/codex-history-recovery.patch`.
 A weekly GitHub Actions job applies all patches to the latest upstream Codex release and compiles
 the CLI. Failures open one actionable compatibility issue; automation never publishes an unreviewed
 Codex upgrade. AgentRoute is not affiliated with or endorsed by OpenAI.
+
+The CLI's visible version remains `0.155.0-alpha.2.6` for Desktop compatibility. Use
+`agentroute doctor` and `agentroute desktop status` to verify the source build ID
+(`b412ff32…-provider-routing-v37`) and Desktop binary agreement; matching version banners alone
+do not establish that two installations contain the same patches.
 
 ## Development
 

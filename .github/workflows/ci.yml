@@ -32,4 +32,4 @@ jobs:
       - name: Verify maintained patch stack at the pinned Codex commit
         env:
           AGENTROUTE_UPSTREAM_CARGO_CHECK: "0"
-        run: ./scripts/check_upstream.sh b0af519c39766c173191fc39b341808619b51c74
+        run: ./scripts/check_upstream.sh b412ff32c417f855c2b2d1581b77058eed87c84b

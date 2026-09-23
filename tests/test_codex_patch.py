@@ -1,4 +1,5 @@
 import os
+import subprocess
 from pathlib import Path
 
 from agentroute.codex_patch import install_binary, patch_path, patch_paths
@@ -21,7 +22,9 @@ def test_native_patch_is_packaged():
     assert "ToolCompatibility::FunctionsAndApplyPatch" in content
     assert "provider_tool_compatibility_preserves_admitted_safety_authority" in content
     assert "guardian review session could not disable incompatible" in content
-    assert "normalize_prompt_for_provider" in content
+    assert "fn normalize_prompt_for_provider" not in content
+    assert "compaction_survives_same_provider_but_not_provider_or_account_switch" in content
+    assert "let mut model_info = destination.clone();" in content
     assert "openai_prompt_drops_third_party_plaintext_reasoning" in content
     assert "compatible_third_party_provider_drops_encrypted_provider_state" in content
     assert "final_request_boundary_drops_third_party_encrypted_state" in content
@@ -66,7 +69,7 @@ def test_native_patch_is_packaged():
     assert "cross_provider_inter_agent_input_converts_payload_to_plaintext" not in content
     assert 'DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE: &str = "agentroute_collaboration"' in content
     assert "spawn_agent_tool_v2_requires_task_name_and_lists_visible_models" in content
-    assert "if self.namespace == DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE" in content
+    assert "namespace == DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE" in content
     assert '"spawn_agent" | "send_message" | "followup_task"' in content
     assert "message.encrypted = None;" in content
     assert "plaintext_v2_custom_namespace_calls_are_redacted_without_encryption_metadata" in content
@@ -79,7 +82,7 @@ def test_native_patch_is_packaged():
     assert "provider_capabilities" in content
     assert ".namespace_tools" in content
     assert 'format!("functions.{namespace}.spawn_agent")' in content
-    assert '"functions.spawn_agent".to_string()' in content
+    assert '"functions.collaboration.spawn_agent".to_string()' in content
     assert "fn tool_dispatch_payload(payload: &ToolPayload, source: &ToolCallSource)" in content
     assert "matches!(source, ToolCallSource::DirectPlaintextMessage)" in content
     assert 'arguments: "{}".to_string()' in content
@@ -113,19 +116,66 @@ def test_primary_patch_path_is_backwards_compatible():
     assert patch_path() == patch_paths()[0]
 
 
-def test_release_metadata_uses_v0541_runtime_v36():
+def test_release_metadata_uses_v0542_runtime_v37():
     root = Path(__file__).parents[1]
     package = (root / "pyproject.toml").read_text(encoding="utf-8")
     lock = (root / "uv.lock").read_text(encoding="utf-8")
     public_api = (root / "src/agentroute/__init__.py").read_text(encoding="utf-8")
     installer = (root / "scripts/install.sh").read_text(encoding="utf-8")
     doctor = (root / "src/agentroute/doctor.py").read_text(encoding="utf-8")
+    ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
     assert 'version = "0.5.42"' in package
     assert 'version = "0.5.42"' in lock
     assert '__version__ = "0.5.42"' in public_api
-    assert "provider-routing-v36" in installer
-    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v36"' in doctor
+    assert "provider-routing-v37" in installer
+    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v37"' in doctor
+    assert "b412ff32c417f855c2b2d1581b77058eed87c84b" in installer
+    assert "0.156.1" in installer
+    assert "b412ff32c417f855c2b2d1581b77058eed87c84b" in ci
+
+
+def test_installer_preserves_dirty_source_before_upstream_upgrade(tmp_path):
+    origin = tmp_path / "origin"
+    source = tmp_path / "codex"
+    origin.mkdir()
+
+    def git(cwd, *args):
+        return subprocess.check_output(
+            ["git", "-C", str(cwd), *args], text=True, stderr=subprocess.STDOUT
+        ).strip()
+
+    git(origin, "init")
+    git(origin, "config", "user.name", "Test")
+    git(origin, "config", "user.email", "test@example.invalid")
+    (origin / "source.rs").write_text("old upstream\n")
+    git(origin, "add", ".")
+    git(origin, "commit", "-m", "old")
+    old = git(origin, "rev-parse", "HEAD")
+    (origin / "source.rs").write_text("new upstream\n")
+    git(origin, "commit", "-am", "new")
+    new = git(origin, "rev-parse", "HEAD")
+    git(tmp_path, "clone", str(origin), str(source))
+    git(source, "checkout", "--detach", old)
+    git(source, "config", "user.name", "Test")
+    git(source, "config", "user.email", "test@example.invalid")
+    (source / "source.rs").write_text("old AgentRoute patches\n")
+    git(source, "add", "source.rs")
+    (source / "source.rs").write_text("additional local edits\n")
+    (source / "local-note.txt").write_text("preserve untracked work\n")
+    installer = (Path(__file__).parents[1] / "scripts/install.sh").read_text()
+    start = installer.index('git -C "$AGENTROUTE_CODEX_SOURCE" fetch')
+    end = installer.index("AGENTROUTE_PATCHES_APPLIED=0", start)
+    subprocess.run(
+        ["sh", "-eu", "-c", installer[start:end]],
+        env={**os.environ, "AGENTROUTE_CODEX_SOURCE": str(source), "AGENTROUTE_CODEX_COMMIT": new},
+        check=True, capture_output=True, text=True,
+    )
+    assert git(source, "rev-parse", "HEAD") == new
+    assert git(source, "status", "--porcelain") == ""
+    assert git(source, "show", "stash@{0}:source.rs") == "additional local edits"
+    assert git(source, "show", "stash@{0}^2:source.rs") == "old AgentRoute patches"
+    assert git(source, "show", "stash@{0}^3:local-note.txt") == "preserve untracked work"
 
 
 def test_install_binary_atomically_replaces_destination(tmp_path, monkeypatch):
@@ -175,7 +225,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v36" in installer
+    assert "provider-routing-v37" in installer
     assert "chatgpt_profile_home" in installer
     assert "ordinary_usage_allowed" in installer
     assert "codex-package-version.patch" in installer

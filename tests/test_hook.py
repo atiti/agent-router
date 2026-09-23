@@ -1219,7 +1219,7 @@ def test_confirmation_uses_previous_assistant_task_definition(tmp_path):
     output = invoke(config, store, "ok do it", transcript_path=transcript)
     row = store.latest("same-thread")
 
-    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6-sol"
     assert "MAX→SMART SAFETY FALLBACK" in output["hookSpecificOutput"]["routeMessage"]
     assert row is not None
     assert row["task_context_used"] == 1
@@ -1236,7 +1236,7 @@ def test_credential_route_notice_is_visible(tmp_path):
         "service api key: abcdefghijklmnop1234",
     )
 
-    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6-sol"
     assert "CREDENTIAL RISK" in output["hookSpecificOutput"]["routeMessage"]
 
 
@@ -1254,7 +1254,7 @@ def test_hook_surfaces_llm_classifier_confidence_and_audits_hash(tmp_path, monke
     output = invoke(config, store, "Please handle this")
     row = store.latest("same-thread")
 
-    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6-sol"
     assert "classifier confidence 87%" in output["hookSpecificOutput"]["routeMessage"]
     assert "rule score -0.5" in output["hookSpecificOutput"]["routeMessage"]
     assert "implementation" in output["hookSpecificOutput"]["routeMessage"]
@@ -1380,7 +1380,7 @@ def test_explicit_confirmation_approves_agent_request(tmp_path):
     row = store.latest("same-thread")
 
     assert "AGENT REQUEST APPROVED" in output["hookSpecificOutput"]["routeMessage"]
-    assert output["hookSpecificOutput"]["model"] == "gpt-5.6-sol"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6-sol"
     assert row is not None
     assert row["agent_requested_tier"] == "smart"
     assert len(row["agent_request_reason_hash"]) == 64
@@ -1437,7 +1437,7 @@ def test_stop_hook_records_exact_turn_usage(tmp_path):
     payload = {
         "session_id": "same-thread",
         "turn_id": "turn-1",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "transcript_path": str(transcript),
     }
 
@@ -1445,7 +1445,7 @@ def test_stop_hook_records_exact_turn_usage(tmp_path):
     row = store.latest("same-thread")
 
     assert json.loads(sink.getvalue()) == {"continue": True, "suppressOutput": True}
-    assert row["answer_model"] == "gpt-5.6-luna"
+    assert row["answer_model"] == "gpt-6-luna"
     assert row["answer_input_tokens"] == 1000
     assert row["answer_cached_input_tokens"] == 800
     assert row["answer_output_tokens"] == 50

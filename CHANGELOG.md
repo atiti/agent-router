@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Port the complete routed Codex patch stack to upstream `rust-v0.156.1`
+  (`b412ff32`, routing runtime v37), including its GPT-6 model catalog.
+- Preserve same-provider Azure compaction checkpoints, including after resume,
+  while still dropping encrypted state across provider/account boundaries.
+  Normalize requests only at the shared client boundary.
+- Use destination-specific context windows, compaction limits, modalities, and
+  guidance when routing; retain admitted approval authority separately and never
+  label fallback model metadata as verified.
+- Preserve staged, unstaged, and untracked Codex source changes in a recoverable
+  stash before upgrading the managed checkout to a new upstream revision.
 - Recover missing custom-tool results as aborted during Codex history normalization, including
   debug builds, rather than panicking when reopening an interrupted thread.
 

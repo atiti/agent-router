@@ -7,9 +7,9 @@ AGENTROUTE_BIN_DIR="$AGENTROUTE_HOME_DIR/bin"
 AGENTROUTE_CODEX_SOURCE="$AGENTROUTE_HOME_DIR/src/codex"
 AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-"$AGENTROUTE_HOME_DIR/build/codex"}
 AGENTROUTE_BUILD_PROFILE=${AGENTROUTE_BUILD_PROFILE:-dev-small}
-AGENTROUTE_CODEX_COMMIT=b0af519c39766c173191fc39b341808619b51c74
-AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.155.0-alpha.10}
-AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v36"
+AGENTROUTE_CODEX_COMMIT=b412ff32c417f855c2b2d1581b77058eed87c84b
+AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.156.1}
+AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v37"
 AGENTROUTE_BUILD_ID_FILE="$AGENTROUTE_HOME_DIR/build-id"
 AGENTROUTE_PATCHES="
 $AGENTROUTE_PROJECT_ROOT/src/agentroute/patches/codex-user-prompt-model-override.patch
@@ -63,6 +63,15 @@ if [ ! -d "$AGENTROUTE_CODEX_SOURCE/.git" ]; then
 fi
 
 git -C "$AGENTROUTE_CODEX_SOURCE" fetch origin "$AGENTROUTE_CODEX_COMMIT"
+# Preserve the old patched checkout (including staged/untracked work) before
+# changing upstream revisions. Checkout would otherwise fail before our normal
+# same-revision patch refresh can run. The stash remains available for recovery.
+if [ "$(git -C "$AGENTROUTE_CODEX_SOURCE" rev-parse HEAD)" != "$AGENTROUTE_CODEX_COMMIT" ] \
+    && [ -n "$(git -C "$AGENTROUTE_CODEX_SOURCE" status --porcelain)" ]; then
+    git -C "$AGENTROUTE_CODEX_SOURCE" stash push --include-untracked \
+        -m "AgentRoute source before upgrade to $AGENTROUTE_CODEX_COMMIT"
+    printf 'Previous Codex source changes preserved in git stash at %s.\n' "$AGENTROUTE_CODEX_SOURCE"
+fi
 git -C "$AGENTROUTE_CODEX_SOURCE" checkout --detach "$AGENTROUTE_CODEX_COMMIT"
 AGENTROUTE_PATCHES_APPLIED=0
 if grep -F 'Route the turn before pre-sampling compaction' \
@@ -95,6 +104,12 @@ if grep -F 'Route the turn before pre-sampling compaction' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/step_activation.rs" >/dev/null 2>&1 \
     && grep -F 'compatibility: Option<ToolCompatibility>' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/step_activation.rs" >/dev/null 2>&1 \
+    && grep -F 'let mut model_info = destination.clone();' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/step_activation.rs" >/dev/null 2>&1 \
+    && grep -F 'compaction_survives_same_provider_but_not_provider_or_account_switch' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/client_tests.rs" >/dev/null 2>&1 \
+    && ! grep -F 'fn normalize_prompt_for_provider' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/turn.rs" >/dev/null 2>&1 \
     && grep -F 'Recover interrupted custom calls in debug builds too.' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/context_manager/normalize.rs" >/dev/null 2>&1 \
     && ! grep -F '"routing_prompt".to_string()' \

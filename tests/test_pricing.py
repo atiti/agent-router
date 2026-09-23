@@ -55,10 +55,10 @@ def test_report_compares_same_observed_tokens_and_includes_classifier(tmp_path):
     assert report.input_tokens == 1000
     assert report.cached_input_tokens == 800
     assert report.output_tokens == 50
-    assert report.actual_cost == pytest.approx(0.000116)
+    assert report.actual_cost == pytest.approx(0.000053)
     assert report.baseline_cost == pytest.approx(0.0053)
     assert report.classifier_cost == pytest.approx(0.000032)
-    assert report.net_savings == pytest.approx(0.005152)
+    assert report.net_savings == pytest.approx(0.005215)
     assert report.unpriced_models == ()
 
 

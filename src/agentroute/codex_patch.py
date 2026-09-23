@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-PINNED_CODEX_COMMIT = "b0af519c39766c173191fc39b341808619b51c74"
+PINNED_CODEX_COMMIT = "b412ff32c417f855c2b2d1581b77058eed87c84b"
 
 
 def patch_paths() -> tuple[Path, ...]:
