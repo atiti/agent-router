@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Show a colorful, transcript-visible `MODEL ROUTE` banner in the Codex TUI, with tier, model,
+  provider, and reasoning effort visually distinguished. The route remains available in warnings.
+
 - Port the complete routed Codex patch stack to upstream `rust-v0.156.1`
   (`b412ff32`, routing runtime v37), including its GPT-6 model catalog.
 - Preserve same-provider Azure compaction checkpoints, including after resume,
@@ -14,6 +17,14 @@
   stash before upgrading the managed checkout to a new upstream revision.
 - Recover missing custom-tool results as aborted during Codex history normalization, including
   debug builds, rather than panicking when reopening an interrupted thread.
+
+## 0.5.43 — 2026-09-23
+
+- Show a colorful `MODEL ROUTE` banner directly in the Codex transcript, making the selected tier,
+  model, backend, and reasoning effort easy to scan without opening the warning panel.
+- Port the complete routed Codex patch stack to upstream `rust-v0.156.1`, preserve same-provider
+  Azure compaction state, and use destination-specific model metadata.
+- Recover interrupted custom-tool history without panicking in debug or release builds.
 
 ## 0.5.42 — 2026-09-22
 

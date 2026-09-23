@@ -17,6 +17,12 @@ DEFAULT_SOURCE_APP = Path("/Applications/ChatGPT.app")
 DEFAULT_DESTINATION_APP = Path("/Applications/ChatGPT-Routed.app")
 
 
+def _agentroute_version() -> str:
+    from . import __version__
+
+    return __version__
+
+
 def _assets_dir() -> Path:
     return Path(__file__).with_name("desktop_assets")
 
@@ -86,6 +92,7 @@ def desktop_status(
             source_version and routed_version and source_version == routed_version
         ),
         "build_id": _read_build_id(home),
+        "agentroute_version": _agentroute_version(),
     }
 
 
@@ -172,7 +179,12 @@ def _build_desktop_app_locked(
                 "LSHasLocalizedDisplayName": False,
                 "SUEnableAutomaticChecks": False,
                 "SUAutomaticallyUpdate": False,
+                "AgentRouteVersion": _agentroute_version(),
                 "AgentRouteDesktopBuild": _read_build_id(home),
+                "CFBundleGetInfoString": (
+                    f"AgentRoute v{_agentroute_version()} · "
+                    f"Codex-compatible {routed_version or 'unknown'}"
+                ),
             }
         )
         with info_path.open("wb") as handle:

@@ -78,6 +78,30 @@ app.add_typer(account_app, name="account")
 console = Console()
 
 
+@app.command("version")
+def version_command() -> None:
+    """Show AgentRoute's release/runtime versions separately from Codex compatibility."""
+    from . import __version__
+
+    home = Path(os.environ.get("AGENTROUTE_HOME", Path.home() / ".agentroute"))
+    build_path = home / "build-id"
+    build_id = build_path.read_text(encoding="utf-8").strip() if build_path.exists() else "unknown"
+    runtime = build_id.rsplit("-provider-routing-", 1)[-1]
+    binary = home / "bin" / "codex-bin"
+    codex_compatibility = "unknown"
+    if binary.is_file():
+        try:
+            result = subprocess.run(
+                [str(binary), "--version"], capture_output=True, text=True, check=True
+            )
+            codex_compatibility = (result.stdout or result.stderr).strip() or "unknown"
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    console.print(f"AgentRoute: v{__version__}")
+    console.print(f"Routing runtime: {runtime}")
+    console.print(f"Codex compatibility: {codex_compatibility}")
+
+
 @app.command("help")
 def help_command() -> None:
     """Show the prompt tags and routing examples."""

@@ -6,6 +6,7 @@ import os
 import sys
 from typing import Any, TextIO
 
+from . import __version__
 from .audit import AuditStore
 from .capacity import backend_spend, subscription_state
 from .classifier import JevShadowClassifier
@@ -500,9 +501,9 @@ def codex_user_prompt_submit(
                     else ""
                 )
                 + (
-                    f" · runtime {runtime_label}"
+                    f" · AgentRoute v{__version__} · runtime {runtime_label}"
                     if (runtime_label := _runtime_label())
-                    else ""
+                    else f" · AgentRoute v{__version__}"
                 )
             )
             if (

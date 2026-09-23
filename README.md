@@ -690,10 +690,14 @@ A weekly GitHub Actions job applies all patches to the latest upstream Codex rel
 the CLI. Failures open one actionable compatibility issue; automation never publishes an unreviewed
 Codex upgrade. AgentRoute is not affiliated with or endorsed by OpenAI.
 
-The CLI's visible version remains `0.155.0-alpha.2.6` for Desktop compatibility. Use
-`agentroute doctor` and `agentroute desktop status` to verify the source build ID
-(`b412ff32…-provider-routing-v37`) and Desktop binary agreement; matching version banners alone
-do not establish that two installations contain the same patches.
+The routed Codex CLI's visible version remains `0.155.0-alpha.2.6` for Desktop compatibility.
+AgentRoute has separate versioning: `agentroute version` reports the AgentRoute release, routing
+runtime, and compatible Codex version; route notices include the AgentRoute release. The routed
+Desktop bundle records the AgentRoute version in its own metadata without changing Codex's app-server
+version, bundle identifier, or compatibility handshake. Use `agentroute doctor` and
+`agentroute desktop status` to verify the source build ID (`b412ff32…-provider-routing-v38`) and
+Desktop binary agreement; matching version banners alone do not establish that two installations
+contain the same patches.
 
 ## Development
 

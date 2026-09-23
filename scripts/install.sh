@@ -9,7 +9,7 @@ AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-"$AGENTROUTE_HOME_DIR/build/c
 AGENTROUTE_BUILD_PROFILE=${AGENTROUTE_BUILD_PROFILE:-dev-small}
 AGENTROUTE_CODEX_COMMIT=b412ff32c417f855c2b2d1581b77058eed87c84b
 AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.156.1}
-AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v37"
+AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v38"
 AGENTROUTE_BUILD_ID_FILE="$AGENTROUTE_HOME_DIR/build-id"
 AGENTROUTE_PATCHES="
 $AGENTROUTE_PROJECT_ROOT/src/agentroute/patches/codex-user-prompt-model-override.patch
@@ -79,6 +79,8 @@ if grep -F 'Route the turn before pre-sampling compaction' \
     && grep -F 'foreign_provider_state_ids' \
     "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/client.rs" >/dev/null 2>&1 \
     && grep -F 'routed_turn_model' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/tui/src/chatwidget.rs" >/dev/null 2>&1 \
+    && grep -F 'new_agentroute_route_event(message)' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/tui/src/chatwidget.rs" >/dev/null 2>&1 \
     && grep -F 'AgentMessageContentDeltaEvent' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/hook_runtime.rs" >/dev/null 2>&1 \
