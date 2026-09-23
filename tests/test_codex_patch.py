@@ -16,6 +16,10 @@ def test_native_patch_is_packaged():
     assert "routeMessage" in content
     assert "routed_turn_model" in content
     assert "history_cell::new_agentroute_route_event(message)" in content
+    assert "Keep routing notices out of the warning channel" in content
+    assert "AgentRouteNoticeHistoryCell" in content
+    assert "agentroute_route_notices_are_transcript_cells_not_warnings" in content
+    assert 'notification.item_id.starts_with("agentroute-route-")' in content
     assert "Color::Magenta" in content
     assert "Color::Green" in content
     assert "Color::Yellow" in content
@@ -61,10 +65,10 @@ def test_native_patch_is_packaged():
     assert "model_provider_id" in content
     assert "foreign_provider_state_ids" in content
     assert "history_has_foreign_provider_state" in content
-    assert "SessionSource::VSCode" in content
+    assert "Keep routing notices out of the warning channel" in content
     assert "MessagePhase::Commentary" in content
     assert "emit_turn_item_completed" in content
-    assert "not added to the model's input history" in content
+    assert "model never receives it as prompt context" in content
     assert "routing_prompt" in content
     assert "Some(args.task_name.clone())" in content
     assert "routing_inherited_model_provider" in content
@@ -121,7 +125,7 @@ def test_primary_patch_path_is_backwards_compatible():
     assert patch_path() == patch_paths()[0]
 
 
-def test_release_metadata_uses_v0543_runtime_v38():
+def test_release_metadata_uses_v0544_runtime_v39():
     root = Path(__file__).parents[1]
     package = (root / "pyproject.toml").read_text(encoding="utf-8")
     lock = (root / "uv.lock").read_text(encoding="utf-8")
@@ -130,11 +134,11 @@ def test_release_metadata_uses_v0543_runtime_v38():
     doctor = (root / "src/agentroute/doctor.py").read_text(encoding="utf-8")
     ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert 'version = "0.5.43"' in package
-    assert 'version = "0.5.43"' in lock
-    assert '__version__ = "0.5.43"' in public_api
-    assert "provider-routing-v38" in installer
-    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v38"' in doctor
+    assert 'version = "0.5.44"' in package
+    assert 'version = "0.5.44"' in lock
+    assert '__version__ = "0.5.44"' in public_api
+    assert "provider-routing-v39" in installer
+    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v39"' in doctor
     assert "b412ff32c417f855c2b2d1581b77058eed87c84b" in installer
     assert "0.156.1" in installer
     assert "b412ff32c417f855c2b2d1581b77058eed87c84b" in ci
@@ -230,7 +234,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v38" in installer
+    assert "provider-routing-v39" in installer
     assert "chatgpt_profile_home" in installer
     assert "ordinary_usage_allowed" in installer
     assert "codex-package-version.patch" in installer
