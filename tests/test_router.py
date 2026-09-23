@@ -58,6 +58,59 @@ def test_public_classifier_default_is_gpt_luna():
     assert default_config().routing.classifier.model == "gpt-5.6-luna"
 
 
+def test_luna_minimum_reasoning_is_xhigh_for_gpt_and_azure(monkeypatch):
+    config = default_config()
+    assert config.routing.classifier.reasoning_effort == "low"
+    config.backends["gpt"].tiers["fast"].reasoning_effort = "low"
+    gpt = Router(config).route(
+        RouteContext(
+            session_id="gpt-luna-floor",
+            latest_prompt="@gpt @fast @low say hello",
+            current_tier=Tier.NORMAL,
+        )
+    )
+
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    config.backends["azure"].tiers["fast"] = ModelTarget(
+        model="dev-gpt-6-luna", reasoning_effort="low"
+    )
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    azure = Router(config).route(
+        RouteContext(
+            session_id="azure-luna-floor",
+            latest_prompt="@azure @fast @low say hello",
+            current_tier=Tier.NORMAL,
+        )
+    )
+
+    for decision in (gpt, azure):
+        assert decision.reasoning_effort == "xhigh"
+        assert decision.reasoning_effort_source == "model_floor"
+        assert ReasonCode.MODEL_REASONING_FLOOR in decision.reason_codes
+        assert decision.selection_receipt["policy"][
+            "minimum_model_reasoning_effort"
+        ] == "xhigh"
+
+
+def test_luna_reasoning_floor_does_not_change_other_models():
+    config = default_config()
+    config.backends["gpt"].tiers["fast"].model = "gpt-6-sol"
+    config.backends["gpt"].tiers["fast"].reasoning_effort = "low"
+    decision = Router(config).route(
+        RouteContext(
+            session_id="sol-no-luna-floor",
+            latest_prompt="@gpt @fast @low say hello",
+            current_tier=Tier.NORMAL,
+        )
+    )
+
+    assert decision.model == "gpt-6-sol"
+    assert decision.reasoning_effort == "low"
+    assert decision.reasoning_effort_source == "manual"
+    assert ReasonCode.MODEL_REASONING_FLOOR not in decision.reason_codes
+
+
 def test_hybrid_uses_llm_for_ambiguous_prompt():
     classifier = FakeClassifier()
     decision = hybrid_route("Please handle this", classifier, current_tier=Tier.NORMAL)
@@ -314,7 +367,9 @@ def test_bounded_slack_reply_routes_normal_without_inheriting_completed_work():
     )
 
     assert decision.tier is Tier.NORMAL
-    assert decision.reasoning_effort == "medium"
+    assert decision.reasoning_effort == "xhigh"
+    assert decision.reasoning_effort_source == "model_floor"
+    assert ReasonCode.MODEL_REASONING_FLOOR in decision.reason_codes
     assert classifier.calls == 1
     assert ReasonCode.BOUNDED_COMMUNICATION in decision.reason_codes
 
@@ -327,7 +382,9 @@ def test_classifier_fast_is_floored_for_judgment_work():
     )
 
     assert decision.tier is Tier.NORMAL
-    assert decision.reasoning_effort == "medium"
+    assert decision.reasoning_effort == "xhigh"
+    assert decision.reasoning_effort_source == "model_floor"
+    assert ReasonCode.MODEL_REASONING_FLOOR in decision.reason_codes
     assert ReasonCode.FAST_QUALITY_FLOOR in decision.reason_codes
 
 
@@ -341,8 +398,10 @@ def test_classifier_fast_remains_available_for_exact_retrieval():
     )
 
     assert decision.tier is Tier.FAST
-    assert decision.reasoning_effort == "low"
+    assert decision.reasoning_effort == "xhigh"
+    assert decision.reasoning_effort_source == "model_floor"
     assert ReasonCode.FAST_QUALITY_FLOOR not in decision.reason_codes
+    assert ReasonCode.MODEL_REASONING_FLOOR in decision.reason_codes
 
 
 def test_continuation_preserves_previous_tier_floor():

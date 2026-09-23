@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from agentroute.classifier import JevShadowClassifier, OpenAICompatibleClassifier, read_api_key
-from agentroute.config import ClassifierConfig, JevShadowConfig
+from agentroute.config import ClassifierConfig, JevShadowConfig, default_config
 from agentroute.models import RouteContext, Tier
 
 
@@ -80,6 +80,10 @@ def test_remote_classifier_requires_explicit_prompt_egress():
         classifier.classify(RouteContext(session_id="s", latest_prompt="handle this"))
 
 
+def test_classifier_reasoning_effort_remains_low_by_default():
+    assert default_config().routing.classifier.reasoning_effort == "low"
+
+
 def test_local_classifier_needs_no_api_key_and_parses_json(monkeypatch):
     captured = {}
 
@@ -132,6 +136,7 @@ def test_local_classifier_needs_no_api_key_and_parses_json(monkeypatch):
     assert captured["timeout"] == 5.0
     assert captured["request"].get_header("Authorization") is None
     body = json.loads(captured["request"].data)
+    assert body["reasoning_effort"] == "low"
     classifier_input = json.loads(body["messages"][1]["content"])
     assert classifier_input["previous_assistant_context"] == "finition"
     assert classifier_input["candidate_reasoning_efforts"] == [
