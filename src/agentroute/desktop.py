@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import platform
 import plistlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -15,6 +16,9 @@ from .config import agentroute_home
 
 DEFAULT_SOURCE_APP = Path("/Applications/ChatGPT.app")
 DEFAULT_DESTINATION_APP = Path("/Applications/ChatGPT-Routed.app")
+_CODEX_RELEASE_VERSION = re.compile(
+    r"\bcodex-cli\s+(?P<release>\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z.-]+)?\b"
+)
 
 
 def _agentroute_version() -> str:
@@ -75,6 +79,27 @@ def _codex_version(binary: Path) -> str | None:
     return (result.stdout or result.stderr).strip() or None
 
 
+def _codex_release_line(version: str | None) -> str | None:
+    """Extract Codex's semver release line, excluding alpha/build identifiers."""
+    if not version:
+        return None
+    match = _CODEX_RELEASE_VERSION.search(version)
+    return match.group("release") if match else None
+
+
+def _codex_versions_compatible(source_version: str | None, routed_version: str | None) -> bool:
+    """Allow different prerelease builds only when both target the same Codex release."""
+    if not source_version or not routed_version:
+        return False
+    source_release = _codex_release_line(source_version)
+    routed_release = _codex_release_line(routed_version)
+    if source_release and routed_release:
+        return source_release == routed_release
+    # Preserve support for legacy/custom binaries without a codex-cli semver label,
+    # but never treat two unreported versions as evidence of compatibility.
+    return source_version == routed_version
+
+
 def desktop_status(
     source: Path = DEFAULT_SOURCE_APP,
     destination: Path = DEFAULT_DESTINATION_APP,
@@ -89,8 +114,13 @@ def desktop_status(
         "destination_version": _codex_version(destination / "Contents/Resources/codex"),
         "routed_binary_version": routed_version,
         "source_routed_versions_match": bool(
+            _codex_versions_compatible(source_version, routed_version)
+        ),
+        "source_routed_versions_exact_match": bool(
             source_version and routed_version and source_version == routed_version
         ),
+        "source_routed_release_line": _codex_release_line(source_version),
+        "routed_release_line": _codex_release_line(routed_version),
         "build_id": _read_build_id(home),
         "agentroute_version": _agentroute_version(),
     }
@@ -139,11 +169,14 @@ def _build_desktop_app_locked(
             raise FileNotFoundError(f"required AgentRoute asset does not exist: {required}")
     source_version = _codex_version(source / "Contents/Resources/codex")
     routed_version = _codex_version(codex)
-    if not allow_version_mismatch and source_version != routed_version:
+    if not allow_version_mismatch and not _codex_versions_compatible(
+        source_version, routed_version
+    ):
         raise RuntimeError(
-            "official and routed Codex versions differ "
+            "official and routed Codex release versions differ "
             f"({source_version or 'unknown'} != {routed_version or 'unknown'}); "
-            "update AgentRoute first or explicitly allow the mismatch"
+            "the major.minor.patch release line must match; update AgentRoute first or "
+            "explicitly allow the mismatch"
         )
     if destination.exists() and not replace:
         raise FileExistsError(f"destination exists; use desktop rebuild: {destination}")

@@ -29,11 +29,26 @@ done
 SOURCE_CODEX="$SOURCE_APP/Contents/Resources/codex"
 SOURCE_VERSION=$("$SOURCE_CODEX" --version 2>/dev/null || true)
 ROUTED_VERSION=$("$ROUTED_CODEX" --version 2>/dev/null || true)
+SOURCE_RELEASE=$(printf '%s\n' "$SOURCE_VERSION" | sed -nE \
+    's/.*codex-cli[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)([-+][[:alnum:].-]+)?.*/\1/p')
+ROUTED_RELEASE=$(printf '%s\n' "$ROUTED_VERSION" | sed -nE \
+    's/.*codex-cli[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)([-+][[:alnum:].-]+)?.*/\1/p')
+VERSIONS_COMPATIBLE=0
+if [ -n "$SOURCE_VERSION" ] && [ -n "$ROUTED_VERSION" ]; then
+    if [ -n "$SOURCE_RELEASE" ] && [ -n "$ROUTED_RELEASE" ] \
+        && [ "$SOURCE_RELEASE" = "$ROUTED_RELEASE" ]; then
+        VERSIONS_COMPATIBLE=1
+    elif [ "$SOURCE_VERSION" = "$ROUTED_VERSION" ]; then
+        VERSIONS_COMPATIBLE=1
+    fi
+fi
 if [ "${AGENTROUTE_ALLOW_DESKTOP_VERSION_MISMATCH:-0}" != 1 ] \
-    && [ "$SOURCE_VERSION" != "$ROUTED_VERSION" ]; then
-    printf 'Official and routed Codex versions differ (%s != %s).\n' \
+    && [ "$VERSIONS_COMPATIBLE" != 1 ]; then
+    printf 'Official and routed Codex release versions differ (%s != %s).\n' \
         "${SOURCE_VERSION:-unknown}" "${ROUTED_VERSION:-unknown}" >&2
-    printf 'Update AgentRoute first; a mismatch can break mobile remote connections.\n' >&2
+    printf '%s\n' \
+        'The major.minor.patch release line must match; use the explicit override only if you accept the compatibility risk.' \
+        >&2
     exit 1
 fi
 
