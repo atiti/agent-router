@@ -32,7 +32,9 @@ def test_jev_shadow_is_loopback_only_and_parses_typed_answers(monkeypatch):
             {
                 "model": "nli-deberta-large",
                 "answers": {
-                    "tier": {"choice": "smart", "confidence": 0.44},
+                    "tier": {"noul": 0.08},
+                    "requires_smart": {"noul": 0.82},
+                    "requires_max": {"noul": 0.05},
                     "reasoning_effort": {"choice": "high", "confidence": 0.30},
                     "task_type": {"choice": "debugging", "confidence": 0.52},
                 },
@@ -48,12 +50,19 @@ def test_jev_shadow_is_loopback_only_and_parses_typed_answers(monkeypatch):
     assert result.tier is Tier.SMART
     assert result.reasoning_effort == "high"
     assert result.task_type.value == "debugging"
-    assert result.tier_confidence == 0.44
+    assert result.tier_confidence == 0.82
+    assert result.tier_signals == {
+        "clearly_fast": 0.08,
+        "requires_smart": 0.82,
+        "requires_max": 0.05,
+    }
     assert captured["timeout"] == 0.75
     body = json.loads(captured["request"].data)
     assert body["model"] == "nli-deberta-large"
     assert set(body["questions"]) == {
         "tier",
+        "requires_smart",
+        "requires_max",
         "reasoning_effort",
         "task_type",
     }

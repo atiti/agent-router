@@ -1281,7 +1281,9 @@ def test_jev_shadow_is_audited_but_cannot_change_a_live_route(tmp_path, monkeypa
             "read": lambda self: json.dumps({
                 "model": "nli-deberta-large",
                 "answers": {
-                    "tier": {"choice": "fast", "confidence": 0.9},
+                    "tier": {"noul": 0.95},
+                    "requires_smart": {"noul": 0.05},
+                    "requires_max": {"noul": 0.01},
                     "reasoning_effort": {"choice": "low", "confidence": 0.9},
                     "task_type": {"choice": "formatting", "confidence": 0.9},
                 },

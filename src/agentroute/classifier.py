@@ -99,6 +99,7 @@ class JevShadowResult(BaseModel):
     task_type_confidence: float = Field(ge=0, le=1)
     latency_ms: float = Field(ge=0)
     model: str
+    tier_signals: dict[str, float] = Field(default_factory=dict)
 
 
 def normalize_task_type(value: str) -> ClassifierTaskType:
@@ -220,6 +221,7 @@ class OpenAICompatibleClassifier:
         self.last_latency_ms: float | None = None
         self.last_usage: dict[str, int | float] = {}
         self.last_previous_context_chars = 0
+        self.last_tier_signals: dict[str, float] = {}
         self.last_status = "idle"
         self.last_error_type: str | None = None
 
@@ -259,6 +261,7 @@ class OpenAICompatibleClassifier:
         self.last_request_hash = None
         self.last_latency_ms = None
         self.last_usage = {}
+        self.last_tier_signals = {}
         self.last_previous_context_chars = 0
         self.last_status = "started"
         self.last_error_type = None
@@ -397,21 +400,25 @@ class JevShadowClassifier:
             "state": state,
             "questions": {
                 "tier": {
-                    "type": "choice",
-                    "instructions": "Choose the cheapest sufficient coding-agent tier.",
-                    "criteria": {
-                        "fast": "Exact retrieval, status, no-op, formatting, rename, or typo fix.",
-                        "normal": (
-                            "Routine communication, explanation, analysis, or implementation."
-                        ),
-                        "smart": (
-                            "Debugging, operations, architecture, security, or multi-step work."
-                        ),
-                        "max": (
-                            "Unusually deep cross-cutting reasoning where smart is materially "
-                            "insufficient."
-                        ),
-                    },
+                    "type": "noul",
+                    "instructions": (
+                        "This is clearly a safe FAST task: greeting, acknowledgement, exact "
+                        "retrieval, simple status, deterministic formatting, rename, or typo fix."
+                    ),
+                },
+                "requires_smart": {
+                    "type": "noul",
+                    "instructions": (
+                        "This requires at least SMART: debugging, production operation, security, "
+                        "architecture, substantial uncertainty, or multi-step tool orchestration."
+                    ),
+                },
+                "requires_max": {
+                    "type": "noul",
+                    "instructions": (
+                        "This requires exceptional MAX reasoning because SMART is materially "
+                        "insufficient for cross-cutting, high-risk work."
+                    ),
                 },
                 "reasoning_effort": {
                     "type": "choice",
@@ -456,20 +463,22 @@ class JevShadowClassifier:
         self.last_latency_ms = latency_ms
         try:
             answers = response_payload["answers"]
-            tier = Tier.parse(str(answers["tier"]["choice"]))
+            tier, tier_confidence, tier_signals = self._tier_from_hierarchy(answers)
             reasoning_effort = str(answers["reasoning_effort"]["choice"]).lower()
             task_type = normalize_task_type(str(answers["task_type"]["choice"]))
             result = JevShadowResult(
                 tier=tier,
                 reasoning_effort=reasoning_effort,
                 task_type=task_type,
-                tier_confidence=float(answers["tier"]["confidence"]),
+                tier_confidence=tier_confidence,
                 reasoning_effort_confidence=float(answers["reasoning_effort"]["confidence"]),
                 task_type_confidence=float(answers["task_type"]["confidence"]),
                 latency_ms=latency_ms,
                 model=str(response_payload.get("model") or self.config.model),
+                tier_signals=tier_signals,
             )
             self.last_response_metadata = {"model": result.model}
+            self.last_tier_signals = result.tier_signals
             usage = response_payload.get("usage")
             self.last_usage = (
                 {
@@ -486,6 +495,34 @@ class JevShadowClassifier:
             raise
         self.last_status = "succeeded"
         return result
+
+    @staticmethod
+    def _tier_from_hierarchy(
+        answers: dict[str, object],
+    ) -> tuple[Tier, float, dict[str, float]]:
+        """Map concrete NLI yes/no answers into one routing tier.
+
+        NLI is better at entailment than ranking adjacent abstract labels.  Each
+        signal is the probability that the statement is true, so a confident
+        NORMAL is positive evidence that none of the exceptional conditions fit.
+        """
+        def probability(name: str) -> float:
+            answer = answers.get(name)
+            if not isinstance(answer, dict) or not isinstance(answer.get("noul"), (int, float)):
+                raise ValueError(f"JEV response missing numeric {name}.noul")
+            return float(answer["noul"])
+
+        fast = probability("tier")
+        smart = probability("requires_smart")
+        maximum = probability("requires_max")
+        signals = {"clearly_fast": fast, "requires_smart": smart, "requires_max": maximum}
+        if maximum >= 0.80:
+            return Tier.MAX, maximum, signals
+        if smart >= 0.65:
+            return Tier.SMART, smart, signals
+        if fast >= 0.75 and smart <= 0.25 and maximum <= 0.20:
+            return Tier.FAST, min(fast, 1 - smart, 1 - maximum), signals
+        return Tier.NORMAL, min(1 - fast, 1 - smart, 1 - maximum), signals
 
     def classify(self, context: RouteContext) -> ClassifierResult:
         """Adapt typed local-jev choices to AgentRoute's live classifier contract."""

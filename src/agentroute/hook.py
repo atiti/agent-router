@@ -182,6 +182,7 @@ def _record_jev_shadow(decision: RouteDecision, context: RouteContext, config: A
                 "reasoning_effort": result.reasoning_effort_confidence,
                 "task_type": result.task_type_confidence,
             },
+            "tier_signals": result.tier_signals,
             "agreement": {
                 "selected_tier": str(result.tier) == str(decision.tier),
                 "reasoning_effort": result.reasoning_effort

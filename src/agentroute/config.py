@@ -64,6 +64,7 @@ class JevShadowConfig(BaseModel):
     timeout_seconds: float = Field(default=0.75, ge=0.05, le=10)
     acceptance_threshold: float = Field(default=0.55, ge=0, le=1)
     llm_fallback_enabled: bool = True
+    deterministic_fast_bypass_confidence: float = Field(default=0.85, ge=0, le=1)
     max_context_chars: int = Field(default=1_000, ge=0, le=10_000)
     include_previous_assistant: bool = False
 

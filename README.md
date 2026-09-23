@@ -407,6 +407,12 @@ acceptance threshold are used directly; lower-confidence selections fall through
 LLM classifier (GPT Luna by default), then to deterministic heuristics if either local service is
 unavailable. `agentroute classifier-llm-enable` restores the normal LLM-only classifier.
 
+JEV uses three concrete yes/no checks—clearly safe FAST, requires SMART, and requires exceptional
+MAX—rather than ranking four adjacent abstract labels. The raw signals and the derived tier are
+audited so the threshold can be calibrated from real overrides. High-confidence deterministic FAST
+rules bypass JEV entirely; this preserves exact status/retrieval/formatting routes where an NLI
+model is less reliable than a purpose-built rule.
+
 ## Install
 
 The recommended installer downloads the release for the current OS and CPU, verifies its SHA-256

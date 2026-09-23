@@ -94,11 +94,11 @@ class Router:
         ):
             self.fallback_classifier = OpenAICompatibleClassifier(classifier_config)
         self._last_classifier: TierClassifier | None = None
-        self._jev_low_confidence: dict[str, object] | None = None
+        self._jev_observation: dict[str, object] | None = None
 
     def route(self, context: RouteContext) -> RouteDecision:
         self._last_classifier = None
-        self._jev_low_confidence = None
+        self._jev_observation = None
         override, backend_override, parsed_reasoning_effort, _ = route_overrides(
             context.latest_prompt, self.config.backends
         )
@@ -750,8 +750,8 @@ class Router:
                 "resolved_task_inherited": resolved_task_inherited,
             },
         }
-        if self._jev_low_confidence is not None:
-            receipt["jev_first_pass"] = self._jev_low_confidence
+        if self._jev_observation is not None:
+            receipt["jev_first_pass"] = self._jev_observation
         receipt_hash = hashlib.sha256(
             json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
@@ -836,6 +836,13 @@ class Router:
             and confidence >= routing.classifier.ambiguity_threshold
         ):
             return proposed, confidence, "heuristic", None, None, None, None
+        if (
+            routing.classifier.engine == "jev"
+            and proposed is Tier.FAST
+            and confidence
+            >= routing.classifier.jev_shadow.deterministic_fast_bypass_confidence
+        ):
+            return proposed, confidence, "heuristic", None, None, None, None
         try:
             result = self.classifier.classify(context)
             self._last_classifier = self.classifier
@@ -853,19 +860,21 @@ class Router:
                 )
             )
             return proposed, confidence, "heuristic_fallback", None, None, None, None
-        if (
-            self.classifier.source == "local_jev"
-            and result.confidence
-            < self.config.routing.classifier.jev_shadow.acceptance_threshold
-        ):
-            self._jev_low_confidence = {
+        if self.classifier.source == "local_jev":
+            self._jev_observation = {
                 "tier": str(result.tier),
                 "confidence": result.confidence,
                 "task_type": result.task_type.value,
                 "acceptance_threshold": (
                     self.config.routing.classifier.jev_shadow.acceptance_threshold
                 ),
+                "tier_signals": getattr(self.classifier, "last_tier_signals", {}),
             }
+        if (
+            self.classifier.source == "local_jev"
+            and result.confidence
+            < self.config.routing.classifier.jev_shadow.acceptance_threshold
+        ):
             contributions.append(
                 ScoreContribution(
                     code=ReasonCode.JEV_LOW_CONFIDENCE,

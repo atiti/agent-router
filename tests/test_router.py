@@ -155,6 +155,23 @@ def test_low_confidence_jev_uses_local_llm_fallback_and_audits_both_steps():
     assert ReasonCode.JEV_LOW_CONFIDENCE in decision.reason_codes
     assert ReasonCode.LLM_CLASSIFIER in decision.reason_codes
     assert decision.selection_receipt["classifier"]["status"] == "succeeded"
+    assert decision.selection_receipt["jev_first_pass"]["tier_signals"] == {}
+
+
+def test_high_confidence_fast_rule_bypasses_jev():
+    config = default_config()
+    config.routing.classifier.enabled = True
+    config.routing.classifier.engine = "jev"
+    config.routing.mode = "llm"
+    classifier = FakeClassifier(source="local_jev")
+
+    decision = Router(config, classifier=classifier).route(
+        RouteContext(session_id="test-session", latest_prompt="is it working?")
+    )
+
+    assert decision.tier is Tier.FAST
+    assert decision.classification_source == "heuristic"
+    assert classifier.calls == 0
 
 
 def test_confirmation_with_appended_question_uses_previous_task():
