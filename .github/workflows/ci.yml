@@ -21,6 +21,7 @@ jobs:
       - name: Verify wheel contains runtime patches and Desktop assets
         run: |
           unzip -l dist/*.whl | grep 'agentroute/patches/codex-user-prompt-model-override.patch'
+          unzip -l dist/*.whl | grep 'agentroute/patches/codex-route-application-receipt.patch'
           unzip -l dist/*.whl | grep 'agentroute/desktop_assets/codex-launcher'
           unzip -l dist/*.whl | grep 'agentroute/code_mode_smoke.py'
           unzip -l dist/*.whl | grep 'agentroute/desktop_assets/codex-code-mode-host.entitlements.plist'

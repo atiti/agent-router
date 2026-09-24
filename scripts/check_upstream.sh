@@ -15,7 +15,8 @@ git -C "$CHECK_ROOT/codex" checkout --detach FETCH_HEAD
 for patch in \
     "$PROJECT_ROOT/patches/codex-user-prompt-model-override.patch" \
     "$PROJECT_ROOT/patches/codex-package-version.patch" \
-    "$PROJECT_ROOT/patches/codex-history-recovery.patch"
+    "$PROJECT_ROOT/patches/codex-history-recovery.patch" \
+    "$PROJECT_ROOT/src/agentroute/patches/codex-route-application-receipt.patch"
 do
     git -C "$CHECK_ROOT/codex" apply --recount --check "$patch"
     git -C "$CHECK_ROOT/codex" apply --recount "$patch"

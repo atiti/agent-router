@@ -148,6 +148,13 @@ def test_audit_schema_has_calibration_columns(tmp_path):
     assert "usage_recorded_at" in columns
     assert "reported_answer_model" in columns
     assert "answer_model_mismatch" in columns
+    assert "answer_backend" in columns
+    assert "route_application_state" in columns
+    assert "route_application_reason" in columns
+    assert "actual_backend" in columns
+    assert "actual_model_provider" in columns
+    assert "actual_model" in columns
+    assert "actual_reasoning_effort" in columns
     assert "turn_completed_at" in columns
     assert "turn_duration_ms" in columns
     assert "turn_outcome" in columns
@@ -198,6 +205,77 @@ def test_completion_is_recorded_without_token_usage(tmp_path):
     assert row["usage_recorded_at"] is None
     assert row["turn_outcome"] == "completed"
     assert row["usage_status"] == "missing"
+    assert row["route_application_state"] == "unknown"
+
+
+def test_completion_records_rejected_route_and_attributes_actual_backend(tmp_path):
+    store = AuditStore(tmp_path / "audit.db")
+    decision = Router(default_config()).route(
+        RouteContext(session_id="session-1", turn_id="turn-1", latest_prompt="@azure @max work")
+    )
+    decision.backend = "azure"
+    decision.model_provider = "agentroute-azure"
+    decision.model = "gpt-6-astra"
+    decision.reasoning_effort = "xhigh"
+    store.record(decision, Tier.NORMAL)
+
+    receipt = {
+        "status": "rejected",
+        "requested": {
+            "model": "gpt-6-astra",
+            "provider": "agentroute-azure",
+            "reasoning_effort": "xhigh",
+        },
+        "actual": {
+            "model": "gpt-6-luna",
+            "provider": "openai",
+            "reasoning_effort": "high",
+        },
+        "reason": "destination changes admitted node REPL review requirement",
+    }
+
+    assert store.record_completion(
+        "session-1",
+        "turn-1",
+        "gpt-6-luna",
+        {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+        application_receipt=receipt,
+        actual_backend="gpt",
+    )
+    row = store.latest("session-1")
+
+    assert row["route_application_state"] == "rejected"
+    assert row["route_application_reason"] == receipt["reason"]
+    assert row["model"] == "gpt-6-astra"
+    assert row["backend"] == "azure"
+    assert row["answer_model"] == "gpt-6-luna"
+    assert row["answer_backend"] == "gpt"
+    assert row["actual_model_provider"] == "openai"
+    assert row["actual_reasoning_effort"] == "high"
+    assert row["answer_model_mismatch"] == 1
+
+
+def test_completion_refuses_application_receipt_for_different_request(tmp_path):
+    store = AuditStore(tmp_path / "audit.db")
+    decision = Router(default_config()).route(
+        RouteContext(session_id="session-1", turn_id="turn-1", latest_prompt="show status")
+    )
+    store.record(decision, Tier.NORMAL)
+    receipt = {
+        "status": "applied",
+        "requested": {"model": "wrong-model", "provider": "openai"},
+        "actual": {"model": decision.model, "provider": "openai"},
+    }
+
+    store.record_completion(
+        "session-1", "turn-1", decision.model, application_receipt=receipt
+    )
+    row = store.latest("session-1")
+
+    assert row["route_application_state"] == "unknown"
+    assert row["route_application_reason"] == (
+        "Codex application receipt did not match the stored route request"
+    )
 
 
 def test_existing_stale_stop_receipt_is_normalized_on_open(tmp_path):

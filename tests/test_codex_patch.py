@@ -119,13 +119,16 @@ def test_native_patch_is_packaged():
         "mixed_provider_history_preserves_destination_reasoning_across_tool_continuations"
     )
     assert continuation_test in content
+    assert "AgentRouteApplicationReceipt" in content
+    assert '"agentroute_application"' in content
+    assert "MODEL ROUTE NOT APPLIED" in content
 
 
 def test_primary_patch_path_is_backwards_compatible():
     assert patch_path() == patch_paths()[0]
 
 
-def test_release_metadata_uses_v0544_runtime_v39():
+def test_release_metadata_uses_v0545_runtime_v40():
     root = Path(__file__).parents[1]
     package = (root / "pyproject.toml").read_text(encoding="utf-8")
     lock = (root / "uv.lock").read_text(encoding="utf-8")
@@ -134,11 +137,11 @@ def test_release_metadata_uses_v0544_runtime_v39():
     doctor = (root / "src/agentroute/doctor.py").read_text(encoding="utf-8")
     ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert 'version = "0.5.44"' in package
-    assert 'version = "0.5.44"' in lock
-    assert '__version__ = "0.5.44"' in public_api
-    assert "provider-routing-v39" in installer
-    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v39"' in doctor
+    assert 'version = "0.5.45"' in package
+    assert 'version = "0.5.45"' in lock
+    assert '__version__ = "0.5.45"' in public_api
+    assert "provider-routing-v40" in installer
+    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v40"' in doctor
     assert "b412ff32c417f855c2b2d1581b77058eed87c84b" in installer
     assert "0.156.1" in installer
     assert "b412ff32c417f855c2b2d1581b77058eed87c84b" in ci
@@ -234,11 +237,13 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v39" in installer
+    assert "provider-routing-v40" in installer
     assert "chatgpt_profile_home" in installer
     assert "ordinary_usage_allowed" in installer
     assert "codex-package-version.patch" in installer
     assert "codex-history-recovery.patch" in installer
+    assert "codex-route-application-receipt.patch" in installer
+    assert "AgentRouteApplicationReceipt" in installer
     assert "new_agentroute_route_event(message)" in installer
     assert "routed_turn_model_provider" in "\n".join(
         path.read_text() for path in patch_paths()

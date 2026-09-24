@@ -154,6 +154,7 @@ class CalibrationSummary:
 class AnalyticsReport:
     rows: int
     model_mismatch_turns: int
+    route_application: dict[str, int]
     overall: CostReport
     by_model: tuple[ModelUsage, ...]
     over_time: tuple[PeriodUsage, ...]
@@ -352,11 +353,13 @@ def usage_analytics(
     by_model_rows: dict[tuple[str, str], list[Any]] = defaultdict(list)
     by_period_rows: dict[tuple[str, str, str], list[Any]] = defaultdict(list)
     classifier_rows: dict[str, list[Any]] = defaultdict(list)
+    application_states: dict[str, int] = defaultdict(int)
     for row in rows:
-        backend = str(row["backend"] or "unknown")
+        backend = str(row["answer_backend"] or row["backend"] or "unknown")
         model = str(row["answer_model"] or row["model"] or "unknown")
         by_model_rows[(backend, model)].append(row)
         by_period_rows[(_period(str(row["created_at"]), bucket), backend, model)].append(row)
+        application_states[str(row["route_application_state"] or "unknown")] += 1
         usage = _classifier_usage(row)
         if usage or row["classifier_latency_ms"] is not None:
             classifier_rows[_classifier_model(row)].append(row)
@@ -455,6 +458,7 @@ def usage_analytics(
     return AnalyticsReport(
         rows=len(rows),
         model_mismatch_turns=sum(bool(row["answer_model_mismatch"]) for row in rows),
+        route_application=dict(sorted(application_states.items())),
         overall=cost_report(rows, pricing, baseline),
         by_model=models,
         over_time=periods,
@@ -467,7 +471,7 @@ def usage_analytics(
             LongestTurn(
                 decision_id=int(row["id"]),
                 created_at=str(row["created_at"]),
-                backend=str(row["backend"] or "unknown"),
+                backend=str(row["answer_backend"] or row["backend"] or "unknown"),
                 model=str(row["answer_model"] or row["model"] or "unknown"),
                 tier=str(row["selected_tier"]),
                 duration_ms=duration,
