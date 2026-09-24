@@ -10,6 +10,14 @@ from pathlib import Path
 from .config import data_dir
 from .models import RouteDecision, Tier
 
+
+def _bounded_string(value: object, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split())
+    return normalized[:limit] or None
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS routing_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,6 +71,7 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     next_manual_override_tier TEXT,
     next_manual_override_at TEXT,
     answer_model TEXT,
+    answer_backend TEXT,
     answer_input_tokens INTEGER,
     answer_cached_input_tokens INTEGER,
     answer_cache_write_input_tokens INTEGER,
@@ -72,6 +81,12 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     usage_recorded_at TEXT,
     reported_answer_model TEXT,
     answer_model_mismatch INTEGER NOT NULL DEFAULT 0,
+    route_application_state TEXT NOT NULL DEFAULT 'unknown',
+    route_application_reason TEXT,
+    actual_backend TEXT,
+    actual_model_provider TEXT,
+    actual_model TEXT,
+    actual_reasoning_effort TEXT,
     turn_completed_at TEXT,
     turn_duration_ms REAL,
     turn_outcome TEXT NOT NULL DEFAULT 'pending',
@@ -125,6 +140,7 @@ MIGRATIONS = {
     "next_manual_override_tier": "TEXT",
     "next_manual_override_at": "TEXT",
     "answer_model": "TEXT",
+    "answer_backend": "TEXT",
     "answer_input_tokens": "INTEGER",
     "answer_cached_input_tokens": "INTEGER",
     "answer_cache_write_input_tokens": "INTEGER",
@@ -134,6 +150,12 @@ MIGRATIONS = {
     "usage_recorded_at": "TEXT",
     "reported_answer_model": "TEXT",
     "answer_model_mismatch": "INTEGER NOT NULL DEFAULT 0",
+    "route_application_state": "TEXT NOT NULL DEFAULT 'unknown'",
+    "route_application_reason": "TEXT",
+    "actual_backend": "TEXT",
+    "actual_model_provider": "TEXT",
+    "actual_model": "TEXT",
+    "actual_reasoning_effort": "TEXT",
     "turn_completed_at": "TEXT",
     "turn_duration_ms": "REAL",
     "turn_outcome": "TEXT NOT NULL DEFAULT 'pending'",
@@ -249,6 +271,7 @@ class AuditStore:
         decision: RouteDecision,
         current_tier: Tier,
         prompt: str | None = None,
+        application_state: str = "pending",
     ) -> int:
         with self.connection() as connection:
             route_predicate = "agent_id IS NULL" if decision.agent_id is None else "agent_id = ?"
@@ -357,7 +380,12 @@ class AuditStore:
                     int(decision.capacity_blocked),
                 ),
             )
-            return int(cursor.lastrowid)
+            decision_id = int(cursor.lastrowid)
+            connection.execute(
+                "UPDATE routing_decisions SET route_application_state = ? WHERE id = ?",
+                (application_state, decision_id),
+            )
+            return decision_id
 
     def record_completion(
         self,
@@ -369,6 +397,8 @@ class AuditStore:
         completion_source: str = "stop_hook",
         route_scope: str | None = None,
         agent_id: str | None = None,
+        application_receipt: dict[str, object] | None = None,
+        actual_backend: str | None = None,
     ) -> bool:
         """Record first completion time and optional usage for one exact routed turn."""
         completed_at = datetime.now(timezone.utc)
@@ -382,7 +412,8 @@ class AuditStore:
             params.append(agent_id)
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT id, created_at, model, turn_completed_at, turn_duration_ms "
+                "SELECT id, created_at, model, model_provider, reasoning_effort, "
+                "turn_completed_at, turn_duration_ms "
                 "FROM routing_decisions WHERE session_id = ? AND turn_id = ? "
                 f"{scope_clause} ORDER BY id DESC LIMIT 1",
                 tuple(params),
@@ -390,8 +421,22 @@ class AuditStore:
             if row is None:
                 return False
             routed_model = str(row["model"])
+            routed_provider = str(row["model_provider"])
+            routed_effort = str(row["reasoning_effort"] or "")
             reported_model = model or None
-            mismatch = bool(reported_model and reported_model != routed_model)
+            state, reason, actual_model, actual_provider, actual_effort = self._route_application(
+                application_receipt, routed_model, routed_provider, routed_effort
+            )
+            receipt_model_observed = actual_model is not None and actual_provider is not None
+            answer_model = actual_model if receipt_model_observed else routed_model
+            answer_backend = actual_backend if receipt_model_observed else None
+            mismatch = bool(
+                (reported_model and reported_model != routed_model)
+                or (
+                    receipt_model_observed
+                    and (actual_model != routed_model or actual_provider != routed_provider)
+                )
+            )
             first_completed_at = row["turn_completed_at"] or completed_at.isoformat()
             if row["turn_duration_ms"] is not None:
                 duration_ms = float(row["turn_duration_ms"])
@@ -404,16 +449,26 @@ class AuditStore:
             cursor = connection.execute(
                 """
                 UPDATE routing_decisions SET
-                    answer_model = ?,
+                    answer_model = ?, answer_backend = ?,
                     reported_answer_model = ?, answer_model_mismatch = ?,
+                    route_application_state = ?, route_application_reason = ?,
+                    actual_backend = ?, actual_model_provider = ?, actual_model = ?,
+                    actual_reasoning_effort = ?,
                     turn_completed_at = ?, turn_duration_ms = ?,
                     turn_outcome = ?, completion_source = ?, usage_status = ?
                 WHERE id = ?
                 """,
                 (
-                    routed_model,
+                    answer_model,
+                    answer_backend,
                     reported_model,
                     int(mismatch),
+                    state,
+                    reason,
+                    answer_backend,
+                    actual_provider,
+                    actual_model,
+                    actual_effort,
                     first_completed_at,
                     duration_ms,
                     outcome,
@@ -444,6 +499,66 @@ class AuditStore:
                     ),
                 )
             return cursor.rowcount == 1
+
+    @staticmethod
+    def _route_application(
+        receipt: dict[str, object] | None,
+        requested_model: str,
+        requested_provider: str,
+        requested_effort: str,
+    ) -> tuple[str, str | None, str | None, str | None, str | None]:
+        """Validate Codex's turn-scoped report against the exact stored route request."""
+        if not isinstance(receipt, dict):
+            return "unknown", None, None, None, None
+
+        requested = receipt.get("requested")
+        actual = receipt.get("actual")
+        requested = requested if isinstance(requested, dict) else {}
+        actual = actual if isinstance(actual, dict) else {}
+        reported_model = _bounded_string(actual.get("model"), 256)
+        reported_provider = _bounded_string(actual.get("provider"), 128)
+        reported_effort = _bounded_string(actual.get("reasoning_effort"), 64)
+        status = str(receipt.get("status", "unknown"))
+        reason = _bounded_string(receipt.get("reason"), 512)
+
+        request_matches = (
+            requested.get("model") == requested_model
+            and requested.get("provider") == requested_provider
+            and (
+                not requested_effort
+                or requested.get("reasoning_effort") == requested_effort
+            )
+        )
+        if not request_matches:
+            return (
+                "unknown",
+                "Codex application receipt did not match the stored route request",
+                reported_model,
+                reported_provider,
+                reported_effort,
+            )
+
+        allowed = {"applied", "rejected", "target_unavailable"}
+        if status not in allowed:
+            return "unknown", reason, reported_model, reported_provider, reported_effort
+        if status == "applied":
+            matches = (
+                reported_model == requested_model
+                and reported_provider == requested_provider
+                and (
+                    not requested_effort
+                    or reported_effort == requested_effort
+                )
+            )
+            if not matches:
+                return (
+                    "mismatch",
+                    reason or "Codex applied settings differ from the requested route",
+                    reported_model,
+                    reported_provider,
+                    reported_effort,
+                )
+        return status, reason, reported_model, reported_provider, reported_effort
 
     def record_usage(
         self, session_id: str, turn_id: str, model: str, usage: dict[str, int]

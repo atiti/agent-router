@@ -155,6 +155,46 @@ def test_deepseek_receipt_uses_routed_model_and_price_when_stop_report_is_stale(
     assert report.model_mismatch_turns == 1
 
 
+def test_analytics_attributes_rejected_route_to_observed_model_and_backend(tmp_path):
+    config = default_config()
+    store = AuditStore(tmp_path / "audit.db")
+    decision = Router(config).route(
+        RouteContext(session_id="s", turn_id="one", latest_prompt="@azure @max do work")
+    )
+    decision.backend = "azure"
+    decision.model_provider = "agentroute-azure"
+    decision.model = "gpt-6-astra"
+    decision.reasoning_effort = "xhigh"
+    store.record(decision, Tier.NORMAL)
+    store.record_completion(
+        "s",
+        "one",
+        "gpt-6-luna",
+        {"input_tokens": 1_000, "output_tokens": 50, "total_tokens": 1_050},
+        application_receipt={
+            "status": "rejected",
+            "requested": {
+                "model": "gpt-6-astra",
+                "provider": "agentroute-azure",
+                "reasoning_effort": "xhigh",
+            },
+            "actual": {
+                "model": "gpt-6-luna",
+                "provider": "openai",
+                "reasoning_effort": "high",
+            },
+        },
+        actual_backend="gpt",
+    )
+
+    report = usage_analytics(store.rows_since(), config.pricing, "gpt-6-astra")
+
+    assert report.route_application == {"rejected": 1}
+    assert [(item.backend, item.model, item.turns) for item in report.by_model] == [
+        ("gpt", "gpt-6-luna", 1)
+    ]
+
+
 def test_rows_since_filters_session_and_time(tmp_path):
     config = default_config()
     store = AuditStore(tmp_path / "audit.db")

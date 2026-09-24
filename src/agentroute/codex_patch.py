@@ -15,6 +15,7 @@ def patch_paths() -> tuple[Path, ...]:
         patch_dir / "codex-user-prompt-model-override.patch",
         patch_dir / "codex-package-version.patch",
         patch_dir / "codex-history-recovery.patch",
+        patch_dir / "codex-route-application-receipt.patch",
     )
 
 

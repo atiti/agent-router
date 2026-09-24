@@ -691,7 +691,8 @@ limits; retained approval requirements do not overwrite those limits.
 
 The installer pins OpenAI Codex `rust-v0.156.1` at commit `b412ff32c417f855c2b2d1581b77058eed87c84b`. The maintained
 patches are `patches/codex-user-prompt-model-override.patch`,
-`patches/codex-package-version.patch`, and `patches/codex-history-recovery.patch`.
+`patches/codex-package-version.patch`, `patches/codex-history-recovery.patch`, and
+`src/agentroute/patches/codex-route-application-receipt.patch`.
 A weekly GitHub Actions job applies all patches to the latest upstream Codex release and compiles
 the CLI. Failures open one actionable compatibility issue; automation never publishes an unreviewed
 Codex upgrade. AgentRoute is not affiliated with or endorsed by OpenAI.
@@ -702,9 +703,15 @@ versioning: `agentroute version` reports the AgentRoute release, routing runtime
 Codex version; route notices include the AgentRoute release. The routed
 Desktop bundle records the AgentRoute version in its own metadata without changing Codex's app-server
 version or bundle identifier. Use `agentroute doctor` and `agentroute desktop status` to verify the
-source build ID (`b412ff32…-provider-routing-v39`), release-line compatibility, and whether the
+source build ID (`b412ff32…-provider-routing-v40`), release-line compatibility, and whether the
 Codex version strings match exactly. Neither a shared release line nor matching version banners
 prove that two installations contain the same patches or guarantee mobile remote compatibility.
+
+In the CLI, `agentroute why` and `agentroute history` show whether Codex applied a routed setting;
+`agentroute analytics` summarizes applied, rejected, unavailable, and unverified turns. The
+receipt comes from the CLI's post-hook settings result and Stop hook, so a route banner by itself
+is not treated as proof that the requested model handled the turn. Older CLI turns without a
+receipt remain unverified.
 
 ## Development
 

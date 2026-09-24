@@ -9,12 +9,13 @@ AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-"$AGENTROUTE_HOME_DIR/build/c
 AGENTROUTE_BUILD_PROFILE=${AGENTROUTE_BUILD_PROFILE:-dev-small}
 AGENTROUTE_CODEX_COMMIT=b412ff32c417f855c2b2d1581b77058eed87c84b
 AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.156.1}
-AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v39"
+AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v40"
 AGENTROUTE_BUILD_ID_FILE="$AGENTROUTE_HOME_DIR/build-id"
 AGENTROUTE_PATCHES="
 $AGENTROUTE_PROJECT_ROOT/src/agentroute/patches/codex-user-prompt-model-override.patch
 $AGENTROUTE_PROJECT_ROOT/patches/codex-package-version.patch
 $AGENTROUTE_PROJECT_ROOT/patches/codex-history-recovery.patch
+$AGENTROUTE_PROJECT_ROOT/src/agentroute/patches/codex-route-application-receipt.patch
 "
 
 for command_name in git cargo uv npm; do
@@ -116,6 +117,8 @@ if grep -F 'Route the turn before pre-sampling compaction' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/turn.rs" >/dev/null 2>&1 \
     && grep -F 'Recover interrupted custom calls in debug builds too.' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/context_manager/normalize.rs" >/dev/null 2>&1 \
+    && grep -F 'AgentRouteApplicationReceipt' \
+        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/hook_runtime.rs" >/dev/null 2>&1 \
     && ! grep -F '"routing_prompt".to_string()' \
         "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/tools/handlers/multi_agents_spec.rs" >/dev/null 2>&1 \
     && grep -F 'version = "0.155.0-alpha.2.6"' \

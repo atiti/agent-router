@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.45 — 2026-09-23
+
+- Record Codex's per-turn route-application receipt so the CLI audit distinguishes requested,
+  applied, rejected, unavailable, and unknown routing outcomes, including the actual model,
+  provider, reasoning effort, and rejection reason. Rejections appear as transcript commentary,
+  not accumulated warnings.
+- Attribute measured usage to the observed model/backend when Codex provides an application
+  receipt; mark provider attribution unknown when the older CLI cannot prove it.
+- Port the route-application receipt through the pinned Codex CLI hook protocol (runtime v40).
+
 ## 0.5.44 — 2026-09-23
 
 - Show model-route notices as colored transcript items instead of warnings, so per-turn routing

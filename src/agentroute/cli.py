@@ -795,6 +795,20 @@ def why_command(session: str | None = None) -> None:
         f"[bold]{row['selected_tier'].upper()}[/bold] → {row['model']} "
         f"via {row['backend']}/{row['model_provider']} ({row['route_scope']})"
     )
+    console.print(f"Codex application: {row['route_application_state'] or 'unknown'}")
+    if row["actual_model"] or row["actual_model_provider"]:
+        actual_effort = (
+            f" · {row['actual_reasoning_effort']} reasoning"
+            if row["actual_reasoning_effort"]
+            else ""
+        )
+        console.print(
+            f"Observed answer: {row['actual_backend'] or 'unknown'}/"
+            f"{row['actual_model_provider'] or 'unknown'} · "
+            f"{row['actual_model'] or 'unknown'}{actual_effort}"
+        )
+    if row["route_application_reason"]:
+        console.print(f"Application detail: {row['route_application_reason']}")
     console.print(
         f"Confidence: {row['confidence']:.0%}; rule score: {row['raw_score']:g}; "
         f"classifier: {row['classifier_version']}"
@@ -831,7 +845,7 @@ def history_command(session: str | None = None, limit: int = 20) -> None:
     """Show recent routing decisions."""
     table = Table(
         "ID", "Time", "Scope", "Session", "Route", "Backend", "Model", "Source",
-        "Confidence", "Reasons"
+        "Confidence", "Application", "Reasons"
     )
     for row in AuditStore().history(session, limit):
         reasons = ", ".join(json.loads(row["reason_codes"]))
@@ -845,6 +859,7 @@ def history_command(session: str | None = None, limit: int = 20) -> None:
             row["model"],
             row["classification_source"],
             f"{row['confidence']:.0%}",
+            str(row["route_application_state"] or "unknown"),
             reasons,
         )
     console.print(table)
@@ -992,6 +1007,7 @@ def analytics_command(
             "currency": currency,
             "rows": report.rows,
             "model_mismatch_turns": report.model_mismatch_turns,
+            "route_application": report.route_application,
             "overall": asdict(report.overall)
             | {
                 "gross_savings": report.overall.gross_savings,
@@ -1028,6 +1044,13 @@ def analytics_command(
         f"p95 {_format_duration(report.duration.p95_ms)}; "
         f"max {_format_duration(report.duration.maximum_ms)}"
     )
+    if report.route_application:
+        console.print(
+            "Route application: "
+            + "; ".join(
+                f"{state} {count}" for state, count in report.route_application.items()
+            )
+        )
     reconciliation = report.reconciliation
     console.print(
         "Reconciliation: "

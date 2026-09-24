@@ -709,7 +709,7 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path, 
         "◆ ACCOUNT ROUTE · default · account match\n"
         "◆ MODEL ROUTE · SMART → gpt-6-sol · high reasoning "
         "· backend gpt/openai · scope root · source MANUAL "
-        "· rule confidence 100% · rule score -0.5 · AgentRoute v0.5.44"
+        "· rule confidence 100% · rule score -0.5 · AgentRoute v0.5.45"
     )
     assert second["hookSpecificOutput"]["model"] == "gpt-6-sol"
     assert len(store.history("same-thread")) == 2
@@ -806,7 +806,7 @@ def test_route_message_identifies_managed_runtime(tmp_path, monkeypatch):
     output = invoke(config, AuditStore(tmp_path / "audit.db"), "@fast say hi")
 
     assert output["hookSpecificOutput"]["routeMessage"].endswith(
-        " · AgentRoute v0.5.44 · runtime v8"
+        " · AgentRoute v0.5.45 · runtime v8"
     )
 
 
@@ -1451,6 +1451,51 @@ def test_stop_hook_records_exact_turn_usage(tmp_path):
     assert row["answer_input_tokens"] == 1000
     assert row["answer_cached_input_tokens"] == 800
     assert row["answer_output_tokens"] == 50
+
+
+def test_stop_hook_records_codex_route_application_receipt(tmp_path):
+    config = default_config()
+    store = AuditStore(tmp_path / "audit.db")
+    invoke(config, store, "show status")
+    decision = store.latest("same-thread")
+    assert decision is not None
+    receipt = {
+        "status": "rejected",
+        "requested": {
+            "model": "gpt-6-astra",
+            "provider": "agentroute-azure",
+            "reasoning_effort": "xhigh",
+        },
+        "actual": {
+            "model": "gpt-6-luna",
+            "provider": "openai",
+            "reasoning_effort": "high",
+        },
+        "reason": "destination changes admitted node REPL review requirement",
+    }
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE routing_decisions SET backend = ?, model_provider = ?, model = ?, "
+            "reasoning_effort = ? WHERE id = ?",
+            ("azure", "agentroute-azure", "gpt-6-astra", "xhigh", decision["id"]),
+        )
+
+    sink = io.StringIO()
+    payload = {
+        "session_id": "same-thread",
+        "turn_id": "turn-1",
+        "model": "gpt-6-luna",
+        "transcript_path": str(tmp_path / "missing.jsonl"),
+        "agentroute_application": receipt,
+    }
+    assert codex_stop(io.StringIO(json.dumps(payload)), sink, store=store) == 0
+    row = store.latest("same-thread")
+
+    assert row["route_application_state"] == "rejected"
+    assert row["answer_model"] == "gpt-6-luna"
+    assert row["answer_backend"] == "gpt"
+    assert row["actual_model_provider"] == "openai"
+    assert "admitted node REPL" in row["route_application_reason"]
 
 
 def test_stop_hook_records_completion_when_usage_is_missing(tmp_path):

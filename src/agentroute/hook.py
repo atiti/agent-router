@@ -367,6 +367,9 @@ def codex_user_prompt_submit(
             decision,
             current_tier,
             context.latest_prompt if config.audit.store_prompts else None,
+            application_state=(
+                "pending" if config.enabled and not decision.capacity_blocked else "not_requested"
+            ),
         )
         action = "Selected" if config.enabled else "Would select"
         reasons = ", ".join(code.value for code in decision.reason_codes) or "DEFAULT"
@@ -575,6 +578,24 @@ def codex_stop(
             else payload.get("transcript_path")
         )
         usage = turn_token_usage(transcript_path, payload.get("turn_id"))
+        application_receipt = payload.get("agentroute_application")
+        if not isinstance(application_receipt, dict):
+            application_receipt = None
+        actual = application_receipt.get("actual") if application_receipt else None
+        actual_provider = (
+            str(actual.get("provider"))
+            if isinstance(actual, dict) and actual.get("provider")
+            else None
+        )
+        actual_backend = None
+        if actual_provider == "openai":
+            actual_backend = "gpt"
+        elif actual_provider:
+            try:
+                actual_backend = _backend_for_model_provider(load_config(), actual_provider)
+            except Exception:
+                # Completion accounting must still work if local config is temporarily invalid.
+                actual_backend = None
         reported_outcome = str(payload.get("turn_outcome") or payload.get("status") or "completed")
         outcome = (
             reported_outcome
@@ -590,6 +611,8 @@ def codex_stop(
             completion_source="stop_hook",
             route_scope=route_scope,
             agent_id=agent_id,
+            application_receipt=application_receipt,
+            actual_backend=actual_backend,
         )
         json.dump({"continue": True, "suppressOutput": True}, sink, separators=(",", ":"))
         sink.write("\n")
