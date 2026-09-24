@@ -132,6 +132,23 @@ apply. The requested tier and a SHA-256 hash of the reason are audited; the reas
 Mappings, thresholds, and risk floors are editable in `~/.agentroute/config.yaml`. The GPT/Azure
 Luna `xhigh` minimum is a model-safety floor and cannot be lowered by tier defaults or prompt tags.
 
+### Daybreak Blue for security work
+
+For ChatGPT accounts that have [Daybreak Blue access in Codex](https://help.openai.com/en/articles/20001258-openai-daybreak-trusted-access-for-cyber-overview),
+set `routing.security_daybreak_enabled: true` in `~/.agentroute/config.yaml`.
+AgentRoute checks the **selected ChatGPT profile's** recent Codex model catalog. When a security,
+authentication, or vulnerability task would use GPT-6 Sol or Luna and that profile lists
+`gpt-daybreak-blue-latest`, it requests that Daybreak Blue model on the existing `gpt` backend.
+No API key, extra backend, or separate Codex home is needed. A profile without the model keeps
+its ordinary GPT target. Explicit tier choices (including `@max` Astra) and Azure/other backend
+choices are respected. The route banner shows whether Daybreak was requested or the standard
+model was kept.
+
+The local catalog is an access hint, not proof that a particular request succeeded. Check the
+Codex route-application receipt for the actual model and any rejection. If an account gains
+Daybreak access, refresh its Codex model catalog by starting a new Codex session. Daybreak
+availability still depends on the account and its approved access controls.
+
 ## Execution backends
 
 The built-in `gpt` backend uses the existing ChatGPT subscription login. Azure OpenAI and

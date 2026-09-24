@@ -128,7 +128,7 @@ def test_primary_patch_path_is_backwards_compatible():
     assert patch_path() == patch_paths()[0]
 
 
-def test_release_metadata_uses_v0545_runtime_v40():
+def test_release_metadata_uses_v0546_runtime_v40():
     root = Path(__file__).parents[1]
     package = (root / "pyproject.toml").read_text(encoding="utf-8")
     lock = (root / "uv.lock").read_text(encoding="utf-8")
@@ -137,9 +137,9 @@ def test_release_metadata_uses_v0545_runtime_v40():
     doctor = (root / "src/agentroute/doctor.py").read_text(encoding="utf-8")
     ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert 'version = "0.5.45"' in package
-    assert 'version = "0.5.45"' in lock
-    assert '__version__ = "0.5.45"' in public_api
+    assert 'version = "0.5.46"' in package
+    assert 'version = "0.5.46"' in lock
+    assert '__version__ = "0.5.46"' in public_api
     assert "provider-routing-v40" in installer
     assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v40"' in doctor
     assert "b412ff32c417f855c2b2d1581b77058eed87c84b" in installer
