@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.46 — 2026-09-24
+
+- Add opt-in, profile-aware Daybreak Blue model selection for ChatGPT subscription security
+  turns. Request `gpt-daybreak-blue-latest` only when the selected account's fresh Codex catalog
+  lists it; otherwise use the profile's ordinary GPT target. Keep the backend as `gpt` and show
+  the selection or fallback in the route notice.
+
 ## 0.5.45 — 2026-09-23
 
 - Record Codex's per-turn route-application receipt so the CLI audit distinguishes requested,

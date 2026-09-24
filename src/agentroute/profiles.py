@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,34 @@ def account_credential_home(
     if profile.codex_home:
         return Path(profile.codex_home).expanduser()
     return canonical_codex_home() / "accounts" / name
+
+
+def profile_has_daybreak_blue(name: str, profile: SubscriptionProfileConfig) -> bool:
+    """Use the selected ChatGPT account's catalog as a conservative entitlement hint.
+
+    The catalog is account-specific and may lag a server-side access change. An
+    absent, unreadable, or stale catalog never opts a profile into Daybreak.
+    """
+    catalog = account_credential_home(name, profile) / "models_cache.json"
+    try:
+        payload = json.loads(catalog.read_text(encoding="utf-8"))
+        fetched_at = datetime.fromisoformat(payload["fetched_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) - fetched_at > timedelta(days=1):
+            return False
+        for model in payload.get("models", []):
+            if not isinstance(model, dict):
+                continue
+            access = model.get("available_access_programs")
+            if (
+                model.get("slug") == "gpt-daybreak-blue-latest"
+                and model.get("visibility") == "list"
+                and isinstance(access, dict)
+                and "daybreak_blue" in access.get("cyber", [])
+            ):
+                return True
+        return False
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return False
 
 
 def profile_account_hash(name: str, profile: SubscriptionProfileConfig) -> str | None:

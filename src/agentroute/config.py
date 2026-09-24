@@ -97,6 +97,7 @@ class RoutingConfig(BaseModel):
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
     fast_quality_floor: bool = True
     continuation_capability_floor: bool = True
+    security_daybreak_enabled: bool = False
     backend_by_tier: dict[str, str] = Field(
         default_factory=lambda: {
             "fast": "gpt",

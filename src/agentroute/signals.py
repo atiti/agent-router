@@ -50,7 +50,7 @@ ARCHITECTURE = re.compile(
     r"\b(architecture|redesign|rearchitect|system design|cross[- ]cutting)\b", re.I
 )
 SECURITY = re.compile(
-    r"\b(security|vulnerab|oauth|authentication|authorization|permission)\b", re.I
+    r"\b(security|vulnerab\w*|oauth|authentication|authorization|permission\w*)\b", re.I
 )
 CONCURRENCY = re.compile(
     r"\b(race condition|deadlock|concurren|distributed lock|cross[- ]process)\b", re.I

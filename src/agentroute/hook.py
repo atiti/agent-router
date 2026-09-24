@@ -15,6 +15,7 @@ from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, 
 from .profiles import (
     TurnProfileSelection,
     account_credential_home,
+    profile_has_daybreak_blue,
     reviewer_fallback_profiles,
     select_turn_profile,
 )
@@ -354,6 +355,59 @@ def codex_user_prompt_submit(
             and (decision.capacity_requested_backend == "gpt" or decision.backend == "gpt")
         ):
             _apply_profile_selection(decision, profile_selection, config)
+        if (
+            config.routing.security_daybreak_enabled
+            and decision.backend == "gpt"
+            and not decision.manual_override
+            and ReasonCode.SECURITY in decision.reason_codes
+            and ReasonCode.CREDENTIAL_EXPOSURE not in decision.reason_codes
+            and decision.model in {"gpt-6-sol", "gpt-6-luna"}
+        ):
+            selected_name = (
+                profile_selection.selected.name
+                if profile_selection is not None and profile_selection.selected is not None
+                else None
+            )
+            profile = config.capacity.profiles.get(selected_name or "")
+            eligible = bool(
+                selected_name
+                and profile
+                and profile_has_daybreak_blue(selected_name, profile)
+            )
+            if eligible:
+                decision.model = "gpt-daybreak-blue-latest"
+            decision.metadata["daybreak_selection"] = (
+                "catalog_available" if eligible else "catalog_unavailable"
+            )
+            decision.contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.DAYBREAK_BLUE if eligible else ReasonCode.DAYBREAK_FALLBACK,
+                    weight=0,
+                    detail=(
+                        f"selected account {selected_name} lists Daybreak Blue access"
+                        if eligible
+                        else (
+                            "Daybreak Blue unavailable for selected account "
+                            f"{selected_name or 'unknown'}"
+                        )
+                    ),
+                )
+            )
+            decision.reason_codes = [item.code for item in decision.contributions]
+            decision.selection_receipt["daybreak"] = {
+                "model": decision.model if eligible else None,
+                "profile": selected_name,
+                "catalog_hint": eligible,
+            }
+            decision.selection_receipt["selected"]["model"] = decision.model
+            decision.selection_receipt["selected"]["reasoning_effort"] = (
+                decision.reasoning_effort
+            )
+            decision.selection_receipt_hash = hashlib.sha256(
+                json.dumps(
+                    decision.selection_receipt, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
         decision.strip_provider_state = store.provider_state_is_mixed(
             session_id, route_scope, agent_id
         ) or decision.model_provider != context.current_model_provider or (
@@ -471,6 +525,13 @@ def codex_user_prompt_submit(
                 + (
                     " · CREDENTIAL RISK"
                     if ReasonCode.CREDENTIAL_EXPOSURE in decision.reason_codes
+                    else ""
+                )
+                + (
+                    " · DAYBREAK BLUE MODEL (ACCOUNT CATALOG)"
+                    if ReasonCode.DAYBREAK_BLUE in decision.reason_codes
+                    else " · DAYBREAK UNAVAILABLE ON THIS ACCOUNT; STANDARD MODEL"
+                    if ReasonCode.DAYBREAK_FALLBACK in decision.reason_codes
                     else ""
                 )
                 + (

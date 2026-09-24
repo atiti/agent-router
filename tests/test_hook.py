@@ -11,7 +11,12 @@ from agentroute.config import (
     default_config,
 )
 from agentroute.hook import codex_stop, codex_user_prompt_submit
-from agentroute.profiles import ProfileStatus, reviewer_fallback_profiles
+from agentroute.profiles import (
+    ProfileStatus,
+    TurnProfileSelection,
+    profile_has_daybreak_blue,
+    reviewer_fallback_profiles,
+)
 
 
 class FakeClassifierResponse:
@@ -85,6 +90,68 @@ def invoke(
     sink = io.StringIO()
     assert codex_user_prompt_submit(source, sink, config=config, store=store) == 0
     return json.loads(sink.getvalue())
+
+
+def test_daybreak_security_model_follows_selected_chatgpt_profile(tmp_path):
+    default_home = tmp_path / "default"
+    markster_home = tmp_path / "markster"
+    default_home.mkdir()
+    markster_home.mkdir()
+    from datetime import datetime, timezone
+
+    catalog = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "models": [{
+            "slug": "gpt-daybreak-blue-latest",
+            "visibility": "list",
+            "available_access_programs": {"cyber": ["daybreak_blue"]},
+        }],
+    }
+    (default_home / "models_cache.json").write_text(json.dumps(catalog), encoding="utf-8")
+    (markster_home / "models_cache.json").write_text(
+        json.dumps({"fetched_at": catalog["fetched_at"], "models": []}),
+        encoding="utf-8",
+    )
+    config = default_config()
+    config.enabled = True
+    config.routing.security_daybreak_enabled = True
+    config.capacity.profiles = {
+        "default": SubscriptionProfileConfig(credential_home=str(default_home)),
+        "markster": SubscriptionProfileConfig(credential_home=str(markster_home)),
+    }
+
+    def selected(name):
+        status = ProfileStatus(
+            name, str(default_home if name == "default" else markster_home),
+            0, True, True, "account-hash",
+            CapacityState("gpt", "healthy", "healthy"),
+        )
+        return TurnProfileSelection(name, status, status, False, "account_match", False)
+
+    with patch("agentroute.hook.select_turn_profile", return_value=selected("default")):
+        blue = invoke(
+            config, AuditStore(tmp_path / "blue.db"), "Review this security vulnerability",
+            model="gpt-6-sol", account_id="default-account",
+        )
+    with patch("agentroute.hook.select_turn_profile", return_value=selected("markster")):
+        fallback = invoke(
+            config, AuditStore(tmp_path / "markster.db"), "Review this security vulnerability",
+            model="gpt-6-sol", account_id="markster-account",
+        )
+    with patch("agentroute.hook.select_turn_profile", return_value=selected("default")):
+        explicit = invoke(
+            config, AuditStore(tmp_path / "manual.db"),
+            "@normal Review this security vulnerability",
+            model="gpt-6-sol", account_id="default-account",
+        )
+
+    assert blue["hookSpecificOutput"]["model"] == "gpt-daybreak-blue-latest"
+    assert "DAYBREAK BLUE MODEL" in blue["hookSpecificOutput"]["routeMessage"]
+    assert fallback["hookSpecificOutput"]["model"] == "gpt-6-sol"
+    assert "DAYBREAK UNAVAILABLE" in fallback["hookSpecificOutput"]["routeMessage"]
+    assert explicit["hookSpecificOutput"]["model"] == "gpt-6-luna"
+    assert profile_has_daybreak_blue("default", config.capacity.profiles["default"])
+    assert not profile_has_daybreak_blue("markster", config.capacity.profiles["markster"])
 
 
 def test_prompt_reasoning_effort_override_works_with_backend_and_tier(tmp_path, monkeypatch):
@@ -709,7 +776,7 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path, 
         "◆ ACCOUNT ROUTE · default · account match\n"
         "◆ MODEL ROUTE · SMART → gpt-6-sol · high reasoning "
         "· backend gpt/openai · scope root · source MANUAL "
-        "· rule confidence 100% · rule score -0.5 · AgentRoute v0.5.45"
+        "· rule confidence 100% · rule score -0.5 · AgentRoute v0.5.46"
     )
     assert second["hookSpecificOutput"]["model"] == "gpt-6-sol"
     assert len(store.history("same-thread")) == 2
@@ -806,7 +873,7 @@ def test_route_message_identifies_managed_runtime(tmp_path, monkeypatch):
     output = invoke(config, AuditStore(tmp_path / "audit.db"), "@fast say hi")
 
     assert output["hookSpecificOutput"]["routeMessage"].endswith(
-        " · AgentRoute v0.5.45 · runtime v8"
+        " · AgentRoute v0.5.46 · runtime v8"
     )
 
 
