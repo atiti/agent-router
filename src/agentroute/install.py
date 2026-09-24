@@ -131,16 +131,23 @@ class _CodexAppServer:
         self.close()
 
 
-def _merge_command(hooks: dict[str, Any], event: str, command: str, status: str) -> None:
+def _merge_command(
+    hooks: dict[str, Any],
+    event: str,
+    command: str,
+    status: str,
+    timeout: int | None = None,
+) -> None:
     groups = hooks.setdefault(event, [])
+    update = {"type": "command", "command": command, "statusMessage": status}
+    if timeout is not None:
+        update["timeout"] = timeout
     for group in groups:
         for item in group.get("hooks", []):
             if "agentroute" in str(item.get("command", "")):
-                item.update({"type": "command", "command": command, "statusMessage": status})
+                item.update(update)
                 return
-    groups.append(
-        {"hooks": [{"type": "command", "command": command, "statusMessage": status}]}
-    )
+    groups.append({"hooks": [update]})
 
 
 def merge_codex_hook(path: Path | None = None) -> tuple[Path, Path | None]:
@@ -169,6 +176,13 @@ def merge_codex_hook(path: Path | None = None) -> tuple[Path, Path | None]:
         hook_command("stop"),
         "AgentRoute is recording subagent token usage",
     )
+    _merge_command(
+        hooks,
+        "Interrupt",
+        hook_command("interrupt"),
+        "AgentRoute is saving the interrupted route",
+        timeout=3,
+    )
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path, backup
 
@@ -190,6 +204,7 @@ def trust_agentroute_hooks(
         "userPromptSubmit": hook_command("user-prompt-submit"),
         "stop": hook_command("stop"),
         "subagentStop": hook_command("stop"),
+        "interrupt": hook_command("interrupt"),
     }
     client_options = {"codex_home": codex_home} if codex_home is not None else {}
     with _CodexAppServer(codex_binary, **client_options) as client:

@@ -48,7 +48,7 @@ from .desktop import (
     rollback_desktop_app,
 )
 from .doctor import run_doctor
-from .hook import _prompt_help, codex_stop, codex_user_prompt_submit
+from .hook import _prompt_help, codex_interrupt, codex_stop, codex_user_prompt_submit
 from .install import hook_command as installed_hook_command
 from .install import merge_codex_hook, trust_agentroute_hooks
 from .launcher import launch_codex
@@ -777,10 +777,13 @@ def hook_command(provider: str, event: str) -> None:
     handlers = {
         ("codex", "user-prompt-submit"): codex_user_prompt_submit,
         ("codex", "stop"): codex_stop,
+        ("codex", "interrupt"): codex_interrupt,
     }
     handler = handlers.get((provider, event))
     if handler is None:
-        raise typer.BadParameter("supported hooks: codex user-prompt-submit, codex stop")
+        raise typer.BadParameter(
+            "supported hooks: codex user-prompt-submit, codex stop, codex interrupt"
+        )
     raise typer.Exit(handler())
 
 
@@ -1923,6 +1926,18 @@ def hook_json_command() -> None:
                             "type": "command",
                             "command": installed_hook_command("stop"),
                             "statusMessage": "AgentRoute is recording subagent token usage",
+                        }
+                    ]
+                }
+            ],
+            "Interrupt": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": installed_hook_command("interrupt"),
+                            "statusMessage": "AgentRoute is saving the interrupted route",
+                            "timeout": 3,
                         }
                     ]
                 }

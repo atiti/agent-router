@@ -52,6 +52,13 @@ Examples:
 @auto continue
 ```
 
+If you interrupt a turn and send a correction, the next turn keeps that interrupted turn's
+effective tier, backend/model, and reasoning effort. Any explicit tag overrides only its own
+setting—for example, `@normal` changes the tier while retaining the backend and effort. Use `@auto`
+to clear the interrupted-turn affinity and route automatically. Capacity, account, and safety
+policies can still select a visible fallback when the prior route is no longer usable. AgentRoute
+uses Codex's `Interrupt` hook to mark the interrupted turn in the local audit store.
+
 > **Alpha:** Codex does not currently accept model overrides from `UserPromptSubmit` hooks. The
 > installer builds a narrowly patched Codex from the pinned upstream commit documented below.
 > This makes routing native to the active session instead of launching a new process per turn.
@@ -545,9 +552,11 @@ local audit metadata and observed token counters only; no prompts, tool argument
 are emitted.
 
 Turn reconciliation separates completed turns with usage receipts from completed turns without
-receipts, pending turns, failed/interrupted turns when the runtime reports that outcome, and pending
-rows older than 24 hours (`stale_unreconciled`). Historical classifier fallbacks without an explicit
-failure receipt remain labeled as generic fallbacks; new attempts record timeout or error type.
+receipts, pending turns, failed/interrupted turns, and pending rows older than 24 hours
+(`stale_unreconciled`). The Codex `Interrupt` hook records user-interrupted root turns directly;
+the stop hook accounts for usage without changing that outcome. Historical classifier fallbacks
+without an explicit failure receipt remain labeled as generic fallbacks; new attempts record
+timeout or error type.
 
 `agentroute models` displays the configured backend/tier matrix together with declared tool-calling,
 reasoning, vision, context-window, and pricing capabilities. These facts live under `capabilities`

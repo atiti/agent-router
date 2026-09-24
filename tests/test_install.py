@@ -34,6 +34,16 @@ def test_hook_install_preserves_existing_hooks_and_is_idempotent(tmp_path, monke
         command.endswith("agentroute hook codex stop")
         for command in subagent_stop_commands
     ) == 1
+    interrupt_commands = [
+        item
+        for group in payload["hooks"]["Interrupt"]
+        for item in group["hooks"]
+    ]
+    assert len(interrupt_commands) == 1
+    assert interrupt_commands[0]["command"] == (
+        f"{tmp_path}/.agentroute/bin/agentroute hook codex interrupt"
+    )
+    assert interrupt_commands[0]["timeout"] == 3
     groups = payload["hooks"]["UserPromptSubmit"]
     commands = [item["command"] for group in groups for item in group["hooks"]]
     assert len(commands) == 1
@@ -48,6 +58,7 @@ def test_trust_agentroute_hooks_only_writes_exact_installed_commands(tmp_path, m
     hooks_path.write_text("{}")
     prompt_command = f"{agentroute_home}/bin/agentroute hook codex user-prompt-submit"
     stop_command = f"{agentroute_home}/bin/agentroute hook codex stop"
+    interrupt_command = f"{agentroute_home}/bin/agentroute hook codex interrupt"
     requests = []
 
     class FakeClient:
@@ -92,6 +103,14 @@ def test_trust_agentroute_hooks_only_writes_exact_installed_commands(tmp_path, m
                                     "currentHash": "sha256:subagent-stop",
                                 },
                                 {
+                                    "key": f"{hooks_path}:interrupt:0:0",
+                                    "eventName": "interrupt",
+                                    "handlerType": "command",
+                                    "command": interrupt_command,
+                                    "sourcePath": str(hooks_path),
+                                    "currentHash": "sha256:interrupt",
+                                },
+                                {
                                     "key": f"{hooks_path}:stop:1:0",
                                     "eventName": "preToolUse",
                                     "handlerType": "command",
@@ -111,7 +130,7 @@ def test_trust_agentroute_hooks_only_writes_exact_installed_commands(tmp_path, m
         tmp_path / "codex-bin", hooks_path=hooks_path, cwd=tmp_path
     )
 
-    assert count == 3
+    assert count == 4
     assert requests[0] == ("hooks/list", {"cwds": [str(tmp_path)]})
     assert requests[1][0] == "config/batchWrite"
     assert requests[1][1]["edits"][0]["value"] == {
@@ -120,6 +139,7 @@ def test_trust_agentroute_hooks_only_writes_exact_installed_commands(tmp_path, m
         f"{hooks_path}:subagent_stop:0:0": {
             "trusted_hash": "sha256:subagent-stop"
         },
+        f"{hooks_path}:interrupt:0:0": {"trusted_hash": "sha256:interrupt"},
     }
 
 

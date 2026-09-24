@@ -231,6 +231,32 @@ def codex_user_prompt_submit(
         tier_override, backend_override, reasoning_effort_override, routed_prompt = route_overrides(
             prompt, config.backends
         )
+        interrupted_route = (
+            previous_route
+            if previous_route is not None
+            and previous_route["turn_outcome"] == "interrupted"
+            and tier_override != "auto"
+            else None
+        )
+        interrupted_backend = None
+        interrupted_model = None
+        interrupted_model_provider = None
+        if interrupted_route is not None:
+            interrupted_backend = str(
+                interrupted_route["actual_backend"] or interrupted_route["backend"]
+            )
+            interrupted_model = str(
+                interrupted_route["actual_model"] or interrupted_route["model"]
+            )
+            interrupted_model_provider = str(
+                interrupted_route["actual_model_provider"]
+                or interrupted_route["model_provider"]
+            )
+            previous_reasoning_effort = str(
+                interrupted_route["actual_reasoning_effort"]
+                or interrupted_route["reasoning_effort"]
+                or ""
+            ) or None
         sticky_backend = store.route_preference(session_id, route_scope, agent_id)
         requested_backend = (
             str(payload.get("requested_backend"))
@@ -322,6 +348,10 @@ def codex_user_prompt_submit(
             current_tier=current_tier,
             previous_task_tier=previous_tier,
             previous_reasoning_effort=previous_reasoning_effort,
+            interrupted_turn_affinity=interrupted_route is not None,
+            interrupted_backend=interrupted_backend,
+            interrupted_model=interrupted_model,
+            interrupted_model_provider=interrupted_model_provider,
             task_definition=task_definition,
             agent_requested_tier=(Tier.parse(agent_request.tier) if agent_request else None),
             agent_request_reason_hash=(
@@ -403,6 +433,53 @@ def codex_user_prompt_submit(
             decision.selection_receipt["selected"]["reasoning_effort"] = (
                 decision.reasoning_effort
             )
+            decision.selection_receipt_hash = hashlib.sha256(
+                json.dumps(
+                    decision.selection_receipt, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+        if interrupted_route is not None:
+            preserve_interrupted_model = bool(
+                interrupted_model
+                and tier_override is None
+                and decision.tier == previous_tier
+                and decision.backend == interrupted_backend
+                and decision.model_provider == interrupted_model_provider
+                and not decision.capacity_blocked
+                and not (
+                    profile_selection is not None
+                    and profile_selection.switched
+                )
+                and ReasonCode.CAPACITY_FALLBACK not in decision.reason_codes
+                and ReasonCode.BACKEND_FALLBACK not in decision.reason_codes
+            )
+            if (
+                preserve_interrupted_model
+                and interrupted_model == "gpt-daybreak-blue-latest"
+            ):
+                selected_name = (
+                    profile_selection.selected.name
+                    if profile_selection is not None and profile_selection.selected is not None
+                    else None
+                )
+                profile = config.capacity.profiles.get(selected_name or "")
+                preserve_interrupted_model = bool(
+                    selected_name and profile and profile_has_daybreak_blue(selected_name, profile)
+                )
+            if preserve_interrupted_model:
+                decision.model = interrupted_model
+            selected = decision.selection_receipt.get("selected")
+            if isinstance(selected, dict):
+                selected["model"] = decision.model
+                selected["backend"] = decision.backend
+                selected["model_provider"] = decision.model_provider
+                selected["reasoning_effort"] = decision.reasoning_effort
+            decision.selection_receipt["interrupted_turn_affinity"] = {
+                "previous_turn_id": interrupted_route["turn_id"],
+                "previous_outcome": "interrupted",
+                "model_preserved": preserve_interrupted_model,
+                "reasoning_effort_inherited": reasoning_effort_override is None,
+            }
             decision.selection_receipt_hash = hashlib.sha256(
                 json.dumps(
                     decision.selection_receipt, sort_keys=True, separators=(",", ":")
@@ -520,6 +597,11 @@ def codex_user_prompt_submit(
                 + (
                     f" · {decision.classifier_task_type}"
                     if decision.classifier_task_type
+                    else ""
+                )
+                + (
+                    " · INTERRUPTED TURN AFFINITY"
+                    if ReasonCode.INTERRUPTED_TURN_AFFINITY in decision.reason_codes
                     else ""
                 )
                 + (
@@ -682,3 +764,25 @@ def codex_stop(
         json.dump({"continue": True, "suppressOutput": True}, sink, separators=(",", ":"))
         sink.write("\n")
         return 0
+
+
+def codex_interrupt(
+    source: TextIO = sys.stdin,
+    sink: TextIO = sys.stdout,
+    *,
+    store: AuditStore | None = None,
+) -> int:
+    """Record an explicit Codex main-thread interruption for next-turn affinity."""
+    try:
+        payload: dict[str, Any] = json.load(source)
+        route_scope, agent_id = _subagent_identity(payload)
+        (store or AuditStore(timeout=2.0)).record_interruption(
+            str(payload["session_id"]),
+            str(payload["turn_id"]),
+            route_scope=route_scope,
+            agent_id=agent_id,
+        )
+    except Exception:
+        # Interrupt hooks must be fast and must never interfere with stopping the turn.
+        pass
+    return 0
