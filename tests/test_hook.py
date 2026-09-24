@@ -10,7 +10,7 @@ from agentroute.config import (
     SubscriptionProfileConfig,
     default_config,
 )
-from agentroute.hook import codex_stop, codex_user_prompt_submit
+from agentroute.hook import codex_interrupt, codex_stop, codex_user_prompt_submit
 from agentroute.profiles import (
     ProfileStatus,
     TurnProfileSelection,
@@ -65,12 +65,13 @@ def invoke(
     inherited_model_provider=None,
     requested_backend=None,
     spawn_model_explicit=False,
+    turn_id="turn-1",
 ):
     source = io.StringIO(
         json.dumps(
             {
                 "session_id": "same-thread",
-                "turn_id": "turn-1",
+                "turn_id": turn_id,
                 "model": model,
                 "model_provider": model_provider,
                 "inherited_model_provider": inherited_model_provider,
@@ -172,6 +173,145 @@ def test_prompt_reasoning_effort_override_works_with_backend_and_tier(tmp_path, 
     receipt = json.loads(store.latest("same-thread")["selection_receipt"])
     assert receipt["selected"]["reasoning_effort"] == "ultra"
     assert receipt["policy"]["reasoning_effort_override"] == "ultra"
+
+
+def test_interrupted_turn_correction_keeps_effective_model_backend_and_effort(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    config.backends["azure"].tiers["smart"] = ModelTarget(
+        model="azure-special-smart", reasoning_effort="high"
+    )
+    config.routing.backend_by_tier["smart"] = "azure"
+    store = AuditStore(tmp_path / "audit.db")
+
+    first = invoke(config, store, "@smart @ultra implement the routing change")
+    first_route = store.latest_route("same-thread")
+    assert first_route is not None
+    assert first_route["backend"] == "azure"
+    assert first_route["model"] == "azure-special-smart"
+    assert first["hookSpecificOutput"]["reasoningEffort"] == "ultra"
+    request = {
+        "model": first_route["model"],
+        "provider": first_route["model_provider"],
+        "reasoning_effort": first_route["reasoning_effort"],
+    }
+    interrupt_output = io.StringIO()
+    assert codex_interrupt(
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "same-thread",
+                    "turn_id": "turn-1",
+                    "hook_event_name": "Interrupt",
+                    "model": first_route["model"],
+                }
+            )
+        ),
+        interrupt_output,
+        store=store,
+    ) == 0
+    assert interrupt_output.getvalue() == ""
+    assert store.latest_route("same-thread")["turn_outcome"] == "interrupted"
+    stop_output = io.StringIO()
+    assert codex_stop(
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "same-thread",
+                    "turn_id": "turn-1",
+                    "hook_event_name": "Stop",
+                    "model": first_route["model"],
+                    "agentroute_application": {
+                        "status": "applied",
+                        "requested": request,
+                        "actual": request,
+                    },
+                }
+            )
+        ),
+        stop_output,
+        store=store,
+    ) == 0
+    assert store.latest_route("same-thread")["turn_outcome"] == "interrupted"
+    assert store.latest_route("same-thread")["actual_model"] == first_route["model"]
+    store.record_completion(
+        "same-thread", "turn-1", first_route["model"], outcome="completed"
+    )
+    completed_route = store.latest_route("same-thread")
+    assert completed_route["turn_outcome"] == "interrupted"
+    assert completed_route["completion_source"] == "interrupt_hook"
+    assert completed_route["actual_model"] == first_route["model"]
+
+    corrected = invoke(
+        config,
+        store,
+        "rename the local variable and retry the focused test",
+        model="gpt-6-luna",
+        model_provider="agentroute-azure",
+        turn_id="turn-2",
+    )
+    specific = corrected["hookSpecificOutput"]
+
+    assert specific["model"] == "azure-special-smart"
+    assert specific["modelProvider"] == "agentroute-azure"
+    assert specific["reasoningEffort"] == "ultra"
+    assert "INTERRUPTED TURN AFFINITY" in specific["routeMessage"]
+    route = store.latest_route("same-thread")
+    receipt = json.loads(route["selection_receipt"])
+    assert route["classification_source"] == "interrupted_turn_affinity"
+    assert receipt["interrupted_turn_affinity"]["model_preserved"] is True
+
+
+def test_interrupted_turn_explicit_tags_override_only_their_settings(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    config.backends["azure"].tiers["smart"] = ModelTarget(
+        model="azure-special-smart", reasoning_effort="high"
+    )
+    config.routing.backend_by_tier["smart"] = "azure"
+    store = AuditStore(tmp_path / "audit.db")
+    invoke(config, store, "@smart @ultra implement the routing change")
+    first_route = store.latest_route("same-thread")
+    request = {
+        "model": first_route["model"],
+        "provider": first_route["model_provider"],
+        "reasoning_effort": first_route["reasoning_effort"],
+    }
+    store.record_completion(
+        "same-thread",
+        "turn-1",
+        first_route["model"],
+        outcome="interrupted",
+        actual_backend="azure",
+        application_receipt={
+            "status": "applied",
+            "requested": request,
+            "actual": request,
+        },
+    )
+
+    corrected = invoke(
+        config,
+        store,
+        "@normal @low correct the route name",
+        model="gpt-6-luna",
+        model_provider="agentroute-azure",
+        turn_id="turn-2",
+    )
+    specific = corrected["hookSpecificOutput"]
+
+    assert specific["model"] == config.backends["azure"].tiers["normal"].model
+    assert specific["modelProvider"] == "agentroute-azure"
+    assert specific["reasoningEffort"] == "low"
+    assert "INTERRUPTED TURN AFFINITY" in specific["routeMessage"]
 
 
 def test_manual_tier_override_offers_nonjudgmental_route_feedback(tmp_path):
@@ -776,7 +916,7 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path, 
         "◆ ACCOUNT ROUTE · default · account match\n"
         "◆ MODEL ROUTE · SMART → gpt-6-sol · high reasoning "
         "· backend gpt/openai · scope root · source MANUAL "
-        "· rule confidence 100% · rule score -0.5 · AgentRoute v0.5.46"
+        "· rule confidence 100% · rule score -0.5 · AgentRoute v0.5.47"
     )
     assert second["hookSpecificOutput"]["model"] == "gpt-6-sol"
     assert len(store.history("same-thread")) == 2
@@ -873,7 +1013,7 @@ def test_route_message_identifies_managed_runtime(tmp_path, monkeypatch):
     output = invoke(config, AuditStore(tmp_path / "audit.db"), "@fast say hi")
 
     assert output["hookSpecificOutput"]["routeMessage"].endswith(
-        " · AgentRoute v0.5.46 · runtime v8"
+        " · AgentRoute v0.5.47 · runtime v8"
     )
 
 

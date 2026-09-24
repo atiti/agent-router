@@ -40,6 +40,7 @@ class ReasonCode(str, Enum):
     HIGH_SCOPE = "HIGH_SCOPE"
     REPEATED_FAILURE = "REPEATED_FAILURE"
     PREVIOUS_TASK_INHERITANCE = "PREVIOUS_TASK_INHERITANCE"
+    INTERRUPTED_TURN_AFFINITY = "INTERRUPTED_TURN_AFFINITY"
     TASK_DEFINITION_INHERITANCE = "TASK_DEFINITION_INHERITANCE"
     MANUAL_OVERRIDE = "MANUAL_OVERRIDE"
     REASONING_EFFORT_OVERRIDE = "REASONING_EFFORT_OVERRIDE"
@@ -92,6 +93,10 @@ class RouteContext(BaseModel):
     current_tier: Tier = Tier.NORMAL
     previous_task_tier: Tier | None = None
     previous_reasoning_effort: str | None = None
+    interrupted_turn_affinity: bool = False
+    interrupted_backend: str | None = None
+    interrupted_model: str | None = None
+    interrupted_model_provider: str | None = None
     task_definition: str | None = None
     agent_requested_tier: Tier | None = None
     agent_request_reason_hash: str | None = None

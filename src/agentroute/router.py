@@ -112,6 +112,7 @@ class Router:
         override, backend_override, parsed_reasoning_effort, _ = route_overrides(
             context.latest_prompt, self.config.backends
         )
+        interrupted_turn_affinity = context.interrupted_turn_affinity and override != "auto"
         reasoning_effort_override = (
             context.requested_reasoning_effort or parsed_reasoning_effort
         )
@@ -145,6 +146,11 @@ class Router:
                     detail=f"explicit @{override} override",
                 )
             )
+        elif interrupted_turn_affinity and context.previous_task_tier is not None:
+            inherited = True
+            proposed = context.previous_task_tier
+            confidence = 0.99
+            classification_source = "interrupted_turn_affinity"
         elif is_confirmation(context.latest_prompt) and context.agent_requested_tier is not None:
             inherited = True
             task_context_used = context.task_definition is not None
@@ -228,6 +234,18 @@ class Router:
                 classifier_reasoning_effort,
             ) = self._maybe_classify(context, proposed, confidence, contributions)
 
+        if interrupted_turn_affinity:
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.INTERRUPTED_TURN_AFFINITY,
+                    weight=0,
+                    detail=(
+                        "retained prior turn settings after interruption; explicit prompt tags "
+                        "override their matching settings"
+                    ),
+                )
+            )
+
         if (
             not manual
             and self.config.routing.fast_quality_floor
@@ -291,8 +309,9 @@ class Router:
 
         backend_name = (
             backend_override
-            or context.sticky_backend
             or context.requested_backend
+            or (context.interrupted_backend if interrupted_turn_affinity else None)
+            or context.sticky_backend
             or context.inherited_backend
             or self.config.routing.backend_by_tier.get(str(proposed), "gpt")
         )
@@ -352,7 +371,9 @@ class Router:
         if backend_unavailable:
             unavailable_requested_backend = backend_name
             unavailable_locked = bool(
-                backend_override or context.sticky_backend or context.requested_backend
+                backend_override
+                or context.requested_backend
+                or context.sticky_backend == backend_name
             )
             selected_ready: str | None = None
             if not unavailable_locked or (
@@ -398,6 +419,7 @@ class Router:
             proposed is Tier.MAX
             and context.current_tier is not Tier.MAX
             and not manual
+            and not interrupted_turn_affinity
             and backend_name == "gpt"
         ):
             proposed = Tier.SMART
@@ -445,7 +467,9 @@ class Router:
         capacity_trigger = capacity.trigger
         capacity_status = capacity.status
         capacity_locked = bool(
-            backend_override or context.sticky_backend or context.requested_backend
+            backend_override
+            or context.requested_backend
+            or context.sticky_backend == backend_name
         )
         if explicit_child_model_mismatch:
             capacity_blocked = True
@@ -570,7 +594,11 @@ class Router:
                         )
                     )
         target = backend.target(proposed)
-        inherited_effort = context.previous_reasoning_effort if inherited else None
+        inherited_effort = (
+            context.previous_reasoning_effort
+            if inherited or interrupted_turn_affinity
+            else None
+        )
         selected_reasoning_effort = reasoning_effort_override or (
             _stronger_reasoning_effort(classifier_reasoning_effort, inherited_effort)
             if classifier_reasoning_effort or inherited_effort
@@ -603,7 +631,8 @@ class Router:
                 else "classifier"
                 if classifier_reasoning_effort
                 else "inheritance"
-                if inherited and context.previous_reasoning_effort
+                if (inherited or interrupted_turn_affinity)
+                and context.previous_reasoning_effort
                 else "tier_default"
             )
         digest = hashlib.sha256(context.latest_prompt.encode("utf-8")).hexdigest()
@@ -804,7 +833,13 @@ class Router:
             backend=backend_name,
             model_provider=backend.codex_provider,
             sticky_backend=(
-                backend_override or context.sticky_backend or context.requested_backend
+                backend_override
+                or context.requested_backend
+                or (
+                    context.sticky_backend
+                    if not interrupted_turn_affinity or context.sticky_backend == backend_name
+                    else None
+                )
             ),
             route_scope=context.route_scope,
             agent_id=context.agent_id,

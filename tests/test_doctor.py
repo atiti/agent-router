@@ -29,6 +29,7 @@ def test_doctor_validates_local_runtime_hooks_and_audit(tmp_path, monkeypatch):
             ],
             "Stop": [{"hooks": [{"command": hook_command("stop")}]}],
             "SubagentStop": [{"hooks": [{"command": hook_command("stop")}]}],
+            "Interrupt": [{"hooks": [{"command": hook_command("interrupt")}]}],
         }
     }
     (codex_home / "hooks.json").write_text(json.dumps(hooks), encoding="utf-8")
@@ -58,6 +59,7 @@ def test_doctor_requires_commands_under_each_exact_hook_event(tmp_path, monkeypa
                 }
             ],
             "Stop": [{"hooks": [{"command": hook_command("stop")}]}],
+            "Interrupt": [{"hooks": [{"command": hook_command("interrupt")}]}],
         }
     }
     (codex_home / "hooks.json").write_text(json.dumps(hooks), encoding="utf-8")

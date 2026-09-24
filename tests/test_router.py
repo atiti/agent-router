@@ -258,6 +258,86 @@ def test_reasoning_effort_prefix_preserves_tier_and_is_audited():
     assert decision.selection_receipt["policy"]["reasoning_effort_override"] == "ultra"
 
 
+def test_interrupted_turn_inherits_route_before_reclassifying_correction(monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    config.backends["azure"].tiers["max"] = ModelTarget(
+        model="azure-special-max", reasoning_effort="high"
+    )
+    config.routing.backend_by_tier["max"] = "azure"
+
+    decision = Router(config).route(
+        RouteContext(
+            session_id="interrupted-correction",
+            latest_prompt="rename this variable",
+            current_tier=Tier.FAST,
+            previous_task_tier=Tier.MAX,
+            previous_reasoning_effort="ultra",
+            interrupted_turn_affinity=True,
+            interrupted_backend="azure",
+            interrupted_model="azure-special-max",
+            interrupted_model_provider="agentroute-azure",
+        )
+    )
+
+    assert decision.tier is Tier.MAX
+    assert decision.backend == "azure"
+    assert decision.reasoning_effort == "ultra"
+    assert decision.classification_source == "interrupted_turn_affinity"
+    assert ReasonCode.INTERRUPTED_TURN_AFFINITY in decision.reason_codes
+    assert ReasonCode.MODEL_COMPATIBILITY_FALLBACK not in decision.reason_codes
+
+
+def test_interrupted_turn_tags_override_only_named_settings(monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    config = default_config()
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+
+    decision = Router(config).route(
+        RouteContext(
+            session_id="interrupted-manual-override",
+            latest_prompt="@normal @low correct the route name",
+            current_tier=Tier.SMART,
+            previous_task_tier=Tier.SMART,
+            previous_reasoning_effort="ultra",
+            interrupted_turn_affinity=True,
+            interrupted_backend="azure",
+            interrupted_model="azure-special-smart",
+            interrupted_model_provider="agentroute-azure",
+        )
+    )
+
+    assert decision.tier is Tier.NORMAL
+    assert decision.backend == "azure"
+    assert decision.reasoning_effort == "low"
+    assert decision.manual_override
+    assert ReasonCode.INTERRUPTED_TURN_AFFINITY in decision.reason_codes
+
+
+def test_auto_clears_interrupted_turn_affinity():
+    decision = Router(default_config()).route(
+        RouteContext(
+            session_id="interrupted-auto-reset",
+            latest_prompt="@auto rename this variable",
+            current_tier=Tier.FAST,
+            previous_task_tier=Tier.MAX,
+            previous_reasoning_effort="ultra",
+            interrupted_turn_affinity=True,
+            interrupted_backend="azure",
+            interrupted_model="azure-special-max",
+            interrupted_model_provider="agentroute-azure",
+        )
+    )
+
+    assert decision.tier is Tier.FAST
+    assert decision.backend == "gpt"
+    assert decision.reasoning_effort != "ultra"
+    assert ReasonCode.INTERRUPTED_TURN_AFFINITY not in decision.reason_codes
+
+
 def test_read_only_issue_comment_retrieval_routes_to_fast():
     decision = route(
         "pull the latest comment from the issue owner: "

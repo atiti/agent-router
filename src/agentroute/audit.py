@@ -171,8 +171,9 @@ MIGRATIONS = {
 
 
 class AuditStore:
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(self, path: Path | None = None, *, timeout: float = 5.0) -> None:
         self.path = path or data_dir() / "audit.db"
+        self.timeout = timeout
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as connection:
             connection.executescript(SCHEMA)
@@ -258,7 +259,7 @@ class AuditStore:
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, timeout=self.timeout)
         connection.row_factory = sqlite3.Row
         try:
             yield connection
@@ -387,6 +388,47 @@ class AuditStore:
             )
             return decision_id
 
+    def record_interruption(
+        self,
+        session_id: str,
+        turn_id: str,
+        route_scope: str = "root",
+        agent_id: str | None = None,
+    ) -> bool:
+        """Mark one exact turn interrupted from Codex's Interrupt hook."""
+        interrupted_at = datetime.now(timezone.utc)
+        agent_clause = "agent_id IS NULL" if agent_id is None else "agent_id = ?"
+        params: list[object] = [session_id, turn_id, route_scope]
+        if agent_id is not None:
+            params.append(agent_id)
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT id, created_at, turn_outcome, turn_completed_at, turn_duration_ms "
+                "FROM routing_decisions WHERE session_id = ? AND turn_id = ? "
+                f"AND route_scope = ? AND {agent_clause} ORDER BY id DESC LIMIT 1",
+                tuple(params),
+            ).fetchone()
+            if row is None or row["turn_outcome"] in {"completed", "failed"}:
+                return False
+            if row["turn_duration_ms"] is not None:
+                duration_ms = float(row["turn_duration_ms"])
+            else:
+                started_at = datetime.fromisoformat(str(row["created_at"]))
+                duration_ms = max(
+                    0.0,
+                    (interrupted_at - started_at.astimezone(timezone.utc)).total_seconds()
+                    * 1000,
+                )
+            cursor = connection.execute(
+                "UPDATE routing_decisions SET turn_completed_at = COALESCE(turn_completed_at, ?), "
+                "turn_duration_ms = COALESCE(turn_duration_ms, ?), turn_outcome = 'interrupted', "
+                "completion_source = 'interrupt_hook', "
+                "usage_status = CASE WHEN usage_status = 'pending' THEN 'missing' "
+                "ELSE usage_status END WHERE id = ?",
+                (interrupted_at.isoformat(), duration_ms, row["id"]),
+            )
+            return cursor.rowcount == 1
+
     def record_completion(
         self,
         session_id: str,
@@ -413,7 +455,9 @@ class AuditStore:
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT id, created_at, model, model_provider, reasoning_effort, "
-                "turn_completed_at, turn_duration_ms "
+                "turn_completed_at, turn_duration_ms, turn_outcome, completion_source, "
+                "route_application_state, route_application_reason, actual_backend, "
+                "actual_model_provider, actual_model, actual_reasoning_effort "
                 "FROM routing_decisions WHERE session_id = ? AND turn_id = ? "
                 f"{scope_clause} ORDER BY id DESC LIMIT 1",
                 tuple(params),
@@ -427,6 +471,15 @@ class AuditStore:
             state, reason, actual_model, actual_provider, actual_effort = self._route_application(
                 application_receipt, routed_model, routed_provider, routed_effort
             )
+            if application_receipt is None:
+                state = str(row["route_application_state"])
+                if state == "pending":
+                    state = "unknown"
+                reason = row["route_application_reason"]
+                actual_backend = row["actual_backend"] or actual_backend
+                actual_provider = row["actual_model_provider"]
+                actual_model = row["actual_model"]
+                actual_effort = row["actual_reasoning_effort"]
             receipt_model_observed = actual_model is not None and actual_provider is not None
             answer_model = actual_model if receipt_model_observed else routed_model
             answer_backend = actual_backend if receipt_model_observed else None
@@ -446,6 +499,14 @@ class AuditStore:
                     0.0,
                     (completed_at - started_at.astimezone(timezone.utc)).total_seconds() * 1000,
                 )
+            interrupted_outcome = (
+                row["turn_outcome"] == "interrupted"
+                and row["completion_source"] == "interrupt_hook"
+            )
+            stored_outcome = "interrupted" if interrupted_outcome else outcome
+            stored_completion_source = (
+                "interrupt_hook" if interrupted_outcome else completion_source
+            )
             cursor = connection.execute(
                 """
                 UPDATE routing_decisions SET
@@ -471,8 +532,8 @@ class AuditStore:
                     actual_effort,
                     first_completed_at,
                     duration_ms,
-                    outcome,
-                    completion_source,
+                    stored_outcome,
+                    stored_completion_source,
                     "recorded" if usage is not None else "missing",
                     row["id"],
                 ),

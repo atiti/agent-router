@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.47 — 2026-09-24
+
+- Preserve the interrupted turn's effective model, backend, and reasoning effort for the next
+  correction prompt. Explicit prompt tags override only their own setting; `@auto` clears the
+  affinity. Capacity, account, and safety policies may still select a visible fallback.
+- Record explicit Codex `Interrupt` hook outcomes in the local audit log, retain them through stop
+  accounting, and add a regression-tested installer/doctor path for the hook.
+
 ## 0.5.46 — 2026-09-24
 
 - Add opt-in, profile-aware Daybreak Blue model selection for ChatGPT subscription security

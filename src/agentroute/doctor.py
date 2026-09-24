@@ -37,6 +37,7 @@ def _hooks_check() -> DoctorCheck:
         "UserPromptSubmit": hook_command("user-prompt-submit"),
         "Stop": hook_command("stop"),
         "SubagentStop": hook_command("stop"),
+        "Interrupt": hook_command("interrupt"),
     }
     missing = []
     for event, command in expected.items():
@@ -53,7 +54,9 @@ def _hooks_check() -> DoctorCheck:
     if missing:
         return DoctorCheck("hooks", "fail", "missing events: " + ", ".join(missing))
     return DoctorCheck(
-        "hooks", "pass", "UserPromptSubmit, Stop, and SubagentStop are installed"
+        "hooks",
+        "pass",
+        "UserPromptSubmit, Stop, SubagentStop, and Interrupt are installed",
     )
 
 
