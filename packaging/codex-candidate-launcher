@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+# Side-by-side CLI testing; never changes CODEX_HOME or the stable binary.
+AGENTROUTE_HOME_DIR=${AGENTROUTE_HOME:-"$HOME/.agentroute"}
+AGENTROUTE_CANDIDATE_HOME=${AGENTROUTE_CANDIDATE_HOME:-"$AGENTROUTE_HOME_DIR/candidates/codex-0.157"}
+if [ -f "$AGENTROUTE_HOME_DIR/backend-credentials.env" ]; then
+    . "$AGENTROUTE_HOME_DIR/backend-credentials.env"
+fi
+AGENTROUTE_RUNTIME_BUILD_ID=$(sed -n '1p' "$AGENTROUTE_CANDIDATE_HOME/build-id")
+export AGENTROUTE_RUNTIME_BUILD_ID
+exec "$AGENTROUTE_HOME_DIR/bin/agentroute" launch-codex \
+    --binary "$AGENTROUTE_CANDIDATE_HOME/bin/codex-bin" -- "$@"

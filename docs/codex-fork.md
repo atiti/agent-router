@@ -100,3 +100,8 @@ Validate the complete stack with formatting, `cargo check -p codex-cli`, focused
 core/hook/TUI regressions, a CLI build, a version-matched Code Mode host smoke test,
 and live provider tests. A green rebase alone does not establish runtime compatibility.
 Keep the previous installed binary until candidate validation passes.
+
+The local test entry point is `codex-0157`, installed separately from `codex` with
+its matching host under `~/.agentroute/candidates/codex-0.157`. It uses the same
+Codex home, hooks, provider credentials, and account routing. It is a test build,
+not a public signed/notarized release; the normal CLI and Desktop remain intact.
