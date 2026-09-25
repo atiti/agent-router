@@ -40,6 +40,7 @@ from .config import (
     model_capabilities,
     save_config,
 )
+from .context_cli import app as context_app
 from .desktop import (
     DEFAULT_DESTINATION_APP,
     DEFAULT_SOURCE_APP,
@@ -76,6 +77,7 @@ account_app = typer.Typer(
 app.add_typer(desktop_app, name="desktop")
 app.add_typer(capacity_app, name="capacity")
 app.add_typer(account_app, name="account")
+app.add_typer(context_app, name="context")
 console = Console()
 
 
@@ -748,8 +750,7 @@ def doctor_command(
         checks = run_doctor(load_config())
     except Exception as error:
         console.print(
-            f"[red]Doctor could not load configuration: "
-            f"{type(error).__name__}: {error}[/red]"
+            f"[red]Doctor could not load configuration: {type(error).__name__}: {error}[/red]"
         )
         raise typer.Exit(1) from error
     if json_output:
@@ -848,8 +849,17 @@ def why_command(session: str | None = None) -> None:
 def history_command(session: str | None = None, limit: int = 20) -> None:
     """Show recent routing decisions."""
     table = Table(
-        "ID", "Time", "Scope", "Session", "Route", "Backend", "Model", "Source",
-        "Confidence", "Application", "Reasons"
+        "ID",
+        "Time",
+        "Scope",
+        "Session",
+        "Route",
+        "Backend",
+        "Model",
+        "Source",
+        "Confidence",
+        "Application",
+        "Reasons",
     )
     for row in AuditStore().history(session, limit):
         reasons = ", ".join(json.loads(row["reason_codes"]))
@@ -951,8 +961,7 @@ def stats_command(
     report = cost_report(rows, config.pricing, baseline)
     currency = config.pricing.currency
     console.print(
-        f"Measured turns: {report.measured_turns}; "
-        f"awaiting/unmeasured: {report.unmeasured_turns}"
+        f"Measured turns: {report.measured_turns}; awaiting/unmeasured: {report.unmeasured_turns}"
     )
     console.print(
         "Answer tokens: "
@@ -1185,8 +1194,18 @@ def analytics_command(
 
     if report.classifiers:
         classifiers = Table(
-            "Classifier model", "Calls", "OK", "Fallback", "Timeout", "Error", "Tokens",
-            "Avg", "P50", "P95", "Estimated cost", "Failure reasons"
+            "Classifier model",
+            "Calls",
+            "OK",
+            "Fallback",
+            "Timeout",
+            "Error",
+            "Tokens",
+            "Avg",
+            "P50",
+            "P95",
+            "Estimated cost",
+            "Failure reasons",
         )
         for item in report.classifiers:
             classifiers.add_row(

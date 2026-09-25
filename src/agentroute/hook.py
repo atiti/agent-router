@@ -10,7 +10,8 @@ from . import __version__
 from .audit import AuditStore
 from .capacity import backend_spend, subscription_state
 from .classifier import JevShadowClassifier
-from .config import AppConfig, load_config
+from .config import AppConfig, codex_home, load_config
+from .context import context_receipt, reference_context, related_memories
 from .efficiency import execution_receipt
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
 from .profiles import (
@@ -200,9 +201,9 @@ def _record_jev_shadow(decision: RouteDecision, context: RouteContext, config: A
             "error_type": type(error).__name__,
         }
     decision.selection_receipt_hash = hashlib.sha256(
-        json.dumps(
-            decision.selection_receipt, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        json.dumps(decision.selection_receipt, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
     ).hexdigest()
 
 
@@ -277,18 +278,18 @@ def codex_user_prompt_submit(
             interrupted_backend = str(
                 interrupted_route["actual_backend"] or interrupted_route["backend"]
             )
-            interrupted_model = str(
-                interrupted_route["actual_model"] or interrupted_route["model"]
-            )
+            interrupted_model = str(interrupted_route["actual_model"] or interrupted_route["model"])
             interrupted_model_provider = str(
-                interrupted_route["actual_model_provider"]
-                or interrupted_route["model_provider"]
+                interrupted_route["actual_model_provider"] or interrupted_route["model_provider"]
             )
-            previous_reasoning_effort = str(
-                interrupted_route["actual_reasoning_effort"]
-                or interrupted_route["reasoning_effort"]
-                or ""
-            ) or None
+            previous_reasoning_effort = (
+                str(
+                    interrupted_route["actual_reasoning_effort"]
+                    or interrupted_route["reasoning_effort"]
+                    or ""
+                )
+                or None
+            )
         sticky_backend = store.route_preference(session_id, route_scope, agent_id)
         requested_backend = (
             str(payload.get("requested_backend"))
@@ -354,9 +355,7 @@ def codex_user_prompt_submit(
             rate_limits["ordinary_usage_allowed"] = payload["ordinary_usage_allowed"]
         elif payload.get("ordinaryUsageAllowed") is not None:
             rate_limits["ordinary_usage_allowed"] = payload["ordinaryUsageAllowed"]
-        current_account_id = (
-            str(payload.get("account_id")) if payload.get("account_id") else None
-        )
+        current_account_id = str(payload.get("account_id")) if payload.get("account_id") else None
         current_subscription = subscription_state(
             config,
             rate_limits,
@@ -465,9 +464,7 @@ def codex_user_prompt_submit(
                 "catalog_hint": eligible,
             }
             decision.selection_receipt["selected"]["model"] = decision.model
-            decision.selection_receipt["selected"]["reasoning_effort"] = (
-                decision.reasoning_effort
-            )
+            decision.selection_receipt["selected"]["reasoning_effort"] = decision.reasoning_effort
             decision.selection_receipt_hash = hashlib.sha256(
                 json.dumps(
                     decision.selection_receipt, sort_keys=True, separators=(",", ":")
@@ -481,17 +478,11 @@ def codex_user_prompt_submit(
                 and decision.backend == interrupted_backend
                 and decision.model_provider == interrupted_model_provider
                 and not decision.capacity_blocked
-                and not (
-                    profile_selection is not None
-                    and profile_selection.switched
-                )
+                and not (profile_selection is not None and profile_selection.switched)
                 and ReasonCode.CAPACITY_FALLBACK not in decision.reason_codes
                 and ReasonCode.BACKEND_FALLBACK not in decision.reason_codes
             )
-            if (
-                preserve_interrupted_model
-                and interrupted_model == "gpt-daybreak-blue-latest"
-            ):
+            if preserve_interrupted_model and interrupted_model == "gpt-daybreak-blue-latest":
                 selected_name = (
                     profile_selection.selected.name
                     if profile_selection is not None and profile_selection.selected is not None
@@ -520,14 +511,38 @@ def codex_user_prompt_submit(
                     decision.selection_receipt, sort_keys=True, separators=(",", ":")
                 ).encode("utf-8")
             ).hexdigest()
-        decision.strip_provider_state = store.provider_state_is_mixed(
-            session_id, route_scope, agent_id
-        ) or decision.model_provider != context.current_model_provider or (
-            profile_selection.use_profile_home if profile_selection is not None else False
+        decision.strip_provider_state = (
+            store.provider_state_is_mixed(session_id, route_scope, agent_id)
+            or decision.model_provider != context.current_model_provider
+            or (profile_selection.use_profile_home if profile_selection is not None else False)
         )
         # @auto clears affinity even though the router's ordinary backend choice may be GPT.
         if tier_override == "auto":
             decision.sticky_backend = None
+        related_context = ""
+        if config.enabled and config.context.mode != "off" and not decision.capacity_blocked:
+            try:
+                references = related_memories(
+                    codex_home() / "memories",
+                    routed_prompt,
+                    str(payload.get("cwd") or ""),
+                    session_id,
+                    config.context,
+                )
+                if config.context.mode == "references":
+                    related_context = reference_context(references, config.context.max_chars)
+                decision.selection_receipt["related_context"] = context_receipt(
+                    references,
+                    config.context.mode,
+                    len(related_context),
+                )
+            except Exception:
+                decision.selection_receipt["related_context"] = {"status": "unavailable"}
+            decision.selection_receipt_hash = hashlib.sha256(
+                json.dumps(
+                    decision.selection_receipt, sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
         _record_jev_shadow(decision, context, config)
         store.record(
             decision,
@@ -569,7 +584,7 @@ def codex_user_prompt_submit(
                     "If this tier is materially insufficient, end your final response with "
                     "two plain lines: MODEL_REQUEST: <FAST|NORMAL|SMART|MAX> and "
                     "MODEL_REQUEST_REASON: <one-line reason>. Request only when needed; it is "
-                    "applied only after explicit user confirmation."
+                    "applied only after explicit user confirmation." + related_context
                 ),
             },
         }
@@ -674,8 +689,7 @@ def codex_user_prompt_submit(
                     else ""
                 )
                 + (
-                    f" · CAPACITY {decision.capacity_status.upper()}: "
-                    f"{decision.capacity_detail}"
+                    f" · CAPACITY {decision.capacity_status.upper()}: {decision.capacity_detail}"
                     if decision.capacity_status not in {"disabled", "healthy", "unknown"}
                     else f" · capacity {decision.capacity_detail}"
                     if decision.capacity_status == "healthy"
