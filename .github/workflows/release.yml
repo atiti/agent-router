@@ -71,7 +71,7 @@ jobs:
       - uses: actions/attest@v4
         with:
           subject-path: dist/*.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: agentroute-${{ runner.os }}-${{ runner.arch }}
           path: dist/*
