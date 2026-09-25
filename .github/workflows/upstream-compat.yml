@@ -31,10 +31,12 @@ jobs:
             ref=$(gh api repos/openai/codex/releases/latest --jq .tag_name)
           fi
           printf 'ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
-      - name: Apply patches and compile Codex CLI
+      - name: Rebase the commit stack and check Codex CLI
         id: check
         continue-on-error: true
-        run: ./scripts/check_upstream.sh "${{ steps.upstream.outputs.ref }}"
+        env:
+          UPSTREAM_REF: ${{ steps.upstream.outputs.ref }}
+        run: ./scripts/check_upstream.sh "$UPSTREAM_REF"
       - name: Open one actionable compatibility issue on failure
         if: steps.check.outcome == 'failure'
         env:
