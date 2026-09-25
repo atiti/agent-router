@@ -4,6 +4,9 @@ AgentRoute releases patched open-source Codex binaries, the AgentRoute wheel, a 
 Code Mode host, checksums, and build-provenance attestations. They never contain ChatGPT.app,
 credentials, user configuration, transcripts, or audit data.
 
+For the upstream mirror, downstream development branch, and stable-release port workflow,
+see [Maintaining the Codex fork](codex-fork.md).
+
 ## Release gate
 
 1. Let CI pass, including the pinned patch-stack check and wheel-content check.
