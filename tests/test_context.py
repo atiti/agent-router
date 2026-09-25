@@ -17,6 +17,15 @@ def memory(root, name, cwd, *, thread="other", date="2026-09-24T12:00:00Z"):
     return path
 
 
+def summary(root, name, cwd, content):
+    path = root / "rollout_summaries" / name
+    path.parent.mkdir(exist_ok=True, parents=True)
+    path.write_text(
+        f"thread_id: {name}\nupdated_at: 2026-09-24T12:00:00Z\ncwd: {cwd}\n{content}"
+    )
+    return path
+
+
 def test_retrieval_excludes_other_projects_current_thread_stale_and_symlinks(tmp_path):
     cwd = str(tmp_path / "project")
     valid = memory(tmp_path, "good.md", cwd)
@@ -64,3 +73,75 @@ def test_empty_query_and_missing_root_are_safe(tmp_path):
             ]
             == []
         )
+
+
+def test_judged_prompt_set_prefers_distinctive_topics_and_rejects_generic_overlap(tmp_path):
+    agentroute_cwd = str(tmp_path / "agent-router")
+    workspace_cwd = str(tmp_path / "workspace")
+    skill_review = summary(
+        tmp_path,
+        "skill-review.md",
+        agentroute_cwd,
+        """# AgentRoute skill catalog optimization review
+## Codex skill catalog context budget
+The review measured skill metadata token budget, catalog omission, and shadow selection.
+It also discussed memory as a separate context feature.
+""",
+    )
+    local_coder = summary(
+        tmp_path,
+        "local-coder.md",
+        workspace_cwd,
+        """# Local Qwen3-Coder tool calling setup
+## OpenAI Responses backend compatibility
+Qwen3-Coder is a local coding model. The Responses adapter must preserve function tool calls.
+""",
+    )
+
+    cases = [
+        (
+            "Codex skill catalog metadata token budget and shadow selection",
+            agentroute_cwd,
+            {str(skill_review)},
+        ),
+        (
+            "local coding model with OpenAI Responses backend and tool calling support",
+            workspace_cwd,
+            {str(local_coder)},
+        ),
+        (
+            "Where does Ivan look at open deals? He has parallel projects with Timi, "
+            "US customers, and random quests",
+            workspace_cwd,
+            set(),
+        ),
+        ("How do I configure native Codex memory?", agentroute_cwd, set()),
+    ]
+
+    for prompt, cwd, expected_sources in cases:
+        result = related_memories(
+            tmp_path, prompt, cwd, "current", ContextConfig(), now=NOW
+        )
+        assert {item["source"] for item in result["references"]} == expected_sources, prompt
+
+
+def test_reference_preview_explains_which_fields_matched(tmp_path):
+    path = summary(
+        tmp_path,
+        "skills.md",
+        "/project",
+        """# Codex skill catalog review
+## Metadata context budget
+Measured token budget for skill metadata and catalog selection.
+""",
+    )
+    result = related_memories(
+        tmp_path,
+        "Codex skill catalog token budget",
+        "/project",
+        "current",
+        ContextConfig(),
+        now=NOW,
+    )
+    assert result["references"][0]["source"] == str(path)
+    assert result["references"][0]["matched_fields"] == ["title", "headings", "body"]

@@ -57,3 +57,14 @@ Shadow mode audits hashes/counts/timing only. Reference mode includes local sour
 paths and titles in model context, so enable it only for providers allowed to see
 that project information. A credential-pattern check is a best-effort additional
 filter, not a guarantee of secret detection. Disable immediately with `mode off`.
+
+Retrieval uses a small built-in conversational stop-word list and weighted lexical
+evidence: title matches count three points, section-heading matches count two, and
+incidental body matches count one. Candidates need at least two distinct overlapping
+terms and a weighted score of four (a single term repeated in both the title and
+body also qualifies). This precision guard is not semantic search; inspect
+`agentroute context search` previews and treat misses as possible. The preview reports
+matched terms and fields to make ranking explainable. The routing audit stores only
+counts, timings, and reference hashes; AgentRoute does not currently observe whether
+Codex opened a referenced file or whether it helped, so usefulness still needs a
+small human-judged evaluation set.

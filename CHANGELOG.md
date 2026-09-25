@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.50 — 2026-09-25
+
+- Improve related-session context precision with conversational stop-word filtering,
+  Unicode-aware term matching, and weighted title, heading, and body evidence.
+- Explain matched fields and terms in search previews; add a small judged prompt set
+  covering relevant retrieval, unrelated-session rejection, and expected misses.
+- Keep related-session context opt-in and make no token-efficiency claim pending
+  longitudinal usage data.
+
 ## 0.5.49 — 2026-09-25
 
 - Fix fresh source installs and release builds incorrectly rejecting a new clone

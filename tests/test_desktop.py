@@ -51,7 +51,7 @@ def test_desktop_build_is_local_reversible_and_preserves_bundle_id(tmp_path, mon
     assert info["CFBundleIdentifier"] == "com.openai.codex"
     assert info["CFBundleDisplayName"] == "ChatGPT-Routed"
     assert info["AgentRouteDesktopBuild"] == "test-build"
-    assert info["AgentRouteVersion"] == "0.5.49"
+    assert info["AgentRouteVersion"] == "0.5.50"
     assert "Codex-compatible" in info["CFBundleGetInfoString"]
     assert len(smoke_calls) == 1
     assert smoke_calls[0].name == "codex-code-mode-host"
