@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.48 — 2026-09-25
+
+- Upgrade the routed CLI and matching Code Mode host to upstream Codex 0.157.0,
+  with AgentRoute runtime v41. Preserve the real upstream version in `codex --version`.
+- Build from an immutable `atiti/codex` revision containing 17 logically separated
+  commits. Future ports use isolated worktrees, conflict-resolution reuse, and
+  `range-diff` review; the installer refuses dirty source checkouts.
+- Add bounded per-turn execution receipts and analytics for observed responses,
+  cached tokens, tool completions/failures, tool work, and compaction. Partial
+  measurements are labeled; overlapping tool work is not reported as model latency.
+- Add opt-in cache economics (`agentroute context economics shadow|retain|off`),
+  using recent same-model/provider evidence. Explicit route choices retain priority;
+  subscription estimates do not trigger cash-cost retention decisions.
+- Add opt-in related-session source references from existing Codex memory artifacts
+  (`agentroute context search`, `agentroute context mode shadow|references|off`).
+  Retrieval is bounded and scoped to the current project or an explicit allowlist.
+  Both context retrieval and cache economics remain off by default.
+- Desktop rebuilds still require a matching 0.157 release line. This release's live
+  acceptance covers CLI GPT/Azure routing and tool continuation; Desktop/mobile
+  interoperability has not been verified. Existing routed Desktop apps are not
+  rebuilt by `agentroute update`.
+
 ## 0.5.47 — 2026-09-24
 
 - Preserve the interrupted turn's effective model, backend, and reasoning effort for the next
