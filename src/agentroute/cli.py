@@ -48,6 +48,7 @@ from .desktop import (
     rollback_desktop_app,
 )
 from .doctor import run_doctor
+from .efficiency import efficiency_report
 from .hook import _prompt_help, codex_interrupt, codex_stop, codex_user_prompt_submit
 from .install import hook_command as installed_hook_command
 from .install import merge_codex_hook, trust_agentroute_hooks
@@ -1024,6 +1025,7 @@ def analytics_command(
             "reconciliation": asdict(report.reconciliation),
             "capacity": asdict(report.capacity),
             "calibration": asdict(report.calibration),
+            "efficiency": efficiency_report(rows),
             "longest_turns": [asdict(item) for item in report.longest_turns],
         }
         console.print_json(json.dumps(payload, sort_keys=True))
@@ -1039,6 +1041,14 @@ def analytics_command(
     console.print(
         f"Turns: {report.rows}; token receipts: {report.overall.measured_turns}; "
         f"without token receipt: {report.overall.unmeasured_turns}"
+    )
+    efficiency = efficiency_report(rows)
+    console.print(
+        f"Execution receipts: {efficiency['measured_turns']} "
+        f"({efficiency['partial_turns']} partial); "
+        f"responses: {efficiency['response_count']}; "
+        f"observed tool failures: {efficiency['observed_tool_failures']}; "
+        f"tool work: {_format_duration(efficiency['tool_work_ms'])} (may overlap)"
     )
     console.print(
         f"Completed: {report.duration.completed_turns}; "

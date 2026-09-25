@@ -11,6 +11,7 @@ from .audit import AuditStore
 from .capacity import backend_spend, subscription_state
 from .classifier import JevShadowClassifier
 from .config import AppConfig, load_config
+from .efficiency import execution_receipt
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
 from .profiles import (
     TurnProfileSelection,
@@ -745,7 +746,8 @@ def codex_stop(
             if reported_outcome in {"completed", "failed", "interrupted"}
             else "completed"
         )
-        (store or AuditStore()).record_completion(
+        store = store or AuditStore()
+        store.record_completion(
             str(payload["session_id"]),
             str(payload["turn_id"]),
             str(payload.get("model", "")),
@@ -756,6 +758,13 @@ def codex_stop(
             agent_id=agent_id,
             application_receipt=application_receipt,
             actual_backend=actual_backend,
+        )
+        store.record_execution(
+            str(payload["session_id"]),
+            str(payload["turn_id"]),
+            execution_receipt(transcript_path, payload.get("turn_id")),
+            route_scope,
+            agent_id,
         )
         json.dump({"continue": True, "suppressOutput": True}, sink, separators=(",", ":"))
         sink.write("\n")
