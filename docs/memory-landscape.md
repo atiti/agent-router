@@ -42,6 +42,14 @@ Sources: [startup implementation](https://github.com/openai/codex/blob/rust-v0.1
 Some paths in the upstream overview predate the crate split; the actual source
 locations above take precedence.
 
+Extraction and consolidation have their own model settings:
+`memories.extract_model` and `memories.consolidation_model`. The provider defaults
+in this release are `gpt-5.6-luna` and `gpt-5.6-terra`. Successful foreground
+routing does not establish that these background calls work with a particular
+Azure deployment or account. Verify their configuration before enabling memory.
+Sources: [settings](https://github.com/openai/codex/blob/rust-v0.157.0/codex-rs/config/src/types.rs),
+[provider defaults](https://github.com/openai/codex/blob/rust-v0.157.0/codex-rs/model-provider/src/provider.rs).
+
 Compaction and memory solve different problems: compaction bounds the active
 conversation; long-term memory makes selected knowledge from prior sessions
 available to later work. Neither automatically guarantees the right evidence
@@ -111,12 +119,19 @@ These are proposed differentiators, not claims that nobody else offers them:
    action per token and millisecond, including ingestion and maintenance costs.
 3. **Provider-aware disclosure.** The same project can route to a subscription,
    Azure or a local endpoint; allowed context should be checked against the
-   destination before retrieval results leave the machine.
+   destination before retrieval results leave the machine. This must also cover
+   later provider switches: evidence or derived answers can persist in the thread.
+   A simple initial design is to constrain eligible providers for the whole thread
+   once restricted evidence enters it. Removing only the original retrieved
+   snippet is not proof that derived private information has been removed.
 4. **Visible memory decisions.** Show what was loaded, why, source age, evidence
    type and how to reject or correct it. Never turn remembered text into new
    approval authority or higher-priority instructions.
 5. **Related-session/subagent handoffs.** Share narrow verified findings and open
    dependencies, without importing the parent conversation into every worker.
+6. **Joint model/context budgeting.** Test whether better evidence lets a cheaper
+   model solve the task reliably. Never assume retrieval justifies a downgrade;
+   compare end-to-end correctness and total cost, including memory maintenance.
 
 ## Smallest credible experiment
 
