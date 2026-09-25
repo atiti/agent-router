@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify maintained patch stack at the pinned Codex commit
+      - name: Verify immutable fork stack at the pinned upstream release
         env:
           AGENTROUTE_UPSTREAM_CARGO_CHECK: "0"
-        run: ./scripts/check_upstream.sh b412ff32c417f855c2b2d1581b77058eed87c84b
+        run: ./scripts/check_upstream.sh rust-v0.157.0

@@ -47,11 +47,16 @@ tracked branch and development branch have different names.
 
 ## Release boundary
 
-The fork is the development surface; the AgentRoute installer still consumes the pinned
-upstream commit and packaged patch stack until that build pipeline is explicitly migrated.
+The fork is the authoritative source for new builds. `scripts/install.sh` pins the exact
+downstream commit, its upstream ancestor, and the matching official Code Mode host version.
+It uses a separate `src/codex-stack` checkout and refuses dirty source trees. The older
+`src/codex` checkout is preserved. Legacy packaged patches remain available only for their
+old exact upstream base; they are not applied on top of the new fork stack.
+
 Do not change the pin, publish a release, or replace an installed binary merely because a
-rebase completed. Regenerate and verify patch exports, record the exact source/build identity,
-and follow [the release gate](releasing.md).
+rebase completed. Record the exact source/build identity and follow
+[the release gate](releasing.md). The scheduled compatibility check now rebases the ordered
+stack into a fresh worktree; it never installs or publishes a release automatically.
 
 The 0.157.0 candidate is `00c972ed5d6ff6499317fd41b7f23605b8e6850d`
 (`rust-v0.157.0`). It is separate from the newer mirrored main. The initial port is not a
@@ -95,3 +100,8 @@ Validate the complete stack with formatting, `cargo check -p codex-cli`, focused
 core/hook/TUI regressions, a CLI build, a version-matched Code Mode host smoke test,
 and live provider tests. A green rebase alone does not establish runtime compatibility.
 Keep the previous installed binary until candidate validation passes.
+
+The local test entry point is `codex-0157`, installed separately from `codex` with
+its matching host under `~/.agentroute/candidates/codex-0.157`. It uses the same
+Codex home, hooks, provider credentials, and account routing. It is a test build,
+not a public signed/notarized release; the normal CLI and Desktop remain intact.

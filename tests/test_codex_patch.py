@@ -128,7 +128,7 @@ def test_primary_patch_path_is_backwards_compatible():
     assert patch_path() == patch_paths()[0]
 
 
-def test_release_metadata_uses_v0547_runtime_v40():
+def test_release_metadata_uses_v0547_runtime_v41():
     root = Path(__file__).parents[1]
     package = (root / "pyproject.toml").read_text(encoding="utf-8")
     lock = (root / "uv.lock").read_text(encoding="utf-8")
@@ -140,11 +140,11 @@ def test_release_metadata_uses_v0547_runtime_v40():
     assert 'version = "0.5.47"' in package
     assert 'version = "0.5.47"' in lock
     assert '__version__ = "0.5.47"' in public_api
-    assert "provider-routing-v40" in installer
-    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v40"' in doctor
-    assert "b412ff32c417f855c2b2d1581b77058eed87c84b" in installer
-    assert "0.156.1" in installer
-    assert "b412ff32c417f855c2b2d1581b77058eed87c84b" in ci
+    assert "provider-routing-v41" in installer
+    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v41"' in doctor
+    assert "90f76f2013f028b3f9bd3a587bf151cb4934bcb4" in installer
+    assert "0.157.0" in installer
+    assert "./scripts/check_upstream.sh" in ci
 
 
 def test_installer_preserves_dirty_source_before_upstream_upgrade(tmp_path):
@@ -176,18 +176,25 @@ def test_installer_preserves_dirty_source_before_upstream_upgrade(tmp_path):
     (source / "source.rs").write_text("additional local edits\n")
     (source / "local-note.txt").write_text("preserve untracked work\n")
     installer = (Path(__file__).parents[1] / "scripts/install.sh").read_text()
-    start = installer.index('git -C "$AGENTROUTE_CODEX_SOURCE" fetch')
-    end = installer.index("AGENTROUTE_PATCHES_APPLIED=0", start)
-    subprocess.run(
-        ["sh", "-eu", "-c", installer[start:end]],
-        env={**os.environ, "AGENTROUTE_CODEX_SOURCE": str(source), "AGENTROUTE_CODEX_COMMIT": new},
-        check=True, capture_output=True, text=True,
-    )
+    start = installer.index('# A pristine, immutable fork revision')
+    end = installer.index('# End immutable source preparation.', start)
+    env = {**os.environ, "AGENTROUTE_CODEX_SOURCE": str(source),
+           "AGENTROUTE_CODEX_COMMIT": new, "AGENTROUTE_CODEX_UPSTREAM": old,
+           "AGENTROUTE_CODEX_REPOSITORY": str(origin)}
+    dirty = subprocess.run(["sh", "-eu", "-c", installer[start:end]], env=env,
+                           capture_output=True, text=True)
+    assert dirty.returncode != 0
+    assert "dirty" in dirty.stderr
+    assert git(source, "rev-parse", "HEAD") == old
+    assert (source / "source.rs").read_text() == "additional local edits\n"
+    assert (source / "local-note.txt").read_text() == "preserve untracked work\n"
+    assert git(source, "show", ":source.rs") == "old AgentRoute patches"
+    git(source, "add", ".")
+    git(source, "commit", "-m", "preserved local work")
+    subprocess.run(["sh", "-eu", "-c", installer[start:end]], env=env,
+                   check=True, capture_output=True, text=True)
     assert git(source, "rev-parse", "HEAD") == new
     assert git(source, "status", "--porcelain") == ""
-    assert git(source, "show", "stash@{0}:source.rs") == "additional local edits"
-    assert git(source, "show", "stash@{0}^2:source.rs") == "old AgentRoute patches"
-    assert git(source, "show", "stash@{0}^3:local-note.txt") == "preserve untracked work"
 
 
 def test_install_binary_atomically_replaces_destination(tmp_path, monkeypatch):
@@ -237,14 +244,11 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v40" in installer
-    assert "chatgpt_profile_home" in installer
-    assert "ordinary_usage_allowed" in installer
-    assert "codex-package-version.patch" in installer
-    assert "codex-history-recovery.patch" in installer
-    assert "codex-route-application-receipt.patch" in installer
-    assert "AgentRouteApplicationReceipt" in installer
-    assert "new_agentroute_route_event(message)" in installer
+    assert "provider-routing-v41" in installer
+    assert "--locked --profile" in installer
+    assert "reset --hard" not in installer
+    assert "AGENTROUTE_PATCHES" not in installer
+    assert "https://github.com/atiti/codex.git" in installer
     assert "routed_turn_model_provider" in "\n".join(
         path.read_text() for path in patch_paths()
     )
@@ -266,17 +270,6 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "Recover interrupted custom calls in debug builds too." in "\n".join(
         path.read_text() for path in patch_paths()
     )
-    assert "apply --recount" in installer
-    assert "MessagePhase::Commentary" in installer
-    assert 'version = "0.155.0-alpha.2.6"' in installer
-    assert "Some(args.task_name.clone())" in installer
-    assert '\"routing_prompt\".to_string()' in installer
-    assert "routing_inherited_model_provider" in installer
-    assert "routing_requested_backend" in installer
-    assert "routing_model_explicit" in installer
-    assert 'properties.keys().map(String::as_str).collect::<Vec<_>>()' in installer
-    assert "! grep -F '\"backend\".to_string()'" in installer
-    assert "! grep -F '    backend: Option<String>,'" in installer
     same_host_guard = (
         'AGENTROUTE_SOURCE_CODE_MODE_HOST" != "$AGENTROUTE_BIN_DIR/codex-code-mode-host'
     )

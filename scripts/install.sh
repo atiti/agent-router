@@ -4,19 +4,15 @@ set -eu
 AGENTROUTE_PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 AGENTROUTE_HOME_DIR=${AGENTROUTE_HOME:-"$HOME/.agentroute"}
 AGENTROUTE_BIN_DIR="$AGENTROUTE_HOME_DIR/bin"
-AGENTROUTE_CODEX_SOURCE="$AGENTROUTE_HOME_DIR/src/codex"
+AGENTROUTE_CODEX_SOURCE="$AGENTROUTE_HOME_DIR/src/codex-stack"
 AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-"$AGENTROUTE_HOME_DIR/build/codex"}
 AGENTROUTE_BUILD_PROFILE=${AGENTROUTE_BUILD_PROFILE:-dev-small}
-AGENTROUTE_CODEX_COMMIT=b412ff32c417f855c2b2d1581b77058eed87c84b
-AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.156.1}
-AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v40"
+AGENTROUTE_CODEX_COMMIT=90f76f2013f028b3f9bd3a587bf151cb4934bcb4
+AGENTROUTE_CODEX_UPSTREAM=00c972ed5d6ff6499317fd41b7f23605b8e6850d
+AGENTROUTE_CODEX_REPOSITORY=https://github.com/atiti/codex.git
+AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.157.0}
+AGENTROUTE_BUILD_ID="$AGENTROUTE_CODEX_COMMIT-provider-routing-v41"
 AGENTROUTE_BUILD_ID_FILE="$AGENTROUTE_HOME_DIR/build-id"
-AGENTROUTE_PATCHES="
-$AGENTROUTE_PROJECT_ROOT/src/agentroute/patches/codex-user-prompt-model-override.patch
-$AGENTROUTE_PROJECT_ROOT/patches/codex-package-version.patch
-$AGENTROUTE_PROJECT_ROOT/patches/codex-history-recovery.patch
-$AGENTROUTE_PROJECT_ROOT/src/agentroute/patches/codex-route-application-receipt.patch
-"
 
 for command_name in git cargo uv npm; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -53,95 +49,28 @@ if [ -L "$AGENTROUTE_BIN_DIR/codex-stock" ]; then
     AGENTROUTE_STOCK_CODEX=$(readlink "$AGENTROUTE_BIN_DIR/codex-stock")
 fi
 
+if [ ! -d "$AGENTROUTE_CODEX_SOURCE/.git" ]; then
+    git clone --filter=blob:none --no-checkout "$AGENTROUTE_CODEX_REPOSITORY" "$AGENTROUTE_CODEX_SOURCE"
+fi
+
+# A pristine, immutable fork revision already contains the reviewed commit stack.
+# Refuse dirty build sources; preserve developer edits instead of resetting/stashing them.
+if [ -n "$(git -C "$AGENTROUTE_CODEX_SOURCE" status --porcelain)" ]; then
+    printf 'Codex stack source is dirty; preserve/commit edits before building: %s\n' \
+        "$AGENTROUTE_CODEX_SOURCE" >&2
+    exit 1
+fi
+git -C "$AGENTROUTE_CODEX_SOURCE" fetch "$AGENTROUTE_CODEX_REPOSITORY" "$AGENTROUTE_CODEX_COMMIT"
+git -C "$AGENTROUTE_CODEX_SOURCE" merge-base --is-ancestor \
+    "$AGENTROUTE_CODEX_UPSTREAM" "$AGENTROUTE_CODEX_COMMIT"
+git -C "$AGENTROUTE_CODEX_SOURCE" checkout --detach "$AGENTROUTE_CODEX_COMMIT"
+# End immutable source preparation.
+
 if [ ! -x "$AGENTROUTE_HOME_DIR/venv/bin/python" ]; then
     uv venv --python 3.12 "$AGENTROUTE_HOME_DIR/venv"
 fi
 uv pip install --python "$AGENTROUTE_HOME_DIR/venv/bin/python" "$AGENTROUTE_PROJECT_ROOT"
 ln -sf "$AGENTROUTE_HOME_DIR/venv/bin/agentroute" "$AGENTROUTE_BIN_DIR/agentroute"
-
-if [ ! -d "$AGENTROUTE_CODEX_SOURCE/.git" ]; then
-    git clone --filter=blob:none --no-checkout https://github.com/openai/codex.git "$AGENTROUTE_CODEX_SOURCE"
-fi
-
-git -C "$AGENTROUTE_CODEX_SOURCE" fetch origin "$AGENTROUTE_CODEX_COMMIT"
-# Preserve the old patched checkout (including staged/untracked work) before
-# changing upstream revisions. Checkout would otherwise fail before our normal
-# same-revision patch refresh can run. The stash remains available for recovery.
-if [ "$(git -C "$AGENTROUTE_CODEX_SOURCE" rev-parse HEAD)" != "$AGENTROUTE_CODEX_COMMIT" ] \
-    && [ -n "$(git -C "$AGENTROUTE_CODEX_SOURCE" status --porcelain)" ]; then
-    git -C "$AGENTROUTE_CODEX_SOURCE" stash push --include-untracked \
-        -m "AgentRoute source before upgrade to $AGENTROUTE_CODEX_COMMIT"
-    printf 'Previous Codex source changes preserved in git stash at %s.\n' "$AGENTROUTE_CODEX_SOURCE"
-fi
-git -C "$AGENTROUTE_CODEX_SOURCE" checkout --detach "$AGENTROUTE_CODEX_COMMIT"
-AGENTROUTE_PATCHES_APPLIED=0
-if grep -F 'Route the turn before pre-sampling compaction' \
-    "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/turn.rs" >/dev/null 2>&1 \
-    && grep -F 'foreign_provider_state_ids' \
-    "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/client.rs" >/dev/null 2>&1 \
-    && grep -F 'routed_turn_model' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/tui/src/chatwidget.rs" >/dev/null 2>&1 \
-    && grep -F 'new_agentroute_route_event(message)' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/tui/src/chatwidget.rs" >/dev/null 2>&1 \
-    && grep -F 'Keep routing notices out of the warning channel' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/hook_runtime.rs" >/dev/null 2>&1 \
-    && grep -F 'AgentMessageContentDeltaEvent' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/hook_runtime.rs" >/dev/null 2>&1 \
-    && grep -F 'MessagePhase::Commentary' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/hook_runtime.rs" >/dev/null 2>&1 \
-    && grep -F 'Some(args.task_name.clone())' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs" >/dev/null 2>&1 \
-    && grep -F 'routing_inherited_model_provider' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/protocol/src/protocol.rs" >/dev/null 2>&1 \
-    && grep -F 'routing_requested_backend' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/protocol/src/protocol.rs" >/dev/null 2>&1 \
-    && grep -F 'routing_model_explicit' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/protocol/src/protocol.rs" >/dev/null 2>&1 \
-    && grep -F 'properties.keys().map(String::as_str).collect::<Vec<_>>()' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs" >/dev/null 2>&1 \
-    && ! grep -F '"backend".to_string()' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/tools/handlers/multi_agents_spec.rs" >/dev/null 2>&1 \
-    && ! grep -F '    backend: Option<String>,' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs" >/dev/null 2>&1 \
-    && grep -F 'ordinary_usage_allowed' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/hook_runtime.rs" >/dev/null 2>&1 \
-    && grep -F 'chatgpt_profile_home' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/step_activation.rs" >/dev/null 2>&1 \
-    && grep -F 'compatibility: Option<ToolCompatibility>' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/step_activation.rs" >/dev/null 2>&1 \
-    && grep -F 'let mut model_info = destination.clone();' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/step_activation.rs" >/dev/null 2>&1 \
-    && grep -F 'compaction_survives_same_provider_but_not_provider_or_account_switch' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/client_tests.rs" >/dev/null 2>&1 \
-    && ! grep -F 'fn normalize_prompt_for_provider' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/session/turn.rs" >/dev/null 2>&1 \
-    && grep -F 'Recover interrupted custom calls in debug builds too.' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/context_manager/normalize.rs" >/dev/null 2>&1 \
-    && grep -F 'AgentRouteApplicationReceipt' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/hook_runtime.rs" >/dev/null 2>&1 \
-    && ! grep -F '"routing_prompt".to_string()' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/core/src/tools/handlers/multi_agents_spec.rs" >/dev/null 2>&1 \
-    && grep -F 'version = "0.155.0-alpha.2.6"' \
-        "$AGENTROUTE_CODEX_SOURCE/codex-rs/Cargo.toml" >/dev/null 2>&1; then
-    AGENTROUTE_PATCHES_APPLIED=1
-fi
-if [ "$AGENTROUTE_PATCHES_APPLIED" = 1 ]; then
-    printf 'Codex patch is already applied.\n'
-else
-    if ! git -C "$AGENTROUTE_CODEX_SOURCE" diff --quiet; then
-        AGENTROUTE_BACKUP_DIR="$AGENTROUTE_HOME_DIR/backups"
-        AGENTROUTE_BACKUP_STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
-        AGENTROUTE_SOURCE_BACKUP="$AGENTROUTE_BACKUP_DIR/codex-source-$AGENTROUTE_BACKUP_STAMP.patch"
-        mkdir -p "$AGENTROUTE_BACKUP_DIR"
-        git -C "$AGENTROUTE_CODEX_SOURCE" diff --binary --output="$AGENTROUTE_SOURCE_BACKUP"
-        printf 'Backed up the previous managed Codex patch to %s\n' "$AGENTROUTE_SOURCE_BACKUP"
-        git -C "$AGENTROUTE_CODEX_SOURCE" reset --hard "$AGENTROUTE_CODEX_COMMIT"
-    fi
-    for AGENTROUTE_PATCH in $AGENTROUTE_PATCHES; do
-        git -C "$AGENTROUTE_CODEX_SOURCE" apply --recount --check "$AGENTROUTE_PATCH"
-        git -C "$AGENTROUTE_CODEX_SOURCE" apply --recount "$AGENTROUTE_PATCH"
-    done
-fi
 
 if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
     || [ ! -x "$AGENTROUTE_BIN_DIR/codex-code-mode-host" ] \
@@ -182,7 +111,7 @@ if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
     CARGO_INCREMENTAL=0 \
     CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2} \
         cargo build --manifest-path "$AGENTROUTE_CODEX_SOURCE/codex-rs/Cargo.toml" \
-        --profile "$AGENTROUTE_BUILD_PROFILE" \
+        --locked --profile "$AGENTROUTE_BUILD_PROFILE" \
         -p codex-cli --bin codex
 
     AGENTROUTE_STAGED_CODEX="$AGENTROUTE_CODEX_TARGET/$AGENTROUTE_BUILD_PROFILE/codex-agentroute-staged"

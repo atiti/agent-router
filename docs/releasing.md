@@ -9,8 +9,10 @@ see [Maintaining the Codex fork](codex-fork.md).
 
 ## Release gate
 
-1. Let CI pass, including the pinned patch-stack check and wheel-content check.
-2. Run `scripts/check_upstream.sh <candidate-codex-tag>` and review every patch conflict.
+1. Let CI pass, including the pinned commit-stack check and wheel-content check.
+2. Run `scripts/check_upstream.sh <candidate-codex-tag>` and review every rebase conflict
+   and the resulting `range-diff`. Update the immutable fork/upstream pins and matching
+   Code Mode host version together; keep upstream's real CLI version unchanged.
 3. Test GPT subscription, Azure, and DeepSeek turns; a provider switch; a tool continuation; an
    automatic approval review; a subagent route; compaction; and a resumed mixed-provider session.
 4. Run `agentroute desktop rebuild`, verify the route banner in Desktop, and verify mobile remote

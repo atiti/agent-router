@@ -31,6 +31,16 @@ def validate_codex_source(source: Path) -> None:
 
 def apply_patch(source: Path, *, check: bool = False) -> None:
     validate_codex_source(source)
+    # Legacy exports are kept for old integrations, not as the current build source.
+    revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=source, text=True
+    ).strip()
+    if revision != PINNED_CODEX_COMMIT:
+        raise ValueError(
+            "Legacy patch exports require their exact upstream base "
+            f"{PINNED_CODEX_COMMIT}. Current source builds use the pinned atiti/codex "
+            "commit stack through scripts/install.sh; see docs/codex-fork.md."
+        )
     for codex_patch in patch_paths():
         command = ["git", "apply", "--recount"]
         if check:
