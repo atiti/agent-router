@@ -106,6 +106,7 @@ ON routing_decisions(created_at, id ASC);
 """
 
 MIGRATIONS = {
+    "execution_receipt": "TEXT NOT NULL DEFAULT '{}'",
     "turn_id": "TEXT",
     "backend": "TEXT NOT NULL DEFAULT 'gpt'",
     "model_provider": "TEXT NOT NULL DEFAULT 'openai'",
@@ -428,6 +429,25 @@ class AuditStore:
                 (interrupted_at.isoformat(), duration_ms, row["id"]),
             )
             return cursor.rowcount == 1
+
+    def record_execution(
+        self,
+        session_id: str,
+        turn_id: str,
+        receipt: dict,
+        route_scope: str,
+        agent_id: str | None,
+    ) -> None:
+        """Replace a turn's bounded aggregate receipt; repeated Stop events are idempotent."""
+        if not receipt:
+            return
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE routing_decisions SET execution_receipt = ? WHERE id = ("
+                "SELECT id FROM routing_decisions WHERE session_id = ? AND turn_id = ? "
+                "AND route_scope = ? AND agent_id IS ? ORDER BY id DESC LIMIT 1)",
+                (json.dumps(receipt, sort_keys=True), session_id, turn_id, route_scope, agent_id),
+            )
 
     def record_completion(
         self,
