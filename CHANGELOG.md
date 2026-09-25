@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.49 — 2026-09-25
+
+- Fix fresh source installs and release builds incorrectly rejecting a new clone
+  as dirty before its first checkout. Existing dirty checkouts remain protected.
+- Includes all 0.5.48 features below. The 0.5.48 packaging run failed before
+  compilation and published no release assets; its tag is preserved unchanged.
+
 ## 0.5.48 — 2026-09-25
 
 - Upgrade the routed CLI and matching Code Mode host to upstream Codex 0.157.0,

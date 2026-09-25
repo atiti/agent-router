@@ -50,7 +50,9 @@ if [ -L "$AGENTROUTE_BIN_DIR/codex-stock" ]; then
 fi
 
 if [ ! -d "$AGENTROUTE_CODEX_SOURCE/.git" ]; then
-    git clone --filter=blob:none --no-checkout "$AGENTROUTE_CODEX_REPOSITORY" "$AGENTROUTE_CODEX_SOURCE"
+    # Populate the index/worktree before checking for local edits. A --no-checkout
+    # clone appears to have every tracked file deleted in `git status`.
+    git clone --filter=blob:none "$AGENTROUTE_CODEX_REPOSITORY" "$AGENTROUTE_CODEX_SOURCE"
 fi
 
 # A pristine, immutable fork revision already contains the reviewed commit stack.
