@@ -53,6 +53,9 @@ class SwitchingConfig(BaseModel):
     upgrade_confidence: float = 0.60
     downgrade_confidence: float = 0.85
     switch_penalty: float = 0.35
+    cache_economics: Literal["off", "shadow", "retain"] = "off"
+    cache_minimum_fraction: float = Field(default=0.80, ge=0, le=1)
+    cache_minimum_savings: float = Field(default=0.10, ge=0, le=1)
 
 
 class JevShadowConfig(BaseModel):
