@@ -137,9 +137,9 @@ def test_release_metadata_uses_v0548_runtime_v41():
     doctor = (root / "src/agentroute/doctor.py").read_text(encoding="utf-8")
     ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert 'version = "0.5.48"' in package
-    assert 'version = "0.5.48"' in lock
-    assert '__version__ = "0.5.48"' in public_api
+    assert 'version = "0.5.49"' in package
+    assert 'version = "0.5.49"' in lock
+    assert '__version__ = "0.5.49"' in public_api
     assert "provider-routing-v41" in installer
     assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v41"' in doctor
     assert "90f76f2013f028b3f9bd3a587bf151cb4934bcb4" in installer
@@ -195,6 +195,39 @@ def test_installer_preserves_dirty_source_before_upstream_upgrade(tmp_path):
                    check=True, capture_output=True, text=True)
     assert git(source, "rev-parse", "HEAD") == new
     assert git(source, "status", "--porcelain") == ""
+
+
+def test_installer_prepares_fresh_clone_at_pinned_revision(tmp_path):
+    origin = tmp_path / "origin"
+    source = tmp_path / "codex"
+    origin.mkdir()
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-C", str(origin), *args], text=True, stderr=subprocess.STDOUT
+        ).strip()
+
+    git("init")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.invalid")
+    (origin / "source.rs").write_text("pinned source\n")
+    git("add", ".")
+    git("commit", "-m", "pinned")
+    pinned = git("rev-parse", "HEAD")
+    (origin / "source.rs").write_text("newer default branch\n")
+    git("commit", "-am", "newer")
+    installer = (Path(__file__).parents[1] / "scripts/install.sh").read_text()
+    start = installer.index('if [ ! -d "$AGENTROUTE_CODEX_SOURCE/.git" ]; then')
+    end = installer.index('# End immutable source preparation.', start)
+    env = {**os.environ, "AGENTROUTE_CODEX_SOURCE": str(source),
+           "AGENTROUTE_CODEX_COMMIT": pinned, "AGENTROUTE_CODEX_UPSTREAM": pinned,
+           "AGENTROUTE_CODEX_REPOSITORY": str(origin)}
+    subprocess.run(["sh", "-eu", "-c", installer[start:end]], env=env,
+                   check=True, capture_output=True, text=True)
+    assert (source / "source.rs").read_text() == "pinned source\n"
+    assert subprocess.check_output(
+        ["git", "-C", str(source), "status", "--porcelain"], text=True
+    ) == ""
 
 
 def test_install_binary_atomically_replaces_destination(tmp_path, monkeypatch):
