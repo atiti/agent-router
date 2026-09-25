@@ -58,6 +58,16 @@ class SwitchingConfig(BaseModel):
     cache_minimum_savings: float = Field(default=0.10, ge=0, le=1)
 
 
+class ContextConfig(BaseModel):
+    """Optional reference retrieval from existing Codex memory artifacts."""
+
+    mode: Literal["off", "shadow", "references"] = "off"
+    related_cwds: list[str] = Field(default_factory=list, max_length=20)
+    max_age_days: int = Field(default=30, ge=1, le=365)
+    max_references: int = Field(default=3, ge=1, le=5)
+    max_chars: int = Field(default=2400, ge=500, le=4000)
+
+
 class JevShadowConfig(BaseModel):
     """Local, non-authoritative System 1 classifier experiment settings."""
 
@@ -243,6 +253,7 @@ class AppConfig(BaseModel):
     preset: str = "balanced"
     enabled: bool = False
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
+    context: ContextConfig = Field(default_factory=ContextConfig)
     providers: dict[str, ProviderConfig]
     backends: dict[str, ExecutionBackendConfig] = Field(default_factory=dict)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
