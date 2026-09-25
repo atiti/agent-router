@@ -13,8 +13,23 @@ from pathlib import Path
 from .config import ContextConfig
 from .signals import contains_credential
 
+# These artifacts are short summaries, so generic prompt language can otherwise
+# dominate overlap (e.g. "existing", "like", "then", "not"). Keep this local
+# instead of adding a heavyweight NLP dependency to the hook path.
 STOP_WORDS = set(
-    "the and for this that with from have does what when where how can you our".split()
+    """
+    a about above after again against all am an and any are as at be because been
+    before being below between both but by can could did do does doing down during
+    each few for from further get had has have having he her here hers herself him
+    himself his how i if in into is it its itself just like me more most my myself
+    no nor not now of off on once only or other our ours ourselves out over own same
+    she should so some such than that the their theirs them themselves then there
+    these they this those through to too under until up very was we were what when
+    where which while who whom why will with would you your yours yourself yourselves
+    ok okay really thing things stuff something anything everything much many lot lots
+    make made use using used work working look looking check checked conclude
+    existing random memory memories context native
+    """.split()
 )
 MAX_FILES = 300
 MAX_FILE_BYTES = 32_768
@@ -24,7 +39,9 @@ MAX_DIRECTORY_ENTRIES = 3000
 
 def terms(text: str) -> set[str]:
     return {
-        word for word in re.findall(r"[\w.-]{3,}", text[:8000].lower()) if word not in STOP_WORDS
+        word
+        for word in re.findall(r"[^\W_]{3,}", text[:8000].lower(), flags=re.UNICODE)
+        if word not in STOP_WORDS
     }
 
 
@@ -89,18 +106,32 @@ def related_memories(
             continue
         if contains_credential(text):
             continue
-        title = next((line[2:] for line in text.splitlines() if line.startswith("# ")), "")
+        lines = text.splitlines()
+        title = next((line[2:].strip() for line in lines if line.startswith("# ")), "")
+        headings = [
+            line.lstrip("#").strip()
+            for line in lines
+            if re.match(r"^#{1,6}\s+", line) and not line.startswith("# ")
+        ]
         body = "\n".join(
             line
-            for line in text.splitlines()
+            for line in lines
             if not line.startswith(
                 ("thread_id:", "updated_at:", "cwd:", "rollout_path:", "git_branch:")
             )
+            and not re.match(r"^#{1,6}\s+", line)
         )
         matched = query_terms & terms(body)
-        if len(matched) < min(2, len(query_terms)):
+        title_matches = query_terms & terms(title)
+        heading_matches = query_terms & terms(" ".join(headings))
+        if len(matched | title_matches | heading_matches) < min(2, len(query_terms)):
             continue
-        score = len(matched) + 2 * len(query_terms & terms(title))
+        # Require a minimum weighted score of four evidence points. Title/topic-
+        # heading matches outweigh incidental body overlap, rejecting weak generic
+        # pairs such as "Codex memory" while preserving clear topic matches.
+        score = len(matched) + 3 * len(title_matches) + 2 * len(heading_matches)
+        if score < 4:
+            continue
         candidates.append(
             {
                 "source": str(path),
@@ -110,7 +141,16 @@ def related_memories(
                 "cwd": metadata["cwd"],
                 "updated_at": updated.isoformat(),
                 "title": title[:180],
-                "matched_terms": sorted(matched)[:12],
+                "matched_terms": sorted(matched | title_matches | heading_matches)[:12],
+                "matched_fields": [
+                    field
+                    for field, values in (
+                        ("title", title_matches),
+                        ("headings", heading_matches),
+                        ("body", matched),
+                    )
+                    if values
+                ],
                 "score": score,
                 "age_days": round(age, 2),
             }
