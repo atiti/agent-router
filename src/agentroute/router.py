@@ -13,6 +13,7 @@ from .classifier import (
     catalog_age_seconds,
 )
 from .config import AppConfig, load_config, model_capabilities
+from .economics import cache_switch_estimate
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
 from .providers import backend_readiness
 from .signals import (
@@ -113,9 +114,7 @@ class Router:
             context.latest_prompt, self.config.backends
         )
         interrupted_turn_affinity = context.interrupted_turn_affinity and override != "auto"
-        reasoning_effort_override = (
-            context.requested_reasoning_effort or parsed_reasoning_effort
-        )
+        reasoning_effort_override = context.requested_reasoning_effort or parsed_reasoning_effort
         contributions = extract_signals(context)
         if reasoning_effort_override:
             contributions.append(
@@ -292,13 +291,29 @@ class Router:
         # risk floors and hysteresis. Policy max_tier still caps every route.
         risk_floor_applied = False
         if not manual:
-            proposed, risk_floor_applied = self._apply_risk_floor(
-                proposed, context, contributions
-            )
+            proposed, risk_floor_applied = self._apply_risk_floor(proposed, context, contributions)
             if risk_floor_applied:
                 confidence = max(confidence, 0.90)
             proposed, confidence = self._apply_switching(
                 proposed, confidence, context, contributions
+            )
+        economics = (
+            cache_switch_estimate(self.config, context, proposed)
+            if not manual
+            and override != "auto"
+            and not backend_override
+            and not reasoning_effort_override
+            and context.agent_requested_tier is None
+            else {}
+        )
+        if economics.get("retain"):
+            proposed = context.current_tier
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.CACHE_REUSE,
+                    weight=0,
+                    detail="retained active model: estimated next-request cache reuse is cheaper",
+                )
             )
         max_tier = Tier.parse(self.config.policy.max_tier)
         if proposed > max_tier:
@@ -595,21 +610,19 @@ class Router:
                     )
         target = backend.target(proposed)
         inherited_effort = (
-            context.previous_reasoning_effort
-            if inherited or interrupted_turn_affinity
-            else None
+            context.previous_reasoning_effort if inherited or interrupted_turn_affinity else None
         )
         selected_reasoning_effort = reasoning_effort_override or (
             _stronger_reasoning_effort(classifier_reasoning_effort, inherited_effort)
             if classifier_reasoning_effort or inherited_effort
             else target.reasoning_effort
         )
-        minimum_reasoning_effort = _minimum_model_reasoning_effort(
-            backend_name, target.model
-        )
-        if minimum_reasoning_effort and REASONING_EFFORT_RANK.get(
-            selected_reasoning_effort or "none", -1
-        ) < REASONING_EFFORT_RANK[minimum_reasoning_effort]:
+        minimum_reasoning_effort = _minimum_model_reasoning_effort(backend_name, target.model)
+        if (
+            minimum_reasoning_effort
+            and REASONING_EFFORT_RANK.get(selected_reasoning_effort or "none", -1)
+            < REASONING_EFFORT_RANK[minimum_reasoning_effort]
+        ):
             selected_reasoning_effort = minimum_reasoning_effort
             contributions.append(
                 ScoreContribution(
@@ -728,11 +741,7 @@ class Router:
             exclusions: list[str] = []
             if candidate_tier > max_tier:
                 exclusions.append("policy_max_tier")
-            if (
-                candidate_tier is Tier.MAX
-                and not manual
-                and context.current_tier is not Tier.MAX
-            ):
+            if candidate_tier is Tier.MAX and not manual and context.current_tier is not Tier.MAX:
                 exclusions.append("codex_step_safety_metadata_incompatible")
             candidates.append(
                 {
@@ -815,6 +824,8 @@ class Router:
                 "resolved_task_inherited": resolved_task_inherited,
             },
         }
+        if economics:
+            receipt["cache_economics"] = economics
         if self._jev_observation is not None:
             receipt["jev_first_pass"] = self._jev_observation
         receipt_hash = hashlib.sha256(

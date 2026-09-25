@@ -206,6 +206,37 @@ def _record_jev_shadow(decision: RouteDecision, context: RouteContext, config: A
     ).hexdigest()
 
 
+def _previous_response_usage(
+    row: Any, current_model: str, current_provider: str
+) -> dict[str, int]:
+    """Use recent, observed per-response evidence only; no cumulative turn estimates."""
+    if row is None:
+        return {}
+    try:
+        from datetime import datetime, timezone
+
+        if (row["actual_model"] or row["answer_model"]) != current_model:
+            return {}
+        if (row["actual_model_provider"] or row["model_provider"]) != current_provider:
+            return {}
+        completed = datetime.fromisoformat(row["turn_completed_at"])
+        age = (datetime.now(timezone.utc) - completed).total_seconds()
+        if not 0 <= age <= 300 or row["turn_outcome"] != "completed":
+            return {}
+        receipt = json.loads(row["execution_receipt"])
+        usage = receipt.get("last_response_usage", {})
+        return {
+            key: value
+            for key, value in usage.items()
+            if key in {"input_tokens", "cached_input_tokens", "output_tokens"}
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0
+        }
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+        return {}
+
+
 def codex_user_prompt_submit(
     source: TextIO = sys.stdin,
     sink: TextIO = sys.stdout,
@@ -346,6 +377,9 @@ def codex_user_prompt_submit(
             spawn_model_explicit=spawn_model_explicit,
             inherited_backend=inherited_backend,
             current_model=current_model,
+            previous_response_usage=_previous_response_usage(
+                previous_route, current_model, str(payload.get("model_provider", "openai"))
+            ),
             current_tier=current_tier,
             previous_task_tier=previous_tier,
             previous_reasoning_effort=previous_reasoning_effort,

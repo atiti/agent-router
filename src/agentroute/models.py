@@ -52,6 +52,7 @@ class ReasonCode(str, Enum):
     SESSION_AFFINITY = "SESSION_AFFINITY"
     PROVIDER_INHERITANCE = "PROVIDER_INHERITANCE"
     DOWNGRADE_HYSTERESIS = "DOWNGRADE_HYSTERESIS"
+    CACHE_REUSE = "CACHE_REUSE"
     AGENT_ESCALATION = "AGENT_ESCALATION"
     MODEL_COMPATIBILITY_FALLBACK = "MODEL_COMPATIBILITY_FALLBACK"
     LLM_CLASSIFIER = "LLM_CLASSIFIER"
@@ -90,6 +91,7 @@ class RouteContext(BaseModel):
     agent_id: str | None = None
     latest_prompt: str
     current_model: str = ""
+    previous_response_usage: dict[str, int] = Field(default_factory=dict)
     current_tier: Tier = Tier.NORMAL
     previous_task_tier: Tier | None = None
     previous_reasoning_effort: str | None = None
