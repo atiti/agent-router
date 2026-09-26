@@ -23,17 +23,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import socketserver
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterator
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Literal
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
@@ -46,6 +50,24 @@ CC_VERSION = "2.1.283"
 DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_CONTEXT_WINDOW = 200_000
 DEFAULT_PORT = 8090
+
+# Anthropic reports subscription limits on every Messages response as a unified
+# header family. Codex reads the equivalent `x-<family>-primary-*` headers off
+# the Responses stream it consumes, so the bridge translates one into the other
+# and records each observation under `~/.agentroute/state/`.
+UNIFIED_RATE_LIMIT_NAMESPACE = "anthropic-ratelimit-unified"
+CODEX_RATE_LIMIT_FAMILY = "claude"
+CODEX_RATE_LIMIT_NAME = "Claude"
+RATE_LIMIT_EVENT = "ratelimits"
+# (Anthropic header infix, snapshot key, window length in minutes). Codex labels
+# 300 minutes as "5h" and 10080 as "weekly", which is the display we want.
+UNIFIED_WINDOWS: tuple[tuple[str, str, int], ...] = (
+    ("5h", "five_hour", 5 * 60),
+    ("7d", "seven_day", 7 * 24 * 60),
+)
+SUBSCRIPTION_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_STATE_FILE = "claude-usage.json"
+USAGE_HISTORY_LIMIT = 500
 
 LONG_CONTEXT_BETA = "context-1m-2025-08-07"
 MODELS_WITHOUT_LONG_CONTEXT = ("claude-haiku",)
@@ -629,6 +651,11 @@ def anthropic_stream(
         raise CredentialError(f"anthropic {exc.code}: {detail[:400]}") from exc
 
     with response:
+        # Anthropic reports subscription usage on every Messages response, so
+        # forward it once, before the content events Codex consumes.
+        snapshot = parse_unified_rate_limits(getattr(response, "headers", None))
+        if snapshot is not None:
+            yield RATE_LIMIT_EVENT, snapshot
         event_type = ""
         for raw_line in response:
             line = raw_line.decode("utf-8", errors="replace").rstrip("\n")
@@ -1034,6 +1061,265 @@ def model_catalog(
 
 
 # --------------------------------------------------------------------------- #
+# Subscription usage
+# --------------------------------------------------------------------------- #
+
+
+def _lower_headers(headers: Any) -> dict[str, str]:
+    """Return header pairs keyed by lowercase name, or ``{}`` when there are none."""
+    items = getattr(headers, "items", None)
+    if items is None:
+        return {}
+    return {str(name).lower(): str(value) for name, value in items()}
+
+
+def _number(raw: Any) -> float | None:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _unified_percent(raw: Any) -> float | None:
+    """Convert a unified utilization value into a used percentage.
+
+    Anthropic sends utilization as a fraction (``0.74`` means 74%), so values at
+    or below 1 are scaled and larger values are read as percentages already.
+    """
+    value = _number(raw)
+    if value is None or value < 0:
+        return None
+    return round(value * 100 if value <= 1 else value, 1)
+
+
+def parse_unified_rate_limits(headers: Any) -> dict[str, Any] | None:
+    """Normalize Anthropic's unified rate-limit headers into a JSON snapshot."""
+    values = _lower_headers(headers)
+    if not values:
+        return None
+    windows: dict[str, dict[str, Any]] = {}
+    for infix, key, window_minutes in UNIFIED_WINDOWS:
+        used = values.get(f"{UNIFIED_RATE_LIMIT_NAMESPACE}-{infix}-utilization")
+        percent = _unified_percent(used)
+        if percent is None:
+            continue
+        window: dict[str, Any] = {
+            "used_percent": percent,
+            "window_minutes": window_minutes,
+            "resets_at": None,
+        }
+        reset = values.get(f"{UNIFIED_RATE_LIMIT_NAMESPACE}-{infix}-reset")
+        if reset is not None and reset.lstrip("-").isdigit():
+            window["resets_at"] = int(reset)
+        status = values.get(f"{UNIFIED_RATE_LIMIT_NAMESPACE}-{infix}-status")
+        if status:
+            window["status"] = status
+        windows[key] = window
+    if not windows:
+        return None
+    snapshot: dict[str, Any] = {"captured_at": int(time.time()), "windows": windows}
+    for key, suffix in (
+        ("status", "status"),
+        ("representative_claim", "representative-claim"),
+        ("fallback_status", "fallback"),
+        ("overage_status", "overage-status"),
+        ("overage_disabled_reason", "overage-disabled-reason"),
+    ):
+        raw = values.get(f"{UNIFIED_RATE_LIMIT_NAMESPACE}-{suffix}")
+        if raw:
+            snapshot[key] = raw
+    return snapshot
+
+
+def codex_rate_limit_headers(snapshot: dict[str, Any] | None) -> dict[str, str]:
+    """Translate a unified snapshot into the limit headers Codex renders.
+
+    Codex discovers limit families from ``x-<family>-primary-used-percent`` and
+    labels the windows by their length, so the five-hour session becomes the
+    primary window and the seven-day limit the secondary one.
+    """
+    if not isinstance(snapshot, dict):
+        return {}
+    windows = snapshot.get("windows")
+    if not isinstance(windows, dict):
+        return {}
+    family = CODEX_RATE_LIMIT_FAMILY
+    headers: dict[str, str] = {f"x-{family}-limit-name": CODEX_RATE_LIMIT_NAME}
+    for slot, key in (("primary", "five_hour"), ("secondary", "seven_day")):
+        window = windows.get(key)
+        if not isinstance(window, dict):
+            continue
+        percent = _number(window.get("used_percent"))
+        minutes = _number(window.get("window_minutes"))
+        if percent is None or minutes is None:
+            continue
+        headers[f"x-{family}-{slot}-used-percent"] = f"{percent:g}"
+        headers[f"x-{family}-{slot}-window-minutes"] = str(int(minutes))
+        reset = window.get("resets_at")
+        if reset is not None:
+            headers[f"x-{family}-{slot}-reset-at"] = str(int(reset))
+    if len(headers) == 1:
+        return {}
+    return headers
+
+
+def describe_usage(snapshot: dict[str, Any] | None) -> str:
+    """Summarize a snapshot for the bridge log, e.g. ``5h 79%; 7d 9%``."""
+    if not isinstance(snapshot, dict):
+        return "usage unknown"
+    windows = snapshot.get("windows")
+    if not isinstance(windows, dict):
+        return "usage unknown"
+    parts = []
+    for label, key in (("5h", "five_hour"), ("7d", "seven_day")):
+        window = windows.get(key)
+        if isinstance(window, dict) and window.get("used_percent") is not None:
+            parts.append(f"{label} {window['used_percent']:g}%")
+    return "; ".join(parts) if parts else "usage unknown"
+
+
+def usage_state_path() -> Path:
+    """Return the tracked-usage file AgentRoute keeps for the bridge."""
+    override = os.environ.get("AGENTROUTE_HOME")
+    home = Path(override).expanduser() if override else Path.home() / ".agentroute"
+    return home / "state" / USAGE_STATE_FILE
+
+
+def read_usage_state(path: Path | None = None) -> dict[str, Any]:
+    """Read the tracked-usage file, treating anything unreadable as empty."""
+    target = path or usage_state_path()
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def record_usage_snapshot(snapshot: dict[str, Any], path: Path | None = None) -> Path | None:
+    """Persist the newest usage sample so AgentRoute can report it later.
+
+    Failures are logged and swallowed: usage tracking must never break a turn.
+    """
+    target = path or usage_state_path()
+    state = read_usage_state(target)
+    captured_at = datetime.now(timezone.utc).isoformat()
+    state["snapshot"] = snapshot
+    state["updated_at"] = captured_at
+    windows = snapshot.get("windows") if isinstance(snapshot.get("windows"), dict) else {}
+    sample: dict[str, Any] = {"at": captured_at}
+    for key in ("five_hour", "seven_day"):
+        window = windows.get(key)
+        if isinstance(window, dict) and window.get("used_percent") is not None:
+            sample[key] = window["used_percent"]
+    history = state.get("history")
+    if not isinstance(history, list):
+        history = []
+    history = [*history, sample][-USAGE_HISTORY_LIMIT:]
+    state["history"] = history
+    handle = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+        handle = name
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(state, indent=2, sort_keys=True) + "\n")
+        os.replace(name, target)
+        handle = None
+    except OSError as exc:
+        log(f"could not record Claude usage: {exc}")
+        return None
+    finally:
+        if handle is not None:
+            Path(handle).unlink(missing_ok=True)
+    return target
+
+
+_LIMIT_LABELS = {
+    "session": "5h session",
+    "weekly_all": "weekly (all models)",
+    "weekly_scoped": "weekly (scoped)",
+}
+
+
+def summarize_subscription_usage(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Shape Anthropic's OAuth usage summary into rows for the CLI."""
+    rows: list[dict[str, Any]] = []
+    limits = payload.get("limits")
+    if isinstance(limits, list):
+        for limit in limits:
+            if not isinstance(limit, dict):
+                continue
+            kind = str(limit.get("kind") or "unknown")
+            scope = limit.get("scope") if isinstance(limit.get("scope"), dict) else {}
+            model = scope.get("model") if isinstance(scope.get("model"), dict) else {}
+            label = _LIMIT_LABELS.get(kind, kind.replace("_", " "))
+            display_name = str(model.get("display_name") or "").strip()
+            if kind == "weekly_scoped" and display_name:
+                label = f"weekly ({display_name})"
+            rows.append(
+                {
+                    "kind": kind,
+                    "group": limit.get("group"),
+                    "label": label,
+                    "percent": _number(limit.get("percent")),
+                    "severity": limit.get("severity"),
+                    "resets_at": limit.get("resets_at"),
+                    "is_active": limit.get("is_active"),
+                }
+            )
+    if rows:
+        return rows
+    # Older payloads expose the two windows at the top level instead of `limits`.
+    for key, label in (("five_hour", "5h session"), ("seven_day", "weekly (all models)")):
+        window = payload.get(key)
+        if isinstance(window, dict):
+            rows.append(
+                {
+                    "kind": key,
+                    "group": key,
+                    "label": label,
+                    "percent": _number(window.get("utilization")),
+                    "severity": None,
+                    "resets_at": window.get("resets_at"),
+                    "is_active": None,
+                }
+            )
+    return rows
+
+
+def fetch_subscription_usage(
+    credentials: ApiKeyCredential | ClaudeCodeCredential,
+    *,
+    urlopen: Callable[..., Any] = urllib.request.urlopen,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    """Read Anthropic's OAuth usage summary, which only subscription credentials have."""
+    if credentials.mode != "claude-code":
+        raise CredentialError(
+            "subscription usage needs the claude-code credential; an API key has no usage limits"
+        )
+    request = urllib.request.Request(
+        SUBSCRIPTION_USAGE_URL,
+        headers={
+            "authorization": f"Bearer {credentials.token()}",
+            "anthropic-version": "2023-06-01",
+            "accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        if exc.code in (401, 403):
+            credentials.invalidate()
+        raise CredentialError(f"anthropic usage {exc.code}: {detail[:400]}") from exc
+    return payload if isinstance(payload, dict) else {}
+
+
+# --------------------------------------------------------------------------- #
 # HTTP surface
 # --------------------------------------------------------------------------- #
 
@@ -1048,6 +1334,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
     # argument, which would call anthropic_stream(handler, credentials, payload).
     stream_factory: Callable[..., Any] = staticmethod(anthropic_stream)
     logger: Callable[[str], None] = staticmethod(log)
+    # The newest Anthropic limit snapshot seen by this request, translated into
+    # Codex's own `x-<family>-*` header family on the SSE response.
+    usage_snapshot: dict[str, Any] | None = None
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
@@ -1065,6 +1354,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_header("content-type", "text/event-stream")
         self.send_header("cache-control", "no-cache")
         self.send_header("transfer-encoding", "chunked")
+        for name, value in codex_rate_limit_headers(self.usage_snapshot).items():
+            self.send_header(name, value)
         self.end_headers()
 
     def _chunk(self, data: bytes) -> bool:
@@ -1086,6 +1377,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path in ("/healthz", "/health"):
             self._json(200, {"status": "ok"})
+        elif path.endswith("/usage"):
+            state = read_usage_state()
+            self._json(
+                200,
+                {
+                    "updated_at": state.get("updated_at"),
+                    "snapshot": state.get("snapshot"),
+                    "history": state.get("history"),
+                },
+            )
         elif path.endswith("/models"):
             self._json(200, model_catalog(self.models))
         else:
@@ -1124,6 +1425,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         )
         try:
             for event_type, data in self.stream_factory(self.credentials, payload):
+                if event_type == RATE_LIMIT_EVENT:
+                    self.usage_snapshot = data
+                    record_usage_snapshot(data)
+                    self.logger(f"{model}: {describe_usage(data)}")
+                    continue
                 if event_type == "message_delta":
                     stop_reason = (data.get("delta") or {}).get("stop_reason") or stop_reason
                 if not started:

@@ -36,7 +36,10 @@ from .claude_bridge import (
     ResponsesStream,
     anthropic_stream,
     catalog_from_config,
+    fetch_subscription_usage,
+    read_usage_state,
     resolve_credential,
+    summarize_subscription_usage,
     translate_request,
 )
 from .claude_bridge import (
@@ -2063,6 +2066,67 @@ def bridge_check_command(
     console.print(f"usage: {json.dumps(stream.usage)}")
     if not completed:
         raise typer.Exit(code=1)
+
+
+@bridge_app.command("usage")
+def bridge_usage_command(
+    credential: str = typer.Option(
+        "auto",
+        help="auto, api-key (ANTHROPIC_API_KEY), or claude-code (subscription Keychain).",
+    ),
+    offline: bool = typer.Option(
+        False, "--offline", help="Only report what the bridge has already recorded."
+    ),
+) -> None:
+    """Show Claude subscription usage: 5h session, weekly, and any scoped weekly caps."""
+    state = read_usage_state()
+    snapshot = state.get("snapshot")
+    if isinstance(snapshot, dict):
+        windows = snapshot.get("windows")
+        parts = []
+        if isinstance(windows, dict):
+            for key, label in (("five_hour", "5h"), ("seven_day", "weekly")):
+                window = windows.get(key)
+                if isinstance(window, dict) and window.get("used_percent") is not None:
+                    parts.append(f"{label} {window['used_percent']:g}% used")
+        console.print(
+            f"bridge: {'; '.join(parts) if parts else 'no windows'} "
+            f"(recorded {state.get('updated_at') or 'unknown'})"
+        )
+    else:
+        console.print("bridge: no usage recorded yet; send one Claude turn through it.")
+
+    if offline:
+        return
+
+    source = _claude_bridge_credential(credential, "claude")
+    try:
+        payload = fetch_subscription_usage(source)
+    except CredentialError as exc:
+        console.print_json(data={"subscription": str(exc)})
+        return
+    rows = summarize_subscription_usage(payload)
+    if not rows:
+        console.print_json(data={"subscription": payload})
+        return
+    table = Table(title="Claude subscription usage")
+    table.add_column("limit")
+    table.add_column("used", justify="right")
+    table.add_column("left", justify="right")
+    table.add_column("resets")
+    table.add_column("active", justify="center")
+    for row in rows:
+        percent = row.get("percent")
+        used = f"{percent:g}%" if isinstance(percent, (int, float)) else "-"
+        left = f"{max(0.0, 100.0 - percent):g}%" if isinstance(percent, (int, float)) else "-"
+        table.add_row(
+            str(row.get("label") or row.get("kind")),
+            used,
+            left,
+            str(row.get("resets_at") or "-"),
+            "yes" if row.get("is_active") else "",
+        )
+    console.print(table)
 
 
 if __name__ == "__main__":

@@ -64,10 +64,13 @@ release until its compilation, regression checks, and runtime smoke tests pass.
 
 ## Ordered 0.157 stack and subsequent ports
 
-`agentroute-stack-0.157` is the reviewable 18-commit stack, ending at
-`227136846d895f3725478f47faeac3f2b0ad7b22`. Its final tree is the
+`agentroute-stack-0.157` is the reviewable 20-commit stack, ending at
+`f68f588df22da584102ff5ceceb5e0ab4c33d78c`. Its final tree is the
 validated initial port plus the TUI status-line fix that keeps the routed
-model and provider visible when a route notice omits the effort field. The earlier history remains available as
+model and provider visible when a route notice omits the effort field, and the
+status-row fix that lets a routed provider's streamed limit family appear in
+`/status` while Codex families stay owned by the account read, with the API-side
+contract test that pins the routed header family. The earlier history remains available as
 `archive/agentroute-0.157-before-split-2026-09-25`; no published branch was rewritten
 to produce the split stack.
 
@@ -84,7 +87,7 @@ working installation or published branches:
 ```sh
 python3 scripts/codex_stack.py /path/to/codex \
   --base 00c972ed5d6ff6499317fd41b7f23605b8e6850d \
-  --tip 227136846d895f3725478f47faeac3f2b0ad7b22 \
+  --tip f68f588df22da584102ff5ceceb5e0ab4c33d78c \
   --onto rust-vNEXT \
   --branch agentroute-port-NEXT \
   --worktree /path/to/new-candidate

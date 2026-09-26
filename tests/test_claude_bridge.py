@@ -10,6 +10,7 @@ from agentroute.claude_bridge import (
     CLAUDE_CODE_BETAS,
     DEFAULT_MODEL,
     LONG_CONTEXT_BETA,
+    RATE_LIMIT_EVENT,
     ApiKeyCredential,
     BridgeHandler,
     BridgeServer,
@@ -18,9 +19,16 @@ from agentroute.claude_bridge import (
     anthropic_headers,
     anthropic_tool_name,
     catalog_from_config,
+    codex_rate_limit_headers,
     collect_tools,
+    describe_usage,
+    fetch_subscription_usage,
     model_catalog,
+    parse_unified_rate_limits,
+    read_usage_state,
+    record_usage_snapshot,
     resolve_credential,
+    summarize_subscription_usage,
     translate_request,
 )
 from agentroute.config import ExecutionBackendConfig, ModelTarget, default_config
@@ -629,6 +637,137 @@ def test_trailing_assistant_text_gets_a_continuation_turn():
     assert payload["messages"][-1]["content"] == [{"type": "text", "text": "Continue."}]
 
 
+_UNIFIED_HEADERS = {
+    "anthropic-ratelimit-unified-status": "allowed",
+    "anthropic-ratelimit-unified-representative-claim": "five_hour",
+    "anthropic-ratelimit-unified-5h-status": "allowed",
+    "anthropic-ratelimit-unified-5h-utilization": "0.74",
+    "anthropic-ratelimit-unified-5h-reset": "1790460000",
+    "anthropic-ratelimit-unified-7d-status": "allowed",
+    "anthropic-ratelimit-unified-7d-utilization": "0.08",
+    "anthropic-ratelimit-unified-7d-reset": "1790942400",
+}
+
+
+def test_unified_rate_limits_become_codex_limit_headers():
+    """Anthropic fractions must reach Codex as percentages and unix seconds."""
+    snapshot = parse_unified_rate_limits(_UNIFIED_HEADERS)
+
+    assert snapshot is not None
+    assert snapshot["windows"]["five_hour"] == {
+        "used_percent": 74.0,
+        "window_minutes": 300,
+        "resets_at": 1790460000,
+        "status": "allowed",
+    }
+    assert snapshot["windows"]["seven_day"]["used_percent"] == 8.0
+    assert snapshot["windows"]["seven_day"]["window_minutes"] == 10080
+
+    assert codex_rate_limit_headers(snapshot) == {
+        "x-claude-limit-name": "Claude",
+        "x-claude-primary-used-percent": "74",
+        "x-claude-primary-window-minutes": "300",
+        "x-claude-primary-reset-at": "1790460000",
+        "x-claude-secondary-used-percent": "8",
+        "x-claude-secondary-window-minutes": "10080",
+        "x-claude-secondary-reset-at": "1790942400",
+    }
+    assert describe_usage(snapshot) == "5h 74%; 7d 8%"
+
+
+def test_unified_rate_limits_accept_percentages_and_partial_windows():
+    """A value above 1 is already a percentage, and a missing window is omitted."""
+    snapshot = parse_unified_rate_limits(
+        {"anthropic-ratelimit-unified-5h-utilization": "83.5"}
+    )
+
+    assert snapshot is not None
+    assert snapshot["windows"]["five_hour"]["used_percent"] == 83.5
+    assert "seven_day" not in snapshot["windows"]
+    headers = codex_rate_limit_headers(snapshot)
+    assert headers["x-claude-primary-used-percent"] == "83.5"
+    # A single window must not claim an empty secondary slot.
+    assert "x-claude-secondary-used-percent" not in headers
+    assert parse_unified_rate_limits({}) is None
+    assert codex_rate_limit_headers(None) == {}
+
+
+def test_usage_snapshots_are_recorded_and_read_back(tmp_path):
+    path = tmp_path / "claude-usage.json"
+    snapshot = parse_unified_rate_limits(_UNIFIED_HEADERS)
+    assert snapshot is not None
+
+    assert record_usage_snapshot(snapshot, path) == path
+    state = read_usage_state(path)
+    assert state["snapshot"] == snapshot
+    assert state["history"][-1]["five_hour"] == 74.0
+    assert state["history"][-1]["seven_day"] == 8.0
+
+    record_usage_snapshot({"windows": {"five_hour": {"used_percent": 79.0}}}, path)
+    state = read_usage_state(path)
+    assert [sample["five_hour"] for sample in state["history"]] == [74.0, 79.0]
+    # Tracking must never raise into a turn, even when the parent directory is new.
+    assert record_usage_snapshot({"windows": {}}, tmp_path / "nested" / "state.json") is not None
+    assert read_usage_state(tmp_path / "absent.json") == {}
+
+
+def test_subscription_usage_rows_cover_weekly_and_scoped_limits():
+    payload = {
+        "limits": [
+            {
+                "kind": "session",
+                "group": "session",
+                "percent": 79,
+                "severity": "warning",
+                "resets_at": "2026-09-26T22:00:00Z",
+                "is_active": True,
+            },
+            {
+                "kind": "weekly_all",
+                "group": "weekly",
+                "percent": 9,
+                "severity": "normal",
+                "resets_at": "2026-10-02T12:00:00Z",
+                "is_active": False,
+            },
+            {
+                "kind": "weekly_scoped",
+                "group": "weekly",
+                "percent": 0,
+                "severity": "normal",
+                "resets_at": "2026-10-02T12:00:00Z",
+                "is_active": False,
+                "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None},
+            },
+        ]
+    }
+
+    rows = summarize_subscription_usage(payload)
+
+    assert [row["label"] for row in rows] == [
+        "5h session",
+        "weekly (all models)",
+        "weekly (Fable)",
+    ]
+    assert rows[0]["percent"] == 79.0
+    assert rows[0]["is_active"] is True
+    assert summarize_subscription_usage({"five_hour": {"utilization": 12}})[0]["percent"] == 12.0
+
+
+def test_subscription_usage_needs_the_subscription_credential():
+    class _KeyCredential:
+        mode = "api-key"
+
+        def token(self):
+            return "fake-key"
+
+        def invalidate(self):
+            return
+
+    with pytest.raises(CredentialError):
+        fetch_subscription_usage(_KeyCredential())
+
+
 class _FakeCredential:
     mode = "api-key"
 
@@ -653,6 +792,8 @@ def bridge_server():
     def fake_stream(credentials, payload):
         captured["credentials"] = credentials
         captured["payload"] = payload
+        if captured.get("rate_limits") is not None:
+            yield RATE_LIMIT_EVENT, captured["rate_limits"]
         yield "message_start", {"message": {"usage": {"input_tokens": 5}}}
         yield "content_block_start", {"index": 0, "content_block": {"type": "text"}}
         yield (
@@ -734,6 +875,60 @@ def test_http_bridge_serves_models_and_health(bridge_server):
         catalog = json.loads(response.read())
     assert catalog["data"] == [{"id": "claude-sonnet-5"}]
     assert catalog["models"][0]["slug"] == "claude-sonnet-5"
+
+
+def test_http_bridge_emits_and_records_claude_limits(bridge_server, tmp_path, monkeypatch):
+    """Codex reads the limit family off the stream, so the bridge must send it there."""
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    server, captured = bridge_server
+    host, port = server.server_address[:2]
+    captured["rate_limits"] = parse_unified_rate_limits(_UNIFIED_HEADERS)
+    request = urllib.request.Request(
+        f"http://{host}:{port}/v1/responses",
+        data=json.dumps({"model": "claude-sonnet-5", "input": []}).encode(),
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = response.read().decode()
+        headers = response.headers
+
+    assert response.status == 200
+    assert "event: response.completed" in payload
+    assert headers["x-claude-limit-name"] == "Claude"
+    assert headers["x-claude-primary-used-percent"] == "74"
+    assert headers["x-claude-primary-window-minutes"] == "300"
+    assert headers["x-claude-primary-reset-at"] == "1790460000"
+    assert headers["x-claude-secondary-used-percent"] == "8"
+    assert headers["x-claude-secondary-window-minutes"] == "10080"
+
+    state = json.loads((tmp_path / "state" / "claude-usage.json").read_text())
+    assert state["snapshot"]["windows"]["five_hour"]["used_percent"] == 74.0
+
+    with urllib.request.urlopen(f"http://{host}:{port}/v1/usage", timeout=30) as response:
+        reported = json.loads(response.read())
+    assert reported["snapshot"]["windows"]["seven_day"]["used_percent"] == 8.0
+    assert reported["history"][-1]["five_hour"] == 74.0
+
+
+def test_http_bridge_omits_limit_headers_without_usage(bridge_server, tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    server, _ = bridge_server
+    host, port = server.server_address[:2]
+    request = urllib.request.Request(
+        f"http://{host}:{port}/v1/responses",
+        data=json.dumps({"model": "claude-sonnet-5", "input": []}).encode(),
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+
+    with urllib.request.urlopen(request, timeout=30) as response:
+        response.read()
+        headers = response.headers
+
+    assert "x-claude-primary-used-percent" not in headers
+    assert not (tmp_path / "state" / "claude-usage.json").exists()
 
 
 def test_http_bridge_reports_translation_and_routing_errors(bridge_server):

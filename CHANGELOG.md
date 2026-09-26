@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.52 — 2026-09-26
+
+- Report Claude subscription usage from the bridge. Every Anthropic Messages response carries the
+  unified rate-limit headers, and the bridge now translates the five-hour session and the
+  seven-day limit into Codex's own `x-claude-primary-*` / `x-claude-secondary-*` limit family on
+  its SSE response, so Codex renders them as "5h" and "Weekly" rows instead of leaving the session
+  with no visible quota. The observed sample is also recorded under
+  `~/.agentroute/state/claude-usage.json`.
+- Add `agentroute bridge usage`, which prints the recorded sample plus Anthropic's live usage
+  summary: the 5h session, the weekly limit for all models, any model-scoped weekly cap, and
+  whether a window is currently binding. `GET /v1/usage` exposes the same recorded sample on the
+  bridge itself.
+- Keep the Codex rate-limit buckets owned by the account read. Only non-Codex families refresh
+  from the stream, so a routed provider's quota cannot overwrite the ChatGPT plan rows or their
+  credit balance.
+
 ## 0.5.51 — 2026-09-26
 
 - Add `agentroute bridge serve`, a local Anthropic Messages bridge that exposes Claude models
