@@ -274,6 +274,44 @@ def _normalize_tool_output(output: Any) -> str:
     return json.dumps(output)
 
 
+def _image_source(image_url: str) -> dict[str, Any] | None:
+    """Translate a Responses data URL into an Anthropic base64 image source."""
+    if not image_url.startswith("data:"):
+        return None
+    header, _, data = image_url.partition(",")
+    if not data:
+        return None
+    media = header[5:].split(";")[0] or "image/png"
+    return {"type": "base64", "media_type": media, "data": data}
+
+
+def _is_image_item(item: Any) -> bool:
+    return isinstance(item, dict) and item.get("type") == "input_image"
+
+
+def _tool_result_content(output: Any) -> str | list[dict[str, Any]]:
+    """Render a tool output as Anthropic ``tool_result`` content.
+
+    Anthropic accepts either a string or a list of content blocks, and the
+    image blocks have to become Anthropic sources. Codex tools such as
+    ``view_image`` return their image here, so flattening the list to text
+    would silently drop the picture the model was asked to look at.
+    """
+    if not isinstance(output, list) or not any(_is_image_item(item) for item in output):
+        return _normalize_tool_output(output) or "(no output)"
+    blocks: list[dict[str, Any]] = []
+    for item in output:
+        if _is_image_item(item):
+            source = _image_source(str((item or {}).get("image_url") or ""))
+            if source is not None:
+                blocks.append({"type": "image", "source": source})
+                continue
+        text = _text_from_content([item])
+        if text:
+            blocks.append({"type": "text", "text": text})
+    return blocks or "(no output)"
+
+
 def anthropic_tool_name(name: str) -> str:
     """Anthropic requires tool names matching ``[a-zA-Z0-9_-]{1,64}``."""
     cleaned = re.sub(r"[^a-zA-Z0-9_-]", "_", name or "tool")
@@ -460,20 +498,9 @@ def translate_request(
                 if part_type in ("input_text", "output_text", "text"):
                     blocks.append({"type": "text", "text": str(part.get("text") or "")})
                 elif part_type == "input_image":
-                    image_url = str(part.get("image_url") or "")
-                    if image_url.startswith("data:"):
-                        header, _, data = image_url.partition(",")
-                        media = header[5:].split(";")[0] or "image/png"
-                        blocks.append(
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media,
-                                    "data": data,
-                                },
-                            }
-                        )
+                    source = _image_source(str(part.get("image_url") or ""))
+                    if source is not None:
+                        blocks.append({"type": "image", "source": source})
             if blocks:
                 role = item.get("role") or "user"
                 push(
@@ -507,7 +534,6 @@ def translate_request(
 
         elif item_type in ("function_call_output", "custom_tool_call_output"):
             call_id = str(item.get("call_id") or item.get("id") or "call")
-            output = _normalize_tool_output(item.get("output"))
             push(
                 {
                     "role": "user",
@@ -515,7 +541,7 @@ def translate_request(
                         {
                             "type": "tool_result",
                             "tool_use_id": call_id,
-                            "content": output or "(no output)",
+                            "content": _tool_result_content(item.get("output")),
                         }
                     ],
                 }
@@ -987,7 +1013,10 @@ def model_catalog(
             "supports_reasoning_summary_parameter": False,
             "context_window": context_window,
             "max_context_window": context_window,
-            "input_modalities": ["text"],
+            # Claude models accept images, and the bridge translates them, so
+            # declaring text only would make Codex refuse `view_image` and strip
+            # attachments before the model ever saw them.
+            "input_modalities": ["text", "image"],
             "supports_search_tool": False,
             "supports_experimental_context": False,
             "use_responses_lite": False,

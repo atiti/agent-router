@@ -15,6 +15,11 @@
   scoped per response so two items in one turn cannot share an id.
 - Repair transcripts that end on an assistant turn into one Anthropic accepts, so an interrupted
   tool call no longer fails the next request with "The conversation must end with a user message."
+- Advertise image input for the served Claude models and keep image content items inside tool
+  outputs as Anthropic image blocks. Without the modality the served models read as text only, so
+  Codex refused `view_image` and stripped attachments; without the block translation the
+  screenshots that `view_image` returns were flattened to empty text, which is why agents reported
+  that the image viewer returned nothing.
 - Serve the Claude Code subscription credential from the macOS Keychain, persisting refreshed
   tokens so Claude Code stays logged in, or `ANTHROPIC_API_KEY` for the credential path Anthropic
   covers. Subscription use prints a warning and remains opt-in per backend.

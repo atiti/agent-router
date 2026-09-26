@@ -301,6 +301,69 @@ def test_model_catalog_exposes_codex_descriptor_fields():
     assert descriptor["apply_patch_tool_type"] == "freeform"
     assert descriptor["shell_type"] == "unified_exec"
     assert descriptor["context_window"] == 200_000
+    # Codex refuses view_image and strips attachments unless the descriptor
+    # advertises image input.
+    assert descriptor["input_modalities"] == ["text", "image"]
+
+
+def test_tool_result_keeps_an_image_returned_by_view_image():
+    payload, _, _ = translate_request(
+        {
+            "model": DEFAULT_MODEL,
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "look at this"}],
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "toolu_1",
+                    "name": "view_image",
+                    "arguments": '{"path": "/tmp/shot.png"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "toolu_1",
+                    "output": [
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,QUJD",
+                        }
+                    ],
+                },
+            ],
+        },
+        mode="claude-code",
+    )
+
+    tool_result = payload["messages"][-1]["content"][0]
+    assert tool_result["type"] == "tool_result"
+    assert tool_result["content"] == [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"},
+        }
+    ]
+
+
+def test_tool_result_stays_text_when_no_image_is_present():
+    payload, _, _ = translate_request(
+        {
+            "model": DEFAULT_MODEL,
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "toolu_1",
+                    "output": [{"type": "input_text", "text": "hello"}],
+                }
+            ],
+        },
+        mode="claude-code",
+    )
+
+    assert payload["messages"][-1]["content"][0]["content"] == "hello"
 
 
 def test_stream_emits_text_deltas_then_completed():
