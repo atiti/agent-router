@@ -372,6 +372,47 @@ def _betas_for(model: str, mode: CredentialMode) -> str:
     return ",".join(betas)
 
 
+def _repair_trailing_assistant(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build the user turn that closes a transcript ending on assistant items.
+
+    Orphaned ``tool_use`` blocks become error tool results, matching how Codex
+    recovers interrupted tool calls. Otherwise the model gets a plain
+    continuation prompt so the transcript ends on a user message.
+    """
+    tool_use_ids: list[str] = []
+    for message in reversed(messages):
+        if message["role"] != "assistant":
+            break
+        for block in message["content"]:
+            if block.get("type") == "tool_use" and block.get("id"):
+                tool_use_ids.append(str(block["id"]))
+    tool_use_ids.reverse()
+    if tool_use_ids:
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": "Tool output unavailable: the previous turn was interrupted.",
+                    "is_error": True,
+                }
+                for tool_use_id in tool_use_ids
+            ],
+        }
+    return {"role": "user", "content": [{"type": "text", "text": "Continue."}]}
+
+
+def message_tail_hint(messages: list[dict[str, Any]], limit: int = 4) -> str:
+    """Compact digest of a payload's last messages, for bridge logs."""
+    parts: list[str] = []
+    for message in messages[-limit:]:
+        role = "assistant" if message["role"] == "assistant" else "user"
+        kinds = sorted({str(block.get("type") or "?") for block in message["content"]})
+        parts.append(f"{role[0]}:{'+'.join(kinds) if kinds else 'empty'}")
+    return " > ".join(parts)
+
+
 def translate_request(
     body: dict[str, Any], *, mode: CredentialMode = "api-key"
 ) -> tuple[dict[str, Any], set[str], dict[str, str]]:
@@ -488,6 +529,19 @@ def translate_request(
     if not messages:
         messages = [{"role": "user", "content": [{"type": "text", "text": ""}]}]
 
+    # Claude models reject assistant prefills: the transcript must end on a user
+    # message. Codex can hand us one that does not, e.g. when a turn is
+    # interrupted after a tool call and the transcript is replayed. Leave the
+    # recorded turn alone and append the follow-up turn the model needs.
+    if messages[-1]["role"] == "assistant":
+        original_tail = message_tail_hint(messages)
+        repair = _repair_trailing_assistant(messages)
+        log(
+            "trailing assistant turn repaired for Anthropic: "
+            f"{len(repair['content'])} block(s) appended after {original_tail}"
+        )
+        messages.append(repair)
+
     payload: dict[str, Any] = {
         "model": body.get("model") or DEFAULT_MODEL,
         "max_tokens": int(body.get("max_output_tokens") or 32000),
@@ -591,10 +645,21 @@ class ResponsesStream:
         self.usage = {"input_tokens": 0, "output_tokens": 0}
         self.stop_reason: str | None = None
         self.item_counter = 0
+        # Item ids are recorded into the Codex transcript, so they must stay
+        # unique across the requests of one turn. Scope them to the response.
+        self.item_scope = response_id.removeprefix("resp_")[:10] or "0"
 
     def _next_item_id(self, prefix: str) -> str:
         self.item_counter += 1
-        return f"{prefix}_{self.item_counter}"
+        return f"{prefix}_{self.item_scope}_{self.item_counter}"
+
+    def _output_index(self, block: dict[str, Any]) -> int:
+        """Assign an item's response output index when it is first emitted."""
+        index = block.get("output_index")
+        if index is None:
+            index = len(self.items)
+            block["output_index"] = index
+        return int(index)
 
     @staticmethod
     def sse(event: str, data: dict[str, Any]) -> bytes:
@@ -634,8 +699,9 @@ class ResponsesStream:
                 "kind": "text",
                 "item_id": self._next_item_id("msg"),
                 "text": str(block.get("text") or ""),
-                "output_index": len(self.items),
+                "output_index": None,
                 "announced": False,
+                "done": False,
             }
         elif block_type == "tool_use":
             name = str(block.get("name") or "tool")
@@ -645,7 +711,7 @@ class ResponsesStream:
                 "call_id": str(block.get("id") or "call"),
                 "name": name,
                 "json": "",
-                "output_index": len(self.items),
+                "output_index": None,
             }
         elif block_type in ("thinking", "redacted_thinking"):
             self.blocks[index] = {"kind": "thinking", "output_index": len(self.items)}
@@ -662,6 +728,7 @@ class ResponsesStream:
             text = str(delta.get("text") or "")
             block["text"] += text
             if text:
+                output_index = self._output_index(block)
                 if not block["announced"]:
                     # Codex tracks an "active item" for text deltas and panics
                     # when a delta arrives before the item is announced.
@@ -670,7 +737,7 @@ class ResponsesStream:
                         "response.output_item.added",
                         {
                             "type": "response.output_item.added",
-                            "output_index": block["output_index"],
+                            "output_index": output_index,
                             "item": {
                                 "type": "message",
                                 "id": block["item_id"],
@@ -684,7 +751,7 @@ class ResponsesStream:
                     {
                         "type": "response.output_text.delta",
                         "item_id": block["item_id"],
-                        "output_index": block["output_index"],
+                        "output_index": output_index,
                         "content_index": 0,
                         "delta": text,
                     },
@@ -694,7 +761,19 @@ class ResponsesStream:
 
     def _on_content_block_stop(self, data: dict[str, Any]) -> Iterator[bytes]:
         block = self.blocks.get(int(data.get("index") or 0))
-        if block is None or block.get("kind") != "tool_use":
+        if block is None:
+            return
+        if block.get("kind") == "text":
+            # Close the assistant text item as soon as its content block ends.
+            #
+            # Codex records items in arrival order, so deferring this to
+            # ``message_stop`` put the text *after* the tool calls of the same
+            # response. That duplicated the text in the TUI and left the
+            # transcript ending on an assistant item, which Anthropic rejects
+            # with "The conversation must end with a user message."
+            yield from self._emit_text_item(block)
+            return
+        if block.get("kind") != "tool_use":
             return
         try:
             parsed = json.loads(block["json"]) if block["json"].strip() else {}
@@ -702,6 +781,7 @@ class ResponsesStream:
             parsed = {"input": block["json"]}
         if not isinstance(parsed, dict):
             parsed = {"input": parsed}
+        output_index = self._output_index(block)
         name = block["name"]
         original = self.renames.get(name, name)
         if name in self.freeform:
@@ -738,7 +818,7 @@ class ResponsesStream:
             "response.output_item.added",
             {
                 "type": "response.output_item.added",
-                "output_index": block["output_index"],
+                "output_index": output_index,
                 "item": item,
             },
         )
@@ -746,7 +826,7 @@ class ResponsesStream:
             "response.output_item.done",
             {
                 "type": "response.output_item.done",
-                "output_index": block["output_index"],
+                "output_index": output_index,
                 "item": item,
             },
         )
@@ -761,26 +841,54 @@ class ResponsesStream:
         return
         yield  # pragma: no cover - keeps this handler a generator
 
+    def _emit_text_item(self, block: dict[str, Any]) -> Iterator[bytes]:
+        """Emit a finished assistant text block as a completed message item."""
+        if block.get("done"):
+            return
+        block["done"] = True
+        text = str(block.get("text") or "")
+        if not text:
+            return
+        output_index = self._output_index(block)
+        if not block.get("announced"):
+            # A block can carry its whole text in ``content_block_start``.
+            # Announce it so Codex has an active item for the completed text.
+            block["announced"] = True
+            yield self.sse(
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": {
+                        "type": "message",
+                        "id": block["item_id"],
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": ""}],
+                    },
+                },
+            )
+        item = {
+            "type": "message",
+            "id": block["item_id"],
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text}],
+        }
+        self.items.append(item)
+        yield self.sse(
+            "response.output_item.done",
+            {
+                "type": "response.output_item.done",
+                "output_index": output_index,
+                "item": item,
+            },
+        )
+
     def _text_items(self) -> Iterator[bytes]:
         for index in sorted(self.blocks):
             block = self.blocks[index]
-            if block.get("kind") != "text" or not block.get("text"):
+            if block.get("kind") != "text":
                 continue
-            item = {
-                "type": "message",
-                "id": block["item_id"],
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": block["text"]}],
-            }
-            self.items.append(item)
-            yield self.sse(
-                "response.output_item.done",
-                {
-                    "type": "response.output_item.done",
-                    "output_index": block["output_index"],
-                    "item": item,
-                },
-            )
+            yield from self._emit_text_item(block)
 
     def _on_message_stop(self, data: dict[str, Any]) -> Iterator[bytes]:
         yield from self._text_items()
@@ -982,7 +1090,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         stop_reason = None
         self.logger(
             f"{model}: {len(payload.get('messages') or [])} messages, "
-            f"{len(payload.get('tools') or [])} tools"
+            f"{len(payload.get('tools') or [])} tools, "
+            f"tail={message_tail_hint(payload.get('messages') or [])}"
         )
         try:
             for event_type, data in self.stream_factory(self.credentials, payload):

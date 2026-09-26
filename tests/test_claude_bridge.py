@@ -330,7 +330,7 @@ def test_stream_emits_text_deltas_then_completed():
     announced = json.loads(events[1].decode().split("data: ", 1)[1])
     assert announced["item"] == {
         "type": "message",
-        "id": "msg_1",
+        "id": f"msg_{stream.item_scope}_1",
         "role": "assistant",
         "content": [{"type": "output_text", "text": ""}],
     }
@@ -383,7 +383,7 @@ def test_stream_maps_function_calls_to_responses_items():
     assert added["type"] == "response.output_item.added"
     assert added["item"] == {
         "type": "function_call",
-        "id": "fc_1",
+        "id": f"fc_{stream.item_scope}_1",
         "call_id": "toolu_1",
         "name": "get_weather",
         "arguments": '{"city": "BP"}',
@@ -445,6 +445,125 @@ def test_stream_reports_upstream_errors_as_response_failed():
         "code": "rate_limit_error",
         "message": "slow down",
     }
+
+
+def test_stream_completes_text_item_before_the_following_tool_call():
+    """Codex records items in arrival order, so the preamble must close first."""
+    stream = ResponsesStream("resp_order", "claude-sonnet-5")
+    events = []
+    events += stream.feed("message_start", {"message": {"usage": {"input_tokens": 1}}})
+    events += stream.feed("content_block_start", {"index": 0, "content_block": {"type": "text"}})
+    events += stream.feed(
+        "content_block_delta",
+        {"index": 0, "delta": {"type": "text_delta", "text": "Checking the repo."}},
+    )
+    events += stream.feed("content_block_stop", {"index": 0})
+    events += stream.feed(
+        "content_block_start",
+        {"index": 1, "content_block": {"type": "tool_use", "id": "toolu_a", "name": "exec"}},
+    )
+    events += stream.feed(
+        "content_block_delta",
+        {"index": 1, "delta": {"type": "input_json_delta", "partial_json": "{}"}},
+    )
+    events += stream.feed("content_block_stop", {"index": 1})
+    events += stream.feed("message_stop", {})
+
+    payloads = [json.loads(chunk.decode().split("data: ", 1)[1]) for chunk in events]
+    kinds = [payload["type"] for payload in payloads]
+    assert kinds == [
+        "response.created",
+        "response.output_item.added",
+        "response.output_text.delta",
+        "response.output_item.done",
+        "response.output_item.added",
+        "response.output_item.done",
+        "response.completed",
+    ]
+    done = payloads[3]
+    assert done["item"]["type"] == "message"
+    assert done["item"]["content"] == [{"type": "output_text", "text": "Checking the repo."}]
+    # The message item is emitted once, ahead of the tool call, with its own index.
+    assert [payload["output_index"] for payload in payloads if "output_index" in payload] == [
+        0,
+        0,
+        0,
+        1,
+        1,
+    ]
+    completed = payloads[-1]["response"]["output"]
+    assert [item["type"] for item in completed] == ["message", "function_call"]
+
+
+def test_stream_item_ids_are_unique_across_requests():
+    first = ResponsesStream("resp_alpha", "claude-sonnet-5")
+    second = ResponsesStream("resp_beta", "claude-sonnet-5")
+    for stream in (first, second):
+        stream.feed("content_block_start", {"index": 0, "content_block": {"type": "text"}})
+        stream.feed(
+            "content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": "hi"}}
+        )
+        stream.feed("content_block_stop", {"index": 0})
+
+    assert first.items[0]["id"] != second.items[0]["id"]
+
+
+def test_trailing_assistant_turn_is_repaired_for_anthropic():
+    payload, _, _ = translate_request(
+        {
+            "model": DEFAULT_MODEL,
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "ship it"}],
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "toolu_1",
+                    "name": "exec_command",
+                    "arguments": '{"cmd": "ls"}',
+                },
+            ],
+        },
+        mode="claude-code",
+    )
+
+    assert [message["role"] for message in payload["messages"]] == ["user", "assistant", "user"]
+    recovered = payload["messages"][-1]["content"]
+    assert recovered == [
+        {
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": "Tool output unavailable: the previous turn was interrupted.",
+            "is_error": True,
+        }
+    ]
+
+
+def test_trailing_assistant_text_gets_a_continuation_turn():
+    payload, _, _ = translate_request(
+        {
+            "model": DEFAULT_MODEL,
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "ship it"}],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Reading the files next."}],
+                },
+            ],
+        },
+        mode="claude-code",
+    )
+
+    assert [message["role"] for message in payload["messages"]] == ["user", "assistant", "user"]
+    assert payload["messages"][-1]["content"] == [{"type": "text", "text": "Continue."}]
 
 
 class _FakeCredential:

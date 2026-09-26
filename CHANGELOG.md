@@ -9,6 +9,12 @@
   function and freeform `apply_patch` calls to `tool_use`, tool outputs to `tool_result`, base64
   images, usage totals, and the output-item SSE events Codex needs before text deltas. Duplicate
   and unsupported tool declarations are dropped instead of failing the turn upstream.
+- Close each assistant text item when its content block ends instead of at `message_stop`. Codex
+  records items in arrival order, so the old order put a turned-over preamble after its own tool
+  calls, which duplicated the text in the TUI against Anthropic-hosted models. Item ids are also
+  scoped per response so two items in one turn cannot share an id.
+- Repair transcripts that end on an assistant turn into one Anthropic accepts, so an interrupted
+  tool call no longer fails the next request with "The conversation must end with a user message."
 - Serve the Claude Code subscription credential from the macOS Keychain, persisting refreshed
   tokens so Claude Code stays logged in, or `ANTHROPIC_API_KEY` for the credential path Anthropic
   covers. Subscription use prints a warning and remains opt-in per backend.
