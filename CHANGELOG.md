@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.51 — 2026-09-26
+
+- Add `agentroute bridge serve`, a local Anthropic Messages bridge that exposes Claude models
+  through the OpenAI Responses API, so Codex can route to them like any other backend. `agentroute
+  bridge check` runs one live round trip through the selected credential.
+- Translate Responses requests and streams in both directions: instructions to the system block,
+  function and freeform `apply_patch` calls to `tool_use`, tool outputs to `tool_result`, base64
+  images, usage totals, and the output-item SSE events Codex needs before text deltas. Duplicate
+  and unsupported tool declarations are dropped instead of failing the turn upstream.
+- Close each assistant text item when its content block ends instead of at `message_stop`. Codex
+  records items in arrival order, so the old order put a turned-over preamble after its own tool
+  calls, which duplicated the text in the TUI against Anthropic-hosted models. Item ids are also
+  scoped per response so two items in one turn cannot share an id.
+- Repair transcripts that end on an assistant turn into one Anthropic accepts, so an interrupted
+  tool call no longer fails the next request with "The conversation must end with a user message."
+- Serve the Claude Code subscription credential from the macOS Keychain, persisting refreshed
+  tokens so Claude Code stays logged in, or `ANTHROPIC_API_KEY` for the credential path Anthropic
+  covers. Subscription use prints a warning and remains opt-in per backend.
+- Negotiate Anthropic betas per model, including long-context beta for Sonnet and Opus classes and
+  its omission for Haiku, which rejects it on subscriptions.
+
 ## 0.5.50 — 2026-09-25
 
 - Improve related-session context precision with conversational stop-word filtering,
