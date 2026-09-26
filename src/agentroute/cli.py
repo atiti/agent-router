@@ -28,6 +28,20 @@ from .classifier import (
     is_private_endpoint,
     read_api_key,
 )
+from .claude_bridge import (
+    DEFAULT_PORT as CLAUDE_BRIDGE_DEFAULT_PORT,
+)
+from .claude_bridge import (
+    CredentialError,
+    ResponsesStream,
+    anthropic_stream,
+    catalog_from_config,
+    resolve_credential,
+    translate_request,
+)
+from .claude_bridge import (
+    serve as serve_claude_bridge,
+)
 from .codex_patch import apply_patch, build_codex, install_binary
 from .config import (
     ExecutionBackendConfig,
@@ -74,10 +88,15 @@ capacity_app = typer.Typer(
 account_app = typer.Typer(
     no_args_is_help=True, help="Manage ChatGPT accounts without splitting Codex state."
 )
+bridge_app = typer.Typer(
+    no_args_is_help=True,
+    help="Serve provider APIs that Codex can consume as a Responses backend.",
+)
 app.add_typer(desktop_app, name="desktop")
 app.add_typer(capacity_app, name="capacity")
 app.add_typer(account_app, name="account")
 app.add_typer(context_app, name="context")
+app.add_typer(bridge_app, name="bridge")
 console = Console()
 
 
@@ -493,11 +512,7 @@ def capacity_status_command(
     daily, monthly = backend_spend(rows, config)
     profiles = () if no_probe else probe_profiles(config)
     active_profile = next(
-        (
-            profile
-            for profile in profiles
-            if profile.name == config.capacity.active_profile
-        ),
+        (profile for profile in profiles if profile.name == config.capacity.active_profile),
         None,
     )
     backend_rows = []
@@ -1069,9 +1084,7 @@ def analytics_command(
     if report.route_application:
         console.print(
             "Route application: "
-            + "; ".join(
-                f"{state} {count}" for state, count in report.route_application.items()
-            )
+            + "; ".join(f"{state} {count}" for state, count in report.route_application.items())
         )
     reconciliation = report.reconciliation
     console.print(
@@ -1121,9 +1134,7 @@ def analytics_command(
         )
         console.print(
             "Classifier confidence: "
-            + ", ".join(
-                f"{band}={count}" for band, count in calibration.confidence_bands.items()
-            )
+            + ", ".join(f"{band}={count}" for band, count in calibration.confidence_bands.items())
         )
     console.print(
         f"Routed answer cost: {currency} {report.overall.actual_cost:.4f}; "
@@ -1154,9 +1165,7 @@ def analytics_command(
         )
     console.print(models)
 
-    durations = Table(
-        "Backend", "Answer model", "Completed", "Avg", "P50", "P95", "Max"
-    )
+    durations = Table("Backend", "Answer model", "Completed", "Avg", "P50", "P95", "Max")
     for item in report.by_model:
         if not item.completed_turns:
             continue
@@ -1431,6 +1440,7 @@ def classifier_jev_shadow_report_command(
     if not succeeded:
         console.print(f"JEV shadow: {len(observations)} observations; {failures} did not complete.")
         return
+
     def percentage(key: str) -> str:
         matches = sum(
             bool(item.get("agreement", {}).get(key))
@@ -1438,6 +1448,7 @@ def classifier_jev_shadow_report_command(
             if isinstance(item.get("agreement"), dict)
         )
         return f"{matches / len(succeeded):.0%}"
+
     latencies = sorted(float(item["latency_ms"]) for item in succeeded)
     p50 = latencies[(len(latencies) - 1) // 2]
     p95 = latencies[min(len(latencies) - 1, round((len(latencies) - 1) * 0.95))]
@@ -1513,9 +1524,7 @@ def classifier_enable_command(
     save_config(config)
     console.print(f"Enabled hybrid classification with {model}.")
     if not is_loopback_endpoint(endpoint) and not api_key_file and not os.environ.get(api_key_env):
-        console.print(
-            f"Set {api_key_env} before launching Codex; heuristics remain the fallback."
-        )
+        console.print(f"Set {api_key_env} before launching Codex; heuristics remain the fallback.")
 
 
 @app.command("classifier-verify")
@@ -1662,9 +1671,7 @@ def backend_add_command(
     if api_key_header.lower() not in {"authorization", "api-key"}:
         raise typer.BadParameter("--api-key-header must be authorization or api-key")
     if tool_compatibility not in {"functions_and_apply_patch", "full"}:
-        raise typer.BadParameter(
-            "--tool-compatibility must be functions_and_apply_patch or full"
-        )
+        raise typer.BadParameter("--tool-compatibility must be functions_and_apply_patch or full")
     if api_key_env and not API_KEY_ENV.fullmatch(api_key_env):
         raise typer.BadParameter("--api-key-env must be a valid uppercase environment variable")
 
@@ -1769,9 +1776,7 @@ def backend_default_command(
         raise typer.BadParameter(f"backend is not enabled: {backend}")
     ready, problems = backend_readiness(config, backend)
     if not ready:
-        raise typer.BadParameter(
-            f"backend is not ready: {backend} ({', '.join(problems)})"
-        )
+        raise typer.BadParameter(f"backend is not ready: {backend} ({', '.join(problems)})")
     for tier in ("fast", "normal", "smart", "max"):
         config.routing.backend_by_tier[tier] = backend
     save_config(config)
@@ -1789,9 +1794,7 @@ def backend_status_command() -> None:
     for name, backend in config.backends.items():
         ready, problems = backend_readiness(config, name)
         state = "ready" if ready else ", ".join(problems)
-        models = ", ".join(
-            f"{tier}={target.model}" for tier, target in backend.tiers.items()
-        )
+        models = ", ".join(f"{tier}={target.model}" for tier, target in backend.tiers.items())
         table.add_row(
             name,
             state,
@@ -1803,9 +1806,7 @@ def backend_status_command() -> None:
     console.print(table)
     console.print(
         "Defaults: "
-        + ", ".join(
-            f"{tier}={backend}" for tier, backend in config.routing.backend_by_tier.items()
-        )
+        + ", ".join(f"{tier}={backend}" for tier, backend in config.routing.backend_by_tier.items())
     )
     console.print(
         "Change every tier with `agentroute backend-default BACKEND`; "
@@ -1983,6 +1984,85 @@ def install_hook_command(path: Path | None = None) -> None:
     console.print(f"Installed AgentRoute hook in {installed}")
     if backup:
         console.print(f"Backup: {backup}")
+
+
+def _claude_bridge_credential(credential: str, backend: str):
+    try:
+        source = resolve_credential(credential)
+    except CredentialError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if source.mode == "claude-code":
+        console.print(
+            "[yellow]Using the Claude Code subscription credential.[/yellow] "
+            "Anthropic does not cover subscription credentials for third-party "
+            "clients; set ANTHROPIC_API_KEY or pass --credential api-key to use a "
+            "supported Anthropic API key instead."
+        )
+    return source
+
+
+@bridge_app.command("serve")
+def bridge_serve_command(
+    host: str = typer.Option("127.0.0.1", help="Loopback interface to bind."),
+    port: int = typer.Option(CLAUDE_BRIDGE_DEFAULT_PORT, help="Port to bind."),
+    backend: str = typer.Option(
+        "claude", help="AgentRoute backend whose tiers define the model catalog."
+    ),
+    credential: str = typer.Option(
+        "auto",
+        help="auto, api-key (ANTHROPIC_API_KEY), or claude-code (subscription Keychain).",
+    ),
+) -> None:
+    """Serve an Anthropic Messages bridge as an OpenAI Responses endpoint."""
+    config = load_config()
+    models = catalog_from_config(config, backend.lower())
+    source = _claude_bridge_credential(credential, backend)
+    serve_claude_bridge(source, host=host, port=port, models=models)
+
+
+@bridge_app.command("check")
+def bridge_check_command(
+    model: str = typer.Option(None, help="Model to test; defaults to the backend FAST tier."),
+    backend: str = typer.Option("claude"),
+    credential: str = typer.Option("auto"),
+) -> None:
+    """Verify the credential and run one live Claude round trip."""
+    config = load_config()
+    models = catalog_from_config(config, backend.lower())
+    chosen = model or models[0][0]
+    source = _claude_bridge_credential(credential, backend)
+    payload, freeform, _ = translate_request(
+        {
+            "model": chosen,
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Reply with the single word: ready"}
+                    ],
+                }
+            ],
+            "tools": [],
+        },
+        mode=source.mode,
+    )
+    stream = ResponsesStream("resp_check", chosen, freeform, {})
+    text: list[str] = []
+    completed: dict[str, object] = {}
+    for event_type, data in anthropic_stream(source, payload):
+        if event_type == "content_block_delta":
+            delta = data.get("delta") or {}
+            if delta.get("type") == "text_delta":
+                text.append(str(delta.get("text") or ""))
+        for chunk in stream.feed(event_type, data):
+            if b"response.completed" in chunk:
+                completed = json.loads(chunk.decode().split("data: ", 1)[1])
+    console.print(f"backend: {backend} | model: {chosen} | credential: {source.mode}")
+    console.print(f"reply: {''.join(text)!r}")
+    console.print(f"usage: {json.dumps(stream.usage)}")
+    if not completed:
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

@@ -272,6 +272,46 @@ a backend with `--review-model MODEL`; `agentroute backend-status` shows the eff
 Guardian remains fail-closed and retains the same local policy, sandbox evidence, and authority
 regardless of reviewer model.
 
+### Claude models through the local bridge
+
+Claude models are not served through the OpenAI Responses API, so AgentRoute ships a small local
+bridge that accepts Responses requests from Codex, calls the Anthropic Messages API, and streams
+the result back in the shape Codex expects. Start it, register it as a backend, and use `@claude`
+like any other provider:
+
+```sh
+agentroute bridge check            # one live round trip through the configured credential
+agentroute bridge serve --port 8090
+
+agentroute backend-add claude \
+  --base-url http://127.0.0.1:8090/v1 \
+  --model claude-sonnet-5 \
+  --fast-model claude-haiku-4-5-20251001 \
+  --smart-model claude-opus-5 \
+  --max-model claude-opus-5-5 \
+  --display-name "Claude subscription" \
+  --review-model claude-haiku-4-5-20251001
+
+agentroute backend-route normal claude   # or prefix a prompt with @claude
+```
+
+The bridge reads the same credential Claude Code already stores. `--credential claude-code` uses
+the rotating subscription token from the macOS Keychain and writes refreshed tokens back, so
+Claude Code keeps working; the bridge also replays Claude Code's identity block, which Anthropic
+requires before it will serve a subscription credential. `--credential api-key` reads
+`ANTHROPIC_API_KEY` instead, which is the path Anthropic's terms cover. `--credential auto`
+(the default) prefers the API key and falls back to the subscription credential, and `serve`
+prints a warning when it runs on the subscription.
+
+Bridging is translation, not a wrapper: Codex keeps its sandbox, approvals, Guardian policy, and
+tool authority. Requests are converted to Anthropic Messages payloads (`instructions` become the
+system block, function and freeform `apply_patch` calls become `tool_use` blocks, tool outputs
+become `tool_result` blocks, images are passed through as base64), and the stream is converted
+back into Responses SSE events including the output-item events Codex requires for streaming
+text. Long-context beta is negotiated per model, because Anthropic rejects it for Haiku. Prompt
+prefixes, tier overrides, and mid-thread provider switches work unchanged: `@claude @smart ...`
+runs that turn on `claude-opus-5`, and the next prompt can switch back to `@gpt`.
+
 ## Capacity management and subscription failover
 
 Capacity management is opt-in. It reads the ordinary ChatGPT subscription allowance already
