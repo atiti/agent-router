@@ -272,6 +272,55 @@ a backend with `--review-model MODEL`; `agentroute backend-status` shows the eff
 Guardian remains fail-closed and retains the same local policy, sandbox evidence, and authority
 regardless of reviewer model.
 
+### Claude models through the local bridge
+
+Claude models are not served through the OpenAI Responses API, so AgentRoute ships a small local
+bridge that accepts Responses requests from Codex, calls the Anthropic Messages API, and streams
+the result back in the shape Codex expects. One command registers the backend, installs it as a
+background service, and waits until it answers:
+
+```sh
+agentroute bridge install     # idempotent; safe to re-run after changing the port
+agentroute bridge check       # one live round trip through the configured credential
+agentroute bridge usage       # subscription limits: 5h, weekly, and any scoped weekly cap
+
+# then, inside Codex:
+@claude explain this stack trace
+
+# or make a tier, or everything, route through Claude:
+agentroute backend-route normal claude
+```
+
+`agentroute bridge status` reports whether the service is installed, loaded, and answering, and
+`agentroute doctor` includes a `bridge` row that fails with the exact next command when the
+service is missing or silent. `agentroute bridge uninstall` removes it. The service is a
+LaunchAgent on macOS and a `systemd --user` unit on Linux, restarting automatically and logging
+to `~/.agentroute/bridge.log`; `agentroute bridge serve` runs the same bridge in the foreground
+for debugging.
+
+The bridge reads the same credential Claude Code already stores. `--credential claude-code` is
+the install default: it uses the rotating subscription token from the macOS Keychain, refreshes
+it through Claude Code's own flow when it expires, and writes the result back, so Claude Code
+keeps working. The bridge also replays Claude Code's identity block, which Anthropic requires
+before it will serve a subscription credential. `--credential api-key` reads
+`ANTHROPIC_API_KEY` instead, which is the path Anthropic's terms cover. `--credential auto`
+prefers the API key and falls back to the subscription credential, and `serve` prints a warning
+when it runs on the subscription.
+
+Bridging is translation, not a wrapper: Codex keeps its sandbox, approvals, Guardian policy, and
+tool authority. Requests are converted to Anthropic Messages payloads (`instructions` become the
+system block, function and freeform `apply_patch` calls become `tool_use` blocks, tool outputs
+become `tool_result` blocks, images are passed through as base64), and the stream is converted
+back into Responses SSE events including the output-item events Codex requires for streaming
+text. Long-context beta is negotiated per model, because Anthropic rejects it for Haiku. Prompt
+prefixes, tier overrides, and mid-thread provider switches work unchanged: `@claude @smart ...`
+runs that turn on `claude-opus-5`, and the next prompt can switch back to `@gpt`. Claude tokens
+are priced with Anthropic's published rates, so `agentroute usage` reports their cost beside
+every other backend.
+
+Full setup, credential, usage-limit, and troubleshooting detail lives in
+[Running Claude models through the bridge](docs/claude-bridge.md).
+
 ## Capacity management and subscription failover
 
 Capacity management is opt-in. It reads the ordinary ChatGPT subscription allowance already

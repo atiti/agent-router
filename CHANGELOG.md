@@ -1,5 +1,85 @@
 # Changelog
 
+## 0.5.54 — 2026-09-27
+
+- Install the Claude bridge with one command. `agentroute bridge install` registers the `claude`
+  backend with the standard tiers, syncs Codex's provider block, writes a per-user background
+  service, and waits for the health endpoint before returning. It is idempotent, and an existing
+  backend keeps its own tier choices. `agentroute bridge status` reports whether the service is
+  installed, loaded, and answering, and `agentroute bridge uninstall` removes it. The service is a
+  LaunchAgent on macOS and a `systemd --user` unit on Linux, restarting automatically and logging
+  to `~/.agentroute/bridge.log`.
+- Report bridge health in `agentroute doctor`. A new `bridge` row fails with the exact next
+  command when a configured Claude backend has no service or the service is silent, and is skipped
+  entirely when no Claude backend is configured, so an install that never opted into the bridge
+  does not collect a permanent warning.
+- Price Claude models. `claude-haiku-4-5-20251001`, `claude-sonnet-5`, `claude-opus-5`, and
+  `claude-opus-5-5` now carry Anthropic's published input, cache-write, cache-read, and output
+  rates, so `agentroute usage` and `agentroute analytics` report Claude cost instead of listing
+  the models as unpriced. Rates verified against Anthropic's pricing page on 2026-09-27.
+- Document the bridge end to end in `docs/claude-bridge.md`: setup, credential choice and its
+  terms-of-service caveat, usage-limit monitoring, service management, tier mapping with pricing,
+  and a troubleshooting table. The README's Claude section now leads with the single install
+  command.
+
+## 0.5.53 — 2026-09-27
+
+- Refresh the Claude Code subscription token the way Claude Code does. Anthropic's OAuth token
+  endpoint checks the caller's identity: an unknown user agent is refused by Cloudflare (`403
+  Error 1010`), and the package name `claude-code/<version>` is answered with `429
+  rate_limit_error`. The refresh request now sends `claude-cli/<version> (external, cli)` and
+  reaches the token handler, which is what let an expired credential renew itself again.
+- Retry a throttled refresh a couple of times with backoff, honour `Retry-After`, and stop
+  retrying for a cooldown after a failure, so a dead credential cannot turn every bridge request
+  into another attempt against the token endpoint.
+- Keep serving a still-valid access token when a refresh fails, instead of failing the turn, and
+  report the reason precisely: a dead refresh token asks for `/login`, a Cloudflare block names
+  the cause, and a throttle says to retry. `agentroute bridge refresh` renews the credential on
+  demand and persists it back to the Keychain; `agentroute bridge usage` now fails with an
+  explanation instead of dumping a JSON error blob.
+
+## 0.5.52 — 2026-09-26
+
+- Report Claude subscription usage from the bridge. Every Anthropic Messages response carries the
+  unified rate-limit headers, and the bridge now translates the five-hour session and the
+  seven-day limit into Codex's own `x-claude-primary-*` / `x-claude-secondary-*` limit family on
+  its SSE response, so Codex renders them as "5h" and "Weekly" rows instead of leaving the session
+  with no visible quota. The observed sample is also recorded under
+  `~/.agentroute/state/claude-usage.json`.
+- Add `agentroute bridge usage`, which prints the recorded sample plus Anthropic's live usage
+  summary: the 5h session, the weekly limit for all models, any model-scoped weekly cap, and
+  whether a window is currently binding. `GET /v1/usage` exposes the same recorded sample on the
+  bridge itself.
+- Keep the Codex rate-limit buckets owned by the account read. Only non-Codex families refresh
+  from the stream, so a routed provider's quota cannot overwrite the ChatGPT plan rows or their
+  credit balance.
+
+## 0.5.51 — 2026-09-26
+
+- Add `agentroute bridge serve`, a local Anthropic Messages bridge that exposes Claude models
+  through the OpenAI Responses API, so Codex can route to them like any other backend. `agentroute
+  bridge check` runs one live round trip through the selected credential.
+- Translate Responses requests and streams in both directions: instructions to the system block,
+  function and freeform `apply_patch` calls to `tool_use`, tool outputs to `tool_result`, base64
+  images, usage totals, and the output-item SSE events Codex needs before text deltas. Duplicate
+  and unsupported tool declarations are dropped instead of failing the turn upstream.
+- Close each assistant text item when its content block ends instead of at `message_stop`. Codex
+  records items in arrival order, so the old order put a turned-over preamble after its own tool
+  calls, which duplicated the text in the TUI against Anthropic-hosted models. Item ids are also
+  scoped per response so two items in one turn cannot share an id.
+- Repair transcripts that end on an assistant turn into one Anthropic accepts, so an interrupted
+  tool call no longer fails the next request with "The conversation must end with a user message."
+- Advertise image input for the served Claude models and keep image content items inside tool
+  outputs as Anthropic image blocks. Without the modality the served models read as text only, so
+  Codex refused `view_image` and stripped attachments; without the block translation the
+  screenshots that `view_image` returns were flattened to empty text, which is why agents reported
+  that the image viewer returned nothing.
+- Serve the Claude Code subscription credential from the macOS Keychain, persisting refreshed
+  tokens so Claude Code stays logged in, or `ANTHROPIC_API_KEY` for the credential path Anthropic
+  covers. Subscription use prints a warning and remains opt-in per backend.
+- Negotiate Anthropic betas per model, including long-context beta for Sonnet and Opus classes and
+  its omission for Haiku, which rejects it on subscriptions.
+
 ## 0.5.50 — 2026-09-25
 
 - Improve related-session context precision with conversational stop-word filtering,

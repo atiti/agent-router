@@ -8,13 +8,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .audit import AuditStore
+from .bridge_service import (
+    DEFAULT_BRIDGE_PORT,
+    probe_health,
+    service_installed,
+    service_port,
+)
 from .classifier import catalog_age_seconds, read_api_key
 from .config import AppConfig, agentroute_home, codex_home, config_path, model_capabilities
 from .install import hook_command
 from .profiles import account_credential_home
 from .providers import END_MARKER, START_MARKER, backend_readiness
 
-EXPECTED_RUNTIME_REVISION = "provider-routing-v41"
+EXPECTED_RUNTIME_REVISION = "provider-routing-v43"
 
 
 @dataclass(frozen=True)
@@ -76,6 +82,41 @@ def _desktop_check(destination: Path, build_id: str) -> DoctorCheck:
         else f"embedded build {app_build}; local build {build_id}"
         if embedded.exists()
         else "routed binary missing",
+    )
+
+
+def _bridge_check(config: AppConfig) -> DoctorCheck:
+    """Report whether the Claude bridge backend is installed and answering.
+
+    Only runs when a Claude backend is configured, so an AgentRoute install that
+    never opted into the bridge does not collect a permanent warning.
+    """
+    claude_backends = {
+        name: backend
+        for name, backend in config.backends.items()
+        if name == "claude"
+        or (backend.display_name or "").lower().startswith("claude")
+        or (backend.codex_provider or "").startswith("agentroute-claude")
+    }
+    if not claude_backends:
+        return DoctorCheck("bridge", "pass", "not configured; no Claude backend")
+    if not service_installed():
+        return DoctorCheck(
+            "bridge",
+            "fail",
+            "not installed; run `agentroute bridge install`",
+        )
+    configured_port = service_port()
+    port = configured_port or DEFAULT_BRIDGE_PORT
+    health = probe_health(port)
+    if health.status == "healthy":
+        return DoctorCheck("bridge", "pass", f"installed and healthy on 127.0.0.1:{port}")
+    if health.status == "unhealthy":
+        return DoctorCheck("bridge", "fail", f"installed but {health.detail}")
+    return DoctorCheck(
+        "bridge",
+        "fail",
+        f"installed but not answering on 127.0.0.1:{port}; run `agentroute bridge install`",
     )
 
 
@@ -262,6 +303,8 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
                 )
         except Exception as error:
             checks.append(DoctorCheck("classifier", "fail", type(error).__name__))
+
+    checks.append(_bridge_check(config))
 
     if platform.system() == "Darwin":
         destination = Path("/Applications/ChatGPT-Routed.app")

@@ -27,6 +27,57 @@ def test_provider_prefixed_model_uses_public_model_price():
     assert cost == pytest.approx(0.20)
 
 
+@pytest.mark.parametrize(
+    ("model", "input_rate", "cache_write_rate", "cached_rate", "output_rate"),
+    [
+        # Anthropic's published rates: platform.claude.com/docs/en/about-claude/pricing
+        ("claude-haiku-4-5-20251001", 1.0, 1.25, 0.10, 5.0),
+        ("claude-sonnet-5", 2.0, 2.50, 0.20, 10.0),
+        ("claude-opus-5", 5.0, 6.25, 0.50, 25.0),
+        ("claude-opus-5-5", 4.0, 5.00, 0.20, 20.0),
+    ],
+)
+def test_bundled_prices_cover_anthropic_rates(
+    model, input_rate, cache_write_rate, cached_rate, output_rate
+):
+    price = default_config().pricing.models[model]
+    assert price.input_per_million == input_rate
+    assert price.cache_write_per_million == cache_write_rate
+    assert price.cached_input_per_million == cached_rate
+    assert price.output_per_million == output_rate
+
+
+def test_claude_models_are_priced_so_no_backend_warns():
+    """Every tier model the bridge serves must resolve to a rate."""
+    config = default_config()
+    claude = config.backends.get("claude")
+    if claude is None:
+        pytest.skip("no bundled claude backend")
+    unpriced = [
+        target.model
+        for target in claude.tiers.values()
+        if target.model not in config.pricing.models
+        and target.model not in config.pricing.aliases
+    ]
+    assert unpriced == []
+
+
+def test_token_cost_uses_the_opus_5_5_cache_write_rate():
+    pricing = default_config().pricing
+    cost = token_cost(
+        "claude-opus-5-5",
+        {
+            "input_tokens": 1_000_000,
+            "cached_input_tokens": 500_000,
+            "cache_write_input_tokens": 250_000,
+            "output_tokens": 1_000,
+        },
+        pricing,
+    )
+    expected = (250_000 * 4.0 + 250_000 * 5.0 + 500_000 * 0.20 + 1_000 * 20.0) / 1_000_000
+    assert cost == pytest.approx(expected)
+
+
 def test_report_compares_same_observed_tokens_and_includes_classifier(tmp_path):
     config = default_config()
     store = AuditStore(tmp_path / "audit.db")

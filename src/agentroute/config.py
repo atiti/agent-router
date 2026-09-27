@@ -200,7 +200,7 @@ class CapabilityConfig(BaseModel):
 class PricingConfig(BaseModel):
     currency: str = "USD"
     baseline_model: str = "gpt-6-astra"
-    source_checked_at: str = "2026-09-22"
+    source_checked_at: str = "2026-09-27"
     models: dict[str, ModelPrice] = Field(
         default_factory=lambda: {
             "gpt-5.6-luna": ModelPrice(
@@ -243,6 +243,33 @@ class PricingConfig(BaseModel):
                 input_per_million=1.32,
                 cached_input_per_million=0.044,
                 output_per_million=3.96,
+            ),
+            # Claude rates come from Anthropic's published pricing page
+            # (platform.claude.com/docs/en/about-claude/pricing). `cache_write`
+            # is the 5-minute cache-write rate; the 1-hour tier costs more.
+            "claude-haiku-4-5-20251001": ModelPrice(
+                input_per_million=1.00,
+                cached_input_per_million=0.10,
+                cache_write_per_million=1.25,
+                output_per_million=5.00,
+            ),
+            "claude-sonnet-5": ModelPrice(
+                input_per_million=2.00,
+                cached_input_per_million=0.20,
+                cache_write_per_million=2.50,
+                output_per_million=10.00,
+            ),
+            "claude-opus-5": ModelPrice(
+                input_per_million=5.00,
+                cached_input_per_million=0.50,
+                cache_write_per_million=6.25,
+                output_per_million=25.00,
+            ),
+            "claude-opus-5-5": ModelPrice(
+                input_per_million=4.00,
+                cached_input_per_million=0.20,
+                cache_write_per_million=5.00,
+                output_per_million=20.00,
             ),
         }
     )
