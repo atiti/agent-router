@@ -583,6 +583,20 @@ def message_tail_hint(messages: list[dict[str, Any]], limit: int = 4) -> str:
     return " > ".join(parts)
 
 
+_CODEX_IDENTITY_LINE = re.compile(r"^You are Codex, an agent based on [^.]+\. ")
+_CODEX_PERSONALITY_LINE = re.compile(r"^As Codex, (you|You) ")
+
+
+def neutralize_codex_identity(instructions: str) -> str:
+    """Remove harness identity claims while retaining the operating guidance."""
+    lines = instructions.splitlines(keepends=True)
+    result = []
+    for line in lines:
+        line = _CODEX_IDENTITY_LINE.sub("", line)
+        result.append(_CODEX_PERSONALITY_LINE.sub("You ", line))
+    return "".join(result)
+
+
 def translate_request(
     body: dict[str, Any], *, mode: CredentialMode = "api-key"
 ) -> tuple[dict[str, Any], set[str], dict[str, str]]:
@@ -594,7 +608,7 @@ def translate_request(
         system_blocks.extend(dict(block) for block in CLAUDE_CODE_IDENTITY_BLOCKS)
     instructions = body.get("instructions")
     if isinstance(instructions, str) and instructions.strip():
-        system_blocks.append({"type": "text", "text": instructions})
+        system_blocks.append({"type": "text", "text": neutralize_codex_identity(instructions)})
 
     messages: list[dict[str, Any]] = []
 
@@ -622,19 +636,22 @@ def translate_request(
 
         if item_type == "message":
             blocks: list[dict[str, Any]] = []
+            role = item.get("role") or "user"
             for part in item.get("content") or []:
                 if not isinstance(part, dict):
                     blocks.append({"type": "text", "text": str(part)})
                     continue
                 part_type = part.get("type")
                 if part_type in ("input_text", "output_text", "text"):
-                    blocks.append({"type": "text", "text": str(part.get("text") or "")})
+                    text = str(part.get("text") or "")
+                    if role in ("system", "developer"):
+                        text = neutralize_codex_identity(text)
+                    blocks.append({"type": "text", "text": text})
                 elif part_type == "input_image":
                     source = _image_source(str(part.get("image_url") or ""))
                     if source is not None:
                         blocks.append({"type": "image", "source": source})
             if blocks:
-                role = item.get("role") or "user"
                 push(
                     {
                         "role": "assistant" if role in ("assistant", "model") else "user",
@@ -1125,13 +1142,10 @@ def model_catalog(
             "slug": slug,
             "display_name": slug,
             "description": "Claude served through the AgentRoute bridge.",
-            "model_messages": {
-                "instructions_template": (
-                    "You are a coding model in Codex CLI. Follow the system and tool "
-                    "instructions in each request exactly. Use tools for file and "
-                    "command work, and verify changes before reporting completion."
-                )
-            },
+            # Keep model metadata neutral. The Codex harness supplies its own
+            # operational instructions; a provider descriptor must not tell
+            # Claude that it is Codex or another named model.
+            "model_messages": {"instructions_template": ""},
             "default_reasoning_level": None,
             "supported_reasoning_levels": [],
             "shell_type": "unified_exec",

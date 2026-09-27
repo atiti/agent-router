@@ -10,6 +10,7 @@ from agentroute.bridge_service import (
     BridgeServiceError,
     install_service,
     probe_health,
+    service_credential,
     service_installed,
     service_port,
     uninstall_service,
@@ -45,6 +46,7 @@ def test_launch_agent_unit_has_the_expected_arguments(tmp_path, monkeypatch):
     assert arguments[arguments.index("--port") + 1] == "8090"
     assert payload["StandardErrorPath"].endswith("bridge.log")
     assert service_port() == 8090
+    assert service_credential() == "claude-code"
 
 
 def test_systemd_unit_uses_the_same_executable_and_port(tmp_path, monkeypatch):
@@ -60,6 +62,7 @@ def test_systemd_unit_uses_the_same_executable_and_port(tmp_path, monkeypatch):
     assert "WantedBy=default.target" in text
     assert path.name == "agentroute-claude-bridge.service"
     assert service_port() == 8123
+    assert service_credential() == "api-key"
 
 
 def test_install_writes_loads_and_health_checks(tmp_path, monkeypatch):
@@ -121,6 +124,7 @@ def test_service_port_is_none_without_a_unit(tmp_path, monkeypatch):
     _isolate(monkeypatch, tmp_path)
     monkeypatch.setattr("agentroute.bridge_service.platform.system", lambda: "Darwin")
     assert service_port() is None
+    assert service_credential() is None
     assert bridge_service.SERVICE_LABEL == SERVICE_LABEL
 
 

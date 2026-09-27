@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Show recorded Claude 5h and weekly subscription usage, with the sample time, in the model
+  route notice when the installed bridge uses the Claude Code credential. API-key routes retain
+  the budget display, and `agentroute bridge usage` remains the current account read.
+- Keep the Claude model catalog's instruction template empty and remove explicit Codex identity
+  claims from requests sent to routed providers. The pinned Codex runtime changes only the
+  outbound request copy, preserving stored history, other guidance, and OpenAI requests.
+  Subscription Claude requests retain the Claude Code identity block required by Anthropic.
+
 ## 0.5.54 — 2026-09-27
 
 - Install the Claude bridge with one command. `agentroute bridge install` registers the `claude`

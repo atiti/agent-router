@@ -81,6 +81,12 @@ any model-scoped weekly cap, read from Anthropic's OAuth usage endpoint:
 bridge translates Anthropic's rate-limit headers into Codex's own limit family, so `/status`
 renders them as 5h and Weekly rows while a Claude turn is active.
 
+The `◆ MODEL ROUTE` notice also shows the recorded 5h and weekly percentages for a bridge
+installed with `--credential claude-code`, including when the sample was recorded. It replaces
+the API-equivalent dollar estimate on that route. It does not fetch the account endpoint during
+every prompt; run `agentroute bridge usage` when you need the current account value. An API-key
+bridge keeps its ordinary budget notice.
+
 The bridge renews an expired subscription token through Claude Code's own refresh flow. If the
 endpoint refuses, the error names the case: a dead refresh token asks you to run `claude` and
 `/login`, a Cloudflare block names the cause, and a throttle says to retry.
@@ -138,6 +144,13 @@ than the 5-minute rate shown above.
 
 Long-context beta is negotiated per model, because Anthropic rejects it for Haiku. Prompt images
 are passed through, capped at 2048 px.
+
+The Claude model descriptor has an empty instruction template. The routed Codex runtime removes
+its `You are Codex` / `As Codex` identity claims from the outbound request copy sent to other
+providers, and the bridge filters the same claims from forwarded Codex base instructions.
+Other operating guidance and saved history are preserved. Subscription requests still include
+the Claude Code identity block required by Anthropic for that credential; the API-key path has
+no such block.
 
 ## Troubleshooting
 
