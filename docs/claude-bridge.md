@@ -146,7 +146,7 @@ Long-context beta is negotiated per model, because Anthropic rejects it for Haik
 are passed through, capped at 2048 px.
 
 The Claude model descriptor has an empty instruction template. The routed Codex runtime removes
-its `You are Codex` / `As Codex` identity claims from the outbound request copy sent to other
+its `You are Codex` / `As Codex` identity claims from the outbound request copy sent to all
 providers, and the bridge filters the same claims from forwarded Codex base instructions.
 Other operating guidance and saved history are preserved. Subscription requests still include
 the Claude Code identity block required by Anthropic for that credential; the API-key path has
@@ -161,4 +161,5 @@ no such block.
 | Codex says "Unknown model claude-..." | the backend is missing `model_catalog_url`; re-run `agentroute bridge install` |
 | Turns fail with a connection error | the service is not running: `agentroute bridge status` |
 | Port already in use | `agentroute bridge install --port <free port>` and re-run `backend-route` if needed |
-| Anthropic returns 403 or 429 | subscription credentials are outside Anthropic's terms; use `--credential api-key` |
+| Anthropic returns 429 | the bridge reports the Claude limit and reset when Anthropic supplies them; check `agentroute bridge usage` for the current window |
+| Anthropic returns 403 | check the Claude Code login with `claude`; subscription credentials are outside Anthropic's terms for third-party clients |

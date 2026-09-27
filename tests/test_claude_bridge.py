@@ -23,7 +23,9 @@ from agentroute.claude_bridge import (
     ClaudeCodeCredential,
     CredentialError,
     ResponsesStream,
+    UpstreamRateLimitError,
     anthropic_headers,
+    anthropic_stream,
     anthropic_tool_name,
     catalog_from_config,
     codex_rate_limit_headers,
@@ -471,6 +473,9 @@ def test_bridge_removes_codex_identity_from_forwarded_instructions():
     assert neutral == (
         "You and the user share one workspace.\n\n# Personality\n"
         "You are curious and careful.\nUse the `codex_apps` MCP when needed.\n"
+    )
+    assert neutralize_codex_identity("You are ChatGPT, a large language model. Be helpful.\n") == (
+        "Be helpful.\n"
     )
     payload, _, _ = translate_request(
         {"model": DEFAULT_MODEL, "instructions": guidance, "input": []},
@@ -1117,6 +1122,84 @@ def test_http_bridge_omits_limit_headers_without_usage(bridge_server, tmp_path, 
 
     assert "x-claude-primary-used-percent" not in headers
     assert not (tmp_path / "state" / "claude-usage.json").exists()
+
+
+def test_anthropic_429_keeps_upstream_limit_headers():
+    error = urllib.error.HTTPError(
+        "https://api.anthropic.com/v1/messages",
+        429,
+        "rate limited",
+        {
+            "anthropic-ratelimit-unified-5h-utilization": "1",
+            "anthropic-ratelimit-unified-5h-reset": "1790501400",
+        },
+        io.BytesIO(b'{"type":"error","error":{"type":"rate_limit_error"}}'),
+    )
+
+    def rejected(_request, timeout):
+        assert timeout == 900
+        raise error
+
+    with pytest.raises(UpstreamRateLimitError) as raised:
+        next(anthropic_stream(_FakeCredential(), {"model": "claude-sonnet-5"}, urlopen=rejected))
+    assert raised.value.snapshot["windows"]["five_hour"]["used_percent"] == 100
+
+
+def test_http_bridge_subscription_limit_is_terminal(bridge_server, tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    server, _ = bridge_server
+    host, port = server.server_address[:2]
+    monkeypatch.setattr(_FakeCredential, "mode", "claude-code")
+    snapshot = {"windows": {
+        "five_hour": {"used_percent": 100, "window_minutes": 300, "resets_at": 1790501400},
+        "seven_day": {"used_percent": 19, "window_minutes": 10080, "resets_at": 1790942400},
+    }}
+
+    def rejected(_credentials, _payload):
+        raise UpstreamRateLimitError("anthropic 429", snapshot)
+        yield  # pragma: no cover - keep this a generator like the real stream
+
+    BridgeHandler.stream_factory = staticmethod(rejected)
+    request = urllib.request.Request(
+        f"http://{host}:{port}/v1/responses",
+        data=json.dumps({"model": "claude-sonnet-5", "input": []}).encode(),
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        urllib.request.urlopen(request, timeout=30)
+
+    assert raised.value.code == 429
+    assert raised.value.headers["x-codex-active-limit"] == "claude"
+    assert raised.value.headers["x-claude-primary-used-percent"] == "100"
+    assert json.load(raised.value)["error"]["type"] == "usage_limit_reached"
+    assert read_usage_state()["snapshot"] == snapshot
+
+
+def test_http_bridge_subscription_429_without_windows_still_stops(
+    bridge_server, monkeypatch
+):
+    monkeypatch.setattr(_FakeCredential, "mode", "claude-code")
+    server, _ = bridge_server
+    host, port = server.server_address[:2]
+
+    def rejected(_credentials, _payload):
+        raise UpstreamRateLimitError("anthropic 429", None)
+        yield  # pragma: no cover
+
+    BridgeHandler.stream_factory = staticmethod(rejected)
+    request = urllib.request.Request(
+        f"http://{host}:{port}/v1/responses",
+        data=b'{"model":"claude-sonnet-5","input":[]}',
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        urllib.request.urlopen(request, timeout=30)
+    assert raised.value.code == 429
+    assert raised.value.headers["x-codex-active-limit"] == "claude"
+    assert raised.value.headers["x-claude-limit-name"] == "Claude"
+    assert json.load(raised.value)["error"] == {"type": "usage_limit_reached"}
 
 
 def test_http_bridge_reports_translation_and_routing_errors(bridge_server):

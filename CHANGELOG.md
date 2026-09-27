@@ -2,12 +2,21 @@
 
 ## Unreleased
 
+## 0.5.55 — 2026-09-27
+
+- Keep ChatGPT cyber access program metadata on OpenAI requests. Codex now checks the selected
+  destination as well as the account before setting `access_programs`, on both HTTP and WebSocket
+  request paths. Azure Direct and other routed providers no longer reject that unsupported field.
+
+- Pass Anthropic Messages 429 responses through the Claude bridge as HTTP 429. Subscription
+  calls use Codex's terminal Claude usage-limit error, with Anthropic's reset time when present,
+  avoiding repeated calls against an exhausted window. API-key 429s retain their rate-limit meaning.
 - Show recorded Claude 5h and weekly subscription usage, with the sample time, in the model
   route notice when the installed bridge uses the Claude Code credential. API-key routes retain
   the budget display, and `agentroute bridge usage` remains the current account read.
 - Keep the Claude model catalog's instruction template empty and remove explicit Codex identity
-  claims from requests sent to routed providers. The pinned Codex runtime changes only the
-  outbound request copy, preserving stored history, other guidance, and OpenAI requests.
+  claims from requests sent to every provider. The pinned Codex runtime changes only the
+  outbound request copy, preserving stored history and other guidance.
   Subscription Claude requests retain the Claude Code identity block required by Anthropic.
 
 ## 0.5.54 — 2026-09-27
