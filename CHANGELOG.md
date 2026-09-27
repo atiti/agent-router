@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.5.55 — 2026-09-27
+
+- Keep ChatGPT cyber access program metadata on OpenAI requests. Codex now checks the selected
+  destination as well as the account before setting `access_programs`, on both HTTP and WebSocket
+  request paths. Azure Direct and other routed providers no longer reject that unsupported field.
+
 - Pass Anthropic Messages 429 responses through the Claude bridge as HTTP 429. Subscription
   calls use Codex's terminal Claude usage-limit error, with Anthropic's reset time when present,
   avoiding repeated calls against an exhausted window. API-key 429s retain their rate-limit meaning.

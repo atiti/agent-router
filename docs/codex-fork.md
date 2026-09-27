@@ -65,12 +65,14 @@ release until its compilation, regression checks, and runtime smoke tests pass.
 ## Ordered 0.157 stack and subsequent ports
 
 `agentroute-stack-0.157` is the reviewable 20-commit stack, ending at
-`c6833a2bc48776d002da147bbccf62529878c1c5`. Its final tree is the
+`c6833a2bc48776d002da147bbccf62529878c1c5`. The current installer pin
+`0d2fa6eb996cf0b643e9ed993cf3d8e925fbc5cb` adds the Azure Direct
+`access_programs` guard on top of that stack. Its final tree is the
 validated initial port plus the TUI status-line fix that keeps the routed
 model and provider visible when a route notice omits the effort field, and the
 status-row fix that lets a routed provider's streamed limit family appear in
 `/status` while Codex families stay owned by the account read, with the API-side
-contract test that pins the routed header family. The final commit removes Codex identity
+contract test that pins the routed header family. The final stack commit removes Codex identity
 claims from the request copy sent to every provider while keeping saved session
 instructions unchanged. The earlier history remains available as
 `archive/agentroute-0.157-before-split-2026-09-25`; no published branch was rewritten
@@ -89,7 +91,7 @@ working installation or published branches:
 ```sh
 python3 scripts/codex_stack.py /path/to/codex \
   --base 00c972ed5d6ff6499317fd41b7f23605b8e6850d \
-  --tip c6833a2bc48776d002da147bbccf62529878c1c5 \
+  --tip 0d2fa6eb996cf0b643e9ed993cf3d8e925fbc5cb \
   --onto rust-vNEXT \
   --branch agentroute-port-NEXT \
   --worktree /path/to/new-candidate
