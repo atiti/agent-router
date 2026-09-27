@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Pass Anthropic Messages 429 responses through the Claude bridge as HTTP 429. Subscription
+  calls use Codex's terminal Claude usage-limit error, with Anthropic's reset time when present,
+  avoiding repeated calls against an exhausted window. API-key 429s retain their rate-limit meaning.
 - Show recorded Claude 5h and weekly subscription usage, with the sample time, in the model
   route notice when the installed bridge uses the Claude Code credential. API-key routes retain
   the budget display, and `agentroute bridge usage` remains the current account read.

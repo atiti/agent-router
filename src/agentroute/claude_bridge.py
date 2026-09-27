@@ -139,6 +139,14 @@ class CredentialError(RuntimeError):
     """Raised when no usable Anthropic credential is available."""
 
 
+class UpstreamRateLimitError(CredentialError):
+    """An Anthropic 429, with any limit windows returned on the error."""
+
+    def __init__(self, detail: str, snapshot: dict[str, Any] | None) -> None:
+        super().__init__(detail)
+        self.snapshot = snapshot
+
+
 class ApiKeyCredential:
     """An Anthropic Console API key, the supported credential for third parties."""
 
@@ -775,6 +783,11 @@ def anthropic_stream(
         detail = exc.read().decode(errors="replace")
         if exc.code in (401, 403):
             credentials.invalidate()
+        if exc.code == 429:
+            raise UpstreamRateLimitError(
+                f"anthropic 429: {detail[:400]}",
+                parse_unified_rate_limits(getattr(exc, "headers", None)),
+            ) from exc
         raise CredentialError(f"anthropic {exc.code}: {detail[:400]}") from exc
 
     with response:
@@ -1466,11 +1479,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         return
 
-    def _json(self, status: int, payload: dict[str, Any]) -> None:
+    def _json(
+        self, status: int, payload: dict[str, Any], headers: dict[str, str] | None = None
+    ) -> None:
         body = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -1563,6 +1580,44 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 for chunk in stream.feed(event_type, data):
                     if not self._chunk(chunk):
                         return
+        except UpstreamRateLimitError as exc:
+            self.logger(f"upstream rate limit for {model}: {exc}")
+            if not started:
+                snapshot = exc.snapshot
+                if snapshot is not None:
+                    self.usage_snapshot = snapshot
+                    record_usage_snapshot(snapshot)
+                headers = codex_rate_limit_headers(snapshot)
+                if self.credentials.mode == "claude-code":
+                    headers = {
+                        "x-codex-active-limit": "claude",
+                        "x-claude-limit-name": "Claude",
+                        **headers,
+                    }
+                    resets_at = None
+                    if isinstance(snapshot, dict):
+                        windows = snapshot.get("windows")
+                        if isinstance(windows, dict):
+                            five_hour = windows.get("five_hour")
+                            if isinstance(five_hour, dict):
+                                reset = five_hour.get("resets_at")
+                                if isinstance(reset, (int, float)) and reset > time.time():
+                                    resets_at = int(reset)
+                    error: dict[str, Any] = {"type": "usage_limit_reached"}
+                    if resets_at is not None:
+                        error["resets_at"] = resets_at
+                    self._json(429, {"error": error}, headers)
+                else:
+                    self._json(
+                        429,
+                        {"error": {"type": "rate_limit_error", "message": str(exc)}},
+                        headers,
+                    )
+                return
+            for chunk in stream.feed(
+                "error", {"error": {"type": "rate_limit_error", "message": str(exc)}}
+            ):
+                self._chunk(chunk)
         except CredentialError as exc:
             self.logger(f"upstream error for {model}: {exc}")
             if not started:
