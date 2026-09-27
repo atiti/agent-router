@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.54 — 2026-09-27
+
+- Install the Claude bridge with one command. `agentroute bridge install` registers the `claude`
+  backend with the standard tiers, syncs Codex's provider block, writes a per-user background
+  service, and waits for the health endpoint before returning. It is idempotent, and an existing
+  backend keeps its own tier choices. `agentroute bridge status` reports whether the service is
+  installed, loaded, and answering, and `agentroute bridge uninstall` removes it. The service is a
+  LaunchAgent on macOS and a `systemd --user` unit on Linux, restarting automatically and logging
+  to `~/.agentroute/bridge.log`.
+- Report bridge health in `agentroute doctor`. A new `bridge` row fails with the exact next
+  command when a configured Claude backend has no service or the service is silent, and is skipped
+  entirely when no Claude backend is configured, so an install that never opted into the bridge
+  does not collect a permanent warning.
+- Price Claude models. `claude-haiku-4-5-20251001`, `claude-sonnet-5`, `claude-opus-5`, and
+  `claude-opus-5-5` now carry Anthropic's published input, cache-write, cache-read, and output
+  rates, so `agentroute usage` and `agentroute analytics` report Claude cost instead of listing
+  the models as unpriced. Rates verified against Anthropic's pricing page on 2026-09-27.
+- Document the bridge end to end in `docs/claude-bridge.md`: setup, credential choice and its
+  terms-of-service caveat, usage-limit monitoring, service management, tier mapping with pricing,
+  and a troubleshooting table. The README's Claude section now leads with the single install
+  command.
+
 ## 0.5.53 — 2026-09-27
 
 - Refresh the Claude Code subscription token the way Claude Code does. Anthropic's OAuth token
