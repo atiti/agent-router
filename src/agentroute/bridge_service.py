@@ -27,6 +27,12 @@ SYSTEMD_UNIT = "agentroute-claude-bridge.service"
 DEFAULT_BRIDGE_PORT = 8090
 DEFAULT_BRIDGE_HOST = "127.0.0.1"
 
+# `launchctl bootout` returns before launchd has finished tearing the job down, and
+# a `bootstrap` that lands in that window fails with a bare
+# "Bootstrap failed: 5: Input/output error". Retry briefly before giving up.
+BOOTSTRAP_ATTEMPTS = 6
+BOOTSTRAP_RETRY_SECONDS = 0.4
+
 
 class BridgeServiceError(RuntimeError):
     """Raised when the bridge service cannot be installed or controlled."""
@@ -122,14 +128,21 @@ def _load_service(path: Path) -> None:
     uid = os.getuid()
     if platform.system() == "Darwin":
         _run(["launchctl", "bootout", f"gui/{uid}/{SERVICE_LABEL}"])
-        result = _run(["launchctl", "bootstrap", f"gui/{uid}", str(path)])
-        if result.returncode:
-            # An already-bootstrapped job is fine; anything else is not.
-            status = _run(["launchctl", "print", f"gui/{uid}/{SERVICE_LABEL}"])
-            if status.returncode:
-                raise BridgeServiceError(
-                    f"launchctl bootstrap failed: {result.stderr.strip() or result.stdout.strip()}"
-                )
+        last_error = ""
+        for attempt in range(BOOTSTRAP_ATTEMPTS):
+            result = _run(["launchctl", "bootstrap", f"gui/{uid}", str(path)])
+            if result.returncode == 0:
+                return
+            last_error = result.stderr.strip() or result.stdout.strip()
+            # launchd may have raced us into a state where the job is already up,
+            # which is success from the caller's point of view.
+            if _run(["launchctl", "print", f"gui/{uid}/{SERVICE_LABEL}"]).returncode == 0:
+                return
+            if attempt < BOOTSTRAP_ATTEMPTS - 1:
+                time.sleep(BOOTSTRAP_RETRY_SECONDS)
+        raise BridgeServiceError(
+            f"launchctl bootstrap failed after {BOOTSTRAP_ATTEMPTS} attempts: {last_error}"
+        )
         return
     _run(["systemctl", "--user", "daemon-reload"])
     result = _run(["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT])
