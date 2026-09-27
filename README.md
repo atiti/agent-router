@@ -300,8 +300,8 @@ for debugging.
 
 For a subscription bridge, the `◆ MODEL ROUTE` notice shows the last recorded 5h and weekly
 usage percentages and their recording time. Use `agentroute bridge usage` for a current account
-read. The routed Codex runtime and Claude bridge remove Codex identity claims from requests sent
-to other providers; subscription traffic still carries the Claude Code identity block required
+read. The Codex runtime and Claude bridge remove Codex identity claims from requests sent
+to models; subscription traffic still carries the Claude Code identity block required
 for that credential.
 
 The bridge reads the same credential Claude Code already stores. `--credential claude-code` is

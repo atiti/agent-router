@@ -6,8 +6,8 @@
   route notice when the installed bridge uses the Claude Code credential. API-key routes retain
   the budget display, and `agentroute bridge usage` remains the current account read.
 - Keep the Claude model catalog's instruction template empty and remove explicit Codex identity
-  claims from requests sent to routed providers. The pinned Codex runtime changes only the
-  outbound request copy, preserving stored history, other guidance, and OpenAI requests.
+  claims from requests sent to every provider. The pinned Codex runtime changes only the
+  outbound request copy, preserving stored history and other guidance.
   Subscription Claude requests retain the Claude Code identity block required by Anthropic.
 
 ## 0.5.54 — 2026-09-27

@@ -146,7 +146,7 @@ Long-context beta is negotiated per model, because Anthropic rejects it for Haik
 are passed through, capped at 2048 px.
 
 The Claude model descriptor has an empty instruction template. The routed Codex runtime removes
-its `You are Codex` / `As Codex` identity claims from the outbound request copy sent to other
+its `You are Codex` / `As Codex` identity claims from the outbound request copy sent to all
 providers, and the bridge filters the same claims from forwarded Codex base instructions.
 Other operating guidance and saved history are preserved. Subscription requests still include
 the Claude Code identity block required by Anthropic for that credential; the API-key path has

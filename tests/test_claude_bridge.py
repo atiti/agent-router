@@ -472,6 +472,9 @@ def test_bridge_removes_codex_identity_from_forwarded_instructions():
         "You and the user share one workspace.\n\n# Personality\n"
         "You are curious and careful.\nUse the `codex_apps` MCP when needed.\n"
     )
+    assert neutralize_codex_identity("You are ChatGPT, a large language model. Be helpful.\n") == (
+        "Be helpful.\n"
+    )
     payload, _, _ = translate_request(
         {"model": DEFAULT_MODEL, "instructions": guidance, "input": []},
         mode="claude-code",

@@ -583,8 +583,8 @@ def message_tail_hint(messages: list[dict[str, Any]], limit: int = 4) -> str:
     return " > ".join(parts)
 
 
-_CODEX_IDENTITY_LINE = re.compile(r"^You are Codex, an agent based on [^.]+\. ")
-_CODEX_PERSONALITY_LINE = re.compile(r"^As Codex, (you|You) ")
+_CODEX_IDENTITY_LINE = re.compile(r"^You are (?:Codex|ChatGPT),[^.]*\. ?")
+_CODEX_PERSONALITY_LINE = re.compile(r"^As (?:Codex|ChatGPT), (?:you|You) ")
 
 
 def neutralize_codex_identity(instructions: str) -> str:
