@@ -770,23 +770,22 @@ Remote compaction checkpoints from the active provider are preserved, including 
 after resuming a thread. Routing uses the destination model's context window and compaction
 limits; retained approval requirements do not overwrite those limits.
 
-The installer pins OpenAI Codex `rust-v0.156.1` at commit `b412ff32c417f855c2b2d1581b77058eed87c84b`. The maintained
-patches are `patches/codex-user-prompt-model-override.patch`,
-`patches/codex-package-version.patch`, `patches/codex-history-recovery.patch`, and
-`src/agentroute/patches/codex-route-application-receipt.patch`.
-A weekly GitHub Actions job applies all patches to the latest upstream Codex release and compiles
-the CLI. Failures open one actionable compatibility issue; automation never publishes an unreviewed
-Codex upgrade. AgentRoute is not affiliated with or endorsed by OpenAI.
+The source installer pins the AgentRoute Codex fork on the `rust-v0.157.0` line at
+`0d2fa6eb996cf0b643e9ed993cf3d8e925fbc5cb`, including the guard that keeps
+ChatGPT `access_programs` metadata off Azure Direct and other non-OpenAI requests. The
+scheduled compatibility check rebases the ordered fork stack onto a new upstream candidate;
+it never installs or publishes an unreviewed upgrade. Legacy packaged patches remain only
+for their older exact base. AgentRoute is not affiliated with or endorsed by OpenAI.
 
-The routed Codex CLI reports `0.155.0-alpha.2.6` within the pinned `0.155.0` Codex release line.
-Desktop rebuilds allow a different prerelease suffix within that same line. AgentRoute has separate
-versioning: `agentroute version` reports the AgentRoute release, routing runtime, and compatible
-Codex version; route notices include the AgentRoute release. The routed
-Desktop bundle records the AgentRoute version in its own metadata without changing Codex's app-server
-version or bundle identifier. Use `agentroute doctor` and `agentroute desktop status` to verify the
-source build ID (`b412ff32…-provider-routing-v40`), release-line compatibility, and whether the
-Codex version strings match exactly. Neither a shared release line nor matching version banners
-prove that two installations contain the same patches or guarantee mobile remote compatibility.
+The routed CLI reports the Codex `0.157.0` release line. AgentRoute has separate versioning:
+`agentroute version` reports the AgentRoute release, routing runtime, and compatible Codex
+version; route notices include the AgentRoute release. Run `agentroute doctor` to check the
+installed source build ID (`0d2fa6eb…-provider-routing-v46`). Desktop rebuilds require the
+stock app and routed CLI to share the same Codex release line. If the stock app still embeds
+`0.155.0`, use its existing compatible routed build until an updated app is available; a
+locally built, version-matched Desktop repair is separate from the 0.157 CLI release. Use
+`agentroute desktop status` to verify both versions. Matching version banners alone do not
+prove two builds contain the same patches or guarantee mobile remote compatibility.
 
 In the CLI, `agentroute why` and `agentroute history` show whether Codex applied a routed setting;
 `agentroute analytics` summarizes applied, rejected, unavailable, and unverified turns. The
