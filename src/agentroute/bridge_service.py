@@ -11,6 +11,7 @@ import json
 import os
 import platform
 import plistlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -248,6 +249,20 @@ def service_loaded() -> bool:
 
 def service_port() -> int | None:
     """Read the port the installed unit actually uses, if it can be parsed."""
+    arguments = _service_arguments()
+    if arguments is None:
+        return None
+    for index, value in enumerate(arguments):
+        if value == "--port" and index + 1 < len(arguments):
+            try:
+                return int(arguments[index + 1])
+            except ValueError:
+                return None
+    return None
+
+
+def _service_arguments() -> list[str] | None:
+    """Read arguments from the installed launchd or systemd definition."""
     path = service_unit_path()
     if not path.exists():
         return None
@@ -265,11 +280,16 @@ def service_port() -> int | None:
         match = next(
             (line for line in text.splitlines() if line.startswith("ExecStart=")), ""
         )
-        arguments = match.removeprefix("ExecStart=").split()
+        arguments = shlex.split(match.removeprefix("ExecStart="))
+    return arguments if isinstance(arguments, list) else None
+
+
+def service_credential() -> str | None:
+    """Read the installed service's credential mode without starting it."""
+    arguments = _service_arguments()
+    if arguments is None:
+        return None
     for index, value in enumerate(arguments):
-        if value == "--port" and index + 1 < len(arguments):
-            try:
-                return int(arguments[index + 1])
-            except ValueError:
-                return None
+        if value == "--credential" and index + 1 < len(arguments):
+            return arguments[index + 1]
     return None

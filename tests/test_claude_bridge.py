@@ -31,6 +31,7 @@ from agentroute.claude_bridge import (
     describe_usage,
     fetch_subscription_usage,
     model_catalog,
+    neutralize_codex_identity,
     parse_unified_rate_limits,
     read_usage_state,
     record_usage_snapshot,
@@ -457,6 +458,48 @@ def test_model_catalog_exposes_codex_descriptor_fields():
     # Codex refuses view_image and strips attachments unless the descriptor
     # advertises image input.
     assert descriptor["input_modalities"] == ["text", "image"]
+    assert descriptor["model_messages"]["instructions_template"] == ""
+
+
+def test_bridge_removes_codex_identity_from_forwarded_instructions():
+    guidance = (
+        "You are Codex, an agent based on GPT-6. You and the user share one workspace.\n"
+        "\n# Personality\nAs Codex, you are curious and careful.\n"
+        "Use the `codex_apps` MCP when needed.\n"
+    )
+    neutral = neutralize_codex_identity(guidance)
+    assert neutral == (
+        "You and the user share one workspace.\n\n# Personality\n"
+        "You are curious and careful.\nUse the `codex_apps` MCP when needed.\n"
+    )
+    payload, _, _ = translate_request(
+        {"model": DEFAULT_MODEL, "instructions": guidance, "input": []},
+        mode="claude-code",
+    )
+    assert payload["system"][-1]["text"] == neutral
+    assert payload["system"][1]["text"].startswith("You are Claude Code,")
+
+
+def test_bridge_neutralizes_model_switch_guidance_without_rewriting_user_text():
+    switch = (
+        "The user was previously using a different model. Please continue the conversation "
+        "according to the following instructions:\n\n"
+        "You are Codex, an agent based on GPT-6. Follow the user's task."
+    )
+    payload, _, _ = translate_request(
+        {"model": DEFAULT_MODEL, "input": [
+            {"type": "message", "role": "developer", "content": [
+                {"type": "input_text", "text": switch},
+            ]},
+            {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "The file says You are Codex."},
+            ]},
+        ]},
+        mode="api-key",
+    )
+    assert "You are Codex" not in payload["messages"][0]["content"][0]["text"]
+    assert "Follow the user's task." in payload["messages"][0]["content"][0]["text"]
+    assert payload["messages"][1]["content"][0]["text"] == "The file says You are Codex."
 
 
 def test_tool_result_keeps_an_image_returned_by_view_image():

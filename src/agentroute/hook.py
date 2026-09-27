@@ -4,12 +4,15 @@ import hashlib
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from typing import Any, TextIO
 
 from . import __version__
 from .audit import AuditStore
+from .bridge_service import service_credential
 from .capacity import backend_spend, subscription_state
 from .classifier import JevShadowClassifier
+from .claude_bridge import read_usage_state
 from .config import AppConfig, codex_home, load_config
 from .context import context_receipt, reference_context, related_memories
 from .efficiency import execution_receipt
@@ -68,6 +71,50 @@ def _runtime_label() -> str | None:
         if version.isdigit():
             return f"v{version}"
     return "managed"
+
+
+def _claude_route_usage() -> str:
+    """Show recorded subscription windows only for an installed subscription bridge."""
+    state = read_usage_state()
+    snapshot = state.get("snapshot")
+    windows = snapshot.get("windows") if isinstance(snapshot, dict) else None
+    if not isinstance(windows, dict):
+        return " · Claude limits unavailable; run agentroute bridge usage"
+    parts = []
+    for key, label in (("five_hour", "5h"), ("seven_day", "weekly")):
+        window = windows.get(key)
+        if not isinstance(window, dict):
+            continue
+        used = window.get("used_percent")
+        reset = window.get("resets_at")
+        if not isinstance(used, (int, float)) or isinstance(used, bool):
+            continue
+        if not 0 <= used <= 100:
+            continue
+        detail = f"{label} {used:g}% used"
+        if isinstance(reset, (int, float)) and not isinstance(reset, bool):
+            try:
+                detail += (
+                    f", resets {datetime.fromtimestamp(reset, timezone.utc):%Y-%m-%d %H:%M} UTC"
+                )
+            except (OverflowError, OSError, ValueError):
+                pass
+        parts.append(detail)
+    if not parts:
+        return " · Claude limits unavailable; run agentroute bridge usage"
+    updated_at = state.get("updated_at")
+    recorded = f" · recorded {updated_at}" if isinstance(updated_at, str) else ""
+    return f" · Claude limits {'; '.join(parts)}{recorded}"
+
+
+def _capacity_route_detail(decision: RouteDecision) -> str:
+    if decision.backend == "claude" and service_credential() == "claude-code":
+        return _claude_route_usage()
+    if decision.capacity_status not in {"disabled", "healthy", "unknown"}:
+        return f" · CAPACITY {decision.capacity_status.upper()}: {decision.capacity_detail}"
+    if decision.capacity_status == "healthy":
+        return f" · capacity {decision.capacity_detail}"
+    return ""
 
 
 def _subagent_identity(payload: dict[str, Any]) -> tuple[str, str | None]:
@@ -688,13 +735,7 @@ def codex_user_prompt_submit(
                     if ReasonCode.JEV_LOW_CONFIDENCE in decision.reason_codes
                     else ""
                 )
-                + (
-                    f" · CAPACITY {decision.capacity_status.upper()}: {decision.capacity_detail}"
-                    if decision.capacity_status not in {"disabled", "healthy", "unknown"}
-                    else f" · capacity {decision.capacity_detail}"
-                    if decision.capacity_status == "healthy"
-                    else ""
-                )
+                + _capacity_route_detail(decision)
                 + (
                     f" · AgentRoute v{__version__} · runtime {runtime_label}"
                     if (runtime_label := _runtime_label())

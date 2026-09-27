@@ -298,6 +298,12 @@ LaunchAgent on macOS and a `systemd --user` unit on Linux, restarting automatica
 to `~/.agentroute/bridge.log`; `agentroute bridge serve` runs the same bridge in the foreground
 for debugging.
 
+For a subscription bridge, the `◆ MODEL ROUTE` notice shows the last recorded 5h and weekly
+usage percentages and their recording time. Use `agentroute bridge usage` for a current account
+read. The routed Codex runtime and Claude bridge remove Codex identity claims from requests sent
+to other providers; subscription traffic still carries the Claude Code identity block required
+for that credential.
+
 The bridge reads the same credential Claude Code already stores. `--credential claude-code` is
 the install default: it uses the rotating subscription token from the macOS Keychain, refreshes
 it through Claude Code's own flow when it expires, and writes the result back, so Claude Code

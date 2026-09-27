@@ -1017,6 +1017,63 @@ def test_route_message_identifies_managed_runtime(tmp_path, monkeypatch):
     )
 
 
+def test_claude_subscription_route_shows_recorded_limits(tmp_path, monkeypatch):
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    config.enabled = True
+    ensure_claude_bridge_backend(config, 8090)
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    monkeypatch.setattr("agentroute.hook.service_credential", lambda: "claude-code")
+    state = tmp_path / "state" / "claude-usage.json"
+    state.parent.mkdir(parents=True)
+    state.write_text(json.dumps({
+        "updated_at": "2026-09-27T05:45:25Z",
+        "snapshot": {"windows": {
+            "five_hour": {"used_percent": 99, "resets_at": 1790501400},
+            "seven_day": {"used_percent": 18, "resets_at": 1790942400},
+        }},
+    }))
+
+    output = invoke(config, AuditStore(tmp_path / "audit.db"), "@claude @max continue")
+    route = output["hookSpecificOutput"]["routeMessage"]
+    assert "Claude limits 5h 99% used" in route
+    assert "weekly 18% used" in route
+    assert "recorded 2026-09-27T05:45:25Z" in route
+    assert "capacity today $" not in route
+
+
+def test_claude_api_key_route_keeps_budget_not_subscription_limits(tmp_path, monkeypatch):
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    ensure_claude_bridge_backend(config, 8090)
+    monkeypatch.setattr("agentroute.hook.service_credential", lambda: "api-key")
+    output = invoke(config, AuditStore(tmp_path / "audit.db"), "@claude @max continue")
+    route = output["hookSpecificOutput"]["routeMessage"]
+    assert "Claude limits" not in route
+    assert "capacity today $" in route
+
+
+def test_claude_subscription_route_without_a_sample_names_the_usage_command(
+    tmp_path, monkeypatch
+):
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    config.enabled = True
+    ensure_claude_bridge_backend(config, 8090)
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    monkeypatch.setattr("agentroute.hook.service_credential", lambda: "claude-code")
+
+    output = invoke(config, AuditStore(tmp_path / "audit.db"), "@claude continue")
+    route = output["hookSpecificOutput"]["routeMessage"]
+    assert "Claude limits unavailable; run agentroute bridge usage" in route
+    assert "capacity today $" not in route
+
+
 def test_subagent_task_is_independently_routed_and_audited(tmp_path):
     config = default_config()
     config.enabled = True
