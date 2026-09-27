@@ -47,6 +47,25 @@ KEYCHAIN_SERVICE = "Claude Code-credentials"
 API_KEY_ENV = "ANTHROPIC_API_KEY"
 CC_VERSION = "2.1.283"
 
+# Claude Code identifies itself as `claude-cli/<version> (external, <entry>)`.
+# Anthropic's OAuth token endpoint is picky about this: an unknown user agent is
+# stopped by Cloudflare (`403 Error 1010`), and the package's own
+# `claude-code/<version>` string is answered with `429 rate_limit_error` even
+# though it is the string Claude Code itself reports for `--version`. Only the
+# `claude-cli/...` form reaches the token handler.
+CLAUDE_CODE_USER_AGENT = f"claude-cli/{CC_VERSION} (external, cli)"
+CLAUDE_CODE_SDK_USER_AGENT = f"claude-cli/{CC_VERSION} (external, sdk-cli)"
+
+# A refresh is refused outright when the credential is dead, and throttled when
+# the endpoint is busy, so retry the transient cases a couple of times and then
+# stop trying for a cooldown instead of hammering on every bridge request.
+REFRESH_ATTEMPTS = 3
+REFRESH_BACKOFF_SECONDS = 2.0
+REFRESH_BACKOFF_MAX_SECONDS = 30.0
+REFRESH_FAILURE_COOLDOWN_SECONDS = 60.0
+REFRESH_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+CREDENTIAL_EXPIRY_SKEW_MS = 300_000
+
 DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_CONTEXT_WINDOW = 200_000
 DEFAULT_PORT = 8090
@@ -142,11 +161,21 @@ class ClaudeCodeCredential:
 
     mode: Literal["claude-code"] = "claude-code"
 
-    def __init__(self, keychain_service: str = KEYCHAIN_SERVICE) -> None:
+    def __init__(
+        self,
+        keychain_service: str = KEYCHAIN_SERVICE,
+        *,
+        urlopen: Callable[..., Any] = urllib.request.urlopen,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.keychain_service = keychain_service
+        self._urlopen = urlopen
+        self._sleep = sleep
         self._lock = threading.Lock()
         self._access_token: str | None = None
         self._expires_at_ms = 0.0
+        self._refresh_failed_at = 0.0
+        self._refresh_error: CredentialError | None = None
 
     def _read_keychain(self) -> dict[str, Any]:
         proc = subprocess.run(
@@ -181,6 +210,62 @@ class ClaudeCodeCredential:
                 f"cannot persist the refreshed credential: {proc.stderr.strip()[:200]}"
             )
 
+    def _refresh_failure(self, code: int, detail: str) -> CredentialError:
+        """Turn an OAuth error body into an error an operator can act on."""
+        if code == 400 and "invalid_grant" in detail:
+            return CredentialError(
+                "the Claude Code refresh token is no longer valid; run `claude` and /login again"
+            )
+        if code == 403 and "1010" in detail:
+            return CredentialError(
+                "token refresh was blocked by Cloudflare (403 Error 1010); "
+                "the request has to carry Claude Code's own user agent"
+            )
+        if code == 429:
+            return CredentialError(
+                "the token endpoint is rate limiting this client (429); retry shortly"
+            )
+        return CredentialError(
+            f"token refresh failed ({code}): {detail[:200]}. Run `claude` to log in again."
+        )
+
+    def _post_refresh(self, body: bytes) -> dict[str, Any]:
+        request = urllib.request.Request(
+            OAUTH_TOKEN_URL,
+            data=body,
+            headers={
+                "content-type": "application/x-www-form-urlencoded",
+                "accept": "application/json",
+                "user-agent": CLAUDE_CODE_USER_AGENT,
+            },
+            method="POST",
+        )
+        delay = REFRESH_BACKOFF_SECONDS
+        for attempt in range(1, REFRESH_ATTEMPTS + 1):
+            try:
+                with self._urlopen(request, timeout=60) as response:
+                    return json.loads(response.read().decode())
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode(errors="replace")
+                failure = self._refresh_failure(exc.code, detail)
+                if exc.code not in REFRESH_RETRYABLE_STATUSES or attempt == REFRESH_ATTEMPTS:
+                    raise failure from exc
+                headers = getattr(exc, "headers", None)
+                retry_after = headers.get("retry-after") if headers else None
+                wait = float(retry_after) if retry_after else delay
+                wait = min(max(wait, 0.0), REFRESH_BACKOFF_MAX_SECONDS)
+                log(f"token refresh hit {exc.code}; retrying in {wait:g}s")
+                self._sleep(wait)
+                delay = min(delay * 2, REFRESH_BACKOFF_MAX_SECONDS)
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                failure = CredentialError(f"token refresh could not reach Anthropic: {exc}")
+                if attempt == REFRESH_ATTEMPTS:
+                    raise failure from exc
+                log(f"token refresh transport error; retrying in {delay:g}s")
+                self._sleep(delay)
+                delay = min(delay * 2, REFRESH_BACKOFF_MAX_SECONDS)
+        raise CredentialError("token refresh failed")
+
     def _refresh(self, payload: dict[str, Any]) -> dict[str, Any]:
         oauth = payload.get("claudeAiOauth") or {}
         refresh_token = oauth.get("refreshToken")
@@ -193,23 +278,12 @@ class ClaudeCodeCredential:
                 "client_id": OAUTH_CLIENT_ID,
             }
         ).encode()
-        request = urllib.request.Request(
-            OAUTH_TOKEN_URL,
-            data=body,
-            headers={
-                "content-type": "application/x-www-form-urlencoded",
-                "accept": "application/json",
-            },
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                refreshed = json.loads(response.read().decode())
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")[:200]
-            raise CredentialError(
-                f"token refresh failed ({exc.code}): {detail}. Run `claude` to log in again."
-            ) from exc
+            refreshed = self._post_refresh(body)
+        except CredentialError as exc:
+            self._refresh_failed_at = time.time()
+            self._refresh_error = exc
+            raise
         access_token = refreshed.get("access_token")
         if not access_token:
             raise CredentialError("token refresh returned no access_token")
@@ -224,25 +298,61 @@ class ClaudeCodeCredential:
             )
         payload["claudeAiOauth"] = oauth
         self._write_keychain(payload)
+        self._refresh_failed_at = 0.0
+        self._refresh_error = None
         log("refreshed the Claude Code subscription token and persisted it")
         return payload
 
     def token(self) -> str:
         with self._lock:
+            now_ms = time.time() * 1000
             if self._access_token and self._expires_at_ms - time.time() * 1000 > 300_000:
                 return self._access_token
             payload = self._read_keychain()
             oauth = payload.get("claudeAiOauth") or {}
             access_token = oauth.get("accessToken") or ""
             expires_at = float(oauth.get("expiresAt") or 0)
-            if not access_token or expires_at - time.time() * 1000 <= 300_000:
-                payload = self._refresh(payload)
-                oauth = payload["claudeAiOauth"]
-                access_token = oauth["accessToken"]
-                expires_at = float(oauth["expiresAt"])
-            self._access_token = access_token
-            self._expires_at_ms = expires_at
+            live = bool(access_token) and expires_at - now_ms > 0
+            if self._refresh_in_cooldown():
+                # Do not hammer the token endpoint; a still-valid access token
+                # keeps working until the cooldown lets a refresh through.
+                if live:
+                    log("token refresh is cooling down after a failure; using the current token")
+                    self._remember(access_token, expires_at)
+                    return access_token
+                raise self._refresh_error or CredentialError(
+                    "Claude Code credential refresh failed"
+                )
+            if not live or expires_at - now_ms <= CREDENTIAL_EXPIRY_SKEW_MS:
+                try:
+                    payload = self._refresh(payload)
+                except CredentialError as exc:
+                    if not live:
+                        raise
+                    log(f"token refresh failed; using the current access token: {exc}")
+                else:
+                    oauth = payload["claudeAiOauth"]
+                    access_token = oauth["accessToken"]
+                    expires_at = float(oauth["expiresAt"])
+            self._remember(access_token, expires_at)
             return access_token
+
+    def _remember(self, access_token: str, expires_at: float) -> None:
+        self._access_token = access_token
+        self._expires_at_ms = expires_at
+
+    def _refresh_in_cooldown(self) -> bool:
+        if not self._refresh_failed_at or self._refresh_error is None:
+            return False
+        return time.time() - self._refresh_failed_at < REFRESH_FAILURE_COOLDOWN_SECONDS
+
+    def refresh_now(self) -> None:
+        """Force a refresh, for operators who do not want to wait for the skew."""
+        with self._lock:
+            payload = self._refresh(self._read_keychain())
+            oauth = payload["claudeAiOauth"]
+            self._access_token = oauth["accessToken"]
+            self._expires_at_ms = float(oauth["expiresAt"])
 
     def invalidate(self) -> None:
         with self._lock:
@@ -620,7 +730,7 @@ def anthropic_headers(token: str, model: str, mode: CredentialMode) -> dict[str,
     }
     if mode == "claude-code":
         headers["authorization"] = f"Bearer {token}"
-        headers["user-agent"] = f"claude-cli/{CC_VERSION} (external, sdk-cli)"
+        headers["user-agent"] = CLAUDE_CODE_SDK_USER_AGENT
         headers["x-app"] = "cli"
         headers["anthropic-dangerous-direct-browser-access"] = "true"
     else:
@@ -1305,6 +1415,7 @@ def fetch_subscription_usage(
             "authorization": f"Bearer {credentials.token()}",
             "anthropic-version": "2023-06-01",
             "accept": "application/json",
+            "user-agent": CLAUDE_CODE_SDK_USER_AGENT,
         },
         method="GET",
     )

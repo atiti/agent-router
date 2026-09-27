@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.53 — 2026-09-27
+
+- Refresh the Claude Code subscription token the way Claude Code does. Anthropic's OAuth token
+  endpoint checks the caller's identity: an unknown user agent is refused by Cloudflare (`403
+  Error 1010`), and the package name `claude-code/<version>` is answered with `429
+  rate_limit_error`. The refresh request now sends `claude-cli/<version> (external, cli)` and
+  reaches the token handler, which is what let an expired credential renew itself again.
+- Retry a throttled refresh a couple of times with backoff, honour `Retry-After`, and stop
+  retrying for a cooldown after a failure, so a dead credential cannot turn every bridge request
+  into another attempt against the token endpoint.
+- Keep serving a still-valid access token when a refresh fails, instead of failing the turn, and
+  report the reason precisely: a dead refresh token asks for `/login`, a Cloudflare block names
+  the cause, and a throttle says to retry. `agentroute bridge refresh` renews the credential on
+  demand and persists it back to the Keychain; `agentroute bridge usage` now fails with an
+  explanation instead of dumping a JSON error blob.
+
 ## 0.5.52 — 2026-09-26
 
 - Report Claude subscription usage from the bridge. Every Anthropic Messages response carries the

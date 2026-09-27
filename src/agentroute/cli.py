@@ -32,6 +32,7 @@ from .claude_bridge import (
     DEFAULT_PORT as CLAUDE_BRIDGE_DEFAULT_PORT,
 )
 from .claude_bridge import (
+    ClaudeCodeCredential,
     CredentialError,
     ResponsesStream,
     anthropic_stream,
@@ -2103,8 +2104,13 @@ def bridge_usage_command(
     try:
         payload = fetch_subscription_usage(source)
     except CredentialError as exc:
-        console.print_json(data={"subscription": str(exc)})
-        return
+        console.print(f"[red]live usage read failed:[/red] {exc}")
+        if source.mode == "claude-code":
+            console.print(
+                "The subscription credential comes from Claude Code's Keychain item; "
+                "run `claude` once if the refresh token needs renewing."
+            )
+        raise typer.Exit(code=1) from exc
     rows = summarize_subscription_usage(payload)
     if not rows:
         console.print_json(data={"subscription": payload})
@@ -2127,6 +2133,20 @@ def bridge_usage_command(
             "yes" if row.get("is_active") else "",
         )
     console.print(table)
+
+
+@bridge_app.command("refresh")
+def bridge_refresh_command() -> None:
+    """Renew the Claude Code subscription token now and persist it to Keychain."""
+    source = _claude_bridge_credential("claude-code", "claude")
+    if not isinstance(source, ClaudeCodeCredential):
+        raise typer.BadParameter("this command only handles the claude-code credential")
+    try:
+        source.refresh_now()
+    except CredentialError as exc:
+        console.print(f"[red]refresh failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print("[green]refreshed[/green] the Claude Code credential and saved it to Keychain")
 
 
 if __name__ == "__main__":

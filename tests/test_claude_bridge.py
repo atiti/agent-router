@@ -1,5 +1,8 @@
+import copy
+import io
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -8,12 +11,16 @@ import pytest
 from agentroute.claude_bridge import (
     API_KEY_BETAS,
     CLAUDE_CODE_BETAS,
+    CLAUDE_CODE_USER_AGENT,
+    CREDENTIAL_EXPIRY_SKEW_MS,
     DEFAULT_MODEL,
     LONG_CONTEXT_BETA,
     RATE_LIMIT_EVENT,
+    REFRESH_FAILURE_COOLDOWN_SECONDS,
     ApiKeyCredential,
     BridgeHandler,
     BridgeServer,
+    ClaudeCodeCredential,
     CredentialError,
     ResponsesStream,
     anthropic_headers,
@@ -275,6 +282,144 @@ def test_resolve_credential_prefers_api_key_and_honours_explicit_modes(monkeypat
     assert resolve_credential("auto", api_key="abc").mode == "api-key"
     with pytest.raises(CredentialError):
         resolve_credential("banana")
+
+
+def _keychain_payload(*, expires_in_ms: int, access: str = "old-access"):
+    return {
+        "claudeAiOauth": {
+            "accessToken": access,
+            "refreshToken": "old-refresh",
+            "expiresAt": int(time.time() * 1000) + expires_in_ms,
+        }
+    }
+
+
+class _FakeOAuthResponse:
+    def __init__(self, payload: dict):
+        self._body = json.dumps(payload).encode()
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> "_FakeOAuthResponse":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+def _http_error(code: int, body: bytes) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://platform.claude.com/v1/oauth/token", code, "error", None, io.BytesIO(body)
+    )
+
+
+def _credential(monkeypatch, payload, urlopen):
+    credential = ClaudeCodeCredential(urlopen=urlopen, sleep=lambda _seconds: None)
+    monkeypatch.setattr(credential, "_read_keychain", lambda: copy.deepcopy(payload))
+    written: dict = {}
+    monkeypatch.setattr(
+        credential,
+        "_write_keychain",
+        lambda new_payload: written.setdefault("payload", copy.deepcopy(new_payload)),
+    )
+    return credential, written
+
+
+def test_refresh_sends_claude_cli_user_agent_and_persists_the_rotation(monkeypatch):
+    seen: list[dict] = []
+
+    def urlopen(request, timeout=None):
+        seen.append({key.lower(): value for key, value in request.headers.items()})
+        return _FakeOAuthResponse(
+            {"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}
+        )
+
+    credential, written = _credential(monkeypatch, _keychain_payload(expires_in_ms=-1000), urlopen)
+
+    assert credential.token() == "new-access"
+    # `claude-code/<version>` is answered with 429 and an unknown agent with
+    # Cloudflare 403 Error 1010, so only the claude-cli form reaches the handler.
+    assert seen[0]["user-agent"] == CLAUDE_CODE_USER_AGENT
+    assert seen[0]["user-agent"].startswith("claude-cli/")
+    assert "claude-code/" not in seen[0]["user-agent"]
+    oauth = written["payload"]["claudeAiOauth"]
+    assert oauth["accessToken"] == "new-access"
+    assert oauth["refreshToken"] == "new-refresh"
+    assert oauth["expiresAt"] > time.time() * 1000
+
+
+def test_refresh_retries_a_rate_limited_attempt(monkeypatch):
+    attempts: list[int] = []
+    slept: list[float] = []
+
+    def urlopen(request, timeout=None):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise _http_error(429, b'{"error": {"type": "rate_limit_error"}}')
+        return _FakeOAuthResponse({"access_token": "new-access", "expires_in": 3600})
+
+    credential = ClaudeCodeCredential(urlopen=urlopen, sleep=slept.append)
+    monkeypatch.setattr(
+        credential, "_read_keychain", lambda: _keychain_payload(expires_in_ms=-1000)
+    )
+    monkeypatch.setattr(credential, "_write_keychain", lambda payload: None)
+
+    assert credential.token() == "new-access"
+    assert len(attempts) == 2
+    assert slept == [2.0]
+
+
+def test_refresh_reports_dead_and_blocked_credentials_clearly(monkeypatch):
+    def dead(request, timeout=None):
+        raise _http_error(400, b'{"error": "invalid_grant"}')
+
+    credential, written = _credential(monkeypatch, _keychain_payload(expires_in_ms=-1000), dead)
+    with pytest.raises(CredentialError, match="run `claude` and /login"):
+        credential.token()
+    assert written == {}
+
+    def blocked(request, timeout=None):
+        raise _http_error(403, b'{"title": "Error 1010: Access denied"}')
+
+    credential, _ = _credential(monkeypatch, _keychain_payload(expires_in_ms=-1000), blocked)
+    with pytest.raises(CredentialError, match="Cloudflare"):
+        credential.token()
+
+
+def test_failed_refresh_does_not_hammer_the_endpoint(monkeypatch):
+    attempts: list[int] = []
+
+    def urlopen(request, timeout=None):
+        attempts.append(1)
+        raise _http_error(429, b'{"error": {"type": "rate_limit_error"}}')
+
+    credential = ClaudeCodeCredential(urlopen=urlopen, sleep=lambda _seconds: None)
+    monkeypatch.setattr(
+        credential, "_read_keychain", lambda: _keychain_payload(expires_in_ms=-1000)
+    )
+    monkeypatch.setattr(credential, "_write_keychain", lambda payload: None)
+
+    with pytest.raises(CredentialError):
+        credential.token()
+    first_round = len(attempts)
+    assert first_round == 3
+    with pytest.raises(CredentialError, match="rate limiting"):
+        credential.token()
+    assert len(attempts) == first_round, "the cooldown should stop further attempts"
+    assert REFRESH_FAILURE_COOLDOWN_SECONDS > 0
+
+
+def test_still_valid_token_is_used_when_the_refresh_fails(monkeypatch):
+    def urlopen(request, timeout=None):
+        raise _http_error(429, b'{"error": {"type": "rate_limit_error"}}')
+
+    payload = _keychain_payload(expires_in_ms=60_000, access="still-good")
+    remaining = int(payload["claudeAiOauth"]["expiresAt"]) - time.time() * 1000
+    assert remaining < CREDENTIAL_EXPIRY_SKEW_MS
+    credential, _ = _credential(monkeypatch, payload, urlopen)
+
+    assert credential.token() == "still-good"
 
 
 def test_catalog_follows_backend_tiers_without_duplicates():
