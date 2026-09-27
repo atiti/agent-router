@@ -15,6 +15,9 @@ see [Maintaining the Codex fork](codex-fork.md).
    Code Mode host version together; keep upstream's real CLI version unchanged.
 3. Test GPT subscription, Azure, and DeepSeek turns; a provider switch; a tool continuation; an
    automatic approval review; a subagent route; compaction; and a resumed mixed-provider session.
+   When the bridge changed, also run `agentroute bridge install`, `bridge check`, and `bridge
+   status` on a clean profile, and confirm `agentroute doctor` reports the bridge row as PASS on
+   both macOS (LaunchAgent) and Linux (`systemd --user`).
 4. Run `agentroute desktop rebuild`, verify the route banner in Desktop, and verify mobile remote
    connection against the routed app-server.
 5. Confirm the routed binary and bundled Desktop CLI report the same Codex

@@ -8,11 +8,58 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import AppConfig
+from .config import AppConfig, ExecutionBackendConfig, ModelTarget
 
 START_MARKER = "# >>> agentroute model providers >>>"
 END_MARKER = "# <<< agentroute model providers <<<"
 ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+# The tiers the local Claude bridge serves. Kept here so `bridge install` and the
+# documented `backend-add` invocation cannot drift apart.
+CLAUDE_BRIDGE_TIERS: dict[str, str] = {
+    "fast": "claude-haiku-4-5-20251001",
+    "normal": "claude-sonnet-5",
+    "smart": "claude-opus-5",
+    "max": "claude-opus-5-5",
+}
+
+
+def ensure_claude_bridge_backend(
+    config: AppConfig, port: int, host: str = "127.0.0.1"
+) -> bool:
+    """Register the local Claude bridge backend when it is missing.
+
+    Returns True when a backend was created. An existing `claude` backend is left
+    untouched apart from its base URL, so re-running the install cannot discard a
+    user's own tier choices.
+    """
+    base_url = f"http://{host}:{port}/v1"
+    existing = config.backends.get("claude")
+    if existing is not None:
+        if existing.base_url != base_url:
+            existing.base_url = base_url
+        return False
+    config.backends["claude"] = ExecutionBackendConfig(
+        enabled=True,
+        codex_provider="agentroute-claude",
+        display_name="Claude subscription (AgentRoute bridge)",
+        base_url=base_url,
+        tool_compatibility="functions_and_apply_patch",
+        review_model=CLAUDE_BRIDGE_TIERS["fast"],
+        tiers={
+            tier: ModelTarget(
+                model=model,
+                reasoning_effort={
+                    "fast": "low",
+                    "normal": "medium",
+                    "smart": "high",
+                    "max": "high",
+                }[tier],
+            )
+            for tier, model in CLAUDE_BRIDGE_TIERS.items()
+        },
+    )
+    return True
 
 
 def _toml_string(value: str) -> str:

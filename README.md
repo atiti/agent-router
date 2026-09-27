@@ -276,32 +276,36 @@ regardless of reviewer model.
 
 Claude models are not served through the OpenAI Responses API, so AgentRoute ships a small local
 bridge that accepts Responses requests from Codex, calls the Anthropic Messages API, and streams
-the result back in the shape Codex expects. Start it, register it as a backend, and use `@claude`
-like any other provider:
+the result back in the shape Codex expects. One command registers the backend, installs it as a
+background service, and waits until it answers:
 
 ```sh
-agentroute bridge check            # one live round trip through the configured credential
-agentroute bridge serve --port 8090
+agentroute bridge install     # idempotent; safe to re-run after changing the port
+agentroute bridge check       # one live round trip through the configured credential
+agentroute bridge usage       # subscription limits: 5h, weekly, and any scoped weekly cap
 
-agentroute backend-add claude \
-  --base-url http://127.0.0.1:8090/v1 \
-  --model claude-sonnet-5 \
-  --fast-model claude-haiku-4-5-20251001 \
-  --smart-model claude-opus-5 \
-  --max-model claude-opus-5-5 \
-  --display-name "Claude subscription" \
-  --review-model claude-haiku-4-5-20251001
+# then, inside Codex:
+@claude explain this stack trace
 
-agentroute backend-route normal claude   # or prefix a prompt with @claude
+# or make a tier, or everything, route through Claude:
+agentroute backend-route normal claude
 ```
 
-The bridge reads the same credential Claude Code already stores. `--credential claude-code` uses
-the rotating subscription token from the macOS Keychain and writes refreshed tokens back, so
-Claude Code keeps working; the bridge also replays Claude Code's identity block, which Anthropic
-requires before it will serve a subscription credential. `--credential api-key` reads
+`agentroute bridge status` reports whether the service is installed, loaded, and answering, and
+`agentroute doctor` includes a `bridge` row that fails with the exact next command when the
+service is missing or silent. `agentroute bridge uninstall` removes it. The service is a
+LaunchAgent on macOS and a `systemd --user` unit on Linux, restarting automatically and logging
+to `~/.agentroute/bridge.log`; `agentroute bridge serve` runs the same bridge in the foreground
+for debugging.
+
+The bridge reads the same credential Claude Code already stores. `--credential claude-code` is
+the install default: it uses the rotating subscription token from the macOS Keychain, refreshes
+it through Claude Code's own flow when it expires, and writes the result back, so Claude Code
+keeps working. The bridge also replays Claude Code's identity block, which Anthropic requires
+before it will serve a subscription credential. `--credential api-key` reads
 `ANTHROPIC_API_KEY` instead, which is the path Anthropic's terms cover. `--credential auto`
-(the default) prefers the API key and falls back to the subscription credential, and `serve`
-prints a warning when it runs on the subscription.
+prefers the API key and falls back to the subscription credential, and `serve` prints a warning
+when it runs on the subscription.
 
 Bridging is translation, not a wrapper: Codex keeps its sandbox, approvals, Guardian policy, and
 tool authority. Requests are converted to Anthropic Messages payloads (`instructions` become the
@@ -310,7 +314,12 @@ become `tool_result` blocks, images are passed through as base64), and the strea
 back into Responses SSE events including the output-item events Codex requires for streaming
 text. Long-context beta is negotiated per model, because Anthropic rejects it for Haiku. Prompt
 prefixes, tier overrides, and mid-thread provider switches work unchanged: `@claude @smart ...`
-runs that turn on `claude-opus-5`, and the next prompt can switch back to `@gpt`.
+runs that turn on `claude-opus-5`, and the next prompt can switch back to `@gpt`. Claude tokens
+are priced with Anthropic's published rates, so `agentroute usage` reports their cost beside
+every other backend.
+
+Full setup, credential, usage-limit, and troubleshooting detail lives in
+[Running Claude models through the bridge](docs/claude-bridge.md).
 
 ## Capacity management and subscription failover
 

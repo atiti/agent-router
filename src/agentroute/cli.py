@@ -15,6 +15,30 @@ from rich.table import Table
 
 from .analytics import usage_analytics
 from .audit import AuditStore
+from .bridge_service import (
+    BridgeServiceError,
+)
+from .bridge_service import (
+    install_service as install_bridge_service,
+)
+from .bridge_service import (
+    probe_health as probe_bridge_health,
+)
+from .bridge_service import (
+    service_installed as bridge_service_installed,
+)
+from .bridge_service import (
+    service_loaded as bridge_service_loaded,
+)
+from .bridge_service import (
+    service_port as bridge_service_port,
+)
+from .bridge_service import (
+    service_unit_path as bridge_service_unit_path,
+)
+from .bridge_service import (
+    uninstall_service as uninstall_bridge_service,
+)
 from .capacity import (
     backend_spend,
     backend_state,
@@ -78,6 +102,7 @@ from .profiles import account_credential_home, probe_profiles, routed_codex_bina
 from .providers import (
     backend_readiness,
     effective_review_model,
+    ensure_claude_bridge_backend,
     import_backend_credential,
     sync_codex_providers,
 )
@@ -2022,6 +2047,77 @@ def bridge_serve_command(
     models = catalog_from_config(config, backend.lower())
     source = _claude_bridge_credential(credential, backend)
     serve_claude_bridge(source, host=host, port=port, models=models)
+
+
+@bridge_app.command("install")
+def bridge_install_command(
+    port: int = typer.Option(
+        CLAUDE_BRIDGE_DEFAULT_PORT, help="Loopback port the bridge should listen on."
+    ),
+    host: str = typer.Option("127.0.0.1", help="Loopback interface to bind."),
+    credential: str = typer.Option(
+        "claude-code",
+        help="claude-code (subscription Keychain) or api-key (ANTHROPIC_API_KEY).",
+    ),
+    backend: str = typer.Option(
+        "claude", help="Backend whose tiers define the model catalog the bridge serves."
+    ),
+) -> None:
+    """Install the Claude bridge as a background service and wait until it answers."""
+    if credential not in ("claude-code", "api-key", "auto"):
+        raise typer.BadParameter("credential must be claude-code, api-key, or auto")
+    config = load_config()
+    created = ensure_claude_bridge_backend(config, port, host)
+    save_config(config)
+    providers_path, providers_backup = sync_codex_providers(config)
+    try:
+        path, detail = install_bridge_service(port=port, credential=credential, host=host)
+    except BridgeServiceError as error:
+        console.print(f"[red]Bridge install failed:[/red] {error}")
+        raise typer.Exit(code=1) from error
+    if created:
+        console.print(f"✓ Registered the `claude` backend and synced {providers_path}")
+    else:
+        console.print(f"✓ Reused the existing `claude` backend; synced {providers_path}")
+    if providers_backup:
+        console.print(f"  Provider backup: {providers_backup}")
+    console.print(f"✓ Bridge service installed: {path}")
+    console.print(f"✓ {detail}")
+    console.print(f"  Endpoint: http://{host}:{port}/v1")
+    if credential != "api-key":
+        console.print(
+            "[yellow]The bridge is using the Claude Code subscription credential.[/yellow] "
+            "Anthropic does not cover subscription credentials for third-party clients; "
+            "re-run with --credential api-key to use a supported Anthropic API key instead."
+        )
+    console.print("  Next: `agentroute bridge check`, then prefix a prompt with @claude.")
+
+
+@bridge_app.command("uninstall")
+def bridge_uninstall_command() -> None:
+    """Stop the Claude bridge service and remove its definition."""
+    path, existed = uninstall_bridge_service()
+    if existed:
+        console.print(f"✓ Removed {path}")
+    else:
+        console.print(f"No service definition at {path}; stopped anything that was loaded.")
+
+
+@bridge_app.command("status")
+def bridge_status_command() -> None:
+    """Report whether the bridge service is installed, loaded, and answering."""
+    path = bridge_service_unit_path()
+    installed = bridge_service_installed()
+    loaded = bridge_service_loaded()
+    port = bridge_service_port() or CLAUDE_BRIDGE_DEFAULT_PORT
+    health = probe_bridge_health(port)
+    console.print(f"unit:      {path} ({'present' if installed else 'missing'})")
+    console.print(f"supervisor: {'loaded' if loaded else 'not loaded'}")
+    console.print(f"endpoint:  http://127.0.0.1:{port}/v1")
+    color = "green" if health.status == "healthy" else "red"
+    console.print(f"health:    [{color}]{health.status}[/{color}] ({health.detail})")
+    if health.status != "healthy":
+        raise typer.Exit(code=1)
 
 
 @bridge_app.command("check")
