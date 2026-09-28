@@ -46,6 +46,7 @@ from .capacity import (
     reset_description,
 )
 from .classifier import (
+    JevShadowClassifier,
     OpenAICompatibleClassifier,
     catalog_age_seconds,
     is_loopback_endpoint,
@@ -1297,46 +1298,47 @@ def classifier_status_command() -> None:
     """Show classifier backend, privacy gate, and credential readiness."""
     routing = load_config().routing
     classifier = routing.classifier
+    engine = classifier.engine
+    active = classifier.jev_shadow if engine == "jev" else classifier
     backend = (
         "local"
-        if is_loopback_endpoint(classifier.endpoint)
+        if is_loopback_endpoint(active.endpoint)
         else "private"
-        if is_private_endpoint(classifier.endpoint)
+        if is_private_endpoint(active.endpoint)
         else "cloud"
     )
     if backend == "local":
         credential_detail = "not required"
     else:
         try:
-            credential = bool(read_api_key(classifier))
+            credential = bool(read_api_key(active))
             credential_detail = "available" if credential else "missing"
         except (OSError, RuntimeError) as error:
             credential_detail = str(error)
     console.print(f"Mode: {routing.mode}")
-    engine = classifier.engine
-    active_model = classifier.jev_shadow.model if engine == "jev" else classifier.model
-    active_endpoint = classifier.jev_shadow.endpoint if engine == "jev" else classifier.endpoint
+    active_model = active.model
+    active_endpoint = active.endpoint
     console.print(f"Classifier: {'enabled' if classifier.enabled else 'disabled'} ({engine})")
     console.print(f"Model: {active_model}")
     console.print(f"Endpoint: {active_endpoint}")
-    console.print(f"Remote prompt egress: {'allowed' if classifier.allow_remote else 'blocked'}")
-    credential_source = classifier.api_key_file or classifier.api_key_env
+    console.print(f"Remote prompt egress: {'allowed' if active.allow_remote else 'blocked'}")
+    credential_source = active.api_key_file or active.api_key_env
     console.print(f"Credential {credential_source}: {credential_detail}")
     console.print(
         f"Ambiguity threshold: {classifier.ambiguity_threshold:.0%}; "
-        f"timeout: {classifier.timeout_seconds:g}s"
+        f"timeout: {active.timeout_seconds:g}s"
     )
-    age = catalog_age_seconds(classifier)
+    age = catalog_age_seconds(active)
     catalog_status = (
         "unverified"
         if age is None
         else "fresh"
-        if age <= classifier.catalog_ttl_seconds
+        if age <= active.catalog_ttl_seconds
         else "stale"
     )
     console.print(
-        f"Catalog: {catalog_status}; checked: {classifier.catalog_checked_at or 'never'}; "
-        f"models: {len(classifier.catalog_models)}"
+        f"Catalog: {catalog_status}; checked: {active.catalog_checked_at or 'never'}; "
+        f"models: {len(active.catalog_models)}"
     )
     shadow = classifier.jev_shadow
     console.print(
@@ -1359,9 +1361,11 @@ def classifier_status_command() -> None:
 @app.command("classifier-jev-enable")
 def classifier_jev_enable_command(
     endpoint: str = typer.Option(
-        "http://127.0.0.1:8091/v1/systemone", help="Loopback local-jev System 1 endpoint."
+        "http://127.0.0.1:8091/v1/systemone", help="Local HTTP or hosted HTTPS System One endpoint."
     ),
-    model: str = typer.Option("nli-deberta-large", help="Installed local-jev model name."),
+    model: str = typer.Option(
+        "nli-deberta-large", help="System One model name, e.g. nli-deberta-large or jev-latest."
+    ),
     timeout_seconds: float = typer.Option(
         0.75, "--timeout", min=0.05, max=10, help="Per-turn ceiling in seconds."
     ),
@@ -1372,10 +1376,20 @@ def classifier_jev_enable_command(
         max=1.0,
         help="Minimum JEV tier confidence required to override heuristics.",
     ),
+    allow_remote: bool = typer.Option(
+        False, help="Permit classification prompts to leave this host."
+    ),
+    api_key_env: str = typer.Option(
+        "TYPESAFE_API_KEY", help="Hosted JEV credential environment name."
+    ),
+    api_key_file: str | None = typer.Option(
+        None, help="Private file containing the hosted JEV key."
+    ),
 ) -> None:
-    """Make local JEV the live classifier; retain deterministic safety fallback."""
-    if not is_loopback_endpoint(endpoint) or not endpoint.startswith("http://"):
-        raise typer.BadParameter("JEV accepts loopback HTTP endpoints only")
+    """Make local or hosted JEV primary; retain the configured LLM fallback."""
+    remote = not is_loopback_endpoint(endpoint)
+    if remote and not (endpoint.startswith("https://") and allow_remote):
+        raise typer.BadParameter("Hosted JEV requires HTTPS and --allow-remote")
     if not endpoint.rstrip("/").endswith("/v1/systemone"):
         raise typer.BadParameter("JEV endpoint must end with /v1/systemone")
     config = load_config()
@@ -1385,13 +1399,30 @@ def classifier_jev_enable_command(
     shadow.model = model
     shadow.timeout_seconds = timeout_seconds
     shadow.acceptance_threshold = acceptance_threshold
+    shadow.allow_remote = allow_remote
+    shadow.api_key_env = api_key_env
+    shadow.api_key_file = api_key_file
+    try:
+        client = JevShadowClassifier(shadow)
+        if remote:
+            models, digest, checked_at = client.verify_catalog()
+            shadow.catalog_models = models
+            shadow.catalog_hash = digest
+            shadow.catalog_checked_at = checked_at
+        else:
+            shadow.catalog_models = []
+            shadow.catalog_hash = None
+            shadow.catalog_checked_at = None
+    except (OSError, RuntimeError, ValueError) as error:
+        raise typer.BadParameter(f"Cannot enable JEV: {error}") from error
     config.routing.classifier.engine = "jev"
     config.routing.classifier.enabled = True
     config.routing.mode = "llm"
     save_config(config)
     console.print(
-        f"Enabled local JEV ({model}) as the live classifier. Low-confidence selections use "
-        "the configured local Qwen fallback; manual tags, policy floors, and heuristic fallback "
+        f"Enabled {'hosted' if remote else 'local'} JEV ({model}) as the live classifier. "
+        "Low-confidence selections use the configured LLM fallback; manual tags, policy floors, "
+        "and heuristic fallback "
         "remain active."
     )
 
@@ -1560,14 +1591,19 @@ def classifier_enable_command(
 def classifier_verify_command() -> None:
     """Verify the configured model against the provider catalog and cache the receipt."""
     config = load_config()
-    classifier = OpenAICompatibleClassifier(config.routing.classifier)
+    settings = config.routing.classifier
+    active = settings.jev_shadow if settings.engine == "jev" else settings
+    classifier = (
+        JevShadowClassifier(active) if settings.engine == "jev"
+        else OpenAICompatibleClassifier(settings)
+    )
     models, digest, checked_at = classifier.verify_catalog()
-    config.routing.classifier.catalog_models = models
-    config.routing.classifier.catalog_hash = digest
-    config.routing.classifier.catalog_checked_at = checked_at
+    active.catalog_models = models
+    active.catalog_hash = digest
+    active.catalog_checked_at = checked_at
     save_config(config)
     console.print(
-        f"Verified {config.routing.classifier.model} in {len(models)} visible models; "
+        f"Verified {active.model} in {len(models)} visible models; "
         f"catalog {digest[:12]}."
     )
 
@@ -1576,13 +1612,17 @@ def classifier_verify_command() -> None:
 def classifier_refresh_command() -> None:
     """Refresh a missing or stale remote catalog; otherwise return immediately."""
     config = load_config()
-    classifier_config = config.routing.classifier
-    if not classifier_config.enabled or is_loopback_endpoint(classifier_config.endpoint):
+    settings = config.routing.classifier
+    classifier_config = settings.jev_shadow if settings.engine == "jev" else settings
+    if not settings.enabled or is_loopback_endpoint(classifier_config.endpoint):
         return
     age = catalog_age_seconds(classifier_config)
     if age is not None and age <= classifier_config.catalog_ttl_seconds:
         return
-    classifier = OpenAICompatibleClassifier(classifier_config)
+    classifier = (
+        JevShadowClassifier(classifier_config) if settings.engine == "jev"
+        else OpenAICompatibleClassifier(settings)
+    )
     models, digest, checked_at = classifier.verify_catalog()
     classifier_config.catalog_models = models
     classifier_config.catalog_hash = digest

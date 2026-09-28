@@ -38,6 +38,7 @@ CREDENTIAL_EXPOSURE = re.compile(
     r"(?:\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|"
     r"password|secret)\b\s*(?:is\s+|[:=]\s*)[\"']?"
     r"(?!\[?(?:redacted|hidden|masked)\]?\b)[A-Za-z0-9_./+=-]{12,})"
+    r"|(?:\bapikey_[0-9a-f]{32}_[0-9a-f]{64}\b)"
     r"|(?:-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)",
     re.IGNORECASE,
 )

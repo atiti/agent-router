@@ -257,3 +257,68 @@ def test_remote_classification_requires_fresh_verified_catalog(monkeypatch):
     classifier.config.catalog_models = ["classifier-model"]
     with pytest.raises(RuntimeError, match="stale"):
         classifier.classify(RouteContext(session_id="s", latest_prompt="handle this"))
+
+
+@pytest.mark.parametrize("allow_remote,credential", [(False, "test-key"), (True, None)])
+def test_hosted_jev_requires_egress_permission_and_credential(
+    monkeypatch, allow_remote, credential,
+):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    if credential:
+        monkeypatch.setenv("TYPESAFE_API_KEY", credential)
+    classifier = JevShadowClassifier(JevShadowConfig(
+        endpoint="https://api.typesafe.ai/v1/systemone", model="jev-latest",
+        allow_remote=allow_remote,
+    ))
+    with pytest.raises(RuntimeError), pytest.MonkeyPatch.context() as context:
+        def never_send(*args, **kwargs):
+            pytest.fail("blocked hosted request must not access network")
+        context.setattr("urllib.request.urlopen", never_send)
+        classifier.evaluate(RouteContext(session_id="s", latest_prompt="draft an email"))
+
+
+def test_hosted_jev_uses_separate_private_key_and_parses_official_api(tmp_path, monkeypatch):
+    key = tmp_path / "typesafe-key"
+    key.write_text("hosted-test-key")
+    key.chmod(0o600)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    captured = []
+    def fake_urlopen(request, timeout):
+        captured.append(request)
+        assert request.get_header("Authorization") == "Bearer hosted-test-key"
+        if request.get_method() == "GET":
+            return FakeResponse({"models": [{"name": "jev-latest"}, {"name": "jev-preview"}]})
+        return FakeResponse({
+            "model": "jev-1.13.0",
+            "usage": {"input_tokens": 736, "output_tokens": 254},
+            "answers": {
+                "tier": {"noul": 0.05}, "requires_smart": {"noul": 0.91},
+                "requires_max": {"noul": 0.34},
+                "reasoning_effort": {"choice": "high", "confidence": 0.81},
+                "task_type": {"choice": "debugging", "confidence": 0.99},
+            },
+        })
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    classifier = JevShadowClassifier(JevShadowConfig(
+        endpoint="https://api.typesafe.ai/v1/systemone", model="jev-latest",
+        allow_remote=True, api_key_file=str(key),
+    ))
+    models, digest, checked = classifier.verify_catalog()
+    result = classifier.classify(RouteContext(session_id="s", latest_prompt="diagnose an outage"))
+    assert models == ["jev-latest", "jev-preview"]
+    assert digest and checked
+    assert captured[0].full_url == "https://api.typesafe.ai/v1/models"
+    assert captured[1].full_url == "https://api.typesafe.ai/v1/systemone"
+    assert classifier.source == "cloud_jev"
+    assert result.tier == Tier.SMART
+    assert classifier.last_response_metadata == {"model": "jev-1.13.0"}
+    assert classifier.last_usage == {"input_tokens": 736, "output_tokens": 254}
+
+
+@pytest.mark.parametrize("endpoint", [
+    "http://api.typesafe.ai/v1/systemone", "ftp://api.typesafe.ai/v1/systemone",
+    "https://user:pass@api.typesafe.ai/v1/systemone",
+])
+def test_hosted_jev_rejects_insecure_or_embedded_credential_urls(endpoint):
+    with pytest.raises(ValueError):
+        JevShadowClassifier(JevShadowConfig(endpoint=endpoint, allow_remote=True))
