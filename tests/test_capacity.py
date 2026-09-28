@@ -1,3 +1,5 @@
+import pytest
+
 from agentroute.capacity import fallback_chain, subscription_state
 from agentroute.config import default_config
 from agentroute.models import ReasonCode, RouteContext
@@ -95,3 +97,41 @@ def test_automatic_subscription_failover_strips_provider_state(monkeypatch):
     assert decision.backend == "azure"
     assert decision.capacity_status == "fallback"
     assert ReasonCode.CAPACITY_FALLBACK in decision.reason_codes
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("limit_id", ["claude", "deepseek"])
+def test_foreign_limits_do_not_exhaust_chatgpt_capacity(nested, limit_id):
+    limits = {
+        "limit_id": limit_id,
+        "primary": {"used_percent": 100},
+        "spend_control_reached": True,
+        "rate_limit_reached_type": "rate_limit_reached",
+    }
+    snapshot = {"rateLimits": limits} if nested else limits
+    state = subscription_state(enabled_config(), snapshot)
+
+    assert state.status == "unknown"
+    assert state.available
+    assert state.used_percent is None
+
+
+def test_foreign_limits_preserve_independent_chatgpt_account_lock():
+    state = subscription_state(enabled_config(), {
+        "ordinaryUsageAllowed": False,
+        "rateLimits": {"limitId": "claude", "primary": {"usedPercent": 100}},
+    })
+
+    assert state.status == "exhausted"
+    assert state.used_percent is None
+
+
+@pytest.mark.parametrize("limit_id", [None, "codex", "codex_other", "codex-other"])
+def test_chatgpt_limit_families_still_enforce_exhaustion(limit_id):
+    state = subscription_state(enabled_config(), {
+        "limit_id": limit_id,
+        "primary": {"usedPercent": 100},
+    })
+
+    assert state.status == "exhausted"
+    assert state.used_percent == 100

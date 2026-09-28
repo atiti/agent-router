@@ -438,6 +438,24 @@ def select_turn_profile(
     current = current or by_name.get(current_name)
     current_profile_hash = current.account_hash if current is not None else current_hash
 
+    # A fresh account read can supersede an exhausted snapshot retained by a
+    # long-running session. Reuse the same account before seeking a different one.
+    refreshed_current = by_name.get(current_name)
+    if (
+        refreshed_current is not None
+        and refreshed_current.enabled
+        and refreshed_current.authenticated
+        and refreshed_current.capacity.status in {"healthy", "warning"}
+    ):
+        return TurnProfileSelection(
+            current_name,
+            refreshed_current,
+            refreshed_current,
+            False,
+            "quota_refresh",
+            refreshed_current.account_hash != current_hash,
+        )
+
     candidate = next(
         (
             item

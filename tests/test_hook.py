@@ -2,6 +2,8 @@ import io
 import json
 from unittest.mock import patch
 
+import pytest
+
 from agentroute.audit import AuditStore
 from agentroute.capacity import CapacityState
 from agentroute.config import (
@@ -16,6 +18,7 @@ from agentroute.profiles import (
     TurnProfileSelection,
     profile_has_daybreak_blue,
     reviewer_fallback_profiles,
+    select_turn_profile,
 )
 
 
@@ -470,6 +473,7 @@ def test_authoritative_subscription_lock_falls_back_with_visible_message(tmp_pat
     config = default_config()
     config.enabled = True
     config.capacity.enabled = True
+    config.capacity.profiles = {}  # No alternate or refreshed account in this scenario.
     config.backends["azure"].enabled = True
     config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
 
@@ -493,6 +497,7 @@ def test_explicit_subscription_lock_fails_closed_with_auto_guidance(tmp_path):
     config = default_config()
     config.enabled = True
     config.capacity.enabled = True
+    config.capacity.profiles = {}  # No alternate or refreshed account in this scenario.
 
     output = invoke(
         config,
@@ -1874,3 +1879,70 @@ def test_subagent_stop_reads_usage_from_child_transcript(tmp_path):
     assert row["answer_output_tokens"] == 45
     assert row["answer_reasoning_output_tokens"] == 6
     assert row["usage_status"] == "recorded"
+
+
+@pytest.mark.parametrize("prompt", ["@gpt continue", "@auto continue"])
+def test_claude_exhaustion_does_not_block_switch_to_gpt(tmp_path, prompt):
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.backends["gpt"].fallback_backend = None
+    store = AuditStore(tmp_path / "audit.db")
+
+    output = invoke(
+        config, store, prompt,
+        model="claude-opus-5-5", model_provider="agentroute-claude",
+        rate_limits={"limit_id": "claude", "primary": {"used_percent": 100}},
+    )
+
+    assert output["continue"] is True
+    specific = output["hookSpecificOutput"]
+    assert specific["modelProvider"] == "openai"
+    assert specific["stripProviderState"] is True
+    assert "CAPACITY BLOCKED" not in specific["routeMessage"]
+
+
+def test_fresh_current_account_capacity_recovers_stale_session_lock(tmp_path):
+    config = default_config()
+    config.capacity.enabled = True
+    config.capacity.active_profile = "personal"
+    config.capacity.profiles = {
+        "personal": SubscriptionProfileConfig(codex_home=str(tmp_path / "personal")),
+    }
+    healthy = ProfileStatus(
+        "personal", str(tmp_path / "personal"), 100, True, True, "personal-hash",
+        CapacityState("gpt", "healthy", "subscription 43% used / 57% remaining",
+                      "subscription", 43),
+    )
+    with patch("agentroute.profiles.profile_name_for_home", return_value="personal"), patch(
+        "agentroute.profiles.probe_profiles", return_value=(healthy,),
+    ):
+        selection = select_turn_profile(
+            config, CapacityState("gpt", "exhausted", "stale session lock", "subscription"),
+        )
+
+    assert selection.selected == healthy
+    assert selection.switched is False
+    assert selection.source == "quota_refresh"
+
+
+@pytest.mark.parametrize("status", ["unknown", "exhausted", "unavailable"])
+def test_account_refresh_without_known_capacity_keeps_session_lock(tmp_path, status):
+    config = default_config()
+    config.capacity.enabled = True
+    config.capacity.active_profile = "personal"
+    config.capacity.profiles = {
+        "personal": SubscriptionProfileConfig(codex_home=str(tmp_path / "personal")),
+    }
+    current = ProfileStatus(
+        "personal", str(tmp_path / "personal"), 100, True, status != "unavailable",
+        "personal-hash", CapacityState("gpt", status, "no known capacity"),
+    )
+    with patch("agentroute.profiles.profile_name_for_home", return_value="personal"), patch(
+        "agentroute.profiles.probe_profiles", return_value=(current,),
+    ):
+        selection = select_turn_profile(
+            config, CapacityState("gpt", "exhausted", "account lock", "subscription"),
+        )
+
+    assert selection.selected is None

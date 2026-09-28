@@ -370,6 +370,12 @@ backend is exhausted or over budget. The banner and stop message explain the nex
 CAPACITY BLOCKED: explicit session route gpt is capacity-locked. Use @auto to permit backend fallback.
 ```
 
+Limits belong to their provider: Claude's exhausted window cannot block `@gpt continue`.
+A fresh healthy ChatGPT account read can recover an old session lock. `@auto` clears a manual
+route and follows the configured fallback chain; without a fallback configured it does not
+try every enabled backend. Use an explicit destination tag to switch directly, or configure
+`agentroute capacity fallback gpt azure-direct` for that automatic fallback.
+
 ### Multiple ChatGPT subscriptions, one Codex home
 
 AgentRoute keeps the normal Codex state directory as the only `CODEX_HOME`. Sessions, `config.toml`,
