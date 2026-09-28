@@ -1051,8 +1051,11 @@ class _FakeCredential:
 
 
 @pytest.fixture
-def bridge_server():
-    """A live bridge with a stubbed Anthropic stream, to exercise the HTTP path."""
+def bridge_server(tmp_path, monkeypatch):
+    """A live bridge with a stubbed stream and isolated capture/account state."""
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    monkeypatch.setenv("AGENTROUTE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("AGENTROUTE_PROFILE_CAPTURE", raising=False)
     previous = {
         "stream_factory": BridgeHandler.stream_factory,
         "credentials": getattr(BridgeHandler, "credentials", None),
