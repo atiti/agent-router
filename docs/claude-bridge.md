@@ -142,8 +142,15 @@ with AgentRoute, so `agentroute usage` and `agentroute analytics` report Claude 
 every other backend instead of treating those turns as free. The 1-hour cache TTL tier costs more
 than the 5-minute rate shown above.
 
-Long-context beta is negotiated per model, because Anthropic rejects it for Haiku. Prompt images
-are passed through, capped at 2048 px.
+Long-context beta is negotiated per model, because Anthropic rejects it for Haiku. The bridge
+keeps prompt images and images returned by tools such as `view_image`. Before sending a request,
+it counts all images, including earlier turns and nested tool results. With more than 20 images,
+it resizes any image larger than 2000 px on either axis to fit within 2000 × 2000 px, preserving
+its aspect ratio. With 20 or fewer images, the maximum is 8000 px. These are
+[Anthropic's image limits](https://platform.claude.com/docs/en/build-with-claude/vision).
+Images within the limit are sent unchanged; local files and saved conversation history are
+never modified. This lets a long screenshot-heavy session continue without manually clearing
+its image history.
 
 The Claude model descriptor has an empty instruction template. The routed Codex runtime removes
 its `You are Codex` / `As Codex` identity claims from the outbound request copy sent to all
@@ -161,5 +168,6 @@ no such block.
 | Codex says "Unknown model claude-..." | the backend is missing `model_catalog_url`; re-run `agentroute bridge install` |
 | Turns fail with a connection error | the service is not running: `agentroute bridge status` |
 | Port already in use | `agentroute bridge install --port <free port>` and re-run `backend-route` if needed |
+| Image error mentions the 2000 px maximum for many-image requests | the bridge automatically resizes the outbound images; install the latest bridge version and restart it with `agentroute bridge install`, then retry the turn |
 | Anthropic returns 429 | the bridge reports the Claude limit and reset when Anthropic supplies them; check `agentroute bridge usage` for the current window |
 | Anthropic returns 403 | check the Claude Code login with `claude`; subscription credentials are outside Anthropic's terms for third-party clients |

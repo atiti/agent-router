@@ -21,7 +21,10 @@ Two credential modes are supported:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import io
 import json
 import math
 import os
@@ -39,6 +42,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Literal
+
+from PIL import Image, UnidentifiedImageError
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
@@ -69,6 +74,9 @@ CREDENTIAL_EXPIRY_SKEW_MS = 300_000
 DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_CONTEXT_WINDOW = 200_000
 DEFAULT_PORT = 8090
+ANTHROPIC_IMAGE_MAX_DIMENSION = 8000
+ANTHROPIC_MANY_IMAGE_THRESHOLD = 20
+ANTHROPIC_MANY_IMAGE_MAX_DIMENSION = 2000
 
 # Anthropic reports subscription limits on every Messages response as a unified
 # header family. Codex reads the equivalent `x-<family>-primary-*` headers off
@@ -425,6 +433,65 @@ def _image_source(image_url: str) -> dict[str, Any] | None:
     return {"type": "base64", "media_type": media, "data": data}
 
 
+def _image_blocks(content: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    for block in content:
+        if block.get("type") == "image":
+            yield block
+        elif block.get("type") == "tool_result" and isinstance(block.get("content"), list):
+            yield from _image_blocks(block["content"])
+
+
+def _resize_image_source(source: dict[str, Any], max_dimension: int) -> dict[str, Any]:
+    if source.get("type") != "base64":
+        return source
+    try:
+        decoded = base64.b64decode(source["data"], validate=True)
+        with Image.open(io.BytesIO(decoded)) as image:
+            if max(image.size) <= max_dimension:
+                return source
+            image_format = image.format if image.format in ("JPEG", "WEBP") else "PNG"
+            # Anthropic uses only the first frame of GIFs. Preserve PNG alpha,
+            # and convert palette images before resampling so Lanczos is used.
+            resized = (
+                image.convert("RGBA" if "transparency" in image.info else "RGB")
+                if image.mode == "P"
+                else image.copy()
+            )
+            resized.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            resized.save(output, format=image_format)
+    except (KeyError, ValueError, binascii.Error, OSError, UnidentifiedImageError):
+        # Preserve malformed/unsupported input for upstream validation instead
+        # of silently removing an image from the conversation.
+        return source
+    return {
+        "type": "base64",
+        "media_type": Image.MIME[image_format],
+        "data": base64.b64encode(output.getvalue()).decode("ascii"),
+    }
+
+
+def _normalize_request_images(messages: list[dict[str, Any]]) -> None:
+    # The >20 threshold counts the whole request, including earlier turns and
+    # images inside tool_result blocks. It applies to every image, not just the
+    # new screenshot. Only change the translated request, never saved history.
+    blocks = [block for message in messages for block in _image_blocks(message["content"])]
+    max_dimension = (
+        ANTHROPIC_MANY_IMAGE_MAX_DIMENSION
+        if len(blocks) > ANTHROPIC_MANY_IMAGE_THRESHOLD
+        else ANTHROPIC_IMAGE_MAX_DIMENSION
+    )
+    # Deduplicate decoding/resizing within this request, without retaining
+    # image data in a process-wide cache after the request finishes.
+    normalized: dict[tuple[str, str], dict[str, Any]] = {}
+    for block in blocks:
+        source = block["source"]
+        key = (source.get("media_type", ""), source.get("data", ""))
+        if key not in normalized:
+            normalized[key] = _resize_image_source(source, max_dimension)
+        block["source"] = normalized[key]
+
+
 def _is_image_item(item: Any) -> bool:
     return isinstance(item, dict) and item.get("type") == "input_image"
 
@@ -724,6 +791,8 @@ def translate_request(
             f"{len(repair['content'])} block(s) appended after {original_tail}"
         )
         messages.append(repair)
+
+    _normalize_request_images(messages)
 
     payload: dict[str, Any] = {
         "model": body.get("model") or DEFAULT_MODEL,

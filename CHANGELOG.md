@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Resize outbound Claude images to Anthropic's request-dependent dimension limit: 2000 px
+  on either axis when the request contains more than 20 images, otherwise 8000 px. Count
+  conversation history and nested tool results, preserving aspect ratio, supported image
+  formats, local files, and saved history. This fixes screenshot-heavy sessions failing with
+  `At least one of the image dimensions exceed max allowed size for many-image requests`.
+
 ## 0.5.55 — 2026-09-27
 
 - Keep ChatGPT cyber access program metadata on OpenAI requests. Codex now checks the selected

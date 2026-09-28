@@ -1,3 +1,4 @@
+import base64
 import copy
 import io
 import json
@@ -7,6 +8,7 @@ import urllib.error
 import urllib.request
 
 import pytest
+from PIL import Image
 
 from agentroute.claude_bridge import (
     API_KEY_BETAS,
@@ -547,6 +549,83 @@ def test_tool_result_keeps_an_image_returned_by_view_image():
             "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"},
         }
     ]
+
+
+def _image_url(size, image_format="PNG", mode="RGB"):
+    buffer = io.BytesIO()
+    Image.new(mode, size).save(buffer, format=image_format)
+    media = {"PNG": "png", "JPEG": "jpeg", "WEBP": "webp", "GIF": "gif"}[image_format]
+    return f"data:image/{media};base64,{base64.b64encode(buffer.getvalue()).decode()}"
+
+
+@pytest.mark.parametrize("count,expected", [(20, (2048, 1024)), (21, (2000, 1000))])
+def test_many_image_limit_counts_history_and_nested_tool_results(count, expected):
+    small = {"type": "input_image", "image_url": _image_url((8, 8))}
+    large = {"type": "input_image", "image_url": _image_url((2048, 1024))}
+    portrait = {"type": "input_image", "image_url": _image_url((1024, 2048))}
+    body = {
+        "input": [
+            {"type": "message", "role": "user", "content": [large, *[small] * (count - 2)]},
+            {"type": "function_call", "call_id": "shot", "name": "view_image", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "shot", "output": [portrait]},
+        ],
+    }
+    original = copy.deepcopy(body)
+    payload, _, _ = translate_request(body)
+    prompt_source = payload["messages"][0]["content"][0]["source"]
+    tool_source = payload["messages"][-1]["content"][0]["content"][0]["source"]
+    with Image.open(io.BytesIO(base64.b64decode(prompt_source["data"]))) as img:
+        assert img.size == expected
+    with Image.open(io.BytesIO(base64.b64decode(tool_source["data"]))) as img:
+        assert img.size == expected[::-1]
+    assert len(payload["messages"][0]["content"]) + 1 == count
+    assert (
+        payload["messages"][0]["content"][1]["source"]["data"] == small["image_url"].split(",")[1]
+    )
+    assert body == original
+    if count == 20:
+        assert prompt_source["data"] == large["image_url"].split(",")[1]
+
+
+@pytest.mark.parametrize(
+    "image_format,mode", [("PNG", "RGBA"), ("JPEG", "RGB"), ("WEBP", "RGB"), ("GIF", "P")]
+)
+def test_many_image_resize_keeps_supported_formats(image_format, mode):
+    url = _image_url((2001, 400), image_format, mode)
+    payload, _, _ = translate_request(
+        {
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_image", "image_url": url}] * 21,
+                }
+            ]
+        }
+    )
+    source = payload["messages"][0]["content"][0]["source"]
+    with Image.open(io.BytesIO(base64.b64decode(source["data"]))) as img:
+        assert img.size == (2000, 400)
+        assert source["media_type"] == Image.MIME[img.format]
+        if mode == "RGBA":
+            assert img.mode == "RGBA"
+
+
+def test_single_image_is_clamped_to_anthropic_absolute_dimension_limit():
+    payload, _, _ = translate_request(
+        {
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_image", "image_url": _image_url((8001, 8))}],
+                }
+            ]
+        }
+    )
+    source = payload["messages"][0]["content"][0]["source"]
+    with Image.open(io.BytesIO(base64.b64decode(source["data"]))) as img:
+        assert img.size == (8000, 8)
 
 
 def test_tool_result_stays_text_when_no_image_is_present():
