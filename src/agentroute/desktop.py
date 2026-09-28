@@ -69,6 +69,26 @@ def _read_build_id(home: Path) -> str:
     return path.read_text(encoding="utf-8").splitlines()[0] if path.exists() else "unknown"
 
 
+def desktop_codex_path(app: Path) -> Path:
+    """Resolve both the legacy Desktop CLI and the packaged CLI entrypoint."""
+    resources = app / "Contents/Resources"
+    candidates = (
+        resources / "codex-cli/bin/codex",
+        resources / "codex",
+        resources / "codex-cli/CodexCLI.app/Contents/MacOS/codex",
+    )
+    return next((path for path in candidates if path.is_file()), candidates[0])
+
+
+def _desktop_build_id(app: Path) -> str:
+    info_path = app / "Contents/Info.plist"
+    try:
+        with info_path.open("rb") as handle:
+            return str(plistlib.load(handle).get("AgentRouteDesktopBuild", "unknown"))
+    except (OSError, plistlib.InvalidFileException):
+        return "unknown"
+
+
 def _codex_version(binary: Path) -> str | None:
     if not binary.exists():
         return None
@@ -105,13 +125,18 @@ def desktop_status(
     destination: Path = DEFAULT_DESTINATION_APP,
 ) -> dict[str, str | bool | None]:
     home = agentroute_home()
-    source_version = _codex_version(source / "Contents/Resources/codex")
+    source_cli = desktop_codex_path(source)
+    source_version = _codex_version(source_cli)
     routed_version = _codex_version(home / "bin/codex-bin")
     return {
         "source_exists": source.is_dir(),
         "destination_exists": destination.is_dir(),
         "source_version": source_version,
-        "destination_version": _codex_version(destination / "Contents/Resources/codex"),
+        "source_cli_path": str(source_cli),
+        "destination_cli_path": str(desktop_codex_path(destination)),
+        "destination_version": _codex_version(desktop_codex_path(destination)),
+        "destination_build_id": _desktop_build_id(destination),
+        "destination_matches_runtime": _desktop_build_id(destination) == _read_build_id(home),
         "routed_binary_version": routed_version,
         "source_routed_versions_match": bool(
             _codex_versions_compatible(source_version, routed_version)
@@ -167,7 +192,15 @@ def _build_desktop_app_locked(
     for required in (codex, code_mode_host, launcher, entitlements, code_mode_entitlements):
         if not required.exists():
             raise FileNotFoundError(f"required AgentRoute asset does not exist: {required}")
-    source_version = _codex_version(source / "Contents/Resources/codex")
+    source_cli = desktop_codex_path(source)
+    if not source_cli.is_file():
+        raise FileNotFoundError(f"official Codex CLI not found in {source}; expected {source_cli}")
+    source_version = _codex_version(source_cli)
+    if source_version is None:
+        raise RuntimeError(
+            f"cannot execute official Codex CLI: {source_cli}; "
+            "run it with --version for the underlying error"
+        )
     routed_version = _codex_version(codex)
     if not allow_version_mismatch and not _codex_versions_compatible(
         source_version, routed_version
@@ -182,9 +215,7 @@ def _build_desktop_app_locked(
         raise FileExistsError(f"destination exists; use desktop rebuild: {destination}")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    staging_root = Path(
-        tempfile.mkdtemp(prefix=".ChatGPT-Routed.build.", dir=destination.parent)
-    )
+    staging_root = Path(tempfile.mkdtemp(prefix=".ChatGPT-Routed.build.", dir=destination.parent))
     staging_app = staging_root / destination.name
     backup: Path | None = None
     try:
@@ -200,6 +231,17 @@ def _build_desktop_app_locked(
         shutil.copy2(codex, resources / "codex-bin")
         shutil.copy2(code_mode_host, resources / "codex-code-mode-host")
         shutil.copy2(launcher, resources / "codex")
+        (resources / "agentroute-build-id").write_text(
+            _read_build_id(home) + "\n", encoding="utf-8"
+        )
+        # The frontend discovers the package entrypoint in recent Desktop releases.
+        # Replace every existing package entrypoint; retain the legacy root launcher.
+        for relative in ("codex-cli/bin/codex", "codex-cli/CodexCLI.app/Contents/MacOS/codex"):
+            entrypoint = resources / relative
+            if entrypoint.exists():
+                entrypoint.unlink()
+                shutil.copy2(launcher, entrypoint)
+                entrypoint.chmod(0o755)
         for executable in ("codex", "codex-bin", "codex-code-mode-host"):
             (resources / executable).chmod(0o755)
 
@@ -247,8 +289,12 @@ def _build_desktop_app_locked(
             staging_app,
         )
         _run("codesign", "--verify", "--deep", "--strict", "--verbose=2", staging_app)
+        if _codex_version(desktop_codex_path(staging_app)) != routed_version:
+            raise RuntimeError(
+                "rebuilt Desktop entrypoint did not launch the embedded routed runtime"
+            )
         smoke_code_mode_host(resources / "codex-code-mode-host")
-        _run(resources / "codex", "app-server", "--help", capture=True)
+        _run(desktop_codex_path(staging_app), "app-server", "--help", capture=True)
         if destination.exists():
             conflict_root = home / "backups" / "desktop" / "conflicts"
             conflict_root.mkdir(parents=True, exist_ok=True)

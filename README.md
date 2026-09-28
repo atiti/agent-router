@@ -810,22 +810,19 @@ Remote compaction checkpoints from the active provider are preserved, including 
 after resuming a thread. Routing uses the destination model's context window and compaction
 limits; retained approval requirements do not overwrite those limits.
 
-The source installer pins the AgentRoute Codex fork on the `rust-v0.157.0` line at
-`0d2fa6eb996cf0b643e9ed993cf3d8e925fbc5cb`, including the guard that keeps
-ChatGPT `access_programs` metadata off Azure Direct and other non-OpenAI requests. The
-scheduled compatibility check rebases the ordered fork stack onto a new upstream candidate;
-it never installs or publishes an unreviewed upgrade. Legacy packaged patches remain only
-for their older exact base. AgentRoute is not affiliated with or endorsed by OpenAI.
+The source installer pins the AgentRoute Codex fork at
+`e17c80b71da526e083043c9a0055cbe9b9279376`, based on `rust-v0.158.0-alpha.2.1`.
+The routed CLI preserves upstream's real `0.158.0-alpha.2.1` version. AgentRoute
+`0.5.56` uses runtime v47. The scheduled compatibility check prepares a candidate
+stack; it never publishes an unreviewed upgrade. AgentRoute is not affiliated with OpenAI.
 
-The routed CLI reports the Codex `0.157.0` release line. AgentRoute has separate versioning:
-`agentroute version` reports the AgentRoute release, routing runtime, and compatible Codex
-version; route notices include the AgentRoute release. Run `agentroute doctor` to check the
-installed source build ID (`0d2fa6eb…-provider-routing-v46`). Desktop rebuilds require the
-stock app and routed CLI to share the same Codex release line. If the stock app still embeds
-`0.155.0`, use its existing compatible routed build until an updated app is available; a
-locally built, version-matched Desktop repair is separate from the 0.157 CLI release. Use
-`agentroute desktop status` to verify both versions. Matching version banners alone do not
-prove two builds contain the same patches or guarantee mobile remote compatibility.
+Desktop supports both legacy `Contents/Resources/codex` and the new
+`Contents/Resources/codex-cli/bin/codex` package entrypoint (including `CodexCLI.app`).
+Run `agentroute desktop status` to inspect the exact entrypoints, source/destination
+versions, embedded build, and whether Desktop matches the installed runtime. A CLI
+update requires a separate Desktop rebuild. The source and patched runtime must share
+the same `major.minor.patch` release line; older Desktop installations need a matching
+runtime or an official app update before rebuilding. See [Desktop setup](docs/desktop.md).
 
 In the CLI, `agentroute why` and `agentroute history` show whether Codex applied a routed setting;
 `agentroute analytics` summarizes applied, rejected, unavailable, and unverified turns. The
@@ -844,3 +841,11 @@ uv run ruff check .
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SUPPORT.md](SUPPORT.md), and
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Run `./scripts/uninstall.sh` for safe removal
 instructions. Licensed under Apache-2.0.
+
+## Usage and context profiling
+
+Use `agentroute context profile on`, start a new routed Codex session, then run
+`agentroute context profile report`. The report separates fresh input, cache reads/writes,
+output, API-equivalent costs, and context sections. Native capture retains request text locally;
+reports contain counts and sizes. See [usage profiling](docs/usage-profiling.md) for filtering,
+coverage, subscription quota interpretation, and retention.

@@ -51,7 +51,7 @@ def test_desktop_build_is_local_reversible_and_preserves_bundle_id(tmp_path, mon
     assert info["CFBundleIdentifier"] == "com.openai.codex"
     assert info["CFBundleDisplayName"] == "ChatGPT-Routed"
     assert info["AgentRouteDesktopBuild"] == "test-build"
-    assert info["AgentRouteVersion"] == "0.5.55"
+    assert info["AgentRouteVersion"] == "0.5.56"
     assert "Codex-compatible" in info["CFBundleGetInfoString"]
     assert len(smoke_calls) == 1
     assert smoke_calls[0].name == "codex-code-mode-host"
@@ -192,3 +192,71 @@ def test_codex_release_parser_requires_all_three_version_components():
     assert not desktop._codex_versions_compatible(
         "codex-cli 0.155.0-alpha.9.2", "codex-cli 0.156.0-alpha.2.6"
     )
+
+
+@pytest.mark.parametrize(
+    "relative", ["codex", "codex-cli/bin/codex", "codex-cli/CodexCLI.app/Contents/MacOS/codex"]
+)
+def test_desktop_detects_supported_cli_layouts(tmp_path, relative):
+    executable = tmp_path / "Contents/Resources" / relative
+    executable.parent.mkdir(parents=True)
+    executable.write_text("binary")
+    assert desktop.desktop_codex_path(tmp_path) == executable
+
+
+def test_packaged_desktop_replaces_frontend_entrypoints(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    source = tmp_path / "ChatGPT.app"
+    destination = tmp_path / "ChatGPT-Routed.app"
+    _fake_app(source)
+    (source / "Contents/Resources/codex").unlink()
+    entrypoints = ("codex-cli/bin/codex", "codex-cli/CodexCLI.app/Contents/MacOS/codex")
+    for relative in entrypoints:
+        path = source / "Contents/Resources" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("stock")
+    (home / "bin").mkdir(parents=True)
+    for name in ("codex-bin", "codex-code-mode-host"):
+        (home / "bin" / name).write_text(name)
+    (home / "build-id").write_text("new-build\n")
+    monkeypatch.setenv("AGENTROUTE_HOME", str(home))
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(desktop, "smoke_code_mode_host", lambda _path: None)
+    calls = []
+
+    def fake_run(*command, capture=False):
+        calls.append(command)
+        if command[0] == "ditto":
+            shutil.copytree(command[1], command[2])
+        return subprocess.CompletedProcess(
+            command, 0, stdout="codex-cli 0.158.0-alpha.2.1\n", stderr=""
+        )
+
+    monkeypatch.setattr(desktop, "_run", fake_run)
+    desktop.build_desktop_app(source, destination)
+    for relative in entrypoints:
+        assert (destination / "Contents/Resources" / relative).read_bytes() == (
+            desktop._assets_dir() / "codex-launcher"
+        ).read_bytes()
+    assert (source / "Contents/Resources/codex-cli/bin/codex").read_text() == "stock"
+    status = desktop.desktop_status(source, destination)
+    assert status["destination_build_id"] == "new-build"
+    assert status["destination_matches_runtime"] is True
+    assert "codex-cli/bin/codex" in status["source_cli_path"]
+    assert any(
+        str(call[0]).endswith("codex-cli/bin/codex") and call[1:] == ("app-server", "--help")
+        for call in calls
+    )
+
+
+def test_desktop_missing_cli_reports_path_before_version_mismatch(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    source = tmp_path / "ChatGPT.app"
+    source.mkdir()
+    (home / "bin").mkdir(parents=True)
+    for name in ("codex-bin", "codex-code-mode-host"):
+        (home / "bin" / name).write_text(name)
+    monkeypatch.setenv("AGENTROUTE_HOME", str(home))
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    with pytest.raises(FileNotFoundError, match="official Codex CLI not found"):
+        desktop.build_desktop_app(source, tmp_path / "Routed.app")

@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.5.56 — 2026-09-28
+
+- Support the new Codex Desktop CLI package layout (`codex-cli/bin/codex` and
+  `CodexCLI.app`). Detect and replace the frontend's actual entrypoints, verify the
+  rebuilt entrypoint launches the routed runtime, and report source/destination paths
+  and the embedded build separately from the installed CLI. Embedded launchers use
+  their own build identity. Missing source executables now report a concrete path.
+- Port the complete routing stack to Codex `0.158.0-alpha.2.1` (runtime v47), matching
+  the current Desktop bundle and Code Mode host. Preserve Guardian authorization,
+  provider isolation, Claude quota handling, and route application receipts.
+
+
+- Add opt-in `agentroute context profile` capture and reports for provider input, cache reads,
+  cache writes by TTL, output, API-equivalent USD estimates, context composition and repeated
+  request exposure. Join native Codex traces with counts-only Claude bridge receipts, reconstruct
+  WebSocket continuations, show thread growth and quota observations, and flag missing coverage.
+  Preserve Anthropic cache counters in Responses usage instead of discarding them.
+  See [usage profiling](docs/usage-profiling.md).
 
 - Support hosted TypeSafe JEV as the primary classifier through authenticated HTTPS System One.
   `classifier-jev-enable` accepts `--allow-remote`, `--api-key-file`, and `--api-key-env`, verifies

@@ -2,7 +2,7 @@
 set -eu
 
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-UPSTREAM_REF=${1:-rust-v0.157.0}
+UPSTREAM_REF=${1:-rust-v0.158.0-alpha.2.1}
 CHECK_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/agentroute-upstream.XXXXXX")
 # Keep candidate worktrees for diagnostics instead of deleting conflict evidence.
 trap 'printf "Candidate worktree retained at %s\n" "$CHECK_ROOT"' EXIT

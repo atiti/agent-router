@@ -68,3 +68,27 @@ def test_launch_profile_preserves_canonical_codex_home_before_exec(tmp_path, mon
         pass
 
     assert captured["environment"]["CODEX_HOME"] == str(canonical_home)
+
+
+def test_launch_enables_native_traces_and_preserves_explicit_trace_root(tmp_path, monkeypatch):
+    from agentroute.profiling import set_capture
+
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    monkeypatch.delenv("CODEX_ROLLOUT_TRACE_ROOT", raising=False)
+    monkeypatch.setattr("agentroute.launcher.load_config", default_config)
+    captured = {}
+
+    def fake_exec(path, argv, environment):
+        captured.update(environment)
+
+    monkeypatch.setattr("agentroute.launcher.os.execve", fake_exec)
+    binary = tmp_path / "codex"
+    launch_codex(binary, [])
+    assert "CODEX_ROLLOUT_TRACE_ROOT" not in captured
+    set_capture(True)
+    launch_codex(binary, [])
+    assert captured["CODEX_ROLLOUT_TRACE_ROOT"] == str(tmp_path / "profiling" / "traces")
+    assert (tmp_path / "profiling" / "traces").stat().st_mode & 0o777 == 0o700
+    monkeypatch.setenv("CODEX_ROLLOUT_TRACE_ROOT", "/custom/traces")
+    launch_codex(binary, [])
+    assert captured["CODEX_ROLLOUT_TRACE_ROOT"] == "/custom/traces"

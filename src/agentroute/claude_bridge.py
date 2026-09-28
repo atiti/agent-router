@@ -45,6 +45,14 @@ from typing import Any, Literal
 
 from PIL import Image, UnidentifiedImageError
 
+from .context_profile import (
+    capture_enabled,
+    normalize_anthropic_usage,
+    record_bridge_profile,
+    request_identity,
+    summarize_context,
+)
+
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -905,6 +913,8 @@ class ResponsesStream:
         self.blocks: dict[int, dict[str, Any]] = {}
         self.items: list[dict[str, Any]] = []
         self.usage = {"input_tokens": 0, "output_tokens": 0}
+        self.anthropic_usage: dict[str, Any] = {}
+        self.actual_model = model
         self.stop_reason: str | None = None
         self.item_counter = 0
         # Item ids are recorded into the Codex transcript, so they must stay
@@ -935,10 +945,27 @@ class ResponsesStream:
 
     # -- handlers ----------------------------------------------------------- #
 
+    def _update_usage(self, usage: dict[str, Any]) -> None:
+        # Streaming usage counters are cumulative snapshots, not additive deltas.
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "cache_creation",
+        ):
+            if key in usage:
+                if key == "cache_creation" and isinstance(usage[key], dict):
+                    previous = self.anthropic_usage.get(key) or {}
+                    self.anthropic_usage[key] = {**previous, **usage[key]}
+                else:
+                    self.anthropic_usage[key] = usage[key]
+        self.usage = normalize_anthropic_usage(self.anthropic_usage)
+
     def _on_message_start(self, data: dict[str, Any]) -> Iterator[bytes]:
         usage = (data.get("message") or {}).get("usage") or {}
-        self.usage["input_tokens"] = int(usage.get("input_tokens") or 0)
-        self.usage["output_tokens"] = int(usage.get("output_tokens") or 0)
+        self.actual_model = str((data.get("message") or {}).get("model") or self.model)
+        self._update_usage(usage)
         yield self.sse(
             "response.created",
             {
@@ -1095,8 +1122,7 @@ class ResponsesStream:
 
     def _on_message_delta(self, data: dict[str, Any]) -> Iterator[bytes]:
         usage = data.get("usage") or {}
-        if usage.get("output_tokens") is not None:
-            self.usage["output_tokens"] = int(usage["output_tokens"])
+        self._update_usage(usage)
         stop_reason = (data.get("delta") or {}).get("stop_reason")
         if stop_reason:
             self.stop_reason = str(stop_reason)
@@ -1167,7 +1193,10 @@ class ResponsesStream:
                     "output": self.items,
                     "usage": {
                         "input_tokens": self.usage["input_tokens"],
-                        "input_tokens_details": None,
+                        "input_tokens_details": {
+                            "cached_tokens": self.usage.get("cached_input_tokens", 0),
+                            "cache_write_tokens": self.usage.get("cache_write_input_tokens", 0),
+                        },
                         "output_tokens": self.usage["output_tokens"],
                         "output_tokens_details": None,
                         "total_tokens": total,
@@ -1627,6 +1656,29 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         response_id = f"resp_{hashlib.sha256(raw + str(time.time()).encode()).hexdigest()[:24]}"
         stream = ResponsesStream(response_id, model, freeform, renames)
+        profile: dict[str, Any] | None = None
+        if capture_enabled():
+            try:
+                before = read_usage_state().get("snapshot") or {}
+                profile = {
+                    "version": 1,
+                    "source": "anthropic_bridge",
+                    "response_id": response_id,
+                    **request_identity(self.headers, body),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "model": model,
+                    "provider": "anthropic",
+                    "credential_mode": self.credentials.mode,
+                    "context_window": dict(self.models).get(model),
+                    "context": summarize_context(payload, anthropic=True),
+                    "harness_context": summarize_context(body),
+                    "subscription_windows_before": before.get("windows", {}),
+                    "subscription_sample_before_at": before.get("captured_at"),
+                }
+            except Exception:  # Telemetry must never reject an otherwise valid request.
+                self.logger("request profiling unavailable")
+        profile_started = time.monotonic()
+        outcome = "incomplete"
         started = False
         stop_reason = None
         self.logger(
@@ -1643,13 +1695,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     continue
                 if event_type == "message_delta":
                     stop_reason = (data.get("delta") or {}).get("stop_reason") or stop_reason
+                if event_type == "message_stop":
+                    outcome = "completed"
+                elif event_type == "error":
+                    outcome = "failed"
                 if not started:
                     self._start_sse()
                     started = True
                 for chunk in stream.feed(event_type, data):
                     if not self._chunk(chunk):
+                        outcome = "disconnected"
                         return
         except UpstreamRateLimitError as exc:
+            outcome = "rate_limited"
             self.logger(f"upstream rate limit for {model}: {exc}")
             if not started:
                 snapshot = exc.snapshot
@@ -1688,6 +1746,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             ):
                 self._chunk(chunk)
         except CredentialError as exc:
+            outcome = "failed"
             self.logger(f"upstream error for {model}: {exc}")
             if not started:
                 self._json(502, {"error": str(exc)})
@@ -1697,11 +1756,26 @@ class BridgeHandler(BaseHTTPRequestHandler):
             ):
                 self._chunk(chunk)
         except Exception as exc:  # noqa: BLE001 - never leak a traceback to the client
+            outcome = "failed"
             self.logger(f"bridge failure for {model}: {type(exc).__name__}: {exc}")
             if not started:
                 self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
                 return
         finally:
+            if profile is not None:
+                profile.update(
+                    {
+                        "outcome": outcome,
+                        "model": stream.actual_model,
+                        "duration_ms": (time.monotonic() - profile_started) * 1000,
+                        "usage": stream.usage if stream.anthropic_usage else None,
+                        "cache_fields_present": "cache_read_input_tokens" in stream.anthropic_usage,
+                        "cache_ttl_breakdown_present": "cache_creation" in stream.anthropic_usage,
+                        "subscription_windows": (self.usage_snapshot or {}).get("windows", {}),
+                        "subscription_sample_at": (self.usage_snapshot or {}).get("captured_at"),
+                    }
+                )
+                record_bridge_profile(profile)
             if started:
                 self._end_chunks()
             self.logger(f"{model}: finished, stop_reason={stop_reason}")

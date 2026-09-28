@@ -1051,8 +1051,11 @@ class _FakeCredential:
 
 
 @pytest.fixture
-def bridge_server():
-    """A live bridge with a stubbed Anthropic stream, to exercise the HTTP path."""
+def bridge_server(tmp_path, monkeypatch):
+    """A live bridge with a stubbed stream and isolated capture/account state."""
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    monkeypatch.setenv("AGENTROUTE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("AGENTROUTE_PROFILE_CAPTURE", raising=False)
     previous = {
         "stream_factory": BridgeHandler.stream_factory,
         "credentials": getattr(BridgeHandler, "credentials", None),
@@ -1308,3 +1311,59 @@ def test_http_bridge_reports_translation_and_routing_errors(bridge_server):
             timeout=30,
         )
     assert bad_json.value.code == 400
+
+
+def test_stream_preserves_cache_receipts_and_cumulative_usage():
+    stream = ResponsesStream("resp_cache", "claude-opus-5-5")
+    stream.feed("message_start", {"message": {
+        "model": "claude-opus-5-5", "usage": {
+            "input_tokens": 10, "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 20,
+            "cache_creation": {"ephemeral_5m_input_tokens": 15, "ephemeral_1h_input_tokens": 5},
+        },
+    }})
+    stream.feed("message_delta", {"usage": {"output_tokens": 3}})
+    stream.feed("message_delta", {"usage": {"output_tokens": 8}})
+    events = stream.feed("message_stop", {})
+    usage = json.loads(events[-1].decode().split("data: ", 1)[1])["response"]["usage"]
+    assert usage == {
+        "input_tokens": 130,
+        "input_tokens_details": {"cached_tokens": 100, "cache_write_tokens": 20},
+        "output_tokens": 8, "output_tokens_details": None, "total_tokens": 138,
+    }
+    assert stream.usage["cache_write_1h_input_tokens"] == 5
+    assert stream.actual_model == "claude-opus-5-5"
+
+
+def test_http_bridge_profiles_translated_request_without_prompt_text(
+    bridge_server, tmp_path, monkeypatch
+):
+    from agentroute.profiling import read_profiles, set_capture
+
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENTROUTE_STATE_DIR", str(tmp_path / "state"))
+    set_capture(True)
+    server, captured = bridge_server
+    host, port = server.server_address[:2]
+    body = {"model": "claude-sonnet-5", "instructions": "private instruction",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text",
+                       "text": "private user message"}]}], "tools": []}
+    request = urllib.request.Request(
+        f"http://{host}:{port}/v1/responses", data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", "session-id": "s",
+                 "x-codex-inference-call-id": "i1"},
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        response.read()
+    # The handler records before closing the response's chunked stream.
+    rows, errors = read_profiles(tmp_path / "profiling")
+    assert errors == 0 and len(rows) == 1
+    row = rows[0]
+    assert row["outcome"] == "completed"
+    assert row["usage"]["input_tokens"] == 5
+    assert row["usage"]["output_tokens"] == 1
+    assert row["inference_call_id"] == "i1"
+    assert row["context"]["components"]["user_messages"]["bytes"] > 0
+    assert row["harness_context"]["components"]["base_instructions"]["bytes"] > 0
+    assert "private instruction" not in json.dumps(rows)
+    assert "private user message" not in json.dumps(rows)

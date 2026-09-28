@@ -2,6 +2,13 @@
 set -eu
 
 ROUTED_RESOURCES=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+while [ ! -x "$ROUTED_RESOURCES/codex-bin" ]; do
+    if [ "$ROUTED_RESOURCES" = / ]; then
+        printf 'AgentRoute embedded runtime not found. Rebuild the routed Desktop app.\n' >&2
+        exit 1
+    fi
+    ROUTED_RESOURCES=$(dirname "$ROUTED_RESOURCES")
+done
 AGENTROUTE_HOME_DIR=${AGENTROUTE_HOME:-"$HOME/.agentroute"}
 AGENTROUTE_CREDENTIALS="$AGENTROUTE_HOME_DIR/backend-credentials.env"
 
@@ -9,8 +16,8 @@ if [ -f "$AGENTROUTE_CREDENTIALS" ]; then
     . "$AGENTROUTE_CREDENTIALS"
 fi
 
-if [ -f "$AGENTROUTE_HOME_DIR/build-id" ]; then
-    AGENTROUTE_RUNTIME_BUILD_ID=$(sed -n '1p' "$AGENTROUTE_HOME_DIR/build-id")
+if [ -f "$ROUTED_RESOURCES/agentroute-build-id" ]; then
+    AGENTROUTE_RUNTIME_BUILD_ID=$(sed -n '1p' "$ROUTED_RESOURCES/agentroute-build-id")
     export AGENTROUTE_RUNTIME_BUILD_ID
 fi
 
