@@ -113,3 +113,13 @@ The local test entry point is `codex-0157`, installed separately from `codex` wi
 its matching host under `~/.agentroute/candidates/codex-0.157`. It uses the same
 Codex home, hooks, provider credentials, and account routing. It is a test build,
 not a public signed/notarized release; the normal CLI and Desktop remain intact.
+
+## Desktop 0.158 port (AgentRoute 0.5.56)
+
+The release pin is `e17c80b71da526e083043c9a0055cbe9b9279376` on
+`codex/desktop-0158-runtime`, based on the exact Desktop release
+`0d9c7cbfa6cf1489f55a8a9542b75ddd2c061807` (`rust-v0.158.0-alpha.2.1`).
+All 24 routing-stack commits were ported. The substantive conflict preserves
+upstream's inherited agent-control initialization and downstream's isolated reviewer
+credentials. Lockfile workspace versions now match upstream; child spawning imports
+the upstream AgentControl trait. The native CLI version is unchanged.
