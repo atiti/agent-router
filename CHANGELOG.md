@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add opt-in `agentroute context profile` capture and reports for provider input, cache reads,
+  cache writes by TTL, output, API-equivalent USD estimates, context composition and repeated
+  request exposure. Join native Codex traces with counts-only Claude bridge receipts, reconstruct
+  WebSocket continuations, show thread growth and quota observations, and flag missing coverage.
+  Preserve Anthropic cache counters in Responses usage instead of discarding them.
+  See [usage profiling](docs/usage-profiling.md).
+
 - Support hosted TypeSafe JEV as the primary classifier through authenticated HTTPS System One.
   `classifier-jev-enable` accepts `--allow-remote`, `--api-key-file`, and `--api-key-env`, verifies
   the hosted model catalog before saving, and retains the separately configured LLM fallback.

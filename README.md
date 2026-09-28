@@ -844,3 +844,11 @@ uv run ruff check .
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SUPPORT.md](SUPPORT.md), and
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Run `./scripts/uninstall.sh` for safe removal
 instructions. Licensed under Apache-2.0.
+
+## Usage and context profiling
+
+Use `agentroute context profile on`, start a new routed Codex session, then run
+`agentroute context profile report`. The report separates fresh input, cache reads/writes,
+output, API-equivalent costs, and context sections. Native capture retains request text locally;
+reports contain counts and sizes. See [usage profiling](docs/usage-profiling.md) for filtering,
+coverage, subscription quota interpretation, and retention.

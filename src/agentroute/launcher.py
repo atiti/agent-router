@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .config import AppConfig, agentroute_home, load_config
+from .context_profile import capture_enabled, profile_root
 
 BASE_CODEX_ARGS = [
     "--enable",
@@ -74,5 +75,11 @@ def launch_codex(
             file=sys.stderr,
         )
     environment = os.environ.copy()
+    if capture_enabled() and not environment.get("CODEX_ROLLOUT_TRACE_ROOT"):
+        profile_root().mkdir(parents=True, exist_ok=True, mode=0o700)
+        profile_root().chmod(0o700)
+        root = profile_root() / "traces"
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        environment["CODEX_ROLLOUT_TRACE_ROOT"] = str(root)
     argv = codex_argv(binary, user_args, config)
     os.execve(str(binary), argv, environment)

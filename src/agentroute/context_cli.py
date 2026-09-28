@@ -10,8 +10,10 @@ import typer
 from .config import codex_home, load_config, save_config
 from .context import related_memories
 from .efficiency import execution_receipt
+from .profile_cli import app as profile_app
 
-app = typer.Typer(no_args_is_help=True, help="Preview existing Codex memory references.")
+app = typer.Typer(no_args_is_help=True, help="Inspect and control context and usage profiling.")
+app.add_typer(profile_app, name="profile")
 
 
 @app.command("search")

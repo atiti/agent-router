@@ -188,6 +188,7 @@ class ModelPrice(BaseModel):
     cached_input_per_million: float = Field(ge=0)
     output_per_million: float = Field(ge=0)
     cache_write_per_million: float | None = Field(default=None, ge=0)
+    cache_write_1h_per_million: float | None = Field(default=None, ge=0)
 
 
 class ModelCapabilities(BaseModel):
@@ -271,24 +272,28 @@ class PricingConfig(BaseModel):
                 input_per_million=1.00,
                 cached_input_per_million=0.10,
                 cache_write_per_million=1.25,
+                cache_write_1h_per_million=2.00,
                 output_per_million=5.00,
             ),
             "claude-sonnet-5": ModelPrice(
                 input_per_million=2.00,
                 cached_input_per_million=0.20,
                 cache_write_per_million=2.50,
+                cache_write_1h_per_million=4.00,
                 output_per_million=10.00,
             ),
             "claude-opus-5": ModelPrice(
                 input_per_million=5.00,
                 cached_input_per_million=0.50,
                 cache_write_per_million=6.25,
+                cache_write_1h_per_million=10.00,
                 output_per_million=25.00,
             ),
             "claude-opus-5-5": ModelPrice(
                 input_per_million=4.00,
                 cached_input_per_million=0.20,
                 cache_write_per_million=5.00,
+                cache_write_1h_per_million=8.00,
                 output_per_million=20.00,
             ),
         }
