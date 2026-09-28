@@ -77,6 +77,10 @@ def report(
     if not data["requests_count"]:
         console.print("No captured requests in this range. Use profile on and start a new session.")
         return
+    console.print(
+        f"{data['classifier_requests']:,} recorded routing classifier calls; "
+        f"{data['requests_count'] - data['classifier_requests']:,} model/compaction attempts"
+    )
     table = Table(title="Measured tokens and API-equivalent cost estimates")
     table.add_column("Component")
     table.add_column("Tokens", justify="right")
@@ -104,7 +108,12 @@ def report(
             str(row["requests"]),
             f"{row['tokens']['input_tokens']:,}",
             f"{row['tokens']['output_tokens']:,}",
-            f"${row['priced_usd']:.4f}",
+            (
+                "unknown"
+                if row["unpriced_requests"] == row["requests"]
+                else f"${row['priced_usd']:.4f}"
+                + (" (partial)" if row["unpriced_requests"] else "")
+            ),
         )
     console.print(models)
     threads = Table(title="Threads and context growth (classifier input excluded)")
@@ -119,16 +128,20 @@ def report(
             f"{row['max_input_tokens']:,}",
             f"${row['priced_usd']:.4f}",
         )
-    console.print(threads)
-    largest = data["largest_context_request"] or data["largest_requests"][0]
+    if any(row["first_input_tokens"] is not None for row in data["threads"]):
+        console.print(threads)
+    largest = data["largest_context_request"] or {}
     context = largest.get("context", {})
     usage = largest.get("usage") or {}
-    console.print(
-        f"Largest captured context input: {usage.get('input_tokens', 0):,} tokens; "
-        f"model {largest.get('model')}; thread {largest.get('thread_id')}; "
-        f"turn {largest.get('turn_id')}",
-        markup=False,
-    )
+    if largest:
+        console.print(
+            f"Largest captured context input: {usage.get('input_tokens', 0):,} tokens; "
+            f"model {largest.get('model')}; thread {largest.get('thread_id')}; "
+            f"turn {largest.get('turn_id')}",
+            markup=False,
+        )
+    else:
+        console.print("No assembled request captures yet. Start a new routed Codex session.")
     if largest.get("context_window"):
         console.print(
             f"Provider input / advertised window: "
@@ -152,7 +165,8 @@ def report(
             f"{part.get('estimated_tokens', 0):,}",
             f"{data['context_exposure_bytes'][key]:,}",
         )
-    console.print(components)
+    if context.get("components"):
+        console.print(components)
     if context.get("largest_named_items"):
         named = Table(title="Largest named content in that request")
         for name in ("Kind", "Skill / tool", "Bytes"):

@@ -444,8 +444,10 @@ def profile_report(
                 "measured_requests": 0,
                 "tokens": {key: 0 for key in _USAGE_KEYS},
                 "priced_usd": 0.0,
+                "unpriced_requests": 0,
             },
         )
+        group["unpriced_requests"] += not row["cost"]["priced"]
         group["requests"] += 1
         thread = str(row.get("thread_id") or row.get("session_id") or "unknown")
         thread_group = threads.setdefault(

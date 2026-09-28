@@ -546,3 +546,27 @@ def test_json_schema_properties_named_type_cannot_break_context_capture():
         anthropic=True,
     )
     assert result["components"]["tool_calls"]["bytes"] > 0
+
+
+def test_classifier_only_report_does_not_claim_captured_context(home):
+    with sqlite3.connect(home / "audit.db") as connection:
+        connection.execute(
+            "CREATE TABLE routing_decisions(id, created_at, session_id, turn_id, "
+            "classifier_usage, selection_receipt)"
+        )
+        connection.execute(
+            "INSERT INTO routing_decisions VALUES(?,?,?,?,?,?)",
+            (
+                1,
+                datetime.now(timezone.utc).isoformat(),
+                "s",
+                "t",
+                json.dumps({"prompt_tokens": 100}),
+                json.dumps({"classifier": {"model": "local-unpriced"}}),
+            ),
+        )
+    result = CliRunner().invoke(app, ["report"])
+    assert result.exit_code == 0, result.output
+    assert "No assembled request captures yet" in result.output
+    assert "Largest captured context" not in result.output
+    assert "unknown" in result.output
