@@ -1,6 +1,7 @@
 import json
 from unittest.mock import patch
 
+from click import unstyle
 from typer.testing import CliRunner
 
 from agentroute.capacity import CapacityState
@@ -337,7 +338,7 @@ def test_hosted_jev_enable_requires_explicit_egress_and_keeps_config(tmp_path, m
         "--model", "jev-latest",
     ])
     assert result.exit_code == 2
-    assert "--allow-remote" in result.output
+    assert "--allow-remote" in unstyle(result.output)
     assert path.read_bytes() == before
 
 
