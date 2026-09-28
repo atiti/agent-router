@@ -14,7 +14,7 @@ from .bridge_service import (
     service_installed,
     service_port,
 )
-from .classifier import catalog_age_seconds, read_api_key
+from .classifier import JevShadowClassifier, catalog_age_seconds, is_loopback_endpoint, read_api_key
 from .config import AppConfig, agentroute_home, codex_home, config_path, model_capabilities
 from .install import hook_command
 from .profiles import account_credential_home
@@ -280,6 +280,25 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
     classifier = config.routing.classifier
     if not classifier.enabled:
         checks.append(DoctorCheck("classifier", "warn", "disabled; deterministic routing only"))
+    elif classifier.engine == "jev":
+        active = classifier.jev_shadow
+        try:
+            JevShadowClassifier(active)
+            remote = not is_loopback_endpoint(active.endpoint)
+            if remote and not active.allow_remote:
+                checks.append(DoctorCheck("classifier", "fail", "remote JEV prompt egress blocked"))
+            elif remote and not read_api_key(active):
+                checks.append(DoctorCheck("classifier", "fail", "JEV credential missing"))
+            elif remote and (
+                (age := catalog_age_seconds(active)) is None or age > active.catalog_ttl_seconds
+            ):
+                checks.append(DoctorCheck("classifier", "warn", "JEV catalog stale or unverified"))
+            else:
+                checks.append(
+                    DoctorCheck("classifier", "pass", f"{active.model}; {active.endpoint}")
+                )
+        except (OSError, RuntimeError, ValueError) as error:
+            checks.append(DoctorCheck("classifier", "fail", str(error)))
     else:
         try:
             credential_ready = bool(read_api_key(classifier)) or classifier.endpoint.startswith(

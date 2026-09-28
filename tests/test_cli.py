@@ -1,6 +1,7 @@
 import json
 from unittest.mock import patch
 
+from rich.text import Text
 from typer.testing import CliRunner
 
 from agentroute.capacity import CapacityState
@@ -299,3 +300,65 @@ def test_capacity_status_uses_active_profile_telemetry_and_hides_raw_account_id(
     assert payload["profiles"][0]["account_hash"] == "hashed-account"
     assert "account_id" not in payload["profiles"][0]["capacity"]
     assert "raw-account-id" not in result.output
+
+
+
+def test_hosted_jev_enable_verifies_catalog_and_preserves_llm_fallback(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
+    config = default_config()
+    config.routing.classifier.endpoint = "http://127.0.0.1:8081/v1/chat/completions"
+    config.routing.classifier.model = "qwen-fallback"
+    save_config(config, path)
+    with patch("agentroute.classifier.JevShadowClassifier.verify_catalog", return_value=(
+        ["jev-latest"], "catalog-hash", "2026-09-28T00:00:00+00:00",
+    )):
+        result = runner.invoke(app, [
+            "classifier-jev-enable", "--endpoint", "https://api.typesafe.ai/v1/systemone",
+            "--model", "jev-latest", "--api-key-file", str(tmp_path / "key"),
+            "--allow-remote", "--timeout", "5",
+        ])
+    assert result.exit_code == 0, result.output
+    settings = load_config(path).routing.classifier
+    assert settings.engine == "jev" and settings.enabled
+    assert settings.jev_shadow.allow_remote
+    assert settings.jev_shadow.catalog_models == ["jev-latest"]
+    assert settings.model == "qwen-fallback"
+    assert settings.endpoint == "http://127.0.0.1:8081/v1/chat/completions"
+    assert settings.api_key_file is None
+
+
+def test_hosted_jev_enable_requires_explicit_egress_and_keeps_config(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
+    save_config(default_config(), path)
+    before = path.read_bytes()
+    result = runner.invoke(app, [
+        "classifier-jev-enable", "--endpoint", "https://api.typesafe.ai/v1/systemone",
+        "--model", "jev-latest",
+    ])
+    assert result.exit_code == 2
+    assert "--allow-remote" in Text.from_ansi(result.output).plain
+    assert path.read_bytes() == before
+
+
+def test_jev_catalog_verify_and_refresh_use_active_endpoint(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
+    config = default_config()
+    config.routing.classifier.enabled = True
+    config.routing.classifier.engine = "jev"
+    config.routing.classifier.jev_shadow.endpoint = "https://api.typesafe.ai/v1/systemone"
+    config.routing.classifier.jev_shadow.model = "jev-latest"
+    config.routing.classifier.jev_shadow.allow_remote = True
+    save_config(config, path)
+    with patch("agentroute.classifier.JevShadowClassifier.verify_catalog", return_value=(
+        ["jev-latest"], "digest", "2026-09-28T00:00:00+00:00",
+    )) as verify:
+        result = runner.invoke(app, ["classifier-refresh"])
+        assert result.exit_code == 0, result.output
+        result = runner.invoke(app, ["classifier-verify"])
+        assert result.exit_code == 0, result.output
+    assert verify.call_count == 2
+    assert load_config(path).routing.classifier.jev_shadow.catalog_hash == "digest"
+    assert load_config(path).routing.classifier.catalog_hash is None

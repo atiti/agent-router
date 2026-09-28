@@ -169,7 +169,7 @@ def catalog_endpoint(endpoint: str) -> str:
     return urllib.parse.urlunparse(parsed._replace(path=path[: -len(marker)] + "/models"))
 
 
-def read_api_key(config: ClassifierConfig) -> str | None:
+def read_api_key(config: ClassifierConfig | JevShadowConfig) -> str | None:
     value = os.environ.get(config.api_key_env)
     if value:
         return value.strip()
@@ -190,7 +190,7 @@ def read_api_key(config: ClassifierConfig) -> str | None:
     return value
 
 
-def catalog_age_seconds(config: ClassifierConfig) -> float | None:
+def catalog_age_seconds(config: ClassifierConfig | JevShadowConfig) -> float | None:
     if not config.catalog_checked_at:
         return None
     checked = datetime.fromisoformat(config.catalog_checked_at.replace("Z", "+00:00"))
@@ -358,27 +358,57 @@ class OpenAICompatibleClassifier:
 
 
 class JevShadowClassifier:
-    """Call local-jev's System 1 endpoint with bounded, typed choices.
-
-    This intentionally has no dependency on the production classifier path.  It
-    is only used to collect calibration evidence in an audit receipt.
-    """
+    """Call local or hosted System One with typed routing questions."""
 
     def __init__(self, config: JevShadowConfig) -> None:
         self.config = config
         parsed = urllib.parse.urlparse(config.endpoint)
-        if parsed.scheme != "http" or not is_loopback_endpoint(config.endpoint):
-            raise ValueError("Jev shadow endpoint must use loopback HTTP")
+        if (
+            not parsed.hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment
+        ):
+            raise ValueError("JEV endpoint must be a plain HTTP(S) URL")
+        if parsed.scheme != "https" and not (
+            parsed.scheme == "http" and is_loopback_endpoint(config.endpoint)
+        ):
+            raise ValueError("JEV endpoint must use loopback HTTP or authenticated HTTPS")
         if not parsed.path.rstrip("/").endswith("/v1/systemone"):
             raise ValueError("Jev shadow endpoint must end with /v1/systemone")
         self.last_status = "idle"
         self.last_error_type: str | None = None
-        self.source = "local_jev"
+        self.source = "local_jev" if is_loopback_endpoint(config.endpoint) else "cloud_jev"
         self.last_response_metadata: dict[str, object] = {}
         self.last_request_hash: str | None = None
         self.last_latency_ms: float | None = None
         self.last_usage: dict[str, int | float] = {}
         self.last_previous_context_chars = 0
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "User-Agent": "agentroute/0.5"}
+        if self.source == "cloud_jev":
+            if not self.config.allow_remote:
+                raise RuntimeError("remote JEV prompt egress is not enabled")
+            api_key = read_api_key(self.config)
+            if not api_key:
+                raise RuntimeError("JEV classifier credential is missing")
+            headers["Authorization"] = f"Bearer {api_key}"
+        return headers
+
+    def verify_catalog(self) -> tuple[list[str], str, str]:
+        parsed = urllib.parse.urlparse(self.config.endpoint)
+        endpoint = urllib.parse.urlunparse(parsed._replace(path="/v1/models"))
+        request = urllib.request.Request(endpoint, headers=self._headers(), method="GET")
+        with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
+            payload = json.loads(response.read())
+        models = sorted(
+            str(item["name"])
+            for item in payload.get("models", [])
+            if isinstance(item, dict) and item.get("name")
+        )
+        if self.config.model not in models:
+            raise RuntimeError(f"JEV model absent from catalog: {self.config.model}")
+        digest = hashlib.sha256(json.dumps(models, separators=(",", ":")).encode()).hexdigest()
+        return models, digest, datetime.now(timezone.utc).isoformat()
 
     def evaluate(self, context: RouteContext) -> JevShadowResult:
         self.last_status = "started"
@@ -445,7 +475,7 @@ class JevShadowClassifier:
         request = urllib.request.Request(
             self.config.endpoint,
             data=body,
-            headers={"Content-Type": "application/json", "User-Agent": "agentroute/0.5"},
+            headers=self._headers(),
             method="POST",
         )
         started = time.perf_counter()
@@ -532,5 +562,5 @@ class JevShadowClassifier:
             reasoning_effort=result.reasoning_effort,
             confidence=result.tier_confidence,
             task_type=result.task_type,
-            reason="local JEV System 1 typed classification",
+            reason=f"{self.source} System One typed classification",
         )

@@ -257,6 +257,7 @@ class Router:
                 "private_llm_fallback",
                 "cloud_llm_fallback",
                 "local_jev",
+                "cloud_jev",
             }
             and proposed is Tier.FAST
             and classifier_task_type not in FAST_SAFE_TASK_TYPES
@@ -660,6 +661,7 @@ class Router:
             "private_llm_fallback",
             "cloud_llm_fallback",
             "local_jev",
+            "cloud_jev",
             "heuristic_jev_low_confidence",
             "heuristic_fallback",
         }
@@ -687,6 +689,7 @@ class Router:
                 "private_llm_fallback",
                 "cloud_llm_fallback",
                 "local_jev",
+                "cloud_jev",
                 "heuristic_jev_low_confidence",
             }
             else "error"
@@ -708,10 +711,15 @@ class Router:
             and getattr(self._last_classifier, "last_previous_context_chars", 0)
         )
         task_context_used = resolved_task_inherited or previous_context_sent
-        catalog_age = catalog_age_seconds(classifier_config)
+        active_config = getattr(
+            self._last_classifier, "config",
+            (classifier_config.jev_shadow
+             if classifier_config.engine == "jev" else classifier_config),
+        )
+        catalog_age = catalog_age_seconds(active_config)
         if catalog_age is None:
             catalog_status = "unverified"
-        elif catalog_age <= classifier_config.catalog_ttl_seconds:
+        elif catalog_age <= active_config.catalog_ttl_seconds:
             catalog_status = "fresh"
         else:
             catalog_status = "stale"
@@ -779,8 +787,8 @@ class Router:
                 ),
                 "status": classifier_status,
                 "error_type": classifier_error_type,
-                "catalog_hash": classifier_config.catalog_hash,
-                "catalog_checked_at": classifier_config.catalog_checked_at,
+                "catalog_hash": active_config.catalog_hash,
+                "catalog_checked_at": active_config.catalog_checked_at,
                 "catalog_status": catalog_status,
                 "provider_response": getattr(
                     self._last_classifier, "last_response_metadata", {}
@@ -942,7 +950,7 @@ class Router:
                 )
             )
             return proposed, confidence, "heuristic_fallback", None, None, None, None
-        if self.classifier.source == "local_jev":
+        if self.classifier.source in {"local_jev", "cloud_jev"}:
             self._jev_observation = {
                 "tier": str(result.tier),
                 "confidence": result.confidence,
@@ -953,7 +961,7 @@ class Router:
                 "tier_signals": getattr(self.classifier, "last_tier_signals", {}),
             }
         if (
-            self.classifier.source == "local_jev"
+            self.classifier.source in {"local_jev", "cloud_jev"}
             and result.confidence
             < self.config.routing.classifier.jev_shadow.acceptance_threshold
         ):
@@ -962,9 +970,9 @@ class Router:
                     code=ReasonCode.JEV_LOW_CONFIDENCE,
                     weight=0,
                     detail=(
-                        f"local JEV confidence {result.confidence:.0%} below "
+                        f"JEV confidence {result.confidence:.0%} below "
                         f"{self.config.routing.classifier.jev_shadow.acceptance_threshold:.0%}; "
-                        "requesting configured local LLM fallback"
+                        "requesting configured LLM fallback"
                         if self.fallback_classifier is not None
                         else "retained heuristic route"
                     ),
@@ -985,7 +993,7 @@ class Router:
                             code=ReasonCode.CLASSIFIER_FALLBACK,
                             weight=0,
                             detail=(
-                                "local JEV was low confidence and LLM fallback was unavailable "
+                                "JEV was low confidence and LLM fallback was unavailable "
                                 f"({type(error).__name__}); used heuristic"
                             ),
                         )
@@ -997,7 +1005,7 @@ class Router:
                         weight=0,
                         detail=(
                             f"{self.fallback_classifier.source} selected "
-                            f"{fallback_result.tier.name} after low-confidence local JEV"
+                            f"{fallback_result.tier.name} after low-confidence JEV"
                         ),
                     )
                 )
@@ -1023,7 +1031,7 @@ class Router:
             ScoreContribution(
                 code=(
                     ReasonCode.JEV_CLASSIFIER
-                    if self.classifier.source == "local_jev"
+                    if self.classifier.source in {"local_jev", "cloud_jev"}
                     else ReasonCode.LLM_CLASSIFIER
                 ),
                 weight=0,

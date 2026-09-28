@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Support hosted TypeSafe JEV as the primary classifier through authenticated HTTPS System One.
+  `classifier-jev-enable` accepts `--allow-remote`, `--api-key-file`, and `--api-key-env`, verifies
+  the hosted model catalog before saving, and retains the separately configured LLM fallback.
+  Status, doctor, catalog verify/refresh, route notices, confidence gating, and audit receipts
+  now distinguish hosted `cloud_jev` from the local substitute. Credential files stay private.
+  Include Jev 1.13 input-only pricing and recognize TypeSafe API keys as sensitive prompts.
+
 - Keep Claude and other foreign limit snapshots out of ChatGPT capacity checks. After a Claude
   quota error, `@gpt` and `@auto` no longer treat Claude's exhausted window as a GPT lock.
   Account-validated ChatGPT usage restrictions still apply. Fresh healthy account probes can

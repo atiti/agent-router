@@ -1,3 +1,5 @@
+import pytest
+
 from agentroute.classifier import ClassifierResult
 from agentroute.config import ExecutionBackendConfig, ModelTarget, default_config
 from agentroute.models import ReasonCode, RouteContext, Tier
@@ -175,7 +177,8 @@ def test_hybrid_fails_back_to_heuristic():
     assert ReasonCode.CLASSIFIER_FALLBACK in decision.reason_codes
 
 
-def test_low_confidence_jev_uses_local_llm_fallback_and_audits_both_steps():
+@pytest.mark.parametrize("source", ["local_jev", "cloud_jev"])
+def test_low_confidence_jev_uses_local_llm_fallback_and_audits_both_steps(source):
     config = default_config()
     config.routing.classifier.enabled = True
     config.routing.classifier.engine = "jev"
@@ -188,7 +191,7 @@ def test_low_confidence_jev_uses_local_llm_fallback_and_audits_both_steps():
             confidence=0.20,
             reasoning_effort="high",
             task_type="debugging",
-            source="local_jev",
+            source=source,
         ),
         fallback_classifier=FakeClassifier(
             tier=Tier.SMART,
@@ -677,3 +680,37 @@ def test_backend_missing_credential_fails_visibly_to_gpt(tmp_path, monkeypatch):
     assert decision.backend == "gpt"
     assert decision.model_provider == "openai"
     assert ReasonCode.BACKEND_FALLBACK in decision.reason_codes
+
+
+
+def test_hosted_jev_route_records_source_latency_usage_and_reason():
+    config = default_config()
+    config.routing.classifier.enabled = True
+    config.routing.classifier.engine = "jev"
+    config.routing.mode = "llm"
+    classifier = FakeClassifier(source="cloud_jev")
+    classifier.last_latency_ms = 450.0
+    classifier.last_usage = {"input_tokens": 736, "output_tokens": 254}
+    decision = Router(config, classifier=classifier).route(RouteContext(
+        session_id="hosted-test", latest_prompt="Implement a robust parser for nested records.",
+    ))
+    assert decision.classification_source == "cloud_jev"
+    assert ReasonCode.JEV_CLASSIFIER in decision.reason_codes
+    assert decision.classifier_latency_ms == 450.0
+    assert decision.classifier_usage == {"input_tokens": 736, "output_tokens": 254}
+    assert decision.selection_receipt["classifier"]["status"] == "succeeded"
+
+
+
+def test_typesafe_key_in_prompt_stays_out_of_hosted_classifier():
+    config = default_config()
+    config.routing.classifier.engine = "jev"
+    config.routing.classifier.enabled = True
+    config.routing.mode = "llm"
+    classifier = FakeClassifier(source="cloud_jev")
+    key = "apikey_" + "a" * 32 + "_" + "b" * 64
+    decision = Router(config, classifier=classifier).route(RouteContext(
+        session_id="s", latest_prompt=f"Configure classification using {key}",
+    ))
+    assert classifier.calls == 0
+    assert decision.classification_source == "heuristic_sensitive"

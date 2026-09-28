@@ -69,11 +69,18 @@ class ContextConfig(BaseModel):
 
 
 class JevShadowConfig(BaseModel):
-    """Local, non-authoritative System 1 classifier experiment settings."""
+    """System One endpoint settings for primary or shadow classification."""
 
     enabled: bool = False
     endpoint: str = "http://127.0.0.1:8091/v1/systemone"
     model: str = "nli-deberta-large"
+    allow_remote: bool = False
+    api_key_env: str = "TYPESAFE_API_KEY"
+    api_key_file: str | None = None
+    catalog_ttl_seconds: int = Field(default=86_400, ge=60)
+    catalog_checked_at: str | None = None
+    catalog_hash: str | None = None
+    catalog_models: list[str] = Field(default_factory=list)
     timeout_seconds: float = Field(default=0.75, ge=0.05, le=10)
     acceptance_threshold: float = Field(default=0.55, ge=0, le=1)
     llm_fallback_enabled: bool = True
@@ -243,6 +250,19 @@ class PricingConfig(BaseModel):
                 input_per_million=1.32,
                 cached_input_per_million=0.044,
                 output_per_million=3.96,
+            ),
+            # TypeSafe Jev 1.13 charges $0.042/MTok input; output is free.
+            "jev-latest": ModelPrice(
+                input_per_million=0.042, cached_input_per_million=0.042,
+                output_per_million=0,
+            ),
+            "jev-preview": ModelPrice(
+                input_per_million=0.042, cached_input_per_million=0.042,
+                output_per_million=0,
+            ),
+            "jev-1.13.0": ModelPrice(
+                input_per_million=0.042, cached_input_per_million=0.042,
+                output_per_million=0,
             ),
             # Claude rates come from Anthropic's published pricing page
             # (platform.claude.com/docs/en/about-claude/pricing). `cache_write`

@@ -169,3 +169,23 @@ def test_ensure_claude_bridge_backend_registers_tiers_and_is_idempotent(tmp_path
     assert ensure_claude_bridge_backend(config, 8091) is False
     assert config.backends["claude"].tiers["fast"].model == "claude-sonnet-5"
     assert config.backends["claude"].base_url == "http://127.0.0.1:8091/v1"
+
+
+
+def test_doctor_reports_hosted_jev_instead_of_fallback_catalog(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    config = default_config()
+    config.routing.classifier.enabled = True
+    config.routing.classifier.engine = "jev"
+    active = config.routing.classifier.jev_shadow
+    active.endpoint = "https://api.typesafe.ai/v1/systemone"
+    active.model = "jev-latest"
+    active.allow_remote = True
+    active.catalog_checked_at = datetime.now(timezone.utc).isoformat()
+    active.catalog_models = ["jev-latest"]
+    check = next(c for c in run_doctor(config) if c.name == "classifier")
+    assert check.status == "pass"
+    assert "jev-latest" in check.detail
+    assert "typesafe.ai" in check.detail

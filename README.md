@@ -477,6 +477,40 @@ agentroute classifier-enable \
 
 Use `agentroute classifier-disable` to return to deterministic-only routing.
 
+### Hosted TypeSafe JEV as primary classifier
+
+Use [TypeSafe's official System One API](https://docs.typesafe.ai/api) with a private key file
+(mode `600`) or the `TYPESAFE_API_KEY` environment variable:
+
+```sh
+agentroute classifier-jev-enable \
+  --endpoint https://api.typesafe.ai/v1/systemone \
+  --model jev-latest \
+  --api-key-file ~/.agentroute/credentials/typesafe-api-key \
+  --allow-remote \
+  --timeout 5 \
+  --acceptance-threshold 0.55
+agentroute classifier-status
+agentroute classifier-verify
+agentroute doctor
+```
+
+The setup command authenticates and checks the model catalog before saving. `--allow-remote`
+authorizes sending the current classification prompt to TypeSafe; previous assistant context
+is excluded by default. The key stays in its private file, outside the config and audit receipts.
+The hosted model is primary, while your existing OpenAI-compatible classifier configuration
+remains the fallback for low-confidence selections. Timeouts and API failures use deterministic
+heuristics. Manual tags, credential-sensitive prompt handling, and risk floors still apply.
+Audit receipts distinguish `cloud_jev` from the local substitute and record the actual responding
+model, latency, token usage, and tier signals. `classifier-refresh` refreshes its catalog when stale.
+New prompts load the configuration immediately; no Codex restart is required.
+
+`jev-latest` is TypeSafe's stable alias, currently pointing to `jev-1.13.0`. The alias can move
+with a future release; see [TypeSafe models](https://docs.typesafe.ai/models). The bundled
+Jev 1.13 price is $0.042 per million input tokens, with free output; receipts include its
+classifier overhead.
+`agentroute classifier-llm-enable` switches back to your configured LLM classifier.
+
 ### Optional local JEV cascade
 
 If you run a loopback-compatible [local-JEV](https://github.com/amithgc/local-jev)

@@ -148,3 +148,12 @@ def test_report_counts_classifier_cost_before_answer_usage_arrives(tmp_path):
     assert report.measured_turns == 0
     assert report.unmeasured_turns == 1
     assert report.classifier_cost == pytest.approx(0.000032)
+
+
+
+def test_jev_classifier_cost_charges_input_only():
+    from agentroute.pricing import token_cost
+    config = default_config()
+    cost = token_cost("jev-latest", {"input_tokens": 1000000, "output_tokens": 1000000},
+                      config.pricing)
+    assert cost == 0.042
