@@ -53,6 +53,14 @@ def subscription_state(
     nested = data.get("rateLimits") or data.get("rate_limits")
     if isinstance(nested, dict):
         data = nested
+    # Codex sends the latest provider's snapshot, which may belong to Claude
+    # after a routed turn. Its windows and merged spend metadata are not GPT
+    # telemetry. The independent account-validated usage flag above remains valid.
+    limit_id = data.get("limit_id") or data.get("limitId")
+    if limit_id and not (
+        limit_id == "codex" or str(limit_id).startswith(("codex_", "codex-"))
+    ):
+        data = {}
     reached = data.get("rateLimitReachedType") or data.get("rate_limit_reached_type")
     spend_reached = data.get("spendControlReached")
     if spend_reached is None:
@@ -75,7 +83,15 @@ def subscription_state(
     if ordinary_allowed is False or reached or spend_reached is True or (
         used_percent is not None and used_percent >= config.capacity.switch_percent
     ):
-        reason = str(reached or "subscription usage unavailable")
+        reason = (
+            str(reached)
+            if reached
+            else "subscription usage not allowed"
+            if ordinary_allowed is False
+            else "subscription spend control reached"
+            if spend_reached is True
+            else _subscription_usage_detail(used_percent)
+        )
         return CapacityState(
             "gpt", "exhausted", reason, "subscription", used_percent, resets_at, account_id
         )

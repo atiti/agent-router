@@ -125,6 +125,31 @@ agentroute backend-route normal gpt    # back to the subscription
 Tier overrides compose, so `@claude @smart ...` runs that turn on `claude-opus-5`, and the next
 prompt can switch back to `@gpt`.
 
+### Switching after a Claude usage limit
+
+When Claude reaches its 5-hour or weekly limit, use a different backend in the same session:
+
+```text
+@gpt continue
+@azure-direct @max continue
+```
+
+Claude's recorded limit belongs to Claude and does not count against your ChatGPT quota.
+AgentRoute keeps a genuine ChatGPT account lock and API budget limits in force, and a fresh
+healthy account read can recover a stale session lock. Check `agentroute capacity status`
+for the destination account's current capacity.
+
+`@auto continue` clears your manual route and returns to configured routing. It can use another
+backend only when a fallback is configured; it does not search every enabled provider. To permit
+GPT routes to fall back to your existing Azure Direct backend, configure:
+
+```sh
+agentroute capacity fallback gpt azure-direct
+```
+
+An explicit provider remains selected until another provider tag or `@auto` clears it. A tier
+such as `@max` chooses the model within that provider; it does not select a different provider.
+
 ## Models, tiers, and pricing
 
 The bridge serves the tiers of the `claude` backend and advertises them through

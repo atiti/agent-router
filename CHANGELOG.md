@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Keep Claude and other foreign limit snapshots out of ChatGPT capacity checks. After a Claude
+  quota error, `@gpt` and `@auto` no longer treat Claude's exhausted window as a GPT lock.
+  Account-validated ChatGPT usage restrictions still apply. Fresh healthy account probes can
+  recover a stale session lock on the same account before attempting account failover.
+- Explain switching providers after a Claude quota error and that `@auto` requires configured
+  fallbacks when the selected backend is truly exhausted. Capacity errors now report the
+  actual usage or account restriction instead of calling exhausted telemetry unavailable.
+
 - Resize outbound Claude images to Anthropic's request-dependent dimension limit: 2000 px
   on either axis when the request contains more than 20 images, otherwise 8000 px. Count
   conversation history and nested tool results, preserving aspect ratio, supported image
