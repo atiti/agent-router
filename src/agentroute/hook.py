@@ -340,7 +340,25 @@ def codex_user_prompt_submit(
                 )
                 or None
             )
+        goal_id = payload.get("goal_id")
+        goal_id = goal_id if isinstance(goal_id, str) and goal_id else None
+        goal_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest() if goal_id else None
+        goal_continuation = bool(
+            goal_id
+            and previous_route is not None
+            and store.goal_route_is_current(session_id, route_scope, agent_id, goal_id, goal_hash)
+        )
+        if goal_continuation:
+            # Objective tags apply on activation; later explicit turns may change the route.
+            tier_override = backend_override = reasoning_effort_override = None
+        if goal_id and not goal_continuation:
+            # A new or edited objective must not inherit a prior task's tier.
+            interrupted_route = None
+            previous_tier = None
+            previous_reasoning_effort = None
         sticky_backend = store.route_preference(session_id, route_scope, agent_id)
+        if goal_continuation and sticky_backend is None:
+            sticky_backend = store.previous_backend(session_id, route_scope, agent_id)
         requested_backend = (
             str(payload.get("requested_backend"))
             if route_scope == "subagent" and payload.get("requested_backend")
@@ -376,7 +394,7 @@ def codex_user_prompt_submit(
             inherited_backend = None
         elif backend_override:
             sticky_backend = backend_override
-        routing_input = "continue" if opaque_subagent_followup else prompt
+        routing_input = "continue" if opaque_subagent_followup or goal_continuation else prompt
         continuation = continues_previous_task(routing_input)
         classifier_needs_context = (
             config.routing.classifier.enabled
@@ -385,7 +403,7 @@ def codex_user_prompt_submit(
         )
         task_definition = (
             previous_assistant_task(payload.get("transcript_path"))
-            if continuation or classifier_needs_context
+            if not goal_id and (continuation or classifier_needs_context)
             else None
         )
         agent_request = (
@@ -593,6 +611,17 @@ def codex_user_prompt_submit(
                     decision.selection_receipt, sort_keys=True, separators=(",", ":")
                 ).encode()
             ).hexdigest()
+        if goal_id:
+            decision.selection_receipt["goal_routing"] = {
+                "goal_id": goal_id,
+                "objective_hash": goal_hash,
+                "mode": "continuation" if goal_continuation else "classify_objective",
+            }
+            decision.selection_receipt_hash = hashlib.sha256(
+                json.dumps(
+                    decision.selection_receipt, sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
         _record_jev_shadow(decision, context, config)
         store.record(
             decision,
@@ -602,6 +631,8 @@ def codex_user_prompt_submit(
                 "pending" if config.enabled and not decision.capacity_blocked else "not_requested"
             ),
         )
+        if goal_id and config.enabled and not decision.capacity_blocked:
+            store.remember_goal_route(session_id, route_scope, agent_id, goal_id, goal_hash)
         action = "Selected" if config.enabled else "Would select"
         reasons = ", ".join(code.value for code in decision.reason_codes) or "DEFAULT"
         confidence_kind = (
