@@ -1998,12 +1998,13 @@ def test_goal_continuation_respects_later_manual_tier(tmp_path):
     config.routing.classifier.enabled = False
     config.capacity.enabled = False
     store = AuditStore(tmp_path / "audit.sqlite")
-    invoke(config, store, "@max Implement objective", goal_id="goal-1")
-    manual = invoke(config, store, "@normal continue", turn_id="turn-2")
+    invoke(config, store, "@max @high Implement objective", goal_id="goal-1")
+    manual = invoke(config, store, "@normal @medium continue", turn_id="turn-2")
     continuation = invoke(
-        config, store, "@max Implement objective", goal_id="goal-1", turn_id="turn-3"
+        config, store, "@max @high Implement objective", goal_id="goal-1", turn_id="turn-3"
     )
     assert continuation["hookSpecificOutput"]["model"] == manual["hookSpecificOutput"]["model"]
+    assert continuation["hookSpecificOutput"]["reasoningEffort"] == "medium"
     assert store.latest()["selected_tier"] == "normal"
 
 
