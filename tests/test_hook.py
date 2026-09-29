@@ -921,7 +921,7 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path, 
         "◆ ACCOUNT ROUTE · default · account match\n"
         "◆ MODEL ROUTE · SMART → gpt-6-sol · high reasoning "
         "· backend gpt/openai · scope root · source MANUAL "
-        "· rule confidence 100% · rule score -0.5 · AgentRoute v0.5.56"
+        "· rule confidence 100% · rule score -0.5 · AgentRoute v0.5.57"
     )
     assert second["hookSpecificOutput"]["model"] == "gpt-6-sol"
     assert len(store.history("same-thread")) == 2
@@ -1018,7 +1018,7 @@ def test_route_message_identifies_managed_runtime(tmp_path, monkeypatch):
     output = invoke(config, AuditStore(tmp_path / "audit.db"), "@fast say hi")
 
     assert output["hookSpecificOutput"]["routeMessage"].endswith(
-        " · AgentRoute v0.5.56 · runtime v8"
+        " · AgentRoute v0.5.57 · runtime v8"
     )
 
 
