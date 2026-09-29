@@ -69,11 +69,13 @@ def invoke(
     requested_backend=None,
     spawn_model_explicit=False,
     turn_id="turn-1",
+    goal_id=None,
 ):
     source = io.StringIO(
         json.dumps(
             {
                 "session_id": "same-thread",
+                "goal_id": goal_id,
                 "turn_id": turn_id,
                 "model": model,
                 "model_provider": model_provider,
@@ -1947,3 +1949,97 @@ def test_account_refresh_without_known_capacity_keeps_session_lock(tmp_path, sta
         )
 
     assert selection.selected is None
+
+
+def test_goal_classifies_once_and_reuses_route_after_restart(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.routing.classifier.enabled = True
+    config.routing.classifier.endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+    config.routing.mode = "llm"
+    config.capacity.enabled = False
+    store = AuditStore(tmp_path / "audit.sqlite")
+    with patch(
+        "agentroute.classifier.urllib.request.urlopen", return_value=FakeClassifierResponse()
+    ) as call:
+        first = invoke(config, store, "Implement objective", goal_id="goal-1")
+        second = invoke(
+            config,
+            AuditStore(store.path),
+            "Implement objective",
+            goal_id="goal-1",
+            turn_id="turn-2",
+        )
+    assert call.call_count == 1
+    assert second["hookSpecificOutput"]["model"] == first["hookSpecificOutput"]["model"]
+    assert json.loads(store.latest()["selection_receipt"])["goal_routing"]["mode"] == "continuation"
+
+
+def test_goal_edit_and_replacement_reclassify(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.routing.classifier.enabled = True
+    config.routing.classifier.endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+    config.routing.mode = "llm"
+    config.capacity.enabled = False
+    store = AuditStore(tmp_path / "audit.sqlite")
+    with patch(
+        "agentroute.classifier.urllib.request.urlopen", return_value=FakeClassifierResponse()
+    ) as call:
+        invoke(config, store, "Implement objective", goal_id="goal-1")
+        invoke(config, store, "Implement changed objective", goal_id="goal-1", turn_id="turn-2")
+        invoke(config, store, "Implement changed objective", goal_id="goal-2", turn_id="turn-3")
+    assert call.call_count == 3
+
+
+def test_goal_continuation_respects_later_manual_tier(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.routing.classifier.enabled = False
+    config.capacity.enabled = False
+    store = AuditStore(tmp_path / "audit.sqlite")
+    invoke(config, store, "@max Implement objective", goal_id="goal-1")
+    manual = invoke(config, store, "@normal continue", turn_id="turn-2")
+    continuation = invoke(
+        config, store, "@max Implement objective", goal_id="goal-1", turn_id="turn-3"
+    )
+    assert continuation["hookSpecificOutput"]["model"] == manual["hookSpecificOutput"]["model"]
+    assert store.latest()["selected_tier"] == "normal"
+
+
+def test_goal_new_objective_does_not_inherit_interrupted_route(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.routing.classifier.enabled = False
+    config.capacity.enabled = False
+    store = AuditStore(tmp_path / "audit.sqlite")
+    invoke(config, store, "@max prior task")
+    codex_interrupt(
+        io.StringIO(json.dumps({"session_id": "same-thread", "turn_id": "turn-1"})),
+        io.StringIO(),
+        store=store,
+    )
+    invoke(config, store, "hello", goal_id="new-goal", turn_id="turn-2")
+    assert store.latest()["selected_tier"] != "max"
+    assert store.latest()["classification_source"] != "interrupted_turn_affinity"
+
+
+def test_goal_continuation_still_checks_capacity(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.routing.classifier.enabled = False
+    config.capacity.enabled = False
+    store = AuditStore(tmp_path / "audit.sqlite")
+    invoke(config, store, "@smart Implement objective", goal_id="goal-1")
+    config.capacity.enabled = True
+    config.capacity.profiles = {}
+    with patch(
+        "agentroute.router.backend_state",
+        return_value=CapacityState("gpt", "exhausted", "5h quota exhausted", "subscription"),
+    ):
+        output = invoke(
+            config, store, "@smart Implement objective", goal_id="goal-1", turn_id="turn-2"
+        )
+    assert output["continue"] is False
+    assert "5h quota exhausted" in output["stopReason"]
+    assert json.loads(store.latest()["selection_receipt"])["goal_routing"]["mode"] == "continuation"

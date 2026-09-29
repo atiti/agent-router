@@ -883,6 +883,11 @@ def why_command(session: str | None = None) -> None:
         )
     if row["agent_requested_tier"]:
         console.print(f"Approved agent request: {row['agent_requested_tier']}")
+    goal_routing = json.loads(row["selection_receipt"] or "{}").get("goal_routing")
+    if goal_routing:
+        console.print(
+            f"Goal routing: {goal_routing['goal_id']} · {goal_routing['mode']}"
+        )
     if row["selection_receipt_hash"]:
         console.print(f"Selection receipt: {row['selection_receipt_hash']}")
     for item in json.loads(row["contributions"]):

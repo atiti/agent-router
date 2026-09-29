@@ -813,9 +813,9 @@ after resuming a thread. Routing uses the destination model's context window and
 limits; retained approval requirements do not overwrite those limits.
 
 The source installer pins the AgentRoute Codex fork at
-`e17c80b71da526e083043c9a0055cbe9b9279376`, based on `rust-v0.158.0-alpha.2.1`.
+`af578870da6c605a5d9f5648d295d7769668070b`, based on `rust-v0.158.0-alpha.2.1`.
 The routed CLI preserves upstream's real `0.158.0-alpha.2.1` version. AgentRoute
-`0.5.57` uses runtime v47. The scheduled compatibility check prepares a candidate
+`0.5.57` uses runtime v47; the development source pins runtime v48 for goal routing. The scheduled compatibility check prepares a candidate
 stack; it never publishes an unreviewed upgrade. AgentRoute is not affiliated with OpenAI.
 
 Desktop supports both legacy `Contents/Resources/codex` and the new
@@ -851,3 +851,5 @@ Use `agentroute context profile on`, start a new routed Codex session, then run
 output, API-equivalent costs, and context sections. Native capture retains request text locally;
 reports contain counts and sizes. See [usage profiling](docs/usage-profiling.md) for filtering,
 coverage, subscription quota interpretation, and retention.
+
+See [goal routing](docs/codex-fork.md#goal-routing-runtime-v48) for autonomous objective classification.

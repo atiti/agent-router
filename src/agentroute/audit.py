@@ -99,6 +99,14 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     ,capacity_account_id TEXT
     ,capacity_blocked INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS goal_routing_state (
+    session_id TEXT NOT NULL,
+    route_scope TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    objective_hash TEXT NOT NULL,
+    PRIMARY KEY (session_id, route_scope, agent_id)
+);
 CREATE INDEX IF NOT EXISTS idx_routing_session
 ON routing_decisions(session_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_routing_created_at
@@ -656,6 +664,38 @@ class AuditStore:
         query += " ORDER BY id DESC LIMIT 1"
         with self.connection() as connection:
             return connection.execute(query, params).fetchone()
+
+    def goal_route_is_current(
+        self,
+        session_id: str,
+        route_scope: str,
+        agent_id: str | None,
+        goal_id: str,
+        objective_hash: str,
+    ) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT goal_id, objective_hash FROM goal_routing_state "
+                "WHERE session_id = ? AND route_scope = ? AND agent_id = ?",
+                (session_id, route_scope, agent_id or ""),
+            ).fetchone()
+        return row is not None and tuple(row) == (goal_id, objective_hash)
+
+    def remember_goal_route(
+        self,
+        session_id: str,
+        route_scope: str,
+        agent_id: str | None,
+        goal_id: str,
+        objective_hash: str,
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO goal_routing_state "
+                "(session_id, route_scope, agent_id, goal_id, objective_hash) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, route_scope, agent_id or "", goal_id, objective_hash),
+            )
 
     def latest_route(
         self, session_id: str, route_scope: str = "root", agent_id: str | None = None

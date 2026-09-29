@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Route autonomous `/goal` turns through AgentRoute using the persisted objective.
+  Classify new or edited objectives, reuse the active route on continuation, honor
+  later manual prompt routes, and check capacity before every turn. Add goal routing
+  receipts and restart-safe objective fingerprints. Requires runtime v48.
+
 ## 0.5.57 — 2026-09-29
 
 - Use Sonnet 5.5 at medium effort for Claude NORMAL and high effort for SMART; retain

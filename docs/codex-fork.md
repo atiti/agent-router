@@ -123,3 +123,34 @@ All 24 routing-stack commits were ported. The substantive conflict preserves
 upstream's inherited agent-control initialization and downstream's isolated reviewer
 credentials. Lockfile workspace versions now match upstream; child spawning imports
 the upstream AgentControl trait. The native CLI version is unchanged.
+
+## Goal routing (runtime v48)
+
+Development source pins `af578870da6c605a5d9f5648d295d7769668070b`
+(`codex/goal-routing`), based on the v47 Desktop-compatible fork.
+
+The `/goal` command stores an objective and starts autonomous work. Its internal
+continuations previously bypassed `UserPromptSubmit`, so they inherited whichever
+model the task already used. The goal-aware runtime supplies the persisted objective
+and goal ID to AgentRoute before sampling.
+
+- The first autonomous turn classifies the objective using the configured classifier
+  (including hosted JEV), with the usual rule and capability checks.
+- Editing the objective or replacing the goal triggers a fresh classification.
+- Later continuations reuse the active route tier, backend, and reasoning effort;
+  they do not pay for another objective classification. This state survives restart.
+- Capacity checks still run every turn. Reusing a route does not bypass quotas.
+- Objective tags apply on activation. A later explicit prompt such as `@normal continue`
+  or `@claude @smart continue` changes the active route for subsequent continuations.
+
+For example, set `/goal @smart Implement the migration and verify rollback` to opt
+into SMART immediately, or omit the tag to classify the objective automatically.
+The goal payload is routing metadata, not an extra user message in the model history.
+
+`agentroute history --limit 10` lists routing decisions; `agentroute explain <ID>`
+shows the goal ID and `classify_objective` or `continuation` mode. Each goal turn's
+stored selection receipt also includes the objective hash.
+The continuity table stores the hash rather than an additional copy of the objective.
+This requires both the goal-aware fork and companion AgentRoute hook; installing only
+one side does not enable objective classification. AgentRoute 0.5.57/runtime v47 does
+not include this change.
