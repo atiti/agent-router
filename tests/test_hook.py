@@ -1022,7 +1022,8 @@ def test_route_message_identifies_managed_runtime(tmp_path, monkeypatch):
     )
 
 
-def test_claude_subscription_route_shows_recorded_limits(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ["claude", "fable"])
+def test_claude_subscription_route_shows_recorded_limits(tmp_path, monkeypatch, backend):
     from agentroute.providers import ensure_claude_bridge_backend
 
     config = default_config()
@@ -1040,7 +1041,7 @@ def test_claude_subscription_route_shows_recorded_limits(tmp_path, monkeypatch):
         }},
     }))
 
-    output = invoke(config, AuditStore(tmp_path / "audit.db"), "@claude @max continue")
+    output = invoke(config, AuditStore(tmp_path / "audit.db"), f"@{backend} @max continue")
     route = output["hookSpecificOutput"]["routeMessage"]
     assert "Claude limits 5h 99% used" in route
     assert "weekly 18% used" in route

@@ -130,6 +130,7 @@ class RoutingConfig(BaseModel):
 
 class PolicyConfig(BaseModel):
     max_tier: str = "max"
+    backend_risk_floors: dict[str, dict[str, str]] = Field(default_factory=dict)
     risk_floors: dict[str, str] = Field(
         default_factory=lambda: {
             "auth": "smart",
@@ -208,7 +209,7 @@ class CapabilityConfig(BaseModel):
 class PricingConfig(BaseModel):
     currency: str = "USD"
     baseline_model: str = "gpt-6-astra"
-    source_checked_at: str = "2026-09-27"
+    source_checked_at: str = "2026-09-29"
     models: dict[str, ModelPrice] = Field(
         default_factory=lambda: {
             "gpt-5.6-luna": ModelPrice(
@@ -281,6 +282,16 @@ class PricingConfig(BaseModel):
                 cache_write_per_million=2.50,
                 cache_write_1h_per_million=4.00,
                 output_per_million=10.00,
+            ),
+            "claude-sonnet-5-5": ModelPrice(
+                input_per_million=2.00, cached_input_per_million=0.20,
+                cache_write_per_million=2.50, cache_write_1h_per_million=4.00,
+                output_per_million=10.00,
+            ),
+            "claude-fable-5-1": ModelPrice(
+                input_per_million=10.00, cached_input_per_million=0.25,
+                cache_write_per_million=12.50, cache_write_1h_per_million=20.00,
+                output_per_million=50.00,
             ),
             "claude-opus-5": ModelPrice(
                 input_per_million=5.00,

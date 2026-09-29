@@ -45,6 +45,7 @@ from typing import Any, Literal
 
 from PIL import Image, UnidentifiedImageError
 
+from .claude_models import CLAUDE_EFFORT_LEVELS, EFFORT_MODELS, MODERN_CLAUDE_MODELS, claude_effort
 from .context_profile import (
     capture_enabled,
     normalize_anthropic_usage,
@@ -79,7 +80,7 @@ REFRESH_FAILURE_COOLDOWN_SECONDS = 60.0
 REFRESH_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 CREDENTIAL_EXPIRY_SKEW_MS = 300_000
 
-DEFAULT_MODEL = "claude-sonnet-5"
+DEFAULT_MODEL = "claude-sonnet-5-5"
 DEFAULT_CONTEXT_WINDOW = 200_000
 DEFAULT_PORT = 8090
 ANTHROPIC_IMAGE_MAX_DIMENSION = 8000
@@ -808,6 +809,17 @@ def translate_request(
         "messages": messages,
         "stream": True,
     }
+    model = str(payload["model"])
+    reasoning = body.get("reasoning")
+    requested_effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+    effort = claude_effort(model, requested_effort)
+    if effort:
+        payload["output_config"] = {"effort": effort}
+    if model in MODERN_CLAUDE_MODELS:
+        payload["thinking"] = {"type": "adaptive"}
+        # Thinking and visible output share the cap. Respect explicit caller caps.
+        if not body.get("max_output_tokens"):
+            payload["max_tokens"] = 128000
     if system_blocks:
         payload["system"] = system_blocks
     if anthropic_tools:
@@ -816,7 +828,31 @@ def translate_request(
         if tool_choice == "none":
             payload["tool_choice"] = {"type": "none"}
         elif tool_choice == "required":
-            payload["tool_choice"] = {"type": "any"}
+            if model in MODERN_CLAUDE_MODELS:
+                payload["tool_choice"] = {"type": "auto"}
+                payload.setdefault("system", []).append(
+                    {
+                        "type": "text",
+                        "text": "You must call at least one available tool before replying.",
+                    }
+                )
+            else:
+                payload["tool_choice"] = {"type": "any"}
+        elif isinstance(tool_choice, dict) and tool_choice.get("type") in {"function", "custom"}:
+            name = anthropic_tool_name(str(tool_choice.get("name") or ""))
+            payload["tools"] = [tool for tool in anthropic_tools if tool["name"] == name]
+            if not payload["tools"]:
+                raise ValueError("Requested tool is not in the available tool list")
+            if model in MODERN_CLAUDE_MODELS:
+                payload["tool_choice"] = {"type": "auto"}
+                payload.setdefault("system", []).append(
+                    {
+                        "type": "text",
+                        "text": f"You must call the available {name} tool before replying.",
+                    }
+                )
+            else:
+                payload["tool_choice"] = {"type": "tool", "name": name}
         else:
             payload["tool_choice"] = {"type": "auto"}
     return payload, freeform, renames
@@ -1238,6 +1274,13 @@ def catalog_from_config(config: Any, backend_name: str = "claude") -> list[tuple
         target = backend.tiers.get(tier)
         if target and target.model not in seen:
             seen.append(target.model)
+    for other in config.backends.values():
+        if other.enabled and other.base_url == backend.base_url:
+            for target in other.tiers.values():
+                if target.model not in seen:
+                    seen.append(target.model)
+            if other.review_model and other.review_model not in seen:
+                seen.append(other.review_model)
     return [(model, DEFAULT_CONTEXT_WINDOW) for model in seen] or [
         (DEFAULT_MODEL, DEFAULT_CONTEXT_WINDOW)
     ]
@@ -1257,8 +1300,16 @@ def model_catalog(
             # operational instructions; a provider descriptor must not tell
             # Claude that it is Codex or another named model.
             "model_messages": {"instructions_template": ""},
-            "default_reasoning_level": None,
-            "supported_reasoning_levels": [],
+            "default_reasoning_level": "high" if slug in EFFORT_MODELS else None,
+            "supported_reasoning_levels": [
+                {
+                    "effort": "ultra" if level == "max" else level,
+                    "description": f"Claude {level} effort",
+                }
+                for level in CLAUDE_EFFORT_LEVELS
+            ]
+            if slug in EFFORT_MODELS
+            else [],
             "shell_type": "unified_exec",
             "visibility": "list",
             "supported_in_api": True,
@@ -1282,7 +1333,7 @@ def model_catalog(
             "supports_search_tool": False,
             "supports_experimental_context": False,
             "use_responses_lite": False,
-            "supports_reasoning_effort_updates": False,
+            "supports_reasoning_effort_updates": slug in EFFORT_MODELS,
             "node_repl_auto_review_required": False,
             "node_repl_disabled": False,
         }

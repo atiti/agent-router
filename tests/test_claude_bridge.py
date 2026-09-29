@@ -223,7 +223,7 @@ def test_duplicate_tool_names_are_declared_once():
 
 def test_tool_choice_maps_to_anthropic_modes():
     base = {
-        "model": DEFAULT_MODEL,
+        "model": "claude-haiku-4-5-20251001",
         "input": [
             {
                 "type": "message",
@@ -494,14 +494,25 @@ def test_bridge_neutralizes_model_switch_guidance_without_rewriting_user_text():
         "You are Codex, an agent based on GPT-6. Follow the user's task."
     )
     payload, _, _ = translate_request(
-        {"model": DEFAULT_MODEL, "input": [
-            {"type": "message", "role": "developer", "content": [
-                {"type": "input_text", "text": switch},
-            ]},
-            {"type": "message", "role": "user", "content": [
-                {"type": "input_text", "text": "The file says You are Codex."},
-            ]},
-        ]},
+        {
+            "model": DEFAULT_MODEL,
+            "input": [
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [
+                        {"type": "input_text", "text": switch},
+                    ],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "The file says You are Codex."},
+                    ],
+                },
+            ],
+        },
         mode="api-key",
     )
     assert "You are Codex" not in payload["messages"][0]["content"][0]["text"]
@@ -949,9 +960,7 @@ def test_unified_rate_limits_become_codex_limit_headers():
 
 def test_unified_rate_limits_accept_percentages_and_partial_windows():
     """A value above 1 is already a percentage, and a missing window is omitted."""
-    snapshot = parse_unified_rate_limits(
-        {"anthropic-ratelimit-unified-5h-utilization": "83.5"}
-    )
+    snapshot = parse_unified_rate_limits({"anthropic-ratelimit-unified-5h-utilization": "83.5"})
 
     assert snapshot is not None
     assert snapshot["windows"]["five_hour"]["used_percent"] == 83.5
@@ -1232,10 +1241,12 @@ def test_http_bridge_subscription_limit_is_terminal(bridge_server, tmp_path, mon
     server, _ = bridge_server
     host, port = server.server_address[:2]
     monkeypatch.setattr(_FakeCredential, "mode", "claude-code")
-    snapshot = {"windows": {
-        "five_hour": {"used_percent": 100, "window_minutes": 300, "resets_at": 1790501400},
-        "seven_day": {"used_percent": 19, "window_minutes": 10080, "resets_at": 1790942400},
-    }}
+    snapshot = {
+        "windows": {
+            "five_hour": {"used_percent": 100, "window_minutes": 300, "resets_at": 1790501400},
+            "seven_day": {"used_percent": 19, "window_minutes": 10080, "resets_at": 1790942400},
+        }
+    }
 
     def rejected(_credentials, _payload):
         raise UpstreamRateLimitError("anthropic 429", snapshot)
@@ -1258,9 +1269,7 @@ def test_http_bridge_subscription_limit_is_terminal(bridge_server, tmp_path, mon
     assert read_usage_state()["snapshot"] == snapshot
 
 
-def test_http_bridge_subscription_429_without_windows_still_stops(
-    bridge_server, monkeypatch
-):
+def test_http_bridge_subscription_429_without_windows_still_stops(bridge_server, monkeypatch):
     monkeypatch.setattr(_FakeCredential, "mode", "claude-code")
     server, _ = bridge_server
     host, port = server.server_address[:2]
@@ -1315,13 +1324,23 @@ def test_http_bridge_reports_translation_and_routing_errors(bridge_server):
 
 def test_stream_preserves_cache_receipts_and_cumulative_usage():
     stream = ResponsesStream("resp_cache", "claude-opus-5-5")
-    stream.feed("message_start", {"message": {
-        "model": "claude-opus-5-5", "usage": {
-            "input_tokens": 10, "cache_read_input_tokens": 100,
-            "cache_creation_input_tokens": 20,
-            "cache_creation": {"ephemeral_5m_input_tokens": 15, "ephemeral_1h_input_tokens": 5},
+    stream.feed(
+        "message_start",
+        {
+            "message": {
+                "model": "claude-opus-5-5",
+                "usage": {
+                    "input_tokens": 10,
+                    "cache_read_input_tokens": 100,
+                    "cache_creation_input_tokens": 20,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": 15,
+                        "ephemeral_1h_input_tokens": 5,
+                    },
+                },
+            }
         },
-    }})
+    )
     stream.feed("message_delta", {"usage": {"output_tokens": 3}})
     stream.feed("message_delta", {"usage": {"output_tokens": 8}})
     events = stream.feed("message_stop", {})
@@ -1329,7 +1348,9 @@ def test_stream_preserves_cache_receipts_and_cumulative_usage():
     assert usage == {
         "input_tokens": 130,
         "input_tokens_details": {"cached_tokens": 100, "cache_write_tokens": 20},
-        "output_tokens": 8, "output_tokens_details": None, "total_tokens": 138,
+        "output_tokens": 8,
+        "output_tokens_details": None,
+        "total_tokens": 138,
     }
     assert stream.usage["cache_write_1h_input_tokens"] == 5
     assert stream.actual_model == "claude-opus-5-5"
@@ -1345,13 +1366,26 @@ def test_http_bridge_profiles_translated_request_without_prompt_text(
     set_capture(True)
     server, captured = bridge_server
     host, port = server.server_address[:2]
-    body = {"model": "claude-sonnet-5", "instructions": "private instruction",
-            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text",
-                       "text": "private user message"}]}], "tools": []}
+    body = {
+        "model": "claude-sonnet-5",
+        "instructions": "private instruction",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "private user message"}],
+            }
+        ],
+        "tools": [],
+    }
     request = urllib.request.Request(
-        f"http://{host}:{port}/v1/responses", data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "session-id": "s",
-                 "x-codex-inference-call-id": "i1"},
+        f"http://{host}:{port}/v1/responses",
+        data=json.dumps(body).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "session-id": "s",
+            "x-codex-inference-call-id": "i1",
+        },
     )
     with urllib.request.urlopen(request, timeout=5) as response:
         response.read()
@@ -1367,3 +1401,72 @@ def test_http_bridge_profiles_translated_request_without_prompt_text(
     assert row["harness_context"]["components"]["base_instructions"]["bytes"] > 0
     assert "private instruction" not in json.dumps(rows)
     assert "private user message" not in json.dumps(rows)
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"])
+@pytest.mark.parametrize(
+    "effort,expected",
+    [
+        ("medium", "medium"),
+        ("high", "high"),
+        ("xhigh", "xhigh"),
+        ("ultra", "max"),
+        ("persistent", "max"),
+        ("none", "low"),
+    ],
+)
+def test_modern_claude_effort_and_adaptive_thinking(model, effort, expected):
+    payload, _, _ = translate_request({"model": model, "reasoning": {"effort": effort}})
+    assert payload["output_config"] == {"effort": expected}
+    assert payload["thinking"] == {"type": "adaptive"}
+    assert payload["max_tokens"] == 128000
+
+
+def test_explicit_output_cap_and_haiku_effort():
+    payload, _, _ = translate_request({"model": "claude-sonnet-5-5", "max_output_tokens": 4096})
+    assert payload["max_tokens"] == 4096
+    haiku, _, _ = translate_request(
+        {"model": "claude-haiku-4-5-20251001", "reasoning": {"effort": "low"}}
+    )
+    assert "output_config" not in haiku
+    assert "thinking" not in haiku
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"])
+@pytest.mark.parametrize("choice", ["required", {"type": "function", "name": "read.file"}])
+def test_modern_claude_uses_auto_for_required_tools(model, choice):
+    body = {
+        "model": model,
+        "tool_choice": choice,
+        "tools": [
+            {"type": "function", "name": "read.file", "parameters": {"type": "object"}},
+            {"type": "function", "name": "other", "parameters": {"type": "object"}},
+        ],
+    }
+    before = copy.deepcopy(body)
+    payload, _, _ = translate_request(body)
+    assert payload["tool_choice"] == {"type": "auto"}
+    assert "must call" in payload["system"][-1]["text"]
+    if isinstance(choice, dict):
+        assert [tool["name"] for tool in payload["tools"]] == ["read_file"]
+    assert body == before
+
+
+def test_effort_catalog_and_opt_in_fable():
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    ensure_claude_bridge_backend(config, 8090)
+    models = catalog_from_config(config)
+    assert ("claude-fable-5-1", 200000) in models
+    descriptors = {entry["slug"]: entry for entry in model_catalog(models)["models"]}
+    for name in ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]:
+        assert descriptors[name]["supports_reasoning_effort_updates"] is True
+        assert [level["effort"] for level in descriptors[name]["supported_reasoning_levels"]] == [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "ultra",
+        ]
+    assert descriptors["claude-haiku-4-5-20251001"]["supported_reasoning_levels"] == []

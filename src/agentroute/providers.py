@@ -18,48 +18,68 @@ ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 # documented `backend-add` invocation cannot drift apart.
 CLAUDE_BRIDGE_TIERS: dict[str, str] = {
     "fast": "claude-haiku-4-5-20251001",
-    "normal": "claude-sonnet-5",
-    "smart": "claude-opus-5",
+    "normal": "claude-sonnet-5-5",
+    "smart": "claude-sonnet-5-5",
     "max": "claude-opus-5-5",
 }
 
 
 def ensure_claude_bridge_backend(
-    config: AppConfig, port: int, host: str = "127.0.0.1"
+    config: AppConfig, port: int, host: str = "127.0.0.1", *, update_models: bool = False
 ) -> bool:
-    """Register the local Claude bridge backend when it is missing.
+    """Register Claude and its explicit Fable route without changing default routing.
 
-    Returns True when a backend was created. An existing `claude` backend is left
-    untouched apart from its base URL, so re-running the install cannot discard a
-    user's own tier choices.
+    Existing tier choices survive reinstall unless ``update_models`` is requested.
     """
     base_url = f"http://{host}:{port}/v1"
-    existing = config.backends.get("claude")
-    if existing is not None:
-        if existing.base_url != base_url:
-            existing.base_url = base_url
-        return False
-    config.backends["claude"] = ExecutionBackendConfig(
-        enabled=True,
-        codex_provider="agentroute-claude",
-        display_name="Claude subscription (AgentRoute bridge)",
-        base_url=base_url,
-        tool_compatibility="functions_and_apply_patch",
-        review_model=CLAUDE_BRIDGE_TIERS["fast"],
-        tiers={
-            tier: ModelTarget(
-                model=model,
-                reasoning_effort={
-                    "fast": "low",
-                    "normal": "medium",
-                    "smart": "high",
-                    "max": "high",
-                }[tier],
-            )
-            for tier, model in CLAUDE_BRIDGE_TIERS.items()
-        },
+    created = "claude" not in config.backends
+    tiers = {
+        tier: ModelTarget(
+            model=model,
+            reasoning_effort={
+                "fast": None,
+                "normal": "medium",
+                "smart": "high",
+                "max": "high",
+            }[tier],
+        )
+        for tier, model in CLAUDE_BRIDGE_TIERS.items()
+    }
+    if created:
+        config.backends["claude"] = ExecutionBackendConfig(
+            enabled=True,
+            codex_provider="agentroute-claude",
+            display_name="Claude subscription (AgentRoute bridge)",
+            base_url=base_url,
+            tool_compatibility="functions_and_apply_patch",
+            review_model=CLAUDE_BRIDGE_TIERS["fast"],
+            tiers=tiers,
+        )
+    else:
+        config.backends["claude"].base_url = base_url
+        if update_models:
+            config.backends["claude"].tiers = tiers
+    # Separate backend: never added to backend_by_tier or a fallback chain.
+    # Every tier uses Fable so @fable cannot accidentally select another model.
+    if "fable" not in config.backends:
+        config.backends["fable"] = ExecutionBackendConfig(
+            enabled=True,
+            codex_provider="agentroute-claude-fable",
+            display_name="Claude Fable (explicit opt-in)",
+            base_url=base_url,
+            tool_compatibility="functions_and_apply_patch",
+            review_model=CLAUDE_BRIDGE_TIERS["fast"],
+            tiers={
+                tier: ModelTarget(model="claude-fable-5-1", reasoning_effort="high")
+                for tier in CLAUDE_BRIDGE_TIERS
+            },
+        )
+    else:
+        config.backends["fable"].base_url = base_url
+    config.policy.backend_risk_floors.setdefault(
+        "claude", {flag: "max" for flag in ("auth", "security", "database_migration", "production")}
     )
-    return True
+    return created
 
 
 def _toml_string(value: str) -> str:
@@ -97,10 +117,7 @@ def _provider_block(config: AppConfig) -> str:
         review_target = effective_review_model(config, name)
         lines.append(f"approval_review_model = {_toml_string(review_target)}")
         if backend.tool_compatibility == "functions_and_apply_patch":
-            lines.append(
-                "tool_compatibility = "
-                f"{_toml_string(backend.tool_compatibility)}"
-            )
+            lines.append(f"tool_compatibility = {_toml_string(backend.tool_compatibility)}")
         if backend.api_key_env:
             if backend.api_key_header.lower() == "authorization":
                 lines.append(f"env_key = {_toml_string(backend.api_key_env)}")
