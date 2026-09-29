@@ -753,3 +753,29 @@ def test_fable_is_never_selected_from_automatic_claude_tiers():
         )
         assert result.backend == "claude"
         assert result.model != "claude-fable-5-1"
+
+
+@pytest.mark.parametrize("risk", ["auth", "security", "database_migration", "production"])
+def test_claude_risk_floor_uses_opus_without_changing_gpt(risk):
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    ensure_claude_bridge_backend(config, 8090)
+    config.routing.classifier.enabled = True
+    for backend, expected in [("claude", Tier.MAX), ("gpt", Tier.SMART)]:
+        result = Router(config, classifier=FakeClassifier(tier=Tier.NORMAL)).route(
+            RouteContext(
+                session_id="risk",
+                latest_prompt=f"@{backend} implement this change",
+                task_risk_flags=[risk],
+            )
+        )
+        assert result.tier == expected
+        if backend == "claude":
+            assert result.model == "claude-opus-5-5"
+    manual = Router(config).route(
+        RouteContext(
+            session_id="manual", latest_prompt="@claude @normal implement", task_risk_flags=[risk]
+        )
+    )
+    assert manual.tier == Tier.NORMAL

@@ -164,6 +164,10 @@ The bridge serves the tiers of the `claude` backend and advertises them through
 
 | Explicit `@fable` (high effort) | `claude-fable-5-1` | $10 | $0.25 | $12.50 | $50 |
 
+Automatic Claude routes with auth, security, database migration or production risk flags
+use MAX/Opus 5.5. These backend-specific floors are under `policy.backend_risk_floors.claude`;
+other backend policies keep their existing floors. An explicit tier tag overrides automatic floors.
+
 New installs use these tiers. Existing custom mappings survive a plain reinstall. To adopt
 these defaults explicitly and restart the bridge:
 

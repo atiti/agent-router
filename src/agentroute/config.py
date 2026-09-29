@@ -130,6 +130,7 @@ class RoutingConfig(BaseModel):
 
 class PolicyConfig(BaseModel):
     max_tier: str = "max"
+    backend_risk_floors: dict[str, dict[str, str]] = Field(default_factory=dict)
     risk_floors: dict[str, str] = Field(
         default_factory=lambda: {
             "auth": "smart",

@@ -76,6 +76,9 @@ def ensure_claude_bridge_backend(
         )
     else:
         config.backends["fable"].base_url = base_url
+    config.policy.backend_risk_floors.setdefault(
+        "claude", {flag: "max" for flag in ("auth", "security", "database_migration", "production")}
+    )
     return created
 
 

@@ -4,7 +4,8 @@
 
 - Use Sonnet 5.5 at medium effort for Claude NORMAL and high effort for SMART; retain
   Haiku FAST and Opus 5.5 MAX. `bridge install --update-models` explicitly adopts these
-  defaults; plain reinstall preserves custom choices.
+  defaults; plain reinstall preserves custom choices. Claude auth/security/migration/production
+  risk floors use MAX/Opus, with explicit tier overrides preserved.
 - Register an explicit `@fable` backend for Fable 5.1, excluded from automatic tier
   mappings and fallbacks, with Haiku approval review and shared subscription limits.
 - Translate reasoning effort into Anthropic output configuration, advertise supported

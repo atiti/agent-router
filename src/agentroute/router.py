@@ -1091,10 +1091,18 @@ class Router:
             flags.add("security")
         if ReasonCode.OPERATIONAL_INCIDENT in codes:
             flags.add("production")
+        _, explicit_backend, _, _ = route_overrides(context.latest_prompt, self.config.backends)
+        backend_name = (
+            explicit_backend or context.requested_backend
+            or (context.interrupted_backend if context.interrupted_turn_affinity else None)
+            or context.sticky_backend or context.inherited_backend
+            or self.config.routing.backend_by_tier.get(str(proposed), "gpt")
+        )
+        backend_floors = self.config.policy.backend_risk_floors.get(backend_name, {})
         floor = Tier.FAST
         matched: list[str] = []
         for flag in flags:
-            configured = self.config.policy.risk_floors.get(flag)
+            configured = backend_floors.get(flag, self.config.policy.risk_floors.get(flag))
             if configured:
                 candidate = Tier.parse(configured)
                 if candidate > floor:
