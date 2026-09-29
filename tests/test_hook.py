@@ -1997,6 +1997,7 @@ def test_goal_continuation_respects_later_manual_tier(tmp_path):
     config.enabled = True
     config.routing.classifier.enabled = False
     config.capacity.enabled = False
+    config.backends["gpt"].tiers["normal"].model = "gpt-6-sol"  # Avoid Luna's xhigh floor.
     store = AuditStore(tmp_path / "audit.sqlite")
     invoke(config, store, "@max @high Implement objective", goal_id="goal-1")
     manual = invoke(config, store, "@normal @medium continue", turn_id="turn-2")
