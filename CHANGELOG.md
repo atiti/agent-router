@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.57 — 2026-09-29
 
 - Use Sonnet 5.5 at medium effort for Claude NORMAL and high effort for SMART; retain
   Haiku FAST and Opus 5.5 MAX. `bridge install --update-models` explicitly adopts these

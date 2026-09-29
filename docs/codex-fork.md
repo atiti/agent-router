@@ -114,7 +114,7 @@ its matching host under `~/.agentroute/candidates/codex-0.157`. It uses the same
 Codex home, hooks, provider credentials, and account routing. It is a test build,
 not a public signed/notarized release; the normal CLI and Desktop remain intact.
 
-## Desktop 0.158 port (AgentRoute 0.5.56)
+## Desktop 0.158 port (AgentRoute 0.5.57)
 
 The release pin is `e17c80b71da526e083043c9a0055cbe9b9279376` on
 `codex/desktop-0158-runtime`, based on the exact Desktop release

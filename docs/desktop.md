@@ -1,6 +1,6 @@
 # Codex Desktop with AgentRoute
 
-AgentRoute 0.5.56 bundles the patched Codex 0.158.0-alpha.2.1 runtime and matching
+AgentRoute 0.5.57 bundles the patched Codex 0.158.0-alpha.2.1 runtime and matching
 Code Mode host. It supports the official app's legacy and nested CLI package layouts.
 
 ## Upgrade an existing installation
