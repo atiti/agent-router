@@ -274,6 +274,8 @@ regardless of reviewer model.
 
 ### Claude models through the local bridge
 
+New bridge defaults: Haiku FAST, Sonnet 5.5 NORMAL (medium) / SMART (high), Opus 5.5 MAX (high). Use `@fable` for Fable 5.1 explicitly and `agentroute bridge install --update-models` to update existing mappings. See [the bridge guide](docs/claude-bridge.md) for reasoning effort and subscription setup.
+
 Claude models are not served through the OpenAI Responses API, so AgentRoute ships a small local
 bridge that accepts Responses requests from Codex, calls the Anthropic Messages API, and streams
 the result back in the shape Codex expects. One command registers the backend, installs it as a
@@ -320,7 +322,7 @@ become `tool_result` blocks, images are passed through as base64), and the strea
 back into Responses SSE events including the output-item events Codex requires for streaming
 text. Long-context beta is negotiated per model, because Anthropic rejects it for Haiku. Prompt
 prefixes, tier overrides, and mid-thread provider switches work unchanged: `@claude @smart ...`
-runs that turn on `claude-opus-5`, and the next prompt can switch back to `@gpt`. Claude tokens
+runs that turn on `claude-sonnet-5-5` at high effort, and the next prompt can switch back to `@gpt`. Claude tokens
 are priced with Anthropic's published rates, so `agentroute usage` reports their cost beside
 every other backend.
 

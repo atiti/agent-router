@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Use Sonnet 5.5 at medium effort for Claude NORMAL and high effort for SMART; retain
+  Haiku FAST and Opus 5.5 MAX. `bridge install --update-models` explicitly adopts these
+  defaults; plain reinstall preserves custom choices.
+- Register an explicit `@fable` backend for Fable 5.1, excluded from automatic tier
+  mappings and fallbacks, with Haiku approval review and shared subscription limits.
+- Translate reasoning effort into Anthropic output configuration, advertise supported
+  effort levels, use adaptive thinking on newer models, and adapt their rejected forced
+  tool modes. Include Sonnet 5.5 and Fable 5.1 prices and setup documentation.
+
 ## 0.5.56 — 2026-09-28
 
 - Support the new Codex Desktop CLI package layout (`codex-cli/bin/codex` and

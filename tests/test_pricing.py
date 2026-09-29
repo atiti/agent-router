@@ -33,6 +33,8 @@ def test_provider_prefixed_model_uses_public_model_price():
         # Anthropic's published rates: platform.claude.com/docs/en/about-claude/pricing
         ("claude-haiku-4-5-20251001", 1.0, 1.25, 0.10, 5.0),
         ("claude-sonnet-5", 2.0, 2.50, 0.20, 10.0),
+        ("claude-sonnet-5-5", 2.0, 2.50, 0.20, 10.0),
+        ("claude-fable-5-1", 10.0, 12.50, 0.25, 50.0),
         ("claude-opus-5", 5.0, 6.25, 0.50, 25.0),
         ("claude-opus-5-5", 4.0, 5.00, 0.20, 20.0),
     ],

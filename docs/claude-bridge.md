@@ -122,7 +122,7 @@ agentroute backend-default claude      # every tier, for example when a plan is 
 agentroute backend-route normal gpt    # back to the subscription
 ```
 
-Tier overrides compose, so `@claude @smart ...` runs that turn on `claude-opus-5`, and the next
+Tier overrides compose, so `@claude @smart ...` runs that turn on `claude-sonnet-5-5` at high effort, and the next
 prompt can switch back to `@gpt`.
 
 ### Switching after a Claude usage limit
@@ -158,9 +158,50 @@ The bridge serves the tiers of the `claude` backend and advertises them through
 | Tier | Model | Input | Cached input | Cache write (5m) | Output |
 |---|---|---|---|---|---|
 | FAST | `claude-haiku-4-5-20251001` | $1 | $0.10 | $1.25 | $5 |
-| NORMAL | `claude-sonnet-5` | $2 | $0.20 | $2.50 | $10 |
-| SMART | `claude-opus-5` | $5 | $0.50 | $6.25 | $25 |
-| MAX | `claude-opus-5-5` | $4 | $0.20 | $5.00 | $20 |
+| NORMAL (medium effort) | `claude-sonnet-5-5` | $2 | $0.20 | $2.50 | $10 |
+| SMART (high effort) | `claude-sonnet-5-5` | $2 | $0.20 | $2.50 | $10 |
+| MAX (high effort) | `claude-opus-5-5` | $4 | $0.20 | $5.00 | $20 |
+
+| Explicit `@fable` (high effort) | `claude-fable-5-1` | $10 | $0.25 | $12.50 | $50 |
+
+New installs use these tiers. Existing custom mappings survive a plain reinstall. To adopt
+these defaults explicitly and restart the bridge:
+
+```sh
+agentroute bridge install --update-models
+```
+
+Fable is registered as a separate backend and is never added to automatic tier mappings or
+fallback chains. It uses the same bridge and subscription credential. Your plan must include
+Fable access; its weekly scoped quota is distinct from the overall weekly limit. Use:
+
+```text
+@claude @normal continue               # Sonnet 5.5, medium effort
+@claude @smart continue                # Sonnet 5.5, high effort
+@claude @max continue                  # Opus 5.5, high effort
+@fable @high solve this difficult task # Fable 5.1, explicit opt-in
+@fable @ultra continue                 # Fable 5.1, Anthropic max effort
+@claude continue                      # leave Fable
+@auto continue                        # clear the manual backend preference
+```
+
+Like other provider tags, `@fable` persists until another backend tag or `@auto`. It is not a
+one-request opt-in. Fable's automatic approval reviewer remains Haiku, so reviewing a command
+never consumes Fable tokens just because the worker is Fable.
+
+The bridge forwards Responses `reasoning.effort` as Anthropic `output_config.effort`:
+`low`, `medium`, `high`, and `xhigh` pass through; `ultra` and `persistent` map to `max`;
+`none` and `minimal` map to `low`. Opus 5.5 and Fable cannot disable thinking. Haiku has no
+`effort` parameter, so the bridge omits it and its catalog advertises no effort levels.
+Modern models use adaptive thinking and a default 128k output cap (thinking plus visible text);
+an explicit caller cap is preserved. Top-level effort changes can invalidate Anthropic's prompt
+cache; per-message cache-preserving effort is not implemented by this bridge.
+See [Anthropic effort guidance](https://platform.claude.com/docs/en/build-with-claude/effort).
+
+Sonnet 5.5, Opus 5.5 and Fable 5.1 reject forced `tool_choice` modes. For required calls the
+bridge uses `auto` plus a tool-call instruction; for a named call it exposes only that tool.
+This is a prompting request, not a provider-enforced guarantee. Legacy models retain native
+forced tool choice. Execution sandbox and approval checks remain enforced by Codex.
 
 All rates are USD per million tokens, taken from Anthropic's published pricing page. They ship
 with AgentRoute, so `agentroute usage` and `agentroute analytics` report Claude cost alongside

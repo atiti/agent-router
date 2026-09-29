@@ -2102,12 +2102,15 @@ def bridge_install_command(
     backend: str = typer.Option(
         "claude", help="Backend whose tiers define the model catalog the bridge serves."
     ),
+    update_models: bool = typer.Option(
+        False, "--update-models", help="Replace Claude tier mappings with current bundled defaults."
+    ),
 ) -> None:
     """Install the Claude bridge as a background service and wait until it answers."""
     if credential not in ("claude-code", "api-key", "auto"):
         raise typer.BadParameter("credential must be claude-code, api-key, or auto")
     config = load_config()
-    created = ensure_claude_bridge_backend(config, port, host)
+    created = ensure_claude_bridge_backend(config, port, host, update_models=update_models)
     save_config(config)
     providers_path, providers_backup = sync_codex_providers(config)
     try:
@@ -2121,6 +2124,12 @@ def bridge_install_command(
         console.print(f"✓ Reused the existing `claude` backend; synced {providers_path}")
     if providers_backup:
         console.print(f"  Provider backup: {providers_backup}")
+    console.print("✓ Explicit Fable route available: @fable (not in automatic tier mappings)")
+    if update_models:
+        console.print(
+            "✓ Updated Claude tiers: Haiku / Sonnet 5.5 medium / "
+            "Sonnet 5.5 high / Opus 5.5 high"
+        )
     console.print(f"✓ Bridge service installed: {path}")
     console.print(f"✓ {detail}")
     console.print(f"  Endpoint: http://{host}:{port}/v1")

@@ -12,6 +12,7 @@ from .classifier import (
     TierClassifier,
     catalog_age_seconds,
 )
+from .claude_models import EFFORT_MODELS, claude_effort
 from .config import AppConfig, load_config, model_capabilities
 from .economics import cache_switch_estimate
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
@@ -649,6 +650,11 @@ class Router:
                 and context.previous_reasoning_effort
                 else "tier_default"
             )
+        if target.model in EFFORT_MODELS:
+            normalized = claude_effort(target.model, selected_reasoning_effort)
+            selected_reasoning_effort = "ultra" if normalized == "max" else normalized
+        elif target.model.startswith("claude-haiku"):
+            selected_reasoning_effort = None
         digest = hashlib.sha256(context.latest_prompt.encode("utf-8")).hexdigest()
         comparison_tier = context.previous_task_tier or context.current_tier
         classifier_config = self.config.routing.classifier

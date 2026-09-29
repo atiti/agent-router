@@ -90,9 +90,7 @@ def test_luna_minimum_reasoning_is_xhigh_for_gpt_and_azure(monkeypatch):
         assert decision.reasoning_effort == "xhigh"
         assert decision.reasoning_effort_source == "model_floor"
         assert ReasonCode.MODEL_REASONING_FLOOR in decision.reason_codes
-        assert decision.selection_receipt["policy"][
-            "minimum_model_reasoning_effort"
-        ] == "xhigh"
+        assert decision.selection_receipt["policy"]["minimum_model_reasoning_effort"] == "xhigh"
 
 
 def test_luna_reasoning_floor_does_not_change_other_models():
@@ -666,9 +664,7 @@ def test_backend_missing_credential_fails_visibly_to_gpt(tmp_path, monkeypatch):
     config = default_config()
     config.backends["deepseek"].enabled = True
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    monkeypatch.setenv(
-        "AGENTROUTE_CREDENTIALS_FILE", str(tmp_path / "missing-credentials.env")
-    )
+    monkeypatch.setenv("AGENTROUTE_CREDENTIALS_FILE", str(tmp_path / "missing-credentials.env"))
 
     decision = Router(config).route(
         RouteContext(
@@ -682,7 +678,6 @@ def test_backend_missing_credential_fails_visibly_to_gpt(tmp_path, monkeypatch):
     assert ReasonCode.BACKEND_FALLBACK in decision.reason_codes
 
 
-
 def test_hosted_jev_route_records_source_latency_usage_and_reason():
     config = default_config()
     config.routing.classifier.enabled = True
@@ -691,15 +686,17 @@ def test_hosted_jev_route_records_source_latency_usage_and_reason():
     classifier = FakeClassifier(source="cloud_jev")
     classifier.last_latency_ms = 450.0
     classifier.last_usage = {"input_tokens": 736, "output_tokens": 254}
-    decision = Router(config, classifier=classifier).route(RouteContext(
-        session_id="hosted-test", latest_prompt="Implement a robust parser for nested records.",
-    ))
+    decision = Router(config, classifier=classifier).route(
+        RouteContext(
+            session_id="hosted-test",
+            latest_prompt="Implement a robust parser for nested records.",
+        )
+    )
     assert decision.classification_source == "cloud_jev"
     assert ReasonCode.JEV_CLASSIFIER in decision.reason_codes
     assert decision.classifier_latency_ms == 450.0
     assert decision.classifier_usage == {"input_tokens": 736, "output_tokens": 254}
     assert decision.selection_receipt["classifier"]["status"] == "succeeded"
-
 
 
 def test_typesafe_key_in_prompt_stays_out_of_hosted_classifier():
@@ -709,8 +706,50 @@ def test_typesafe_key_in_prompt_stays_out_of_hosted_classifier():
     config.routing.mode = "llm"
     classifier = FakeClassifier(source="cloud_jev")
     key = "apikey_" + "a" * 32 + "_" + "b" * 64
-    decision = Router(config, classifier=classifier).route(RouteContext(
-        session_id="s", latest_prompt=f"Configure classification using {key}",
-    ))
+    decision = Router(config, classifier=classifier).route(
+        RouteContext(
+            session_id="s",
+            latest_prompt=f"Configure classification using {key}",
+        )
+    )
     assert classifier.calls == 0
     assert decision.classification_source == "heuristic_sensitive"
+
+
+@pytest.mark.parametrize(
+    "tag,model,effort",
+    [
+        ("@claude @fast", "claude-haiku-4-5-20251001", None),
+        ("@claude @normal", "claude-sonnet-5-5", "medium"),
+        ("@claude @smart", "claude-sonnet-5-5", "high"),
+        ("@claude @max", "claude-opus-5-5", "high"),
+        ("@fable @max", "claude-fable-5-1", "high"),
+        ("@fable @max @ultra", "claude-fable-5-1", "ultra"),
+        ("@claude @normal @none", "claude-sonnet-5-5", "low"),
+    ],
+)
+def test_claude_updated_routes(tag, model, effort):
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    ensure_claude_bridge_backend(config, 8090)
+    decision = Router(config).route(
+        RouteContext(session_id="claude-new", latest_prompt=f"{tag} hello")
+    )
+    assert decision.model == model
+    assert decision.reasoning_effort == effort
+    assert decision.backend == ("fable" if "@fable" in tag else "claude")
+
+
+def test_fable_is_never_selected_from_automatic_claude_tiers():
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    ensure_claude_bridge_backend(config, 8090)
+    config.routing.backend_by_tier = {tier: "claude" for tier in ("fast", "normal", "smart", "max")}
+    for tier in Tier:
+        result = Router(config).route(
+            RouteContext(session_id="automatic", latest_prompt=f"@{tier} hello")
+        )
+        assert result.backend == "claude"
+        assert result.model != "claude-fable-5-1"

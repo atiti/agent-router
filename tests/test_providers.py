@@ -55,8 +55,7 @@ def test_sync_custom_provider_preserves_optional_auth_and_safe_tools(tmp_path):
         base_url="http://127.0.0.1:11434/v1",
         tool_compatibility="functions_and_apply_patch",
         tiers={
-            tier: ModelTarget(model="qwen3-coder")
-            for tier in ("fast", "normal", "smart", "max")
+            tier: ModelTarget(model="qwen3-coder") for tier in ("fast", "normal", "smart", "max")
         },
     )
     config.backends["gateway"] = ExecutionBackendConfig(
@@ -66,8 +65,7 @@ def test_sync_custom_provider_preserves_optional_auth_and_safe_tools(tmp_path):
         base_url="https://models.example.test/v1",
         api_key_env="PRIVATE_GATEWAY_KEY",
         tiers={
-            tier: ModelTarget(model="gateway-model")
-            for tier in ("fast", "normal", "smart", "max")
+            tier: ModelTarget(model="gateway-model") for tier in ("fast", "normal", "smart", "max")
         },
     )
 
@@ -133,8 +131,7 @@ def test_custom_backend_capability_defaults_safe_and_can_be_explicitly_validated
         base_url="http://127.0.0.1:11434/v1",
         tool_compatibility="functions_and_apply_patch",
         tiers={
-            tier: ModelTarget(model="qwen3-coder")
-            for tier in ("fast", "normal", "smart", "max")
+            tier: ModelTarget(model="qwen3-coder") for tier in ("fast", "normal", "smart", "max")
         },
     )
 
@@ -172,10 +169,7 @@ def test_previous_bundled_deepseek_mapping_migrates_to_v41_flash(tmp_path):
 
     loaded = load_config(path)
 
-    assert {
-        tier: target.model
-        for tier, target in loaded.backends["deepseek"].tiers.items()
-    } == {
+    assert {tier: target.model for tier, target in loaded.backends["deepseek"].tiers.items()} == {
         "fast": "deepseek-flash",
         "normal": "deepseek-flash",
         "smart": "deepseek-flash",
@@ -203,17 +197,12 @@ def test_legacy_deepseek_backend_gains_safe_tool_compatibility(tmp_path):
     path = tmp_path / "config.yaml"
     payload = default_config().model_dump(mode="json", exclude_none=True)
     payload["backends"]["deepseek"].pop("tool_compatibility")
-    payload["backends"]["deepseek"]["tiers"]["fast"][
-        "reasoning_effort"
-    ] = "none"
+    payload["backends"]["deepseek"]["tiers"]["fast"]["reasoning_effort"] = "none"
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
     loaded = load_config(path)
 
-    assert (
-        loaded.backends["deepseek"].tool_compatibility
-        == "functions_and_apply_patch"
-    )
+    assert loaded.backends["deepseek"].tool_compatibility == "functions_and_apply_patch"
     assert loaded.backends["deepseek"].tiers["fast"].reasoning_effort == "low"
 
 
@@ -224,9 +213,7 @@ def test_imported_credential_is_owner_only_and_counts_as_ready(tmp_path, monkeyp
     monkeypatch.setenv("SOURCE_DEEPSEEK_KEY", "secret with a quote '")
     monkeypatch.setenv("AGENTROUTE_CREDENTIALS_FILE", str(path))
 
-    written, target_env = import_backend_credential(
-        config, "deepseek", "SOURCE_DEEPSEEK_KEY"
-    )
+    written, target_env = import_backend_credential(config, "deepseek", "SOURCE_DEEPSEEK_KEY")
 
     assert written == path
     assert target_env == "DEEPSEEK_API_KEY"
@@ -247,3 +234,19 @@ def test_imported_credential_refuses_symlink(tmp_path, monkeypatch):
         import_backend_credential(config, "deepseek", "SOURCE_DEEPSEEK_KEY", path)
 
     assert target.read_text(encoding="utf-8") == "untouched\n"
+
+
+def test_bridge_model_update_is_explicit_and_preserves_automatic_routes():
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    routes = dict(config.routing.backend_by_tier)
+    ensure_claude_bridge_backend(config, 8090)
+    config.backends["claude"].tiers["smart"] = ModelTarget(model="custom-model")
+    ensure_claude_bridge_backend(config, 8091)
+    assert config.backends["claude"].tiers["smart"].model == "custom-model"
+    assert config.backends["fable"].base_url == "http://127.0.0.1:8091/v1"
+    ensure_claude_bridge_backend(config, 8091, update_models=True)
+    assert config.backends["claude"].tiers["smart"].model == "claude-sonnet-5-5"
+    assert config.routing.backend_by_tier == routes
+    assert config.backends["fable"].review_model == "claude-haiku-4-5-20251001"

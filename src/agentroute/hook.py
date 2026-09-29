@@ -108,7 +108,10 @@ def _claude_route_usage() -> str:
 
 
 def _capacity_route_detail(decision: RouteDecision) -> str:
-    if decision.backend == "claude" and service_credential() == "claude-code":
+    if (
+        decision.model_provider.startswith("agentroute-claude")
+        and service_credential() == "claude-code"
+    ):
         return _claude_route_usage()
     if decision.capacity_status not in {"disabled", "healthy", "unknown"}:
         return f" · CAPACITY {decision.capacity_status.upper()}: {decision.capacity_detail}"
