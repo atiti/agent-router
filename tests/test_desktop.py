@@ -127,24 +127,71 @@ def test_desktop_build_restores_backup_if_destination_appears(tmp_path, monkeypa
     assert (conflicts[0] / "conflict-marker").read_text(encoding="utf-8") == "conflict"
 
 
-def test_desktop_build_rejects_different_codex_release_line(tmp_path, monkeypatch):
+def test_desktop_build_warns_but_accepts_different_codex_release_line(tmp_path, monkeypatch):
     home = tmp_path / "home"
     source = tmp_path / "ChatGPT.app"
+    destination = tmp_path / "ChatGPT-Routed.app"
     _fake_app(source)
     (home / "bin").mkdir(parents=True)
     for name in ("codex-bin", "codex-code-mode-host"):
         path = home / "bin" / name
         path.write_text(name, encoding="utf-8")
+        path.chmod(0o755)
+    monkeypatch.setenv("AGENTROUTE_HOME", str(home))
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(desktop, "smoke_code_mode_host", lambda _path: None)
+
+    def fake_run(*command, capture=False):
+        if command[0] == "ditto":
+            shutil.copytree(command[1], command[2])
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[1:] == ("--version",):
+            version = (
+                "codex-cli 0.158.0-alpha.2.1\n"
+                if str(command[0]).startswith(str(source))
+                else "codex-cli 0.159.2\n"
+            )
+            return subprocess.CompletedProcess(command, 0, stdout=version, stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(desktop, "_run", fake_run)
+    with pytest.warns(
+        UserWarning, match="frontend/app-server protocol compatibility is not guaranteed"
+    ):
+        installed, _ = desktop.build_desktop_app(source, destination)
+
+    assert installed == destination
+    status = desktop.desktop_status(source, destination)
+    assert status["source_routed_versions_match"] is False
+    assert status["source_routed_release_line"] == "0.158.0"
+    assert status["routed_release_line"] == "0.159.2"
+
+
+def test_desktop_build_can_strictly_reject_a_version_mismatch(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    source = tmp_path / "ChatGPT.app"
+    _fake_app(source)
+    (home / "bin").mkdir(parents=True)
+    for name in ("codex-bin", "codex-code-mode-host"):
+        (home / "bin" / name).write_text(name, encoding="utf-8")
     monkeypatch.setenv("AGENTROUTE_HOME", str(home))
     monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
 
     def fake_run(*command, capture=False):
-        version = "stock" if str(command[0]).startswith(str(source)) else "routed"
-        return subprocess.CompletedProcess(command, 0, stdout=f"{version}\n", stderr="")
+        version = (
+            "codex-cli 0.158.0-alpha.2.1\n"
+            if str(command[0]).startswith(str(source))
+            else "codex-cli 0.159.2\n"
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=version, stderr="")
 
     monkeypatch.setattr(desktop, "_run", fake_run)
-    with pytest.raises(RuntimeError, match="release versions differ"):
-        desktop.build_desktop_app(source, tmp_path / "ChatGPT-Routed.app")
+    with pytest.raises(RuntimeError, match="strict version matching is enabled"):
+        desktop.build_desktop_app(
+            source,
+            tmp_path / "ChatGPT-Routed.app",
+            strict_version_match=True,
+        )
 
 
 def test_desktop_build_accepts_prerelease_variants_on_same_codex_release(tmp_path, monkeypatch):

@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -157,7 +158,7 @@ def build_desktop_app(
     *,
     signing_identity: str = "-",
     replace: bool = False,
-    allow_version_mismatch: bool = False,
+    strict_version_match: bool = False,
 ) -> tuple[Path, Path | None]:
     """Derive a signed routed app from the user's installed official app."""
     _require_macos()
@@ -168,7 +169,7 @@ def build_desktop_app(
             destination,
             signing_identity=signing_identity,
             replace=replace,
-            allow_version_mismatch=allow_version_mismatch,
+            strict_version_match=strict_version_match,
         )
 
 
@@ -178,7 +179,7 @@ def _build_desktop_app_locked(
     *,
     signing_identity: str,
     replace: bool,
-    allow_version_mismatch: bool,
+    strict_version_match: bool,
 ) -> tuple[Path, Path | None]:
     home = agentroute_home()
     codex = home / "bin/codex-bin"
@@ -202,14 +203,23 @@ def _build_desktop_app_locked(
             "run it with --version for the underlying error"
         )
     routed_version = _codex_version(codex)
-    if not allow_version_mismatch and not _codex_versions_compatible(
-        source_version, routed_version
-    ):
-        raise RuntimeError(
-            "official and routed Codex release versions differ "
-            f"({source_version or 'unknown'} != {routed_version or 'unknown'}); "
-            "the major.minor.patch release line must match; update AgentRoute first or "
-            "explicitly allow the mismatch"
+    versions_match = _codex_versions_compatible(source_version, routed_version)
+    if not versions_match:
+        mismatch = (
+            "official and routed Codex versions differ "
+            f"({source_version or 'unknown'} != {routed_version or 'unknown'})"
+        )
+        if strict_version_match:
+            raise RuntimeError(
+                f"{mismatch}; strict version matching is enabled. Remove "
+                "--strict-version-match to continue with the rebuild."
+            )
+        warnings.warn(
+            f"{mismatch}. Continuing with the rebuild; the embedded runtime will be checked, "
+            "but frontend/app-server protocol compatibility is not guaranteed. Test the routed "
+            "app after launch. Use --strict-version-match to reject this mismatch.",
+            UserWarning,
+            stacklevel=2,
         )
     if destination.exists() and not replace:
         raise FileExistsError(f"destination exists; use desktop rebuild: {destination}")

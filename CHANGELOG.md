@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Allow Desktop rebuilds when the official app and routed Codex runtime report different release
+  lines. Warn that startup checks do not prove full frontend/app-server compatibility; keep
+  `--strict-version-match` available for operators who want the previous blocking behavior.
+
 ## 0.5.59 — 2026-09-30
 
 - Put replayed Claude `tool_result` blocks before text and other user content in the
