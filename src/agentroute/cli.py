@@ -1902,7 +1902,7 @@ def desktop_status_command(
     source: Path = typer.Option(DEFAULT_SOURCE_APP, help="Official ChatGPT.app path."),
     destination: Path = typer.Option(DEFAULT_DESTINATION_APP, help="Routed app path."),
 ) -> None:
-    """Show official, routed, and embedded Codex compatibility versions."""
+    """Show official, routed, and embedded Codex versions and build identity."""
     status = desktop_status(source.expanduser(), destination.expanduser())
     for key, value in status.items():
         console.print(f"{key.replace('_', ' ').title()}: {value}")
@@ -1915,9 +1915,15 @@ def desktop_install_command(
     signing_identity: str = typer.Option(
         "-", help="Apple signing identity; '-' creates a local ad-hoc signature."
     ),
+    strict_version_match: bool = typer.Option(
+        False,
+        help="Reject an official app/runtime release-line mismatch instead of continuing.",
+    ),
     allow_version_mismatch: bool = typer.Option(
         False,
-        help="Bypass the app-server compatibility guard (mobile remote may reject it).",
+        "--allow-version-mismatch",
+        hidden=True,
+        help="Deprecated compatibility option; version mismatches are allowed by default.",
     ),
 ) -> None:
     """Create a routed app from the locally installed official ChatGPT app."""
@@ -1926,7 +1932,7 @@ def desktop_install_command(
             source.expanduser(),
             destination.expanduser(),
             signing_identity=signing_identity,
-            allow_version_mismatch=allow_version_mismatch,
+            strict_version_match=strict_version_match and not allow_version_mismatch,
         )
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         console.print(f"[red]Desktop install failed: {error}[/red]")
@@ -1942,9 +1948,15 @@ def desktop_rebuild_command(
     signing_identity: str = typer.Option(
         "-", help="Apple signing identity; '-' creates a local ad-hoc signature."
     ),
+    strict_version_match: bool = typer.Option(
+        False,
+        help="Reject an official app/runtime release-line mismatch instead of continuing.",
+    ),
     allow_version_mismatch: bool = typer.Option(
         False,
-        help="Bypass the app-server compatibility guard (mobile remote may reject it).",
+        "--allow-version-mismatch",
+        hidden=True,
+        help="Deprecated compatibility option; version mismatches are allowed by default.",
     ),
 ) -> None:
     """Rebuild from the latest official app while preserving a rollback copy."""
@@ -1954,7 +1966,7 @@ def desktop_rebuild_command(
             destination.expanduser(),
             signing_identity=signing_identity,
             replace=True,
-            allow_version_mismatch=allow_version_mismatch,
+            strict_version_match=strict_version_match and not allow_version_mismatch,
         )
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         console.print(f"[red]Desktop rebuild failed: {error}[/red]")

@@ -707,11 +707,13 @@ original bundle identifier for frontend compatibility, changes the visible name,
 updates, signs nested code inside the copied bundle, verifies the complete signature, and smoke-tests
 the embedded app-server before publishing the destination. The official app is never uploaded,
 packaged, or redistributed.
-The installer requires the stock app and routed binary to report the same Codex
-`major.minor.patch` release (for example, `0.155.0`); prerelease suffixes may differ. This is a
-release-line guard, not proof that two custom binaries have identical code or that every mobile
-remote workflow is compatible. `agentroute desktop status` reports both release-line compatibility
-and exact version-string equality before any change is made.
+The installer reports the official app and routed runtime versions separately. A release-line
+mismatch warns but does not block `agentroute desktop install` or `rebuild` by default; the rebuilt
+app still checks that its bundled entrypoint launches the routed runtime and that the app-server
+starts. These startup checks do not prove that every frontend or mobile-remote workflow is
+compatible. Test the routed app after rebuilding. Pass `--strict-version-match` when a release-line
+mismatch should stop the build. `agentroute desktop status` reports the source/runtime release-line
+and exact version-string comparisons before changes are made.
 
 After updating the official ChatGPT app or AgentRoute, rebuild with an automatic rollback copy:
 
@@ -824,9 +826,10 @@ Desktop supports both legacy `Contents/Resources/codex` and the new
 `Contents/Resources/codex-cli/bin/codex` package entrypoint (including `CodexCLI.app`).
 Run `agentroute desktop status` to inspect the exact entrypoints, source/destination
 versions, embedded build, and whether Desktop matches the installed runtime. A CLI
-update requires a separate Desktop rebuild. The source and patched runtime must share
-the same `major.minor.patch` release line; older Desktop installations need a matching
-runtime or an official app update before rebuilding. See [Desktop setup](docs/desktop.md).
+update requires a separate Desktop rebuild. After rebuilding, the bundled CLI entrypoint must
+report the same version as the routed runtime; the official app frontend can report a different
+version. A release-line mismatch warns but does not block a rebuild by default. See [Desktop
+setup](docs/desktop.md).
 
 In the CLI, `agentroute why` and `agentroute history` show whether Codex applied a routed setting;
 `agentroute analytics` summarizes applied, rejected, unavailable, and unverified turns. The

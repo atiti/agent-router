@@ -18,12 +18,12 @@ see [Maintaining the Codex fork](codex-fork.md).
    When the bridge changed, also run `agentroute bridge install`, `bridge check`, and `bridge
    status` on a clean profile, and confirm `agentroute doctor` reports the bridge row as PASS on
    both macOS (LaunchAgent) and Linux (`systemd --user`).
-4. Run `agentroute desktop rebuild`, verify the route banner in Desktop, and verify mobile remote
-   connection against the routed app-server.
-5. Confirm the routed binary and bundled Desktop CLI report the same Codex
-   `major.minor.patch` release line; prerelease/build suffixes may differ. Then verify the mobile
-   remote connection against the rebuilt Desktop app, since matching release lines alone do not
-   guarantee app-server protocol compatibility.
+4. Run `agentroute desktop rebuild` from the available official app, verify the route banner in
+   Desktop, and verify mobile remote connection against the routed app-server.
+5. Confirm the bundled Desktop entrypoint launches the same routed runtime as the local AgentRoute
+   binary. The official frontend may be on a different release line; rebuild should warn and
+   continue by default, so exercise Desktop and mobile-remote behavior rather than treating
+   matching version strings as a protocol guarantee.
 6. Update the AgentRoute version and changelog, commit, and tag `vX.Y.Z`.
 
 Pushing the tag builds Linux and macOS payloads for arm64 and x64, creates SHA-256 files, emits
