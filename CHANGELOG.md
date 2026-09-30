@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.59 — 2026-09-30
+
+- Put replayed Claude `tool_result` blocks before text and other user content in the
+  immediately following message. Anthropic rejects a valid result when it appears
+  after text in a mixed user message, reporting the preceding `tool_use` as unanswered.
+  The bridge also keeps synthesizing error results for calls whose outputs are absent.
+
 ## 0.5.58 — 2026-09-30
 
 - Port the routed Codex CLI to OpenAI's stable 0.159.2 release and pair it with

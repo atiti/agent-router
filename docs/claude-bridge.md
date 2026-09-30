@@ -239,6 +239,6 @@ no such block.
 | Turns fail with a connection error | the service is not running: `agentroute bridge status` |
 | Port already in use | `agentroute bridge install --port <free port>` and re-run `backend-route` if needed |
 | Image error mentions the 2000 px maximum for many-image requests | the bridge automatically resizes the outbound images; install the latest bridge version and restart it with `agentroute bridge install`, then retry the turn |
-| Anthropic says a `tool_use` lacks a `tool_result` immediately after | upgrade AgentRoute to 0.5.58 or later and restart the bridge with `agentroute bridge install`; the bridge repairs interrupted tool calls in replayed history |
+| Anthropic says a `tool_use` lacks a `tool_result` immediately after | upgrade AgentRoute to 0.5.59 or later and restart the bridge with `agentroute bridge install`; the bridge repairs interrupted calls and moves results before text in replayed history |
 | Anthropic returns 429 | the bridge reports the Claude limit and reset when Anthropic supplies them; check `agentroute bridge usage` for the current window |
 | Anthropic returns 403 | check the Claude Code login with `claude`; subscription credentials are outside Anthropic's terms for third-party clients |
