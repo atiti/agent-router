@@ -1,7 +1,7 @@
 import pytest
 
 from agentroute.audit import AuditStore
-from agentroute.config import default_config
+from agentroute.config import ModelTarget, _with_default_backends, default_config
 from agentroute.models import RouteContext, Tier
 from agentroute.pricing import cost_report, token_cost
 from agentroute.router import Router
@@ -25,6 +25,33 @@ def test_provider_prefixed_model_uses_public_model_price():
         pricing,
     )
     assert cost == pytest.approx(0.20)
+
+
+def test_gpt_6_1_sol_default_has_published_price_and_capabilities():
+    config = default_config()
+    assert config.backends["gpt"].tiers["smart"].model == "gpt-6.1-sol"
+    assert config.backends["gpt"].tiers["smart"].reasoning_effort == "high"
+    price = config.pricing.models["gpt-6.1-sol"]
+    assert (
+        price.input_per_million,
+        price.cached_input_per_million,
+        price.cache_write_per_million,
+        price.output_per_million,
+    ) == (2.0, 0.10, 2.50, 10.0)
+    assert config.capabilities.models["gpt-6.1-sol"].context_window == 1_050_000
+
+
+def test_existing_gpt_smart_default_migrates_without_overriding_custom_target():
+    config = default_config()
+    config.backends["gpt"].tiers["smart"] = ModelTarget(
+        model="gpt-6-sol", reasoning_effort="high"
+    )
+    assert _with_default_backends(config).backends["gpt"].tiers["smart"].model == "gpt-6.1-sol"
+
+    config.backends["gpt"].tiers["smart"] = ModelTarget(
+        model="gpt-6-sol", reasoning_effort="xhigh"
+    )
+    assert _with_default_backends(config).backends["gpt"].tiers["smart"].model == "gpt-6-sol"
 
 
 @pytest.mark.parametrize(

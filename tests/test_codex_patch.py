@@ -137,13 +137,13 @@ def test_release_metadata_uses_current_version_and_runtime():
     doctor = (root / "src/agentroute/doctor.py").read_text(encoding="utf-8")
     ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert 'version = "0.5.57"' in package
-    assert 'version = "0.5.57"' in lock
-    assert '__version__ = "0.5.57"' in public_api
-    assert "provider-routing-v48" in installer
-    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v48"' in doctor
-    assert "af578870da6c605a5d9f5648d295d7769668070b" in installer
-    assert "0.158.0-alpha.2.1" in installer
+    assert 'version = "0.5.58"' in package
+    assert 'version = "0.5.58"' in lock
+    assert '__version__ = "0.5.58"' in public_api
+    assert "provider-routing-v49" in installer
+    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v49"' in doctor
+    assert "550d7b423e57a2d4a60f72302c25e8f7051f44cf" in installer
+    assert "0.159.2" in installer
     assert "./scripts/check_upstream.sh" in ci
 
 
@@ -277,7 +277,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "code_mode_smoke.py" in installer
     assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v48" in installer
+    assert "provider-routing-v49" in installer
     assert "--locked --profile" in installer
     assert "reset --hard" not in installer
     assert "AGENTROUTE_PATCHES" not in installer

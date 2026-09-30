@@ -151,8 +151,35 @@ def test_parallel_tool_outputs_are_grouped_into_one_user_message():
         mode="api-key",
     )
 
-    assert [m["role"] for m in payload["messages"]] == ["assistant", "assistant", "user"]
+    assert [m["role"] for m in payload["messages"]] == ["assistant", "user"]
+    assert [block["id"] for block in payload["messages"][0]["content"]] == ["a", "b"]
     assert [block["tool_use_id"] for block in payload["messages"][-1]["content"]] == ["a", "b"]
+
+
+def test_interrupted_parallel_tool_calls_receive_missing_results_before_next_turn():
+    payload, _, _ = translate_request(
+        {
+            "model": DEFAULT_MODEL,
+            "input": [
+                {"type": "function_call", "call_id": "a", "name": "one", "arguments": "{}"},
+                {"type": "function_call", "call_id": "b", "name": "two", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "a", "output": "1"},
+                {
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "continue"}],
+                },
+            ],
+        },
+        mode="api-key",
+    )
+
+    assert [message["role"] for message in payload["messages"]] == ["assistant", "user"]
+    results = [
+        block for block in payload["messages"][1]["content"]
+        if block["type"] == "tool_result"
+    ]
+    assert {block["tool_use_id"] for block in results} == {"a", "b"}
+    assert next(block for block in results if block["tool_use_id"] == "b")["is_error"] is True
 
 
 def test_custom_tool_becomes_string_parameter_and_is_tracked():

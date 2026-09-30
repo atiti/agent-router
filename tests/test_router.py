@@ -410,7 +410,7 @@ def test_architecture_and_migration_proposes_max_with_safe_fallback():
 
     assert decision.proposed_tier is Tier.MAX
     assert decision.tier is Tier.SMART
-    assert decision.model == "gpt-6-sol"
+    assert decision.model == "gpt-6.1-sol"
 
 
 def test_security_has_smart_risk_floor():

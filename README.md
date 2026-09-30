@@ -133,11 +133,13 @@ apply. The requested tier and a SHA-256 hash of the reason are audited; the reas
 |---|---|---|
 | FAST | `gpt-6-luna`, xhigh | greetings, exact retrieval, status checks, formatting, mechanical edits |
 | NORMAL | `gpt-6-luna`, xhigh | routine communication, analysis, and implementation |
-| SMART | `gpt-6-sol`, high | debugging, security, complex changes, and tool orchestration |
+| SMART | `gpt-6.1-sol`, high | debugging, security, complex changes, and tool orchestration |
 | MAX | `gpt-6-astra`, xhigh | exceptional architecture and high-risk cross-cutting work |
 
 Mappings, thresholds, and risk floors are editable in `~/.agentroute/config.yaml`. The GPT/Azure
 Luna `xhigh` minimum is a model-safety floor and cannot be lowered by tier defaults or prompt tags.
+The GPT SMART target at the former bundled `gpt-6-sol`/high default migrates to
+`gpt-6.1-sol`/high when an existing config loads; other customized SMART targets remain.
 
 ### Daybreak Blue for security work
 
@@ -813,9 +815,9 @@ after resuming a thread. Routing uses the destination model's context window and
 limits; retained approval requirements do not overwrite those limits.
 
 The source installer pins the AgentRoute Codex fork at
-`af578870da6c605a5d9f5648d295d7769668070b`, based on `rust-v0.158.0-alpha.2.1`.
-The routed CLI preserves upstream's real `0.158.0-alpha.2.1` version. AgentRoute
-`0.5.57` uses runtime v47; the development source pins runtime v48 for goal routing. The scheduled compatibility check prepares a candidate
+`550d7b423e57a2d4a60f72302c25e8f7051f44cf`, based on `rust-v0.159.2`.
+The routed CLI preserves upstream's real `0.159.2` version. AgentRoute
+`0.5.58` uses runtime v49 and includes goal routing. The scheduled compatibility check prepares a candidate
 stack; it never publishes an unreviewed upgrade. AgentRoute is not affiliated with OpenAI.
 
 Desktop supports both legacy `Contents/Resources/codex` and the new

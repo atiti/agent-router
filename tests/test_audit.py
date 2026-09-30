@@ -24,7 +24,7 @@ def test_audit_defaults_to_prompt_hash_only(tmp_path):
     assert row["comparison_tier"] == "normal"
     assert len(row["selection_receipt_hash"]) == 64
     receipt = json.loads(row["selection_receipt"])
-    assert receipt["selected"]["model"] == "gpt-6-sol"
+    assert receipt["selected"]["model"] == "gpt-6.1-sol"
     assert receipt["version"] == "selection-v1"
 
 
