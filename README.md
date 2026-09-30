@@ -817,7 +817,7 @@ limits; retained approval requirements do not overwrite those limits.
 The source installer pins the AgentRoute Codex fork at
 `550d7b423e57a2d4a60f72302c25e8f7051f44cf`, based on `rust-v0.159.2`.
 The routed CLI preserves upstream's real `0.159.2` version. AgentRoute
-`0.5.58` uses runtime v49 and includes goal routing. The scheduled compatibility check prepares a candidate
+`0.5.59` uses runtime v49 and includes goal routing. The scheduled compatibility check prepares a candidate
 stack; it never publishes an unreviewed upgrade. AgentRoute is not affiliated with OpenAI.
 
 Desktop supports both legacy `Contents/Resources/codex` and the new

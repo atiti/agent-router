@@ -693,14 +693,17 @@ def _normalize_tool_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]
         if not use_ids or index + 1 >= len(grouped):
             continue  # the trailing assistant repair handles the final turn
         following = grouped[index + 1]
+        results = [
+            block for block in following["content"]
+            if block.get("type") == "tool_result"
+        ]
         found = {
             str(block.get("tool_use_id"))
-            for block in following["content"]
-            if block.get("type") == "tool_result"
+            for block in results
         }
         missing = [use_id for use_id in use_ids if use_id not in found]
         if missing:
-            following["content"][:0] = [
+            results[:0] = [
                 {
                     "type": "tool_result",
                     "tool_use_id": use_id,
@@ -710,6 +713,16 @@ def _normalize_tool_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]
                 for use_id in missing
             ]
             log(f"repaired {len(missing)} missing tool result(s) in replayed history")
+        if results:
+            non_results = [
+                block for block in following["content"]
+                if block.get("type") != "tool_result"
+            ]
+            if following["content"] != results + non_results:
+                following["content"] = results + non_results
+                log(
+                    "moved tool result(s) before other user content in replayed history"
+                )
     return grouped
 
 
