@@ -493,7 +493,7 @@ def codex_user_prompt_submit(
             and not decision.manual_override
             and ReasonCode.SECURITY in decision.reason_codes
             and ReasonCode.CREDENTIAL_EXPOSURE not in decision.reason_codes
-            and decision.model in {"gpt-6-sol", "gpt-6-luna"}
+            and decision.model in {"gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna"}
         ):
             selected_name = (
                 profile_selection.selected.name

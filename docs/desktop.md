@@ -1,6 +1,6 @@
 # Codex Desktop with AgentRoute
 
-AgentRoute 0.5.57 bundles the patched Codex 0.158.0-alpha.2.1 runtime and matching
+AgentRoute 0.5.58 bundles the patched Codex 0.159.2 runtime and matching
 Code Mode host. It supports the official app's legacy and nested CLI package layouts.
 
 ## Upgrade an existing installation
@@ -26,8 +26,8 @@ If the official app is elsewhere, pass `--source /path/to/App.app` to both statu
 
 ## Confirm routing works
 
-Status should show source and destination on the `0.158.0` release line, the routed runtime
-at `0.158.0-alpha.2.1`, `Destination Matches Runtime: True`, and runtime v47 in both build IDs.
+Status should show source and destination on the `0.159.2` release line, the routed runtime
+at `0.159.2`, `Destination Matches Runtime: True`, and runtime v49 in both build IDs.
 The doctor Desktop check should pass. Open the routed app explicitly; both apps share a
 bundle identifier, so an already running official app can intercept an open request.
 

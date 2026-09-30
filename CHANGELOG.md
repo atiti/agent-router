@@ -1,7 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.5.58 — 2026-09-30
 
+- Port the routed Codex CLI to OpenAI's stable 0.159.2 release and pair it with
+  the matching official Code Mode host. Preserve goal routing, provider isolation,
+  route receipts, and Guardian reviewer fallback.
+- Group parallel Claude tool calls into one assistant turn and synthesize an
+  error result for an interrupted call missing its output, preventing Anthropic
+  from rejecting replayed long task histories.
+- Target GPT-6.1 Sol at high effort for the GPT SMART tier; register its capabilities
+  and published token prices. Existing SMART targets matching the former bundled
+  GPT-6 Sol/high default migrate on load; other customized targets remain intact.
 - Route autonomous `/goal` turns through AgentRoute using the persisted objective.
   Classify new or edited objectives, reuse the active route on continuation, honor
   later manual prompt routes, and check capacity before every turn. Add goal routing

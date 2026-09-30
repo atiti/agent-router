@@ -152,5 +152,14 @@ shows the goal ID and `classify_objective` or `continuation` mode. Each goal tur
 stored selection receipt also includes the objective hash.
 The continuity table stores the hash rather than an additional copy of the objective.
 This requires both the goal-aware fork and companion AgentRoute hook; installing only
-one side does not enable objective classification. AgentRoute 0.5.57/runtime v47 does
-not include this change.
+one side does not enable objective classification. AgentRoute 0.5.58/runtime v49
+includes both.
+
+## Stable 0.159.2 port (AgentRoute 0.5.58)
+
+The release pin is `550d7b423e57a2d4a60f72302c25e8f7051f44cf` on
+`agentroute-release-0.159.2`, based on OpenAI's stable `rust-v0.159.2`
+(`ff6aec96948b70d94983af2641a6b67c94faeff5`). The port retains the 26
+ordered routing commits and repairs upstream changes to provider session state,
+Guardian review, and input metadata. Its native CLI version and Code Mode host
+are both 0.159.2.

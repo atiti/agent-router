@@ -209,7 +209,7 @@ class CapabilityConfig(BaseModel):
 class PricingConfig(BaseModel):
     currency: str = "USD"
     baseline_model: str = "gpt-6-astra"
-    source_checked_at: str = "2026-09-29"
+    source_checked_at: str = "2026-09-30"
     models: dict[str, ModelPrice] = Field(
         default_factory=lambda: {
             "gpt-5.6-luna": ModelPrice(
@@ -235,6 +235,12 @@ class PricingConfig(BaseModel):
             "gpt-6-sol": ModelPrice(
                 input_per_million=2.00,
                 cached_input_per_million=0.20,
+                output_per_million=10.00,
+            ),
+            "gpt-6.1-sol": ModelPrice(
+                input_per_million=2.00,
+                cached_input_per_million=0.10,
+                cache_write_per_million=2.50,
                 output_per_million=10.00,
             ),
             "gpt-6-astra": ModelPrice(
@@ -331,7 +337,7 @@ def default_config() -> AppConfig:
     gpt_tiers = {
         "fast": ModelTarget(model="gpt-6-luna", reasoning_effort="xhigh"),
         "normal": ModelTarget(model="gpt-6-luna", reasoning_effort="xhigh"),
-        "smart": ModelTarget(model="gpt-6-sol", reasoning_effort="high"),
+        "smart": ModelTarget(model="gpt-6.1-sol", reasoning_effort="high"),
         "max": ModelTarget(model="gpt-6-astra", reasoning_effort="xhigh"),
     }
     config = AppConfig(
@@ -407,6 +413,10 @@ def default_config() -> AppConfig:
             tool_calling="full", reasoning=True, vision=True,
             pricing_model="gpt-6-sol",
         ),
+        "gpt-6.1-sol": ModelCapabilities(
+            tool_calling="full", reasoning=True, vision=True,
+            context_window=1_050_000, pricing_model="gpt-6.1-sol",
+        ),
         "gpt-6-astra": ModelCapabilities(
             tool_calling="full", reasoning=True, vision=True,
             pricing_model="gpt-6-astra",
@@ -426,7 +436,7 @@ def default_config() -> AppConfig:
 
 
 def _with_default_backends(config: AppConfig) -> AppConfig:
-    """Migrate pre-backend configs without changing their established GPT mappings."""
+    """Add backend defaults and migrate only the former bundled GPT SMART target."""
     defaults = default_config()
     # The normal Codex credential is deliberately an implicit account.  Keep it
     # available for old installations instead of forcing users to move or copy
@@ -443,6 +453,9 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
             configured = config.backends[name]
             if configured.tool_compatibility is None:
                 configured.tool_compatibility = backend.tool_compatibility
+    gpt_smart = config.backends["gpt"].tiers.get("smart")
+    if gpt_smart == ModelTarget(model="gpt-6-sol", reasoning_effort="high"):
+        config.backends["gpt"].tiers["smart"] = defaults.backends["gpt"].tiers["smart"]
     deepseek = config.backends.get("deepseek")
     if deepseek:
         legacy_models = {"deepseek-chat", "deepseek-reasoner"}

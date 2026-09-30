@@ -657,6 +657,62 @@ def _repair_trailing_assistant(messages: list[dict[str, Any]]) -> dict[str, Any]
     return {"role": "user", "content": [{"type": "text", "text": "Continue."}]}
 
 
+def _normalize_tool_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Make replayed Codex tool calls a valid Anthropic assistant/user pair.
+
+    Responses history stores parallel calls as separate assistant items. Anthropic
+    requires their results together in the very next user message. Interrupted
+    calls can also lack outputs entirely, so supply an explicit error result.
+    """
+    grouped: list[dict[str, Any]] = []
+    for message in messages:
+        grouped_with_previous = bool(
+            grouped
+            and grouped[-1]["role"] == message["role"]
+            and (
+                message["role"] == "assistant"
+                or any(
+                    block.get("type") == "tool_result"
+                    for block in grouped[-1]["content"] + message["content"]
+                )
+            )
+        )
+        if grouped_with_previous:
+            grouped[-1]["content"].extend(message["content"])
+        else:
+            grouped.append({"role": message["role"], "content": list(message["content"])})
+
+    for index, message in enumerate(grouped):
+        if message["role"] != "assistant":
+            continue
+        use_ids = list(dict.fromkeys(
+            str(block["id"])
+            for block in message["content"]
+            if block.get("type") == "tool_use" and block.get("id")
+        ))
+        if not use_ids or index + 1 >= len(grouped):
+            continue  # the trailing assistant repair handles the final turn
+        following = grouped[index + 1]
+        found = {
+            str(block.get("tool_use_id"))
+            for block in following["content"]
+            if block.get("type") == "tool_result"
+        }
+        missing = [use_id for use_id in use_ids if use_id not in found]
+        if missing:
+            following["content"][:0] = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": use_id,
+                    "content": "Tool output unavailable: the previous turn was interrupted.",
+                    "is_error": True,
+                }
+                for use_id in missing
+            ]
+            log(f"repaired {len(missing)} missing tool result(s) in replayed history")
+    return grouped
+
+
 def message_tail_hint(messages: list[dict[str, Any]], limit: int = 4) -> str:
     """Compact digest of a payload's last messages, for bridge logs."""
     parts: list[str] = []
@@ -787,6 +843,8 @@ def translate_request(
 
     if not messages:
         messages = [{"role": "user", "content": [{"type": "text", "text": ""}]}]
+
+    messages = _normalize_tool_turns(messages)
 
     # Claude models reject assistant prefills: the transcript must end on a user
     # message. Codex can hand us one that does not, e.g. when a turn is
