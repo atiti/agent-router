@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.60 — 2026-09-30
 
 - Allow Desktop rebuilds when the official app and routed Codex runtime report different release
   lines. Warn that startup checks do not prove full frontend/app-server compatibility; keep
