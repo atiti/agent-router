@@ -46,7 +46,7 @@ codex resume <session-id>
 Pair mobile with this server using the printed short-lived code. Interactive `codex`,
 `codex resume`, and `codex fork` attach automatically. Terminal and mobile then view and
 prompt one agent through the same session owner. Routed Desktop also joins this owner through
-Codex's native stdio proxy on its next launch. The server stays running after the terminal
+a stdio/WebSocket transport adapter on its next launch. The server stays running after the terminal
 closes; each client receives session events. New sessions use the terminal's working directory;
 resume/fork retain the saved directory unless `--cd` is explicit. Models, reasoning settings,
 permissions, and routed backend tags still apply per session/turn.

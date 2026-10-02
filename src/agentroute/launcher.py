@@ -149,7 +149,7 @@ def shared_client_args(user_args: Sequence[str], endpoint: Path) -> list[str]:
 
 
 def desktop_server_launch(binary: Path, user_args: Sequence[str]) -> bool:
-    """The routed Desktop starts app-server over stdio; join our owner via its native proxy."""
+    """The routed Desktop starts app-server over stdio; join our owner via a transport adapter."""
     if not (binary.parent / "agentroute-build-id").exists():
         return False
     if _launch_command(user_args) != "app-server":
@@ -195,7 +195,7 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
         except (OSError, SharedServerError) as error:
             print(f"AgentRoute shared server: {error}", file=sys.stderr)
             raise SystemExit(1) from error
-        argv = [str(binary), "app-server", "proxy", "--sock", str(endpoint)]
+        argv = [sys.executable, "-m", "agentroute.shared_server", "proxy", str(endpoint)]
     elif config.shared_server.enabled and interactive_launch(user_args) and not explicit_remote:
         from .shared_server import SharedServerError, ensure_server, socket_path
 
@@ -206,4 +206,4 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
             print(f"AgentRoute shared server: {error}", file=sys.stderr)
             raise SystemExit(1) from error
         argv[1:1] = client_args
-    os.execve(str(binary), argv, environment)
+    os.execve(argv[0], argv, environment)

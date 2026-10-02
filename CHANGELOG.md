@@ -4,6 +4,7 @@
 
 - Add opt-in shared routed Codex sessions for CLI and mobile through a persistent private app-server.
 - Add `agentroute server enable/start/status/pair/stop/disable`; forward terminal cwd for new sessions and preserve saved cwd on resume/fork.
+- Join routed Desktop through a stdio/WebSocket adapter on its next launch, avoiding duplicate mobile host registrations; report an actionable hint while an old Desktop owner is still online.
 - Preserve the patched runtime, routing features, credentials, and single-writer guard; refuse implicit restarts when startup settings change.
 - Verify two simultaneous clients can resume, prompt, observe, and read one session using the real runtime and a local mock model.
 

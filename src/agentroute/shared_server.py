@@ -13,6 +13,8 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
+import threading
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -209,12 +211,25 @@ def server_status() -> dict[str, Any]:
     try:
         with RpcClient(socket_path(), timeout=2) as client:
             remote = client.request("remoteControl/status/read")
-            return {
+            status = {
                 "running": True,
                 "socket": str(socket_path()),
                 "pid": metadata.get("pid"),
                 "remoteControl": remote,
             }
+            if remote.get("status") == "errored":
+                log_path = state_dir() / "server.log"
+                if log_path.exists():
+                    with log_path.open("rb") as log:
+                        log.seek(max(0, log_path.stat().st_size - 16384))
+                        recent = log.read().decode("utf-8", errors="replace")
+                    if "Remote app server already online" in recent:
+                        status["mobileHint"] = (
+                            "Another app-server owns this mobile host registration. "
+                            "Turn off remote control in the running Desktop, or close and "
+                            "reopen routed Desktop so it joins the shared owner."
+                        )
+            return status
     except (OSError, TimeoutError, SharedServerError, WebSocketException) as error:
         return {"running": False, "socket": str(socket_path()), "error": str(error)}
 
@@ -300,3 +315,41 @@ def stop_server(force: bool = False) -> bool:
 def pair_server() -> dict[str, Any]:
     with RpcClient(socket_path(), timeout=15) as client:
         return client.request("remoteControl/pairing/start", {"manualCode": True})
+
+
+def proxy_stdio(endpoint: Path) -> None:
+    """Forward Desktop's JSON lines unchanged to the owner's Unix WebSocket.
+
+    Codex's `app-server proxy` relays raw socket bytes, while this control listener
+    requires a WebSocket handshake. Initialization and server requests remain the
+    Desktop client's responsibility; this adapter owns no agent state.
+    """
+    with unix_connect(
+        str(endpoint), open_timeout=10, close_timeout=1, max_size=64 * 1024 * 1024
+    ) as connection:
+        errors: list[Exception] = []
+
+        def input_loop() -> None:
+            try:
+                for line in sys.stdin:
+                    if line.strip():
+                        connection.send(line.rstrip("\n"))
+            except Exception as error:
+                errors.append(error)
+            finally:
+                connection.close()
+
+        threading.Thread(target=input_loop, daemon=True).start()
+        for message in connection:
+            if isinstance(message, bytes):
+                message = message.decode("utf-8")
+            sys.stdout.write(message + "\n")
+            sys.stdout.flush()
+        if errors:
+            raise SharedServerError(f"Desktop stdio proxy failed: {errors[0]}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3 or sys.argv[1] != "proxy":
+        raise SystemExit("usage: python -m agentroute.shared_server proxy SOCKET_PATH")
+    proxy_stdio(Path(sys.argv[2]))

@@ -2,6 +2,7 @@ import json
 import os
 import select
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -89,7 +90,7 @@ def test_explicit_remote_does_not_start_local_owner(tmp_path, monkeypatch):
     launch_codex(Path("/tmp/codex"), ["--remote", "unix:///custom.sock"])
 
 
-def test_routed_desktop_joins_canonical_owner_with_native_proxy(tmp_path, monkeypatch):
+def test_routed_desktop_joins_canonical_owner_with_stdio_proxy(tmp_path, monkeypatch):
     config = default_config()
     config.shared_server.enabled = True
     binary = tmp_path / "desktop" / "codex-bin"
@@ -110,10 +111,10 @@ def test_routed_desktop_joins_canonical_owner_with_native_proxy(tmp_path, monkey
     launch_codex(binary, ["app-server", "--stdio", "--analytics-default-enabled"])
     assert captured["owner"] == tmp_path / "bin" / "codex-bin"
     assert captured["argv"] == [
-        str(binary),
-        "app-server",
+        sys.executable,
+        "-m",
+        "agentroute.shared_server",
         "proxy",
-        "--sock",
         str(tmp_path / "s.sock"),
     ]
     for args in [
@@ -167,9 +168,9 @@ def _wait_completed(client, turn_id):
     pytest.fail("no completion notification")
 
 
-def _verify_native_stdio_proxy(binary, endpoint, thread_id):
+def _verify_stdio_proxy(endpoint, thread_id):
     process = subprocess.Popen(
-        [str(binary), "app-server", "proxy", "--sock", str(endpoint)],
+        [sys.executable, "-m", "agentroute.shared_server", "proxy", str(endpoint)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -308,7 +309,7 @@ supports_websockets = false
                     },
                 )
                 _wait_completed(terminal, first["turn"]["id"])
-                _verify_native_stdio_proxy(binary, paths[0], thread_id)
+                _verify_stdio_proxy(paths[0], thread_id)
                 with RpcClient(paths[0], "codex_chatgpt_ios_remote", timeout=15) as mobile:
                     resumed = mobile.request("thread/resume", {"threadId": thread_id})
                     assert resumed["thread"]["id"] == thread_id
