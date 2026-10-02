@@ -318,6 +318,12 @@ class PricingConfig(BaseModel):
     aliases: dict[str, str] = Field(default_factory=dict)
 
 
+class SharedServerConfig(BaseModel):
+    """Opt in to one routed session owner for terminal and mobile clients."""
+
+    enabled: bool = False
+
+
 class AppConfig(BaseModel):
     preset: str = "balanced"
     enabled: bool = False
@@ -331,6 +337,7 @@ class AppConfig(BaseModel):
     capacity: CapacityConfig = Field(default_factory=CapacityConfig)
     pricing: PricingConfig = Field(default_factory=PricingConfig)
     capabilities: CapabilityConfig = Field(default_factory=CapabilityConfig)
+    shared_server: SharedServerConfig = Field(default_factory=SharedServerConfig)
 
 
 def default_config() -> AppConfig:
