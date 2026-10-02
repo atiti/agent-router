@@ -145,7 +145,7 @@ def test_environment_loads_literal_credentials_without_shell_expansion(tmp_path,
     (tmp_path / "credentials").write_text("export AR_TEST_KEY='$(touch /tmp/should-not-exist)'\n")
     env = server_environment({})
     assert env["AR_TEST_KEY"] == "$(touch /tmp/should-not-exist)"
-    assert server_environment({"AR_TEST_KEY": "explicit"})["AR_TEST_KEY"] == "explicit"
+    assert server_environment({"AR_TEST_KEY": "older"})["AR_TEST_KEY"] == env["AR_TEST_KEY"]
 
 
 def test_distinct_codex_homes_get_distinct_socket_paths(tmp_path, monkeypatch):

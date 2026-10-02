@@ -147,7 +147,9 @@ def server_environment(environment: Mapping[str, str] | None = None) -> dict[str
             name, value = words[1].split("=", 1)
             if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", name):
                 raise SharedServerError("invalid AgentRoute credential variable name")
-            result.setdefault(name, value)
+            # Match the codex shell wrapper, which sources these stored exports
+            # after inheriting its environment. Desktop can retain older values.
+            result[name] = value
     receipt = agentroute_home() / "build-id"
     if receipt.exists():
         result.setdefault("AGENTROUTE_RUNTIME_BUILD_ID", receipt.read_text().strip())
