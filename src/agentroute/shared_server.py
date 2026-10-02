@@ -104,10 +104,16 @@ def server_argv(binary: Path, config: AppConfig) -> list[str]:
         str(binary.resolve()),
         *BASE_CODEX_ARGS,
         *route,
+        *(arg for setting in config.shared_server.startup_config for arg in ("-c", setting)),
         "app-server",
         "--listen",
         f"unix://{socket_path()}",
         "--remote-control",
+        *(
+            ["--analytics-default-enabled"]
+            if config.shared_server.analytics_default_enabled
+            else []
+        ),
     ]
 
 

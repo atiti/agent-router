@@ -19,6 +19,35 @@ from .shared_server import (
 server_app = typer.Typer(no_args_is_help=True, help="Share routed sessions between CLI and mobile.")
 
 
+@server_app.command("configure")
+def configure_command(
+    codex_config: list[str] = typer.Option(
+        [], "--codex-config", help="Server startup key=value override."
+    ),
+    analytics_default_enabled: bool | None = typer.Option(
+        None,
+        "--analytics-default-enabled/--no-analytics-default-enabled",
+    ),
+) -> None:
+    """Persist server settings; an existing owner needs an explicit safe stop/start."""
+    config = load_config()
+    overrides = dict(setting.split("=", 1) for setting in config.shared_server.startup_config)
+    for setting in codex_config:
+        if "=" not in setting or not setting.split("=", 1)[0].strip():
+            raise typer.BadParameter("each --codex-config must be key=value")
+        key, value = setting.split("=", 1)
+        overrides[key.strip()] = value.strip()
+    config.shared_server.startup_config = [
+        f"{key}={value}" for key, value in sorted(overrides.items())
+    ]
+    if analytics_default_enabled is not None:
+        config.shared_server.analytics_default_enabled = analytics_default_enabled
+    save_config(config)
+    typer.echo(
+        "Server startup settings saved; stop/start an existing owner when its work is finished."
+    )
+
+
 def _start(binary: Path | None = None) -> Path:
     return ensure_server(binary or agentroute_home() / "bin" / "codex-bin", load_config())
 

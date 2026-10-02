@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.62 — 2026-10-02
+
+- Preserve Desktop tool settings and analytics preferences on the shared session owner through `agentroute server configure`.
+- Report Desktop startup overrides missing from the owner before attaching, and support explicit `--listen stdio://` Desktop helper connections.
+
 ## 0.5.61 — 2026-10-02
 
 - Add opt-in shared routed Codex sessions for CLI and mobile through a persistent private app-server.

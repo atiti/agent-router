@@ -322,6 +322,8 @@ class SharedServerConfig(BaseModel):
     """Opt in to one routed session owner for terminal and mobile clients."""
 
     enabled: bool = False
+    startup_config: list[str] = Field(default_factory=list)
+    analytics_default_enabled: bool = False
 
 
 class AppConfig(BaseModel):
