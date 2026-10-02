@@ -148,6 +148,24 @@ def shared_client_args(user_args: Sequence[str], endpoint: Path) -> list[str]:
     return args
 
 
+def desktop_server_launch(binary: Path, user_args: Sequence[str]) -> bool:
+    """The routed Desktop starts app-server over stdio; join our owner via its native proxy."""
+    if not (binary.parent / "agentroute-build-id").exists():
+        return False
+    if _launch_command(user_args) != "app-server":
+        return False
+    index = list(user_args).index("app-server")
+    server_args = list(user_args)[index + 1 :]
+    return (
+        not any(arg in {"--help", "-h", "--listen"} for arg in server_args)
+        and not any(arg.startswith("--listen=") for arg in server_args)
+        and not any(
+            arg in {"daemon", "proxy", "generate-ts", "generate-json-schema", "help"}
+            for arg in server_args
+        )
+    )
+
+
 def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | None = None) -> None:
     binary = binary or agentroute_home() / "bin" / "codex-bin"
     config = load_config()
@@ -166,7 +184,19 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
         environment["CODEX_ROLLOUT_TRACE_ROOT"] = str(root)
     argv = codex_argv(binary, user_args, config)
     explicit_remote = any(arg == "--remote" or arg.startswith("--remote=") for arg in user_args)
-    if config.shared_server.enabled and interactive_launch(user_args) and not explicit_remote:
+    desktop_proxy = config.shared_server.enabled and desktop_server_launch(binary, user_args)
+    if desktop_proxy:
+        from .shared_server import SharedServerError, ensure_server
+
+        try:
+            # CLI and Desktop carry separate copies of the same build. Always own sessions
+            # with the canonical binary so their launch fingerprints agree.
+            endpoint = ensure_server(agentroute_home() / "bin" / "codex-bin", config, environment)
+        except (OSError, SharedServerError) as error:
+            print(f"AgentRoute shared server: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+        argv = [str(binary), "app-server", "proxy", "--sock", str(endpoint)]
+    elif config.shared_server.enabled and interactive_launch(user_args) and not explicit_remote:
         from .shared_server import SharedServerError, ensure_server, socket_path
 
         try:

@@ -45,7 +45,8 @@ codex resume <session-id>
 
 Pair mobile with this server using the printed short-lived code. Interactive `codex`,
 `codex resume`, and `codex fork` attach automatically. Terminal and mobile then view and
-prompt one agent through the same session owner. The server stays running after the terminal
+prompt one agent through the same session owner. Routed Desktop also joins this owner through
+Codex's native stdio proxy on its next launch. The server stays running after the terminal
 closes; each client receives session events. New sessions use the terminal's working directory;
 resume/fork retain the saved directory unless `--cd` is explicit. Models, reasoning settings,
 permissions, and routed backend tags still apply per session/turn.
@@ -54,7 +55,10 @@ The shared owner uses AgentRoute's patched binary, private Unix socket, canonica
 hooks, and stored backend credentials. It keeps Codex's single-writer protection. Sessions still
 owned by an older embedded CLI or Desktop process must be closed there before this server can
 resume them. Select this paired host in mobile; a different Desktop server cannot join its
-in-memory sessions. `codex exec` and utility subcommands retain their existing execution path.
+in-memory sessions. An already-running Desktop can occupy the same mobile host registration;
+turn off its remote control or close it before connecting the shared owner's relay. Reopening
+routed Desktop after enabling shared mode uses the shared owner and avoids this conflict.
+`codex exec` and utility subcommands retain their existing execution path.
 
 `agentroute server status` reports local ownership and mobile relay state. Following a reboot
 or server crash, the next interactive CLI launch starts it again. Changing the binary or its

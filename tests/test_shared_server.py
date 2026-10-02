@@ -1,5 +1,7 @@
 import json
 import os
+import select
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -9,7 +11,12 @@ from pathlib import Path
 import pytest
 
 from agentroute.config import default_config, save_config
-from agentroute.launcher import interactive_launch, launch_codex, shared_client_args
+from agentroute.launcher import (
+    desktop_server_launch,
+    interactive_launch,
+    launch_codex,
+    shared_client_args,
+)
 from agentroute.shared_server import (
     RpcClient,
     SharedServerError,
@@ -82,6 +89,42 @@ def test_explicit_remote_does_not_start_local_owner(tmp_path, monkeypatch):
     launch_codex(Path("/tmp/codex"), ["--remote", "unix:///custom.sock"])
 
 
+def test_routed_desktop_joins_canonical_owner_with_native_proxy(tmp_path, monkeypatch):
+    config = default_config()
+    config.shared_server.enabled = True
+    binary = tmp_path / "desktop" / "codex-bin"
+    binary.parent.mkdir()
+    (binary.parent / "agentroute-build-id").write_text("build")
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    monkeypatch.setattr("agentroute.launcher.load_config", lambda: config)
+    captured = {}
+
+    def ensure(owner_binary, *args):
+        captured["owner"] = owner_binary
+        return tmp_path / "s.sock"
+
+    monkeypatch.setattr("agentroute.shared_server.ensure_server", ensure)
+    monkeypatch.setattr(
+        "agentroute.launcher.os.execve", lambda binary, argv, env: captured.update(argv=argv)
+    )
+    launch_codex(binary, ["app-server", "--stdio", "--analytics-default-enabled"])
+    assert captured["owner"] == tmp_path / "bin" / "codex-bin"
+    assert captured["argv"] == [
+        str(binary),
+        "app-server",
+        "proxy",
+        "--sock",
+        str(tmp_path / "s.sock"),
+    ]
+    for args in [
+        ["app-server", "proxy"],
+        ["app-server", "daemon", "start"],
+        ["app-server", "--listen", "ws://127.0.0.1:1234"],
+        ["app-server", "--help"],
+    ]:
+        assert not desktop_server_launch(binary, args)
+
+
 def test_client_preserves_explicit_cwd_and_rejects_ignored_provider(tmp_path):
     assert shared_client_args(["--cd", "/project"], tmp_path / "s") == [
         "--remote",
@@ -122,6 +165,49 @@ def _wait_completed(client, turn_id):
                 return
         client.events.append(json.loads(client.connection.recv(timeout=15)))
     pytest.fail("no completion notification")
+
+
+def _verify_native_stdio_proxy(binary, endpoint, thread_id):
+    process = subprocess.Popen(
+        [str(binary), "app-server", "proxy", "--sock", str(endpoint)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        bufsize=0,
+    )
+
+    def request(request_id, method, params):
+        process.stdin.write(
+            (json.dumps({"id": request_id, "method": method, "params": params}) + "\n").encode()
+        )
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            assert select.select([process.stdout], [], [], 10)[0], "proxy did not answer"
+            message = json.loads(process.stdout.readline())
+            if message.get("id") == request_id and "result" in message:
+                return message["result"]
+            assert "error" not in message, message
+        pytest.fail("no proxy RPC response")
+
+    try:
+        request(
+            1,
+            "initialize",
+            {
+                "clientInfo": {"name": "Codex Desktop", "version": "test"},
+                "capabilities": {"experimentalApi": True},
+            },
+        )
+        process.stdin.write(b'{"method":"initialized"}\n')
+        resumed = request(2, "thread/resume", {"threadId": thread_id})
+        assert resumed["thread"]["id"] == thread_id
+    finally:
+        process.stdin.close()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            process.wait(timeout=5)
 
 
 def test_real_two_clients_share_owner_history_and_turns(tmp_path, monkeypatch):
@@ -222,6 +308,7 @@ supports_websockets = false
                     },
                 )
                 _wait_completed(terminal, first["turn"]["id"])
+                _verify_native_stdio_proxy(binary, paths[0], thread_id)
                 with RpcClient(paths[0], "codex_chatgpt_ios_remote", timeout=15) as mobile:
                     resumed = mobile.request("thread/resume", {"threadId": thread_id})
                     assert resumed["thread"]["id"] == thread_id
