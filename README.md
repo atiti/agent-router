@@ -60,6 +60,20 @@ turn off its remote control or close it before connecting the shared owner's rel
 routed Desktop after enabling shared mode uses the shared owner and avoids this conflict.
 `codex exec` and utility subcommands retain their existing execution path.
 
+Desktop startup overrides must also be configured on the shared owner. For the bundled
+Desktop tools, run this before enabling the owner (or after safely stopping it):
+
+```sh
+agentroute server configure \
+  --codex-config 'plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true' \
+  --codex-config 'plugins.code-review@openai-bundled.mcp_servers.code-review.enabled=true' \
+  --analytics-default-enabled
+```
+
+`--codex-config` accepts repeatable non-secret startup `key=value` settings. The Desktop
+adapter reports missing overrides before attaching, so its tools are not silently disabled.
+`configure` saves settings without restarting an owner or interrupting its work.
+
 `agentroute server status` reports local ownership and mobile relay state. Following a reboot
 or server crash, the next interactive CLI launch starts it again. Changing the binary or its
 startup routing settings requires an explicit stop/start; active sessions are never restarted

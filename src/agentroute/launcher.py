@@ -156,14 +156,56 @@ def desktop_server_launch(binary: Path, user_args: Sequence[str]) -> bool:
         return False
     index = list(user_args).index("app-server")
     server_args = list(user_args)[index + 1 :]
-    return (
-        not any(arg in {"--help", "-h", "--listen"} for arg in server_args)
-        and not any(arg.startswith("--listen=") for arg in server_args)
-        and not any(
-            arg in {"daemon", "proxy", "generate-ts", "generate-json-schema", "help"}
-            for arg in server_args
-        )
+    for index, arg in enumerate(server_args):
+        if arg == "--listen" and (
+            index + 1 == len(server_args) or server_args[index + 1] != "stdio://"
+        ):
+            return False
+        if arg.startswith("--listen=") and arg != "--listen=stdio://":
+            return False
+    return not any(arg in {"--help", "-h"} for arg in server_args) and not any(
+        arg in {"daemon", "proxy", "generate-ts", "generate-json-schema", "help"}
+        for arg in server_args
     )
+
+
+def _config_assignments(args: Sequence[str]) -> dict[str, str]:
+    assignments: dict[str, str] = {}
+    iterator = iter(args)
+    for arg in iterator:
+        if arg in {"-c", "--config"}:
+            assignment = next(iterator, "")
+        elif arg.startswith("--config="):
+            assignment = arg[len("--config=") :]
+        elif arg in {"--enable", "--disable"}:
+            assignments[f"features.{next(iterator, '')}"] = "true" if arg == "--enable" else "false"
+            continue
+        else:
+            continue
+        if "=" in assignment:
+            key, value = assignment.split("=", 1)
+            assignments[key.strip()] = value.strip()
+    return assignments
+
+
+def validate_desktop_startup(user_args: Sequence[str], config: AppConfig) -> None:
+    from .shared_server import SharedServerError, server_argv
+
+    configured = _config_assignments(server_argv(agentroute_home() / "bin" / "codex-bin", config))
+    requested = _config_assignments(user_args)
+    missing = [key for key, value in requested.items() if configured.get(key) != value]
+    if (
+        "--analytics-default-enabled" in user_args
+        and not config.shared_server.analytics_default_enabled
+    ):
+        missing.append("analytics default")
+    if missing:
+        raise SharedServerError(
+            "Desktop startup settings are missing from the shared owner: "
+            + ", ".join(missing)
+            + ". Set them with `agentroute server configure`, "
+            "then finish its sessions and stop/start."
+        )
 
 
 def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | None = None) -> None:
@@ -189,6 +231,7 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
         from .shared_server import SharedServerError, ensure_server
 
         try:
+            validate_desktop_startup(user_args, config)
             # CLI and Desktop carry separate copies of the same build. Always own sessions
             # with the canonical binary so their launch fingerprints agree.
             endpoint = ensure_server(agentroute_home() / "bin" / "codex-bin", config, environment)

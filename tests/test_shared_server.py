@@ -11,17 +11,19 @@ from pathlib import Path
 
 import pytest
 
-from agentroute.config import default_config, save_config
+from agentroute.config import default_config, load_config, save_config
 from agentroute.launcher import (
     desktop_server_launch,
     interactive_launch,
     launch_codex,
     shared_client_args,
+    validate_desktop_startup,
 )
 from agentroute.shared_server import (
     RpcClient,
     SharedServerError,
     ensure_server,
+    server_argv,
     server_environment,
     server_status,
     state_dir,
@@ -93,11 +95,13 @@ def test_explicit_remote_does_not_start_local_owner(tmp_path, monkeypatch):
 def test_routed_desktop_joins_canonical_owner_with_stdio_proxy(tmp_path, monkeypatch):
     config = default_config()
     config.shared_server.enabled = True
+    config.shared_server.analytics_default_enabled = True
     binary = tmp_path / "desktop" / "codex-bin"
     binary.parent.mkdir()
     (binary.parent / "agentroute-build-id").write_text("build")
     monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
     monkeypatch.setattr("agentroute.launcher.load_config", lambda: config)
+    monkeypatch.setattr("agentroute.shared_server.socket_path", lambda: tmp_path / "s.sock")
     captured = {}
 
     def ensure(owner_binary, *args):
@@ -108,7 +112,7 @@ def test_routed_desktop_joins_canonical_owner_with_stdio_proxy(tmp_path, monkeyp
     monkeypatch.setattr(
         "agentroute.launcher.os.execve", lambda binary, argv, env: captured.update(argv=argv)
     )
-    launch_codex(binary, ["app-server", "--stdio", "--analytics-default-enabled"])
+    launch_codex(binary, ["app-server", "--listen", "stdio://", "--analytics-default-enabled"])
     assert captured["owner"] == tmp_path / "bin" / "codex-bin"
     assert captured["argv"] == [
         sys.executable,
@@ -124,6 +128,61 @@ def test_routed_desktop_joins_canonical_owner_with_stdio_proxy(tmp_path, monkeyp
         ["app-server", "--help"],
     ]:
         assert not desktop_server_launch(binary, args)
+
+
+def test_desktop_startup_settings_are_preserved_or_reported(tmp_path):
+    config = default_config()
+    plugin = "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled"
+    requested = [
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+        "--analytics-default-enabled",
+        "-c",
+        f"{plugin}=true",
+    ]
+    with pytest.raises(SharedServerError, match=plugin):
+        validate_desktop_startup(requested, config)
+    config.shared_server.startup_config = [f"{plugin}=true"]
+    config.shared_server.analytics_default_enabled = True
+    validate_desktop_startup(requested, config)
+    argv = server_argv(tmp_path / "codex-bin", config)
+    assert f"{plugin}=true" in argv
+    assert "--analytics-default-enabled" in argv
+    with pytest.raises(SharedServerError, match="features.code_mode_host"):
+        validate_desktop_startup(["--disable", "code_mode_host", "app-server"], config)
+
+
+def test_configure_updates_overrides_without_restarting(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from agentroute.server_cli import server_app
+
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(tmp_path / "config.yaml"))
+    config = default_config()
+    config.shared_server.startup_config = ["existing=true", "changed=false"]
+    save_config(config)
+    result = CliRunner().invoke(
+        server_app,
+        [
+            "configure",
+            "--codex-config",
+            "changed=true",
+            "--codex-config",
+            "new=true",
+            "--analytics-default-enabled",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    configured = load_config().shared_server
+    assert configured.startup_config == ["changed=true", "existing=true", "new=true"]
+    assert configured.analytics_default_enabled is True
+    result = CliRunner().invoke(server_app, ["configure", "--no-analytics-default-enabled"])
+    assert result.exit_code == 0, result.output
+    assert load_config().shared_server.analytics_default_enabled is False
+    result = CliRunner().invoke(server_app, ["configure", "--codex-config", "invalid"])
+    assert result.exit_code != 0
+    assert load_config().shared_server.startup_config == configured.startup_config
 
 
 def test_client_preserves_explicit_cwd_and_rejects_ignored_provider(tmp_path):

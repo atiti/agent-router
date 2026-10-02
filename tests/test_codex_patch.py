@@ -137,9 +137,9 @@ def test_release_metadata_uses_current_version_and_runtime():
     doctor = (root / "src/agentroute/doctor.py").read_text(encoding="utf-8")
     ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert 'version = "0.5.61"' in package
-    assert 'version = "0.5.61"' in lock
-    assert '__version__ = "0.5.61"' in public_api
+    assert 'version = "0.5.62"' in package
+    assert 'version = "0.5.62"' in lock
+    assert '__version__ = "0.5.62"' in public_api
     assert "provider-routing-v49" in installer
     assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v49"' in doctor
     assert "550d7b423e57a2d4a60f72302c25e8f7051f44cf" in installer
