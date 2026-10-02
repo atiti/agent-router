@@ -31,6 +31,51 @@ AgentRoute supports the interactive Codex CLI, `codex exec`, locally rebuilt Cod
 multiple ChatGPT subscription profiles, Azure OpenAI, and tool-compatible DeepSeek endpoints. See
 [Install](#install) for prerequisites and the review-before-running flow.
 
+## CLI and mobile on the same session
+
+Opt in to a shared routed app-server on macOS or Linux:
+
+```sh
+agentroute server enable
+agentroute server pair
+codex
+# Or resume an existing session after its old CLI process has exited:
+codex resume <session-id>
+```
+
+Pair mobile with this server using the printed short-lived code. Interactive `codex`,
+`codex resume`, and `codex fork` attach automatically. Terminal and mobile then view and
+prompt one agent through the same session owner. Routed Desktop also joins this owner through
+a stdio/WebSocket transport adapter on its next launch. The server stays running after the terminal
+closes; each client receives session events. New sessions use the terminal's working directory;
+resume/fork retain the saved directory unless `--cd` is explicit. Models, reasoning settings,
+permissions, and routed backend tags still apply per session/turn.
+
+The shared owner uses AgentRoute's patched binary, private Unix socket, canonical `CODEX_HOME`,
+hooks, and stored backend credentials. It keeps Codex's single-writer protection. Sessions still
+owned by an older embedded CLI or Desktop process must be closed there before this server can
+resume them. Select this paired host in mobile; a different Desktop server cannot join its
+in-memory sessions. An already-running Desktop can occupy the same mobile host registration;
+turn off its remote control or close it before connecting the shared owner's relay. Reopening
+routed Desktop after enabling shared mode uses the shared owner and avoids this conflict.
+`codex exec` and utility subcommands retain their existing execution path.
+
+`agentroute server status` reports local ownership and mobile relay state. Following a reboot
+or server crash, the next interactive CLI launch starts it again. Changing the binary or its
+startup routing settings requires an explicit stop/start; active sessions are never restarted
+automatically. `agentroute server stop` refuses to stop a server with loaded sessions;
+`--force` explicitly allows interruption. `agentroute server disable` changes future CLI
+launches while leaving existing shared sessions running. An explicit `codex --remote …`
+continues to use the supplied endpoint. CLI provider/profile overrides require embedded mode;
+use AgentRoute's `@backend` tags to switch providers in a shared session.
+
+The real runtime integration test uses a local mock model and two connected clients:
+
+```sh
+AGENTROUTE_TEST_CODEX_BINARY="$HOME/.agentroute/bin/codex-bin" \
+  uv run pytest tests/test_shared_server.py
+```
+
 ## Prompt tags
 
 Run `agentroute help` in a terminal to show the currently enabled tag reference. Tags may be
