@@ -110,6 +110,8 @@ from .providers import (
 from .release import install_latest_release
 from .router import Router
 from .server_cli import server_app
+from .storage_cli import storage_app
+from .work_cli import sessions_app, work_app
 
 app = typer.Typer(no_args_is_help=True, help="Local, auditable model routing for coding agents.")
 desktop_app = typer.Typer(no_args_is_help=True, help="Build and manage Codex Desktop locally.")
@@ -129,6 +131,9 @@ app.add_typer(account_app, name="account")
 app.add_typer(context_app, name="context")
 app.add_typer(bridge_app, name="bridge")
 app.add_typer(server_app, name="server")
+app.add_typer(storage_app, name="storage")
+app.add_typer(work_app, name="work")
+app.add_typer(sessions_app, name="sessions")
 console = Console()
 
 

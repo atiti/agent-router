@@ -324,6 +324,9 @@ def _build_desktop_app_locked(
         raise
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
+    from .storage import prune_desktop_backups
+
+    prune_desktop_backups(home)
     return destination, backup
 
 

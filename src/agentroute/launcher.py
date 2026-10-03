@@ -6,7 +6,6 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .config import AppConfig, agentroute_home, load_config
-from .context_profile import capture_enabled, profile_root
 
 BASE_CODEX_ARGS = [
     "--enable",
@@ -218,12 +217,9 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
             file=sys.stderr,
         )
     environment = os.environ.copy()
-    if capture_enabled() and not environment.get("CODEX_ROLLOUT_TRACE_ROOT"):
-        profile_root().mkdir(parents=True, exist_ok=True, mode=0o700)
-        profile_root().chmod(0o700)
-        root = profile_root() / "traces"
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        environment["CODEX_ROLLOUT_TRACE_ROOT"] = str(root)
+    from .storage import prepare_capture
+
+    prepare_capture(environment)
     argv = codex_argv(binary, user_args, config)
     explicit_remote = any(arg == "--remote" or arg.startswith("--remote=") for arg in user_args)
     desktop_proxy = config.shared_server.enabled and desktop_server_launch(binary, user_args)

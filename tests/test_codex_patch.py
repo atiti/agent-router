@@ -137,13 +137,13 @@ def test_release_metadata_uses_current_version_and_runtime():
     doctor = (root / "src/agentroute/doctor.py").read_text(encoding="utf-8")
     ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert 'version = "0.5.62"' in package
-    assert 'version = "0.5.62"' in lock
-    assert '__version__ = "0.5.62"' in public_api
-    assert "provider-routing-v49" in installer
-    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v49"' in doctor
-    assert "550d7b423e57a2d4a60f72302c25e8f7051f44cf" in installer
-    assert "0.159.2" in installer
+    assert 'version = "0.5.63"' in package
+    assert 'version = "0.5.63"' in lock
+    assert '__version__ = "0.5.63"' in public_api
+    assert "provider-routing-v50" in installer
+    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v50"' in doctor
+    assert "2385f6b58e3d380f10d5f2d8d5d13d4c65ef1021" in installer
+    assert "0.160.0" in installer
     assert "./scripts/check_upstream.sh" in ci
 
 
@@ -275,9 +275,10 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert '"$AGENTROUTE_STAGED_CODEX" --version' in installer
     assert "codex-code-mode-host.entitlements.plist" in installer
     assert "code_mode_smoke.py" in installer
-    assert 'AGENTROUTE_CODEX_TARGET=${AGENTROUTE_CODEX_TARGET:-' in installer
+    assert 'agentroute-codex-build.XXXXXX' in installer
+    assert 'trap cleanup_build EXIT HUP INT TERM' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v49" in installer
+    assert "provider-routing-v50" in installer
     assert "--locked --profile" in installer
     assert "reset --hard" not in installer
     assert "AGENTROUTE_PATCHES" not in installer

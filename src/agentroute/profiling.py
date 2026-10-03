@@ -43,8 +43,14 @@ def set_capture(enabled: bool) -> None:
 
 def capture_status() -> dict[str, Any]:
     root = profile_root()
+    from .storage import BRIDGE_LIMIT, TRACE_LIMIT, file_sizes
+
     return {
         "enabled": capture_enabled(),
+        "raw_trace_bytes": file_sizes(root / "traces")[0],
+        "raw_trace_limit_bytes": TRACE_LIMIT,
+        "bridge_limit_bytes": BRIDGE_LIMIT,
+        "retention_days": {"traces": 7, "bridge": 30},
         "root": str(root),
         "trace_bundles": sum(1 for _ in (root / "traces").rglob("trace.jsonl")),
         "bridge_receipts": sum(1 for _ in (root / "bridge").rglob("*.json")),

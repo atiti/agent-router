@@ -112,6 +112,12 @@ fi
 
 INSTALL_COMMITTED=1
 
+# Upgrade old installations that retained source-build caches. Active builds are
+# protected; a skipped cleanup must not roll back a successful runtime install.
+if ! "$AGENTROUTE_BIN_DIR/agentroute" storage prune --build-cache; then
+    printf "Diagnostic cleanup deferred; run agentroute storage prune --build-cache later.\n" >&2
+fi
+
 printf 'AgentRoute installed from a verified release in %s\n' "$AGENTROUTE_HOME_DIR"
 printf 'Run: source %s\n' "$SHELL_RC"
 printf 'Then: agentroute doctor && codex\n'

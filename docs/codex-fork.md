@@ -163,3 +163,21 @@ The release pin is `550d7b423e57a2d4a60f72302c25e8f7051f44cf` on
 ordered routing commits and repairs upstream changes to provider session state,
 Guardian review, and input metadata. Its native CLI version and Code Mode host
 are both 0.159.2.
+
+
+## Stable 0.160.0 port (AgentRoute 0.5.63 / runtime v50)
+
+The release pin is `2385f6b58e3d380f10d5f2d8d5d13d4c65ef1021` on
+`agentroute-release-0.160.0`, based on `rust-v0.160.0`
+(`a956835d020762cb2b570053af06f643a11c0ecc`). All 27 existing patch commits
+were replayed; range-diff showed only changed upstream context for the TUI patch.
+Native Codex and the official Code Mode host both use 0.160.0.
+
+The stack also includes upstream attachment reverse lookup (#50083 and #50094),
+regenerated protocol exports, workspace lock alignment, and a shared raw trace
+budget. The quota lock is held until the file write completes, and pruning uses
+the same lock to reconcile the budget. Trace errors remain best-effort diagnostics.
+
+Validation: 849 tests across rollout-trace, state, thread-store and app-server
+protocol; focused routed-provider core tests; scoped Clippy; schema regeneration
+including the Python SDK using Python 3.12; required Bazel lock refresh.

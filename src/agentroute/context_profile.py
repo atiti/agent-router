@@ -267,6 +267,9 @@ def summarize_context(payload: dict[str, Any], *, anthropic: bool = False) -> di
 
 def record_bridge_profile(record: dict[str, Any]) -> None:
     """Atomic, private, counts-only sidecar. Telemetry failure cannot fail inference."""
+    from .storage import periodic_prune
+
+    periodic_prune()
     temporary: str | None = None
     try:
         profile_root().mkdir(parents=True, exist_ok=True, mode=0o700)
