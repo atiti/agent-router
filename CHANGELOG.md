@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.63 — 2026-10-03
+
+- Upgrade the maintained Codex fork to stable 0.160.0 and its matching Code Mode host, preserving the full downstream routing stack.
+- Add `agentroute work new/link/unlink/show` and `agentroute sessions related --thread ID`, using native thread attachments and upstream indexed attachment-owner lookup.
+- Bound raw tracing to 512 MiB across processes, stop managed capture when `profile off` is run, and prune old traces after seven days. Retain counts-only bridge receipts for 30 days with a 64 MiB target. Recent diagnostic bundles are protected from automatic deletion.
+- Add `agentroute storage status/prune`; remove known inactive Rust build caches during release upgrades. Build source installs in disposable temporary directories, including cleanup after failures.
+- Retain the newest two routed Desktop rollback copies after a successful rebuild. Preserve chats, credentials, settings and source edits.
+
 ## 0.5.62 — 2026-10-02
 
 - Preserve Desktop tool settings and analytics preferences on the shared session owner through `agentroute server configure`.

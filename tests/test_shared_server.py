@@ -285,6 +285,13 @@ def test_real_two_clients_share_owner_history_and_turns(tmp_path, monkeypatch):
         monkeypatch.setenv("AGENTROUTE_CONFIG", str(root / "config.yaml"))
         monkeypatch.setenv("AGENTROUTE_CREDENTIALS_FILE", str(root / "missing-credentials"))
         monkeypatch.delenv("AGENTROUTE_RUNTIME_BUILD_ID", raising=False)
+        for variable in (
+            "CODEX_ROLLOUT_TRACE_ROOT",
+            "CODEX_ROLLOUT_TRACE_MAX_BYTES",
+            "CODEX_ROLLOUT_TRACE_ENABLED_FILE",
+            "AGENTROUTE_PROFILE_CAPTURE",
+        ):
+            monkeypatch.delenv(variable, raising=False)
         home = root / "codex"
         home.mkdir()
         requests = []
@@ -337,6 +344,10 @@ requires_openai_auth = false
 supports_websockets = false
 """)
         save_config(config)
+        from agentroute.profiling import set_capture
+        from agentroute.storage import file_sizes
+
+        set_capture(True)
         try:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 paths = list(executor.map(lambda _: ensure_server(binary, config), range(2)))
@@ -368,7 +379,27 @@ supports_websockets = false
                     },
                 )
                 _wait_completed(terminal, first["turn"]["id"])
+                from typer.testing import CliRunner
+
+                from agentroute.work_cli import owners, work_app
+
+                work = "https://example.com/issues/shared-work"
+                linked = CliRunner().invoke(work_app, ["link", work, "--thread", thread_id])
+                assert linked.exit_code == 0, linked.output
+                assert owners(terminal, work) == [{"threadId": thread_id, "archived": False}]
+                sibling = terminal.request("thread/fork", {"threadId": thread_id})["thread"]["id"]
+                linked = CliRunner().invoke(work_app, ["link", work, "--thread", sibling])
+                assert linked.exit_code == 0, linked.output
+                assert {owner["threadId"] for owner in owners(terminal, work)} == {
+                    thread_id,
+                    sibling,
+                }
                 _verify_stdio_proxy(paths[0], thread_id)
+                trace_root = root / "profiling" / "traces"
+                # Capture can be stopped during an existing native owner session.
+                set_capture(False)
+                captured_bytes = file_sizes(trace_root)[0]
+                assert captured_bytes > 8
                 with RpcClient(paths[0], "codex_chatgpt_ios_remote", timeout=15) as mobile:
                     resumed = mobile.request("thread/resume", {"threadId": thread_id})
                     assert resumed["thread"]["id"] == thread_id
@@ -395,6 +426,7 @@ supports_websockets = false
                     assert "terminal prompt" in json.dumps(turns)
                     assert "mobile prompt" in json.dumps(turns)
                     assert len(requests) == 3
+                    assert file_sizes(trace_root)[0] == captured_bytes
                     assert "terminal prompt" in json.dumps(requests[1])
                     assert "reply-1" in json.dumps(requests[1])
                     changed = config.model_copy(deep=True)

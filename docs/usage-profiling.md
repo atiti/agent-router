@@ -126,3 +126,29 @@ No profiling data is uploaded. Generated reports omit request text, retaining to
 and session correlation IDs. JSON exports are private files. Turning capture off retains data;
 remove only the desired local trace/receipt folders when finished. Do not share raw trace bundles
 without reviewing their contents. The profiler does not change prompt caching or skill selection.
+
+
+## Storage limits (0.5.63 / runtime v50)
+
+Profiling remains opt-in. Raw captures can contain full prompts, tool output and
+model responses. The native writer shares a 512 MiB budget across processes and
+stops capture when it is exhausted; model execution continues. Removing the
+managed `profiling/enabled` marker through `agentroute context profile off` also
+stops writes during a running v50 session. Older runtimes need a restart.
+
+Old traces are pruned to a 512 MiB target and seven-day retention. Counts-only
+bridge receipts use a 64 MiB target and 30-day retention. A bundle modified within
+the last hour is protected from pruning, so legacy unbounded captures may exceed
+the target until their processes restart. Reports cover retained captures only;
+a missing request is not proof of zero usage or savings.
+
+```sh
+agentroute storage status
+agentroute storage prune --build-cache --desktop-backups
+```
+
+This removes known inactive Rust build output and retains two Desktop rollback
+copies. It preserves Codex chats, configuration, credentials and source edits.
+Cleanup refuses build paths while Cargo/rustc are running. Source installs now
+use temporary build directories and clean them on failure as well as success.
+`AGENTROUTE_KEEP_BUILD=1` explicitly retains output for development.

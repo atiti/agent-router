@@ -33,4 +33,4 @@ jobs:
       - name: Verify immutable fork stack at the pinned upstream release
         env:
           AGENTROUTE_UPSTREAM_CARGO_CHECK: "0"
-        run: ./scripts/check_upstream.sh rust-v0.159.2
+        run: ./scripts/check_upstream.sh rust-v0.160.0

@@ -136,7 +136,6 @@ def _fingerprint(binary: Path, config: AppConfig, environment: Mapping[str, str]
 
 
 def server_environment(environment: Mapping[str, str] | None = None) -> dict[str, str]:
-    from .context_profile import capture_enabled, profile_root
     from .providers import credentials_path
 
     result = dict(os.environ if environment is None else environment)
@@ -159,11 +158,9 @@ def server_environment(environment: Mapping[str, str] | None = None) -> dict[str
     receipt = agentroute_home() / "build-id"
     if receipt.exists():
         result.setdefault("AGENTROUTE_RUNTIME_BUILD_ID", receipt.read_text().strip())
-    if capture_enabled() and not result.get("CODEX_ROLLOUT_TRACE_ROOT"):
-        root = profile_root() / "traces"
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        root.chmod(0o700)
-        result["CODEX_ROLLOUT_TRACE_ROOT"] = str(root)
+    from .storage import prepare_capture
+
+    prepare_capture(result)
     return result
 
 

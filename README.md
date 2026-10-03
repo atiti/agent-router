@@ -876,8 +876,8 @@ after resuming a thread. Routing uses the destination model's context window and
 limits; retained approval requirements do not overwrite those limits.
 
 The source installer pins the AgentRoute Codex fork at
-`550d7b423e57a2d4a60f72302c25e8f7051f44cf`, based on `rust-v0.159.2`.
-The routed CLI preserves upstream's real `0.159.2` version. AgentRoute `0.5.60` uses runtime v49
+`2385f6b58e3d380f10d5f2d8d5d13d4c65ef1021`, based on `rust-v0.160.0`.
+The routed CLI preserves upstream's real `0.160.0` version. AgentRoute `0.5.63` uses runtime v50
 and includes goal routing. The scheduled compatibility check prepares a candidate stack; it never
 publishes an unreviewed upgrade. AgentRoute is not affiliated with OpenAI.
 
@@ -917,3 +917,23 @@ reports contain counts and sizes. See [usage profiling](docs/usage-profiling.md)
 coverage, subscription quota interpretation, and retention.
 
 See [goal routing](docs/codex-fork.md#goal-routing-runtime-v48) for autonomous objective classification.
+
+
+### Correlate chats for the same work item
+
+With the shared server enabled, link each saved chat (after its first turn) to a canonical ticket
+or PR URL. The same work ID can be attached to independent chats, including chats
+prompted from both CLI and mobile. Links are native Codex attachments, scoped to
+one Codex home, and inherited by Codex forks. They do not merge histories or
+send context to another provider.
+
+```sh
+agentroute work link https://github.com/OWNER/REPO/issues/123 --thread THREAD_ID
+agentroute work show https://github.com/OWNER/REPO/issues/123
+agentroute sessions related --thread THREAD_ID
+agentroute work new  # local work ID when there is no ticket yet
+```
+
+The CLI provides this lookup; the closed mobile app does not yet expose the work
+links as a separate UI. Raw profiling is optional and bounded; inspect or clean
+storage using `agentroute storage status` and `agentroute storage prune`.

@@ -31,11 +31,20 @@ def disable() -> None:
     """Stop capture for new sessions; retain existing records."""
     set_capture(False)
     typer.echo(
-        "Profiling disabled for new sessions. Restart traced sessions to stop their capture."
+        "Profiling disabled. Runtime v50 stops managed capture during existing sessions.\n"
+        "Restart older runtimes to stop their capture."
     )
     typer.echo(
         "Existing local records are retained; explicit capture environment variables still apply."
     )
+
+
+@app.command("prune")
+def prune() -> None:
+    """Remove old diagnostics: raw traces 512 MiB / 7 days; receipts 64 MiB / 30 days."""
+    from .storage import prune_diagnostics
+
+    typer.echo(json.dumps(prune_diagnostics(), indent=2))
 
 
 @app.command("status")
