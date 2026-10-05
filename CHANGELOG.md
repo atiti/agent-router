@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.64 — 2026-10-05
+
+- Show live Claude subscription usage in `agentroute capacity status` when the existing Claude Code access token is valid, with a recorded bridge sample as fallback and offline behavior under `--no-probe`.
+- Display subscription reset and observation times in local time across capacity status, route notices, bridge usage, and profiling reports.
+
 ## 0.5.63 — 2026-10-03
 
 - Upgrade the maintained Codex fork to stable 0.160.0 and its matching Code Mode host, preserving the full downstream routing stack.
