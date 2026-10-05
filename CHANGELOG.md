@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.65 — 2026-10-05
+
+- Use the installed runtime receipt for shared server startup, overriding an older build identifier inherited from Desktop after an upgrade. This prevents repeated CLI/Desktop mismatches after restarting the owner.
+
 ## 0.5.64 — 2026-10-05
 
 - Show live Claude subscription usage in `agentroute capacity status` when the existing Claude Code access token is valid, with a recorded bridge sample as fallback and offline behavior under `--no-probe`.

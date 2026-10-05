@@ -157,7 +157,9 @@ def server_environment(environment: Mapping[str, str] | None = None) -> dict[str
             result[name] = value
     receipt = agentroute_home() / "build-id"
     if receipt.exists():
-        result.setdefault("AGENTROUTE_RUNTIME_BUILD_ID", receipt.read_text().strip())
+        # The shared owner runs the installed CLI binary. An older Desktop can
+        # inherit its own build ID after an upgrade; the installed receipt wins.
+        result["AGENTROUTE_RUNTIME_BUILD_ID"] = receipt.read_text().strip()
     from .storage import prepare_capture
 
     prepare_capture(result)
