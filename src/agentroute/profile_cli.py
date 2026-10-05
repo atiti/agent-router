@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from .capacity import local_time_description
 from .config import load_config
 from .profiling import capture_status, profile_report, set_capture
 
@@ -209,7 +210,7 @@ def report(
                     observation["request_timestamp"],
                     name,
                     str(window.get("used_percent", "unknown")),
-                    str(window.get("resets_at", "unknown")),
+                    local_time_description(window.get("resets_at")) or "unknown",
                 )
         console.print(snapshots)
     for note in data["notes"]:

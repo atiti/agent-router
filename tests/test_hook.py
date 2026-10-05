@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from agentroute.audit import AuditStore
-from agentroute.capacity import CapacityState
+from agentroute.capacity import CapacityState, local_time_description
 from agentroute.config import (
     ExecutionBackendConfig,
     ModelTarget,
@@ -1047,7 +1047,7 @@ def test_claude_subscription_route_shows_recorded_limits(tmp_path, monkeypatch, 
     route = output["hookSpecificOutput"]["routeMessage"]
     assert "Claude limits 5h 99% used" in route
     assert "weekly 18% used" in route
-    assert "recorded 2026-09-27T05:45:25Z" in route
+    assert f"recorded {local_time_description('2026-09-27T05:45:25Z')}" in route
     assert "capacity today $" not in route
 
 

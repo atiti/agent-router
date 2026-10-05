@@ -362,6 +362,19 @@ class ClaudeCodeCredential:
             self._remember(access_token, expires_at)
             return access_token
 
+    def current_token(self) -> str:
+        """Return the stored access token without refreshing its credential."""
+        with self._lock:
+            payload = self._read_keychain()
+            oauth = payload.get("claudeAiOauth") or {}
+            access_token = oauth.get("accessToken") or ""
+            expires_at = float(oauth.get("expiresAt") or 0)
+            if not access_token or expires_at <= time.time() * 1000:
+                raise CredentialError(
+                    "Claude Code access token is expired; open Claude Code to refresh it"
+                )
+            return access_token
+
     def _remember(self, access_token: str, expires_at: float) -> None:
         self._access_token = access_token
         self._expires_at_ms = expires_at
@@ -1627,6 +1640,25 @@ def summarize_subscription_usage(payload: dict[str, Any]) -> list[dict[str, Any]
             )
     if rows:
         return rows
+    # The bridge-recorded snapshot stores just the unified 5h and 7d windows.
+    windows = payload.get("windows")
+    if isinstance(windows, dict):
+        for key, label in (("five_hour", "5h session"), ("seven_day", "weekly")):
+            window = windows.get(key)
+            if isinstance(window, dict):
+                rows.append(
+                    {
+                        "kind": key,
+                        "group": key,
+                        "label": label,
+                        "percent": _number(window.get("used_percent")),
+                        "severity": window.get("status"),
+                        "resets_at": window.get("resets_at"),
+                        "is_active": None,
+                    }
+                )
+    if rows:
+        return rows
     # Older payloads expose the two windows at the top level instead of `limits`.
     for key, label in (("five_hour", "5h session"), ("seven_day", "weekly (all models)")):
         window = payload.get(key)
@@ -1648,18 +1680,22 @@ def summarize_subscription_usage(payload: dict[str, Any]) -> list[dict[str, Any]
 def fetch_subscription_usage(
     credentials: ApiKeyCredential | ClaudeCodeCredential,
     *,
+    refresh: bool = True,
     urlopen: Callable[..., Any] = urllib.request.urlopen,
     timeout: int = 30,
 ) -> dict[str, Any]:
-    """Read Anthropic's OAuth usage summary, which only subscription credentials have."""
+    """Read subscription limits, optionally without refreshing the stored access token."""
     if credentials.mode != "claude-code":
         raise CredentialError(
             "subscription usage needs the claude-code credential; an API key has no usage limits"
         )
+    if not isinstance(credentials, ClaudeCodeCredential):
+        raise CredentialError("subscription usage needs the Claude Code credential")
+    token = credentials.token() if refresh else credentials.current_token()
     request = urllib.request.Request(
         SUBSCRIPTION_USAGE_URL,
         headers={
-            "authorization": f"Bearer {credentials.token()}",
+            "authorization": f"Bearer {token}",
             "anthropic-version": "2023-06-01",
             "accept": "application/json",
             "user-agent": CLAUDE_CODE_SDK_USER_AGENT,
