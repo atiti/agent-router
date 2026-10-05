@@ -1,6 +1,10 @@
+import os
+import time
+from datetime import datetime
+
 import pytest
 
-from agentroute.capacity import fallback_chain, subscription_state
+from agentroute.capacity import fallback_chain, local_time_description, subscription_state
 from agentroute.config import default_config
 from agentroute.models import ReasonCode, RouteContext
 from agentroute.router import Router
@@ -41,6 +45,25 @@ def test_subscription_usage_reports_used_and_remaining_percentages():
 
     assert state.status == "healthy"
     assert state.detail == "subscription 62% used / 38% remaining"
+
+
+def test_reset_description_uses_the_local_timezone(monkeypatch):
+    if not hasattr(time, "tzset"):
+        pytest.skip("changing the process timezone requires time.tzset")
+    prior_tz = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    try:
+        expected = datetime.fromisoformat("2026-09-26T22:00:00+00:00")
+        assert local_time_description("2026-09-26T22:00:00Z") == expected.astimezone().strftime(
+            "%Y-%m-%d %H:%M %Z"
+        )
+    finally:
+        if prior_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", prior_tz)
+        time.tzset()
 
 
 def test_fallback_ring_is_bounded_and_deduplicated():

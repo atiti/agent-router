@@ -43,6 +43,7 @@ from .capacity import (
     backend_spend,
     backend_state,
     fallback_chain,
+    local_time_description,
     reset_description,
 )
 from .classifier import (
@@ -541,9 +542,9 @@ def capacity_profile_bootstrap_command(name: str) -> None:
 @capacity_app.command("status")
 def capacity_status_command(
     json_output: bool = typer.Option(False, "--json"),
-    no_probe: bool = typer.Option(False, help="Skip app-server profile quota reads."),
+    no_probe: bool = typer.Option(False, help="Skip live quota reads."),
 ) -> None:
-    """Show subscription quota, API budgets, fallbacks, and profile readiness."""
+    """Show GPT and Claude subscription usage, API budgets, fallbacks, and profile readiness."""
     config = load_config()
     rows = AuditStore().rows_since()
     daily, monthly = backend_spend(rows, config)
@@ -579,6 +580,50 @@ def capacity_status_command(
                 "fallback_chain": fallback_chain(config, name),
             }
         )
+    claude_subscription = None
+    if "claude" in config.backends:
+        usage_state = read_usage_state()
+        snapshot = usage_state.get("snapshot")
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        usage_rows = []
+        live_read_unavailable = False
+        if not no_probe:
+            try:
+                live_payload = fetch_subscription_usage(
+                    ClaudeCodeCredential(), refresh=False
+                )
+                usage_rows = summarize_subscription_usage(live_payload)
+            except (CredentialError, OSError, TypeError, ValueError):
+                live_read_unavailable = True
+        usage_status = "live" if usage_rows else "unavailable"
+        observed_at = datetime.now(timezone.utc).isoformat() if usage_rows else None
+        if not usage_rows:
+            usage_rows = summarize_subscription_usage(snapshot)
+            if usage_rows:
+                usage_status = "recorded"
+                observed_at = usage_state.get("updated_at") or snapshot.get("captured_at")
+        claude_subscription = {
+            "status": usage_status,
+            "observed_at": observed_at,
+            "observed_at_local": local_time_description(observed_at),
+            "live_read_unavailable": live_read_unavailable,
+            "limits": [
+                {
+                    "kind": row.get("kind"),
+                    "label": row.get("label") or row.get("kind"),
+                    "used_percent": row.get("percent"),
+                    "remaining_percent": (
+                        max(0.0, 100.0 - row["percent"])
+                        if isinstance(row.get("percent"), (int, float))
+                        else None
+                    ),
+                    "resets_at": row.get("resets_at"),
+                    "reset_local": local_time_description(row.get("resets_at")),
+                    "is_active": row.get("is_active"),
+                }
+                for row in usage_rows
+            ],
+        }
     payload = {
         "enabled": config.capacity.enabled,
         "warn_percent": config.capacity.warn_percent,
@@ -587,6 +632,7 @@ def capacity_status_command(
         "active_profile": config.capacity.active_profile,
         "backends": backend_rows,
         "profiles": [item.as_dict() for item in profiles],
+        "claude_subscription": claude_subscription,
     }
     if json_output:
         console.print_json(json.dumps(payload, sort_keys=True))
@@ -610,6 +656,43 @@ def capacity_status_command(
             " → ".join(item["fallback_chain"]) or "—",
         )
     console.print(table)
+    if claude_subscription is not None:
+        limits = claude_subscription["limits"]
+        if limits:
+            if claude_subscription["status"] == "live":
+                usage_source = "live"
+            else:
+                observed_at = claude_subscription["observed_at_local"] or "unknown time"
+                usage_source = f"last recorded {observed_at}"
+                if claude_subscription["live_read_unavailable"]:
+                    usage_source += "; live read unavailable"
+            usage_table = Table(
+                "Limit", "Used", "Left", "Reset", "Active",
+                title=f"Claude subscription usage · {usage_source}",
+            )
+            for item in limits:
+                percent = item["used_percent"]
+                used = f"{percent:g}%" if isinstance(percent, (int, float)) else "—"
+                left = (
+                    f"{item['remaining_percent']:g}%"
+                    if item["remaining_percent"] is not None
+                    else "—"
+                )
+                usage_table.add_row(
+                    str(item["label"] or item["kind"]),
+                    used,
+                    left,
+                    item["reset_local"] or "—",
+                    "yes" if item["is_active"] else "",
+                )
+            console.print(usage_table)
+        elif no_probe:
+            console.print(
+                "Claude subscription usage: no recorded sample "
+                "(live quota reads skipped)."
+            )
+        else:
+            console.print("Claude subscription usage: unavailable; no current or recorded sample.")
     if no_probe and config.capacity.profiles:
         console.print("Profile probes skipped; run without --no-probe for live quota state.")
     elif profiles:
@@ -2298,7 +2381,7 @@ def bridge_usage_command(
             str(row.get("label") or row.get("kind")),
             used,
             left,
-            str(row.get("resets_at") or "-"),
+            local_time_description(row.get("resets_at")) or "—",
             "yes" if row.get("is_active") else "",
         )
     console.print(table)

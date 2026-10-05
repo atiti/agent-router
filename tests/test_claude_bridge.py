@@ -1076,6 +1076,32 @@ def test_subscription_usage_needs_the_subscription_credential():
         fetch_subscription_usage(_KeyCredential())
 
 
+def test_subscription_usage_can_use_the_current_token_without_refresh(monkeypatch):
+    credential = ClaudeCodeCredential()
+    monkeypatch.setattr(credential, "current_token", lambda: "current-token")
+    monkeypatch.setattr(credential, "token", lambda: pytest.fail("unexpected token refresh"))
+
+    class _Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append((request, timeout))
+        return _Response(b'{"limits": []}')
+
+    payload = fetch_subscription_usage(credential, refresh=False, urlopen=urlopen)
+
+    assert payload == {"limits": []}
+    request, timeout = requests[0]
+    assert request.get_header("Authorization") == "Bearer current-token"
+    assert timeout == 30
+
+
 class _FakeCredential:
     mode = "api-key"
 

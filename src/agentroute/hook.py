@@ -4,13 +4,12 @@ import hashlib
 import json
 import os
 import sys
-from datetime import datetime, timezone
 from typing import Any, TextIO
 
 from . import __version__
 from .audit import AuditStore
 from .bridge_service import service_credential
-from .capacity import backend_spend, subscription_state
+from .capacity import backend_spend, local_time_description, subscription_state
 from .classifier import JevShadowClassifier
 from .claude_bridge import read_usage_state
 from .config import AppConfig, codex_home, load_config
@@ -92,18 +91,14 @@ def _claude_route_usage() -> str:
         if not 0 <= used <= 100:
             continue
         detail = f"{label} {used:g}% used"
-        if isinstance(reset, (int, float)) and not isinstance(reset, bool):
-            try:
-                detail += (
-                    f", resets {datetime.fromtimestamp(reset, timezone.utc):%Y-%m-%d %H:%M} UTC"
-                )
-            except (OverflowError, OSError, ValueError):
-                pass
+        reset_local = local_time_description(reset)
+        if reset_local:
+            detail += f", resets {reset_local}"
         parts.append(detail)
     if not parts:
         return " · Claude limits unavailable; run agentroute bridge usage"
-    updated_at = state.get("updated_at")
-    recorded = f" · recorded {updated_at}" if isinstance(updated_at, str) else ""
+    recorded_at = local_time_description(state.get("updated_at"))
+    recorded = f" · recorded {recorded_at}" if recorded_at else ""
     return f" · Claude limits {'; '.join(parts)}{recorded}"
 
 

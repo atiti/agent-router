@@ -13,6 +13,7 @@ from agentroute.config import (
     save_config,
 )
 from agentroute.profiles import ProfileStatus
+from agentroute.providers import ensure_claude_bridge_backend
 
 runner = CliRunner()
 
@@ -300,6 +301,66 @@ def test_capacity_status_uses_active_profile_telemetry_and_hides_raw_account_id(
     assert payload["profiles"][0]["account_hash"] == "hashed-account"
     assert "account_id" not in payload["profiles"][0]["capacity"]
     assert "raw-account-id" not in result.output
+
+
+def test_capacity_status_shows_live_claude_subscription_usage(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
+    monkeypatch.setenv("AGENTROUTE_DATA_DIR", str(tmp_path))
+    config = default_config()
+    ensure_claude_bridge_backend(config, 8090)
+    save_config(config, path)
+    payload = {
+        "limits": [{
+            "kind": "session",
+            "percent": 42,
+            "resets_at": "2026-09-26T22:00:00Z",
+            "is_active": True,
+        }]
+    }
+
+    with (
+        patch("agentroute.cli.read_usage_state", return_value={}),
+        patch("agentroute.cli.fetch_subscription_usage", return_value=payload) as fetch,
+    ):
+        result = runner.invoke(app, ["capacity", "status", "--json"])
+
+    assert result.exit_code == 0, result.output
+    fetch.assert_called_once()
+    assert fetch.call_args.kwargs == {"refresh": False}
+    usage = json.loads(result.output)["claude_subscription"]
+    assert usage["status"] == "live"
+    assert usage["limits"][0]["used_percent"] == 42.0
+    assert usage["limits"][0]["remaining_percent"] == 58.0
+    assert usage["limits"][0]["reset_local"]
+
+
+def test_capacity_status_no_probe_uses_the_recorded_claude_sample(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
+    monkeypatch.setenv("AGENTROUTE_DATA_DIR", str(tmp_path))
+    config = default_config()
+    ensure_claude_bridge_backend(config, 8090)
+    save_config(config, path)
+    state = {
+        "updated_at": "2026-09-27T05:45:25Z",
+        "snapshot": {"windows": {
+            "five_hour": {"used_percent": 79, "resets_at": 1790460000},
+        }},
+    }
+
+    with (
+        patch("agentroute.cli.read_usage_state", return_value=state),
+        patch("agentroute.cli.fetch_subscription_usage") as fetch,
+    ):
+        result = runner.invoke(app, ["capacity", "status", "--json", "--no-probe"])
+
+    assert result.exit_code == 0, result.output
+    fetch.assert_not_called()
+    usage = json.loads(result.output)["claude_subscription"]
+    assert usage["status"] == "recorded"
+    assert usage["limits"][0]["used_percent"] == 79.0
+    assert usage["observed_at_local"]
 
 
 

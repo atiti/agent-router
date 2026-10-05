@@ -246,8 +246,25 @@ def fallback_cycle(config: AppConfig, backend_name: str) -> list[str]:
     return seen
 
 
-def reset_description(resets_at: int | None) -> str | None:
-    if resets_at is None:
+def local_time_description(value: int | float | str | None) -> str | None:
+    if value is None:
         return None
-    reset = datetime.fromtimestamp(resets_at, timezone.utc)
-    return reset.strftime("%Y-%m-%d %H:%M UTC")
+    try:
+        if isinstance(value, str):
+            try:
+                timestamp = float(value)
+            except ValueError:
+                reset = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if reset.tzinfo is None:
+                    reset = reset.replace(tzinfo=timezone.utc)
+            else:
+                reset = datetime.fromtimestamp(timestamp, timezone.utc)
+        else:
+            reset = datetime.fromtimestamp(float(value), timezone.utc)
+    except (OSError, OverflowError, TypeError, ValueError):
+        return None
+    return reset.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+
+
+def reset_description(resets_at: int | float | str | None) -> str | None:
+    return local_time_description(resets_at)
