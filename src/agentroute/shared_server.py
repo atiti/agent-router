@@ -269,7 +269,7 @@ def ensure_server(
         with log_path.open("ab") as log:
             log_path.chmod(0o600)
             child = subprocess.Popen(
-                server_argv(binary, config),
+                [sys.executable, "-m", "agentroute.server_process", *server_argv(binary, config)],
                 env=environment,
                 cwd=codex_home(),
                 stdin=subprocess.DEVNULL,
