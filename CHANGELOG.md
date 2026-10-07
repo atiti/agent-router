@@ -4,6 +4,7 @@
 
 - Port the complete AgentRoute routing stack to stable Codex CLI 0.161.0 and the matching official Code Mode host.
 - Filter foreign encrypted reasoning and compaction state during standalone compaction and resume warmup; preserve saved history and the destination provider checkpoints.
+- Keep legacy resumes working when provider metadata is absent, and hard-bound resume prewarm history by serialized bytes.
 - Raise the shared server child process open-file limit to 8192 within its existing hard limit, preventing the macOS default of 256 from exhausting skills, watchers, and MCP sockets across loaded tasks.
 
 ## 0.5.65 — 2026-10-05
