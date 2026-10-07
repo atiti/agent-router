@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.66 — Unreleased
+
+- Port the complete AgentRoute routing stack to stable Codex CLI 0.161.0 and the matching official Code Mode host.
+- Filter foreign encrypted reasoning and compaction state during standalone compaction and resume warmup; preserve saved history and the destination provider checkpoints.
+- Raise the shared server child process open-file limit to 8192 within its existing hard limit, preventing the macOS default of 256 from exhausting skills, watchers, and MCP sockets across loaded tasks.
+
 ## 0.5.65 — 2026-10-05
 
 - Use the installed runtime receipt for shared server startup, overriding an older build identifier inherited from Desktop after an upgrade. This prevents repeated CLI/Desktop mismatches after restarting the owner.

@@ -181,3 +181,27 @@ the same lock to reconcile the budget. Trace errors remain best-effort diagnosti
 Validation: 849 tests across rollout-trace, state, thread-store and app-server
 protocol; focused routed-provider core tests; scoped Clippy; schema regeneration
 including the Python SDK using Python 3.12; required Bazel lock refresh.
+
+## Stable 0.161.0 candidate (AgentRoute 0.5.66 / runtime v51)
+
+The candidate pin is `e7c3db0015098c1aaca6c76d1e7b2b02b59501cd` on
+`codex/agentroute-stable-0.161.0`, based on OpenAI's stable `rust-v0.161.0`
+(`979011409de0a60b52f179721948e65531d26144`). The complete 31-commit
+downstream stack was ported in order. Two follow-up commits finish API/lock/schema
+alignment and protect standalone compaction and resume warmup from replaying
+encrypted state owned by another provider. Stored history is preserved.
+
+Native Codex and the official Code Mode host use 0.161.0. The companion shared
+server bootstrap raises only its child's open-file soft limit, to at most 8192
+within the inherited hard limit. It does not change machine or parent limits.
+
+Validation includes the CLI build, 319 protocol tests, 185 hook tests, ten focused
+provider-state/reviewer/warmup tests, scoped Clippy, stable and experimental app-server
+exports, hook schema regeneration, formatting, and the required Bazel lock refresh.
+The existing same-provider websocket cache reuse test remains green. The AgentRoute
+shared-client integration exercises Desktop stdio, terminal/mobile RPC, history,
+and ownership on an isolated temporary profile.
+
+This candidate is separate from the active installation. Do not replace a running
+shared owner or Desktop while other tasks are active. Full live provider and Desktop
+acceptance remains part of the release gate before a public tag is published.
