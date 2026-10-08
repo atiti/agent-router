@@ -1513,7 +1513,7 @@ def test_effort_catalog_and_opt_in_fable():
     models = catalog_from_config(config)
     assert ("claude-fable-5-1", 200000) in models
     descriptors = {entry["slug"]: entry for entry in model_catalog(models)["models"]}
-    for name in ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]:
+    for name in ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]:
         assert descriptors[name]["supports_reasoning_effort_updates"] is True
         assert [level["effort"] for level in descriptors[name]["supported_reasoning_levels"]] == [
             "low",
@@ -1522,4 +1522,4 @@ def test_effort_catalog_and_opt_in_fable():
             "xhigh",
             "ultra",
         ]
-    assert descriptors["claude-haiku-4-5-20251001"]["supported_reasoning_levels"] == []
+    assert descriptors["claude-haiku-5-5"]["context_window"] == 1_000_000

@@ -335,7 +335,7 @@ regardless of reviewer model.
 
 ### Claude models through the local bridge
 
-New bridge defaults: Haiku FAST, Sonnet 5.5 NORMAL (medium) / SMART (high), Opus 5.5 MAX (high). Use `@fable` for Fable 5.1 explicitly and `agentroute bridge install --update-models` to update existing mappings. See [the bridge guide](docs/claude-bridge.md) for reasoning effort and subscription setup.
+New bridge defaults: Haiku 5.5 FAST (low effort), Sonnet 5.5 NORMAL (medium) / SMART (high), Opus 5.5 MAX (high). Use `@fable` for Fable 5.1 explicitly and `agentroute bridge install --update-models` to update existing mappings. See [the bridge guide](docs/claude-bridge.md) for reasoning effort and subscription setup.
 
 Claude models are not served through the OpenAI Responses API, so AgentRoute ships a small local
 bridge that accepts Responses requests from Codex, calls the Anthropic Messages API, and streams

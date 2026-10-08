@@ -45,7 +45,13 @@ from typing import Any, Literal
 
 from PIL import Image, UnidentifiedImageError
 
-from .claude_models import CLAUDE_EFFORT_LEVELS, EFFORT_MODELS, MODERN_CLAUDE_MODELS, claude_effort
+from .claude_models import (
+    CLAUDE_EFFORT_LEVELS,
+    EFFORT_MODELS,
+    FORCED_TOOL_CHOICE_UNSUPPORTED,
+    MODERN_CLAUDE_MODELS,
+    claude_effort,
+)
 from .context_profile import (
     capture_enabled,
     normalize_anthropic_usage,
@@ -912,7 +918,7 @@ def translate_request(
         if tool_choice == "none":
             payload["tool_choice"] = {"type": "none"}
         elif tool_choice == "required":
-            if model in MODERN_CLAUDE_MODELS:
+            if model in FORCED_TOOL_CHOICE_UNSUPPORTED:
                 payload["tool_choice"] = {"type": "auto"}
                 payload.setdefault("system", []).append(
                     {
@@ -927,7 +933,7 @@ def translate_request(
             payload["tools"] = [tool for tool in anthropic_tools if tool["name"] == name]
             if not payload["tools"]:
                 raise ValueError("Requested tool is not in the available tool list")
-            if model in MODERN_CLAUDE_MODELS:
+            if model in FORCED_TOOL_CHOICE_UNSUPPORTED:
                 payload["tool_choice"] = {"type": "auto"}
                 payload.setdefault("system", []).append(
                     {
@@ -1365,7 +1371,10 @@ def catalog_from_config(config: Any, backend_name: str = "claude") -> list[tuple
                     seen.append(target.model)
             if other.review_model and other.review_model not in seen:
                 seen.append(other.review_model)
-    return [(model, DEFAULT_CONTEXT_WINDOW) for model in seen] or [
+    return [
+        (model, 1_000_000 if model == "claude-haiku-5-5" else DEFAULT_CONTEXT_WINDOW)
+        for model in seen
+    ] or [
         (DEFAULT_MODEL, DEFAULT_CONTEXT_WINDOW)
     ]
 
@@ -1384,7 +1393,11 @@ def model_catalog(
             # operational instructions; a provider descriptor must not tell
             # Claude that it is Codex or another named model.
             "model_messages": {"instructions_template": ""},
-            "default_reasoning_level": "high" if slug in EFFORT_MODELS else None,
+            "default_reasoning_level": (
+                "medium"
+                if slug == "claude-haiku-5-5"
+                else "high" if slug in EFFORT_MODELS else None
+            ),
             "supported_reasoning_levels": [
                 {
                     "effort": "ultra" if level == "max" else level,
