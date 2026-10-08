@@ -6,7 +6,9 @@ import json
 import os
 import tempfile
 import threading
+import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +17,16 @@ from .claude_bridge import (
     REASONING_ITEM_PREFIX,
     CredentialError,
     ProfileIdentityChangedError,
+    log,
+    read_usage_state,
     usage_state_path,
 )
-from .claude_profiles import ProfileCredential, profile_account_identity, profile_scope
+from .claude_profiles import (
+    ProfileCredential,
+    profile_account_identity,
+    profile_scope,
+    profile_usage_path,
+)
 from .config import ClaudeSubscriptionProfile, load_config
 from .context_profile import request_identity
 
@@ -102,6 +111,38 @@ class ClaudeProfilePool:
             credential = ProfileCredential(name, profile)
             self._credentials[name] = (repr(key), credential)
         return self._credentials[name][1]
+
+    @staticmethod
+    def _recorded_percent(name: str, account_identity: str, auth_generation: str) -> float | None:
+        state = read_usage_state(profile_usage_path(name, account_identity, auth_generation))
+        snapshot = state.get("snapshot")
+        if not isinstance(snapshot, dict):
+            return None
+        captured_at = snapshot.get("captured_at")
+        if not isinstance(captured_at, (int, float)) or isinstance(captured_at, bool):
+            return None
+        try:
+            captured = datetime.fromtimestamp(float(captured_at), timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+        sample_age = (datetime.now(timezone.utc) - captured).total_seconds()
+        if sample_age < 0 or sample_age > 3600:
+            return None
+        windows = snapshot.get("windows")
+        if not isinstance(windows, dict):
+            return None
+        active: list[float] = []
+        for window in windows.values():
+            if not isinstance(window, dict):
+                continue
+            used = window.get("used_percent")
+            reset = window.get("resets_at")
+            if not isinstance(used, (int, float)) or isinstance(used, bool) or not 0 <= used <= 100:
+                continue
+            if isinstance(reset, (int, float)) and reset <= time.time():
+                continue
+            active.append(float(used))
+        return max(active) if active else None
 
     def select(self, body: dict[str, Any], headers: Any) -> ProfileCredential:
         config = load_config()
@@ -192,6 +233,7 @@ class ClaudeProfilePool:
             sticky_state = self._threads.get(thread_key) if thread_key else None
             sticky = sticky_state[0] if sticky_state else None
             started = bool(sticky_state and sticky_state[2])
+            is_continuation = requested is not None or started
             current = requested or sticky
             current = current or config.claude_subscriptions.active_profile
             selected = next(
@@ -210,6 +252,43 @@ class ClaudeProfilePool:
                     f"Claude account identity is unverified for profile {name}; "
                     f"run `agentroute bridge profile login {name}` before routing"
                 )
+            percent = self._recorded_percent(name, current_identity, profile.auth_generation)
+            if (
+                config.claude_subscriptions.auto_select
+                and not is_continuation
+                and percent is not None
+                and percent >= 100
+            ):
+                alternatives = sorted(
+                    ((candidate, item) for candidate, item in eligible if candidate != name),
+                    key=lambda item: (item[1].priority, item[0]),
+                )
+                signed_in = [item for item in alternatives if self._signed_in(*item)]
+                availability = {
+                    candidate: self._recorded_percent(
+                        candidate,
+                        profile_account_identity(candidate_profile),
+                        candidate_profile.auth_generation,
+                    )
+                    for candidate, candidate_profile in signed_in
+                }
+                available = [
+                    item
+                    for item in signed_in
+                    if availability[item[0]] is None or availability[item[0]] < 100
+                ]
+                if available:
+                    name, profile = available[0]
+                    log(
+                        f"Claude subscription {current} exhausted; "
+                        f"routing new request through {name}"
+                    )
+                    current_identity = profile_account_identity(profile)
+                    if current_identity is None:
+                        raise CredentialError(
+                            f"Claude account identity is unverified for profile {name}; "
+                            f"run `agentroute bridge profile login {name}` before routing"
+                        )
             if sticky_state and started and sticky_state[1] != current_identity:
                 raise ProfileIdentityChangedError(
                     f"Claude account identity changed for profile {name}; start a new conversation"
@@ -252,3 +331,29 @@ class ClaudeProfilePool:
                 )
             self._threads[thread_key] = (name, identity, True)
             self._save_threads()
+
+    def _signed_in(self, name: str, profile: ClaudeSubscriptionProfile) -> bool:
+        """Check for saved Claude Code OAuth credentials without refreshing them."""
+        if profile_account_identity(profile) is None:
+            return False
+        try:
+            payload = self._credential(name, profile)._read_keychain()
+        except (CredentialError, OSError, ValueError):
+            return False
+        oauth = payload.get("claudeAiOauth")
+        if not isinstance(oauth, dict):
+            return False
+        now_ms = time.time() * 1000
+        refresh_token = oauth.get("refreshToken")
+        refresh_expires = oauth.get("refreshTokenExpiresAt")
+        if isinstance(refresh_expires, (int, float)) and refresh_expires <= now_ms:
+            refresh_token = None
+        access_token = oauth.get("accessToken")
+        access_expires = oauth.get("expiresAt")
+        access_is_live = (
+            isinstance(access_token, str)
+            and bool(access_token)
+            and isinstance(access_expires, (int, float))
+            and access_expires > now_ms
+        )
+        return bool(refresh_token) or access_is_live

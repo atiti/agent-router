@@ -1361,6 +1361,82 @@ def test_http_bridge_selects_a_profile_and_records_its_usage(bridge_server, tmp_
     assert usage_payload["snapshot"]["windows"]["five_hour"]["used_percent"] == 74.0
 
 
+def test_http_bridge_retries_first_thread_on_another_profile_after_quota_limit(
+    bridge_server, tmp_path, monkeypatch
+):
+    server, _captured = bridge_server
+    config = default_config()
+    second = ClaudeSubscriptionProfile(
+        config_dir=str(tmp_path / "claude-accounts" / "second"),
+        auth_generation="login-1",
+        priority=1,
+    )
+    config.claude_subscriptions.profiles["second"] = second
+    monkeypatch.setattr("agentroute.config.load_config", lambda: config)
+    monkeypatch.setattr("agentroute.claude_profile_pool.load_config", lambda: config)
+
+    def account_identity(profile):
+        return f"account-{Path(profile.config_dir).name if profile.config_dir else 'default'}"
+
+    monkeypatch.setattr("agentroute.claude_profiles.profile_account_identity", account_identity)
+    monkeypatch.setattr("agentroute.claude_profile_pool.profile_account_identity", account_identity)
+
+    def saved_credential(name, profile):
+        identity = account_identity(profile)
+        return SimpleNamespace(
+            mode="claude-code",
+            profile_name=name,
+            profile_scope=profile_scope(name, profile),
+            account_identity=identity,
+            allow_legacy_profile_scope=name == "default",
+            usage_path=profile_usage_path(name, identity, profile.auth_generation),
+            _read_keychain=lambda: {"claudeAiOauth": {"refreshToken": "available"}},
+        )
+
+    monkeypatch.setattr("agentroute.claude_profiles.ProfileCredential", saved_credential)
+    monkeypatch.setattr("agentroute.claude_profile_pool.ProfileCredential", saved_credential)
+    BridgeHandler.credentials = ClaudeProfilePool()
+    host, port = server.server_address[:2]
+    url = f"http://{host}:{port}/v1/responses"
+    calls = []
+    snapshot = {
+        "captured_at": time.time(),
+        "windows": {
+            "five_hour": {"used_percent": 100, "resets_at": time.time() + 3600},
+        },
+    }
+
+    def fake_stream(credentials, _payload):
+        calls.append(credentials.profile_name)
+        if len(calls) == 1:
+            raise UpstreamRateLimitError("subscription exhausted", snapshot)
+        yield "message_start", {"message": {"usage": {"input_tokens": 5}}}
+        yield "message_stop", {}
+
+    BridgeHandler.stream_factory = staticmethod(fake_stream)
+    body = {
+        "model": "claude-haiku-5-5",
+        "tools": [],
+        "input": [{"type": "message", "role": "user", "content": "try this"}],
+    }
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers={"content-type": "application/json", "thread-id": "thread-first-429"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as rejected:
+        urllib.request.urlopen(request, timeout=30)
+    assert rejected.value.code == 429
+
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = response.read().decode()
+
+    assert response.status == 200
+    assert "event: response.completed" in payload
+    assert calls == ["default", "second"]
+
+
 def test_http_bridge_serves_models_and_health(bridge_server):
     server, _ = bridge_server
     host, port = server.server_address[:2]
