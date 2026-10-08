@@ -28,6 +28,8 @@ def add(name: str, config_dir: Path | None = None, priority: int = 100) -> None:
     config = load_config()
     if name in config.claude_subscriptions.profiles:
         raise typer.BadParameter(f"profile already exists: {name}")
+    if len(config.claude_subscriptions.profiles) >= 20:
+        raise typer.BadParameter("at most 20 Claude subscription profiles are supported")
     if priority < 0:
         raise typer.BadParameter("priority must be nonnegative")
     directory = (config_dir or agentroute_home() / "claude-accounts" / name).expanduser().absolute()

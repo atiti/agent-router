@@ -17,7 +17,7 @@ from agentroute.claude_profiles import (
     profile_usage_path,
 )
 from agentroute.cli import app
-from agentroute.config import ClaudeSubscriptionProfile, default_config, load_config
+from agentroute.config import ClaudeSubscriptionProfile, default_config, load_config, save_config
 
 runner = CliRunner()
 
@@ -178,6 +178,39 @@ def test_profile_add_and_use_creates_private_separate_account_folder(tmp_path, m
     assert directory == account_home / "claude-accounts" / "second"
     assert directory.stat().st_mode & 0o777 == 0o700
     assert config.claude_subscriptions.active_profile == "second"
+
+
+def test_profile_add_rejects_more_than_twenty_profiles(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    account_home = tmp_path / "agentroute"
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(config_path))
+    monkeypatch.setenv("AGENTROUTE_HOME", str(account_home))
+    config = default_config()
+    config.claude_subscriptions.profiles.update(
+        {
+            f"profile-{index}": ClaudeSubscriptionProfile(
+                config_dir=str(tmp_path / f"profile-{index}"), priority=index
+            )
+            for index in range(19)
+        }
+    )
+    save_config(config, config_path)
+
+    result = runner.invoke(app, ["bridge", "profile", "add", "overflow"])
+
+    assert result.exit_code != 0
+    assert "at most 20 Claude subscription profiles" in result.output
+    assert not (account_home / "claude-accounts" / "overflow").exists()
+
+
+def test_bridge_usage_rejects_unknown_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(tmp_path / "config.yaml"))
+
+    result = runner.invoke(app, ["bridge", "usage", "--profile", "typo", "--offline"])
+
+    assert result.exit_code != 0
+    assert "unknown Claude subscription profile: typo" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_profile_login_uses_claudeai_in_the_isolated_config_dir(tmp_path, monkeypatch):

@@ -688,7 +688,11 @@ def capacity_status_command(
                 if claude_subscription["live_read_unavailable"]:
                     usage_source += "; live read unavailable"
             usage_table = Table(
-                "Limit", "Used", "Left", "Reset", "Active",
+                "Limit",
+                "Used",
+                "Left",
+                "Reset",
+                "Active",
                 title=f"Claude subscription usage · {usage_source}",
             )
             for item in limits:
@@ -709,8 +713,7 @@ def capacity_status_command(
             console.print(usage_table)
         elif no_probe:
             console.print(
-                "Claude subscription usage: no recorded sample "
-                "(live quota reads skipped)."
+                "Claude subscription usage: no recorded sample (live quota reads skipped)."
             )
         else:
             console.print("Claude subscription usage: unavailable; no current or recorded sample.")
@@ -1013,9 +1016,7 @@ def why_command(session: str | None = None) -> None:
         console.print(f"Approved agent request: {row['agent_requested_tier']}")
     goal_routing = json.loads(row["selection_receipt"] or "{}").get("goal_routing")
     if goal_routing:
-        console.print(
-            f"Goal routing: {goal_routing['goal_id']} · {goal_routing['mode']}"
-        )
+        console.print(f"Goal routing: {goal_routing['goal_id']} · {goal_routing['mode']}")
     if row["selection_receipt_hash"]:
         console.print(f"Selection receipt: {row['selection_receipt_hash']}")
     for item in json.loads(row["contributions"]):
@@ -1463,11 +1464,7 @@ def classifier_status_command() -> None:
     )
     age = catalog_age_seconds(active)
     catalog_status = (
-        "unverified"
-        if age is None
-        else "fresh"
-        if age <= active.catalog_ttl_seconds
-        else "stale"
+        "unverified" if age is None else "fresh" if age <= active.catalog_ttl_seconds else "stale"
     )
     console.print(
         f"Catalog: {catalog_status}; checked: {active.catalog_checked_at or 'never'}; "
@@ -1727,7 +1724,8 @@ def classifier_verify_command() -> None:
     settings = config.routing.classifier
     active = settings.jev_shadow if settings.engine == "jev" else settings
     classifier = (
-        JevShadowClassifier(active) if settings.engine == "jev"
+        JevShadowClassifier(active)
+        if settings.engine == "jev"
         else OpenAICompatibleClassifier(settings)
     )
     models, digest, checked_at = classifier.verify_catalog()
@@ -1736,8 +1734,7 @@ def classifier_verify_command() -> None:
     active.catalog_checked_at = checked_at
     save_config(config)
     console.print(
-        f"Verified {active.model} in {len(models)} visible models; "
-        f"catalog {digest[:12]}."
+        f"Verified {active.model} in {len(models)} visible models; catalog {digest[:12]}."
     )
 
 
@@ -1753,7 +1750,8 @@ def classifier_refresh_command() -> None:
     if age is not None and age <= classifier_config.catalog_ttl_seconds:
         return
     classifier = (
-        JevShadowClassifier(classifier_config) if settings.engine == "jev"
+        JevShadowClassifier(classifier_config)
+        if settings.engine == "jev"
         else OpenAICompatibleClassifier(settings)
     )
     models, digest, checked_at = classifier.verify_catalog()
@@ -2376,7 +2374,9 @@ def bridge_usage_command(
     """Show Claude subscription usage: 5h session, weekly, and any scoped weekly caps."""
     config = load_config()
     selected = profile or config.claude_subscriptions.active_profile
-    selected_profile = config.claude_subscriptions.profiles[selected]
+    selected_profile = config.claude_subscriptions.profiles.get(selected)
+    if selected_profile is None:
+        raise typer.BadParameter(f"unknown Claude subscription profile: {selected}")
     state = read_usage_state(
         profile_usage_path(
             selected, profile_account_identity(selected_profile), selected_profile.auth_generation
