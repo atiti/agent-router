@@ -60,6 +60,9 @@ from .context_profile import (
     summarize_context,
 )
 
+MAX_REASONING_BLOCK_BYTES = 2600
+REASONING_ITEM_PREFIX = "agentroute-thought-v1:"
+
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -704,22 +707,18 @@ def _normalize_tool_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]
     for index, message in enumerate(grouped):
         if message["role"] != "assistant":
             continue
-        use_ids = list(dict.fromkeys(
-            str(block["id"])
-            for block in message["content"]
-            if block.get("type") == "tool_use" and block.get("id")
-        ))
+        use_ids = list(
+            dict.fromkeys(
+                str(block["id"])
+                for block in message["content"]
+                if block.get("type") == "tool_use" and block.get("id")
+            )
+        )
         if not use_ids or index + 1 >= len(grouped):
             continue  # the trailing assistant repair handles the final turn
         following = grouped[index + 1]
-        results = [
-            block for block in following["content"]
-            if block.get("type") == "tool_result"
-        ]
-        found = {
-            str(block.get("tool_use_id"))
-            for block in results
-        }
+        results = [block for block in following["content"] if block.get("type") == "tool_result"]
+        found = {str(block.get("tool_use_id")) for block in results}
         missing = [use_id for use_id in use_ids if use_id not in found]
         if missing:
             results[:0] = [
@@ -734,14 +733,11 @@ def _normalize_tool_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]
             log(f"repaired {len(missing)} missing tool result(s) in replayed history")
         if results:
             non_results = [
-                block for block in following["content"]
-                if block.get("type") != "tool_result"
+                block for block in following["content"] if block.get("type") != "tool_result"
             ]
             if following["content"] != results + non_results:
                 following["content"] = results + non_results
-                log(
-                    "moved tool result(s) before other user content in replayed history"
-                )
+                log("moved tool result(s) before other user content in replayed history")
     return grouped
 
 
@@ -769,8 +765,45 @@ def neutralize_codex_identity(instructions: str) -> str:
     return "".join(result)
 
 
+def _reasoning_prefix_digest(body: dict[str, Any], input_prefix: list[Any]) -> str:
+    stable_prefix = {
+        "instructions": body.get("instructions"),
+        "tools": body.get("tools"),
+        "input": input_prefix,
+    }
+    encoded = json.dumps(stable_prefix, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _decode_reasoning_item(
+    item: dict[str, Any], *, body: dict[str, Any], index: int, profile_scope: str
+) -> dict[str, Any] | None:
+    encoded = item.get("encrypted_content")
+    if not isinstance(encoded, str) or not encoded.startswith(REASONING_ITEM_PREFIX):
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(encoded.removeprefix(REASONING_ITEM_PREFIX))
+        if len(raw) > MAX_REASONING_BLOCK_BYTES:
+            return None
+        envelope = json.loads(raw)
+    except (ValueError, binascii.Error):
+        return None
+    if (
+        not isinstance(envelope, dict)
+        or envelope.get("profile") != hashlib.sha256(profile_scope.encode()).hexdigest()[:16]
+    ):
+        return None
+    prefix = (body.get("input") or [])[:index]
+    if envelope.get("prefix") != _reasoning_prefix_digest(body, prefix):
+        return None
+    block = envelope.get("block")
+    if not isinstance(block, dict) or block.get("type") not in {"thinking", "redacted_thinking"}:
+        return None
+    return block
+
+
 def translate_request(
-    body: dict[str, Any], *, mode: CredentialMode = "api-key"
+    body: dict[str, Any], *, mode: CredentialMode = "api-key", profile_scope: str = "default"
 ) -> tuple[dict[str, Any], set[str], dict[str, str]]:
     """Convert a Responses API request body into an Anthropic Messages payload."""
     anthropic_tools, freeform, renames = collect_tools(body.get("tools"))
@@ -800,7 +833,7 @@ def translate_request(
             return
         messages.append(message)
 
-    for item in body.get("input") or []:
+    for item_index, item in enumerate(body.get("input") or []):
         if not isinstance(item, dict):
             push({"role": "user", "content": [{"type": "text", "text": str(item)}]})
             continue
@@ -869,8 +902,11 @@ def translate_request(
             )
 
         elif item_type == "reasoning":
-            # Anthropic rejects replayed thinking it did not sign in this turn,
-            # so reasoning items from history are dropped.
+            block = _decode_reasoning_item(
+                item, body=body, index=item_index, profile_scope=profile_scope
+            )
+            if block is not None:
+                push({"role": "assistant", "content": [block]})
             continue
 
     if not messages:
@@ -1031,11 +1067,15 @@ class ResponsesStream:
         model: str,
         freeform: set[str] | None = None,
         renames: dict[str, str] | None = None,
+        request_body: dict[str, Any] | None = None,
+        profile_scope: str = "default",
     ) -> None:
         self.response_id = response_id
         self.model = model
         self.freeform = freeform or set()
         self.renames = renames or {}
+        self.request_body = request_body or {}
+        self.profile_scope = profile_scope
         self.blocks: dict[int, dict[str, Any]] = {}
         self.items: list[dict[str, Any]] = []
         self.usage = {"input_tokens": 0, "output_tokens": 0}
@@ -1129,7 +1169,11 @@ class ResponsesStream:
                 "output_index": None,
             }
         elif block_type in ("thinking", "redacted_thinking"):
-            self.blocks[index] = {"kind": "thinking", "output_index": len(self.items)}
+            self.blocks[index] = {
+                "kind": "thinking",
+                "content": dict(block),
+                "output_index": None,
+            }
         return
         yield  # pragma: no cover - keeps this handler a generator
 
@@ -1139,7 +1183,17 @@ class ResponsesStream:
             return
         delta = data.get("delta") or {}
         delta_type = delta.get("type")
-        if block["kind"] == "text" and delta_type == "text_delta":
+        if block["kind"] == "thinking" and delta_type == "thinking_delta":
+            content = block["content"]
+            content["thinking"] = str(content.get("thinking") or "") + str(
+                delta.get("thinking") or ""
+            )
+        elif block["kind"] == "thinking" and delta_type == "signature_delta":
+            content = block["content"]
+            content["signature"] = str(content.get("signature") or "") + str(
+                delta.get("signature") or ""
+            )
+        elif block["kind"] == "text" and delta_type == "text_delta":
             text = str(delta.get("text") or "")
             block["text"] += text
             if text:
@@ -1189,6 +1243,41 @@ class ResponsesStream:
             yield from self._emit_text_item(block)
             return
         if block.get("kind") != "tool_use":
+            if block.get("kind") == "thinking":
+                envelope = {
+                    "profile": hashlib.sha256(self.profile_scope.encode()).hexdigest()[:16],
+                    "prefix": _reasoning_prefix_digest(
+                        self.request_body, self.request_body.get("input") or []
+                    ),
+                    "block": block["content"],
+                }
+                encoded = json.dumps(envelope, separators=(",", ":")).encode()
+                if len(encoded) <= MAX_REASONING_BLOCK_BYTES:
+                    output_index = len(self.items)
+                    item = {
+                        "type": "reasoning",
+                        "id": self._next_item_id("rs"),
+                        "summary": [],
+                        "encrypted_content": REASONING_ITEM_PREFIX
+                        + base64.urlsafe_b64encode(encoded).decode(),
+                    }
+                    self.items.append(item)
+                    yield self.sse(
+                        "response.output_item.added",
+                        {
+                            "type": "response.output_item.added",
+                            "output_index": output_index,
+                            "item": item,
+                        },
+                    )
+                    yield self.sse(
+                        "response.output_item.done",
+                        {
+                            "type": "response.output_item.done",
+                            "output_index": output_index,
+                            "item": item,
+                        },
+                    )
             return
         try:
             parsed = json.loads(block["json"]) if block["json"].strip() else {}
@@ -1307,28 +1396,46 @@ class ResponsesStream:
     def _on_message_stop(self, data: dict[str, Any]) -> Iterator[bytes]:
         yield from self._text_items()
         total = self.usage["input_tokens"] + self.usage["output_tokens"]
-        yield self.sse(
-            "response.completed",
-            {
-                "type": "response.completed",
-                "response": {
-                    "id": self.response_id,
-                    "object": "response",
-                    "status": "completed",
-                    "model": self.model,
-                    "output": self.items,
-                    "usage": {
-                        "input_tokens": self.usage["input_tokens"],
-                        "input_tokens_details": {
-                            "cached_tokens": self.usage.get("cached_input_tokens", 0),
-                            "cache_write_tokens": self.usage.get("cache_write_input_tokens", 0),
+        if self.stop_reason == "refusal":
+            yield self.sse(
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": {
+                        "id": self.response_id,
+                        "status": "failed",
+                        "error": {
+                            "code": "refusal",
+                            "message": "Claude declined this request.",
                         },
-                        "output_tokens": self.usage["output_tokens"],
-                        "output_tokens_details": None,
-                        "total_tokens": total,
                     },
                 },
+            )
+            return
+        incomplete = self.stop_reason in {"max_tokens", "model_context_window_exceeded"}
+        event = "response.incomplete" if incomplete else "response.completed"
+        response: dict[str, Any] = {
+            "id": self.response_id,
+            "object": "response",
+            "status": "incomplete" if incomplete else "completed",
+            "model": self.model,
+            "output": self.items,
+            "usage": {
+                "input_tokens": self.usage["input_tokens"],
+                "input_tokens_details": {
+                    "cached_tokens": self.usage.get("cached_input_tokens", 0),
+                    "cache_write_tokens": self.usage.get("cache_write_input_tokens", 0),
+                },
+                "output_tokens": self.usage["output_tokens"],
+                "output_tokens_details": None,
+                "total_tokens": total,
             },
+        }
+        if incomplete:
+            response["incomplete_details"] = {"reason": "max_output_tokens"}
+        yield self.sse(
+            event,
+            {"type": event, "response": response},
         )
 
     def _on_error(self, data: dict[str, Any]) -> Iterator[bytes]:
@@ -1374,9 +1481,7 @@ def catalog_from_config(config: Any, backend_name: str = "claude") -> list[tuple
     return [
         (model, 1_000_000 if model == "claude-haiku-5-5" else DEFAULT_CONTEXT_WINDOW)
         for model in seen
-    ] or [
-        (DEFAULT_MODEL, DEFAULT_CONTEXT_WINDOW)
-    ]
+    ] or [(DEFAULT_MODEL, DEFAULT_CONTEXT_WINDOW)]
 
 
 def model_catalog(
@@ -1396,7 +1501,9 @@ def model_catalog(
             "default_reasoning_level": (
                 "medium"
                 if slug == "claude-haiku-5-5"
-                else "high" if slug in EFFORT_MODELS else None
+                else "high"
+                if slug in EFFORT_MODELS
+                else None
             ),
             "supported_reasoning_levels": [
                 {
@@ -1418,7 +1525,7 @@ def model_catalog(
             "default_verbosity": None,
             "apply_patch_tool_type": "freeform",
             "truncation_policy": {"mode": "bytes", "limit": 10000},
-            "effective_context_window_percent": 95,
+            "effective_context_window_percent": 85 if slug == "claude-haiku-5-5" else 95,
             "experimental_supported_tools": [],
             "supports_reasoning_summary_parameter": False,
             "context_window": context_window,
@@ -1816,9 +1923,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         model = str(body.get("model") or self.default_model)
+        profile_scope = str(getattr(self.credentials, "profile_name", self.credentials.mode))
         try:
             payload, freeform, renames = translate_request(
-                {**body, "model": model}, mode=self.credentials.mode
+                {**body, "model": model}, mode=self.credentials.mode, profile_scope=profile_scope
             )
         except Exception as exc:  # noqa: BLE001 - report translation faults to the client
             self.logger(f"translation failed: {exc}")
@@ -1826,7 +1934,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         response_id = f"resp_{hashlib.sha256(raw + str(time.time()).encode()).hexdigest()[:24]}"
-        stream = ResponsesStream(response_id, model, freeform, renames)
+        stream = ResponsesStream(
+            response_id, model, freeform, renames, request_body=body, profile_scope=profile_scope
+        )
         profile: dict[str, Any] | None = None
         if capture_enabled():
             try:

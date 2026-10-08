@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .config import AppConfig
 from .models import RouteContext, Tier
-from .pricing import canonical_model
+from .pricing import canonical_model, token_cost
 
 
 def cache_switch_estimate(
@@ -46,14 +46,10 @@ def cache_switch_estimate(
     candidate_price = config.pricing.models.get(canonical_model(candidate, config.pricing))
     if current_price is None or candidate_price is None:
         return {"status": "unpriced"}
-    stay = (
-        (inputs - cached) * current_price.input_per_million
-        + cached * current_price.cached_input_per_million
-        + outputs * current_price.output_per_million
-    ) / 1_000_000
-    switch = (
-        inputs * candidate_price.input_per_million + outputs * candidate_price.output_per_million
-    ) / 1_000_000
+    usage = {"input_tokens": inputs, "cached_input_tokens": cached, "output_tokens": outputs}
+    cold_usage = {"input_tokens": inputs, "output_tokens": outputs}
+    stay = token_cost(current, usage, config.pricing)
+    switch = token_cost(candidate, cold_usage, config.pricing)
     prefer_stay = stay < switch * (1 - switching.cache_minimum_savings)
     return {
         "status": "estimated",
