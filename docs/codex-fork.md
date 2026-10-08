@@ -182,9 +182,9 @@ Validation: 849 tests across rollout-trace, state, thread-store and app-server
 protocol; focused routed-provider core tests; scoped Clippy; schema regeneration
 including the Python SDK using Python 3.12; required Bazel lock refresh.
 
-## Stable 0.161.0 candidate (AgentRoute 0.5.66 / runtime v51)
+## Stable 0.161.0 candidate (AgentRoute 0.5.67 / runtime v52)
 
-The candidate pin is `619cff6dc9bd1448ce6105abd6dd880705d4f73f` on
+The candidate pin is `e50f83d70c726c05936f8b43a381b1f998eaf6ca` on
 `codex/agentroute-stable-0.161.0`, based on OpenAI's stable `rust-v0.161.0`
 (`979011409de0a60b52f179721948e65531d26144`). The complete downstream stack was
 ported in order. Follow-up commits finish API/lock/schema alignment and protect
@@ -206,7 +206,7 @@ the user confirms the normal folder-consent prompt.
 Validation includes the CLI build, 319 protocol tests, 185 hook tests, ten focused
 provider-state/reviewer/warmup tests, scoped Clippy, stable and experimental app-server
 exports, hook schema regeneration, formatting, and the required Bazel lock refresh.
-The existing same-provider websocket cache reuse test remains green. The AgentRoute
+Daybreak Blue, GPT subscription, Azure and DeepSeek native turns passed, including a mixed-provider tool/resume session and plain/explicit repository folder consent. Windows host/target CRT policy and V8 initialization are aligned; 77 build-script checks and 83 V8 runtime/POC checks pass. Provider footer snapshots were reviewed and targeted Guardian, recovery and folder-consent checks pass. The existing same-provider websocket cache reuse test remains green. The AgentRoute
 shared-client integration exercises Desktop stdio, terminal/mobile RPC, history,
 and ownership on an isolated temporary profile.
 
