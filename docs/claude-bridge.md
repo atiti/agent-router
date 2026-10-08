@@ -115,8 +115,13 @@ The default account continues using Claude Code's usual `~/.claude` settings and
 New named accounts use `~/.agentroute/claude-accounts/<name>`; on macOS Claude Code stores their
 OAuth credentials in its own account-specific Keychain item. AgentRoute keeps no copy of the
 tokens. Profile status verifies the account identity from Claude Code's local metadata and displays
-each account's own subscription usage without refreshing OAuth credentials. `profile use` selects
-the default account for subsequent bridge commands and bridge starts.
+each account's subscription usage without refreshing OAuth credentials; unverified profiles cannot
+route.
+
+`profile use` selects the account for new conversations; existing ones retain it across restarts.
+An identity change requires a new conversation and `agentroute bridge profile login <name>`.
+
+Token and context limits return a partial answer with a notice in response metadata.
 
 ## Managing the service
 

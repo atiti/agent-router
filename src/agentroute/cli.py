@@ -73,6 +73,7 @@ from .claude_bridge import (
     serve as serve_claude_bridge,
 )
 from .claude_profile_cli import app as claude_profile_app
+from .claude_profile_pool import ClaudeProfilePool
 from .claude_profiles import (
     profile_account_identity,
     profile_credential,
@@ -2231,6 +2232,8 @@ def bridge_serve_command(
     config = load_config()
     models = catalog_from_config(config, backend.lower())
     source = _claude_bridge_credential(credential, backend)
+    if source.mode == "claude-code":
+        source = ClaudeProfilePool()
     serve_claude_bridge(source, host=host, port=port, models=models)
 
 

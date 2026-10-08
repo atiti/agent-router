@@ -6,6 +6,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -43,7 +45,14 @@ from agentroute.claude_bridge import (
     summarize_subscription_usage,
     translate_request,
 )
-from agentroute.config import ExecutionBackendConfig, ModelTarget, default_config
+from agentroute.claude_profile_pool import ClaudeProfilePool
+from agentroute.claude_profiles import profile_scope, profile_usage_path
+from agentroute.config import (
+    ClaudeSubscriptionProfile,
+    ExecutionBackendConfig,
+    ModelTarget,
+    default_config,
+)
 
 
 def test_messages_and_instructions_translate_for_api_key_mode():
@@ -165,7 +174,8 @@ def test_interrupted_parallel_tool_calls_receive_missing_results_before_next_tur
                 {"type": "function_call", "call_id": "b", "name": "two", "arguments": "{}"},
                 {"type": "function_call_output", "call_id": "a", "output": "1"},
                 {
-                    "type": "message", "role": "user",
+                    "type": "message",
+                    "role": "user",
                     "content": [{"type": "input_text", "text": "continue"}],
                 },
             ],
@@ -175,8 +185,7 @@ def test_interrupted_parallel_tool_calls_receive_missing_results_before_next_tur
 
     assert [message["role"] for message in payload["messages"]] == ["assistant", "user"]
     results = [
-        block for block in payload["messages"][1]["content"]
-        if block["type"] == "tool_result"
+        block for block in payload["messages"][1]["content"] if block["type"] == "tool_result"
     ]
     assert {block["tool_use_id"] for block in results} == {"a", "b"}
     assert next(block for block in results if block["tool_use_id"] == "b")["is_error"] is True
@@ -1199,6 +1208,151 @@ def test_http_bridge_streams_responses_events(bridge_server):
     assert captured["payload"]["model"] == "claude-sonnet-5"
     assert captured["payload"]["system"] == [{"type": "text", "text": "Be terse."}]
     assert captured["credentials"].mode == "api-key"
+
+
+def test_http_bridge_selects_a_profile_and_records_its_usage(bridge_server, tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    server, captured = bridge_server
+    config = default_config()
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir=str(tmp_path / "claude-accounts" / "second"),
+        auth_generation="login-1",
+        priority=1,
+    )
+    config.claude_subscriptions.active_profile = "second"
+    monkeypatch.setattr("agentroute.config.load_config", lambda: config)
+    monkeypatch.setattr("agentroute.claude_profile_pool.load_config", lambda: config)
+
+    def account_identity(profile):
+        return f"account-{Path(profile.config_dir).name if profile.config_dir else 'default'}"
+
+    monkeypatch.setattr(
+        "agentroute.claude_profiles.profile_account_identity",
+        account_identity,
+    )
+    monkeypatch.setattr("agentroute.claude_profile_pool.profile_account_identity", account_identity)
+
+    def saved_credential(name, profile):
+        identity = account_identity(profile)
+        return SimpleNamespace(
+            mode="claude-code",
+            profile_name=name,
+            profile_scope=profile_scope(name, profile),
+            usage_path=profile_usage_path(name, identity),
+            _read_keychain=lambda: {"claudeAiOauth": {"refreshToken": "available"}},
+        )
+
+    monkeypatch.setattr("agentroute.claude_profiles.ProfileCredential", saved_credential)
+    monkeypatch.setattr("agentroute.claude_profile_pool.ProfileCredential", saved_credential)
+
+    BridgeHandler.credentials = ClaudeProfilePool()
+    captured["rate_limits"] = parse_unified_rate_limits(_UNIFIED_HEADERS)
+    streams = []
+
+    def fake_stream(credentials, payload):
+        streams.append((credentials, payload))
+        if captured.get("rate_limits") is not None:
+            yield RATE_LIMIT_EVENT, captured["rate_limits"]
+        yield "message_start", {"message": {"usage": {"input_tokens": 5}}}
+        if len(streams) == 1:
+            yield (
+                "content_block_start",
+                {
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+                },
+            )
+            yield (
+                "content_block_delta",
+                {
+                    "index": 0,
+                    "delta": {"type": "signature_delta", "signature": "sig-second"},
+                },
+            )
+            yield "content_block_stop", {"index": 0}
+        yield "content_block_start", {"index": 1, "content_block": {"type": "text"}}
+        yield (
+            "content_block_delta",
+            {
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "ok"},
+            },
+        )
+        yield "content_block_stop", {"index": 1}
+        yield "message_delta", {"usage": {"output_tokens": 1}}
+        yield "message_stop", {}
+
+    BridgeHandler.stream_factory = staticmethod(fake_stream)
+    host, port = server.server_address[:2]
+    url = f"http://{host}:{port}/v1/responses"
+
+    def post(body):
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode(),
+            headers={"content-type": "application/json", "thread-id": "thread-2"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read().decode()
+
+    first_body = {
+        "model": "claude-haiku-5-5",
+        "instructions": "Be concise.",
+        "tools": [],
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "first"}],
+            }
+        ],
+    }
+    first_payload = post(first_body)
+    first_events = [
+        json.loads(line[6:]) for line in first_payload.splitlines() if line.startswith("data: ")
+    ]
+    reasoning = next(
+        event["item"]
+        for event in first_events
+        if event.get("type") == "response.output_item.done"
+        and event["item"].get("type") == "reasoning"
+    )
+    second_body = {
+        **first_body,
+        "input": [
+            *first_body["input"],
+            reasoning,
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "continue"}],
+            },
+        ],
+    }
+    second_payload = post(second_body)
+    usage_request = urllib.request.Request(url.rsplit("/", 1)[0] + "/usage?profile=second")
+    with urllib.request.urlopen(usage_request, timeout=5) as response:
+        usage_payload = json.loads(response.read())
+
+    assert "event: response.completed" in first_payload
+    assert "event: response.completed" in second_payload
+    assert [credential.profile_name for credential, _payload in streams] == ["second", "second"]
+    replayed_content = [
+        block for message in streams[1][1]["messages"] for block in message["content"]
+    ]
+    assert any(block["type"] == "thinking" for block in replayed_content)
+    assert (
+        next(block for block in replayed_content if block["type"] == "thinking")["signature"]
+        == "sig-second"
+    )
+    second_config_dir = config.claude_subscriptions.profiles["second"].config_dir
+    state_path = profile_usage_path("second", f"account-{Path(second_config_dir).name}")
+    assert state_path.exists()
+    state = json.loads(state_path.read_text())
+    assert state["snapshot"]["windows"]["five_hour"]["used_percent"] == 74.0
+    assert usage_payload["profile"] == "second"
+    assert usage_payload["snapshot"]["windows"]["five_hour"]["used_percent"] == 74.0
 
 
 def test_http_bridge_serves_models_and_health(bridge_server):
