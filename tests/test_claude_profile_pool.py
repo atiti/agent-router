@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,7 +21,7 @@ from agentroute.claude_profiles import profile_scope
 from agentroute.config import ClaudeSubscriptionProfile, default_config
 
 
-def _pool(monkeypatch, config, tmp_path):
+def _pool(monkeypatch, config, tmp_path, snapshots=None):
     monkeypatch.setattr("agentroute.claude_profile_pool.load_config", lambda: config)
 
     def identity(profile):
@@ -28,6 +29,20 @@ def _pool(monkeypatch, config, tmp_path):
 
     monkeypatch.setattr("agentroute.claude_profiles.profile_account_identity", identity)
     monkeypatch.setattr("agentroute.claude_profile_pool.profile_account_identity", identity)
+    if snapshots is not None:
+        monkeypatch.setattr(
+            "agentroute.claude_profile_pool.profile_usage_path",
+            lambda name, account=None, generation=None: Path(
+                f"/{name}/{account or 'unverified-' + (generation or 'unknown')}/usage.json"
+            ),
+        )
+        monkeypatch.setattr(
+            "agentroute.claude_profile_pool.read_usage_state",
+            lambda path: snapshots.get(
+                f"{path.parent.parent.name}:{path.parent.name}",
+                snapshots.get(path.parent.parent.name, {}),
+            ),
+        )
     monkeypatch.setattr(
         "agentroute.claude_profile_pool.ProfileCredential",
         lambda name, profile: SimpleNamespace(
@@ -51,6 +66,17 @@ def _pool(monkeypatch, config, tmp_path):
         ),
     )
     return ClaudeProfilePool(affinity_path=tmp_path / "affinity.json")
+
+
+def _snapshot(percent, *, captured_at=None, resets_at=None):
+    captured = captured_at if captured_at is not None else time.time()
+    reset = resets_at if resets_at is not None else time.time() + 3600
+    return {
+        "snapshot": {
+            "captured_at": captured,
+            "windows": {"five_hour": {"used_percent": percent, "resets_at": reset}},
+        }
+    }
 
 
 def test_pool_rejects_unverified_active_profile(monkeypatch, tmp_path):
@@ -393,3 +419,115 @@ def test_oversized_thinking_block_fails_instead_of_disappearing(monkeypatch):
     assert failure["type"] == "response.failed"
     assert failure["response"]["error"]["code"] == "invalid_prompt"
     assert stream.feed("message_stop", {}) == []
+
+
+def test_pool_routes_new_threads_away_from_exhausted_profile(monkeypatch, tmp_path):
+    config = default_config()
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir="/tmp/second-claude", auth_generation="login-1", priority=1
+    )
+    config.claude_subscriptions.profiles["third"] = ClaudeSubscriptionProfile(
+        config_dir="/tmp/third-claude", auth_generation="login-2", priority=2
+    )
+    snapshots = {"default": _snapshot(100), "second": _snapshot(40), "third": _snapshot(20)}
+    pool = _pool(monkeypatch, config, tmp_path, snapshots)
+
+    selected = pool.select({"client_metadata": {"thread_id": "thread-rotation"}}, {})
+
+    assert selected.profile_name == "second"
+    pool.mark_started({"client_metadata": {"thread_id": "thread-rotation"}}, {}, selected)
+    snapshots["second"] = _snapshot(100)
+    assert (
+        pool.select({"client_metadata": {"thread_id": "thread-rotation"}}, {}).profile_name
+        == "second"
+    )
+
+
+def test_pool_can_rotate_a_pending_thread_after_first_request_is_rate_limited(
+    monkeypatch, tmp_path
+):
+    config = default_config()
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir="/tmp/second-claude", auth_generation="login-1", priority=1
+    )
+    snapshots = {"default": _snapshot(40), "second": _snapshot(20)}
+    pool = _pool(monkeypatch, config, tmp_path, snapshots)
+    body = {"client_metadata": {"thread_id": "thread-first-429"}}
+
+    assert pool.select(body, {}).profile_name == "default"
+    snapshots["default"] = _snapshot(100)
+
+    assert pool.select(body, {}).profile_name == "second"
+
+
+def test_pool_skips_unsigned_profiles_during_exhaustion_fallback(monkeypatch, tmp_path):
+    config = default_config()
+    config.claude_subscriptions.profiles["unlogged"] = ClaudeSubscriptionProfile(
+        config_dir="/tmp/unlogged-claude", auth_generation="login-1", priority=1
+    )
+    config.claude_subscriptions.profiles["signed-in"] = ClaudeSubscriptionProfile(
+        config_dir="/tmp/signed-in-claude", auth_generation="login-2", priority=2
+    )
+    pool = _pool(monkeypatch, config, tmp_path, {"default": _snapshot(100)})
+    monkeypatch.setattr(pool, "_signed_in", lambda name, _profile: name != "unlogged")
+
+    selected = pool.select({"client_metadata": {"thread_id": "thread-signed-in"}}, {})
+
+    assert selected.profile_name == "signed-in"
+
+
+def test_pool_ignores_quota_saved_for_another_account(monkeypatch, tmp_path):
+    config = default_config()
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir="/tmp/second-claude", auth_generation="login-1", priority=1
+    )
+    pool = _pool(monkeypatch, config, tmp_path, {"default:account-old": _snapshot(100)})
+
+    selected = pool.select({"client_metadata": {"thread_id": "thread-new-account"}}, {})
+
+    assert selected.profile_name == "default"
+
+
+@pytest.mark.parametrize(
+    ("auto_select", "sample_age", "reset_delta"),
+    [(False, 0, 3600), (True, 3601, 3600), (True, -1, 3600), (True, 0, -1)],
+)
+def test_pool_keeps_profile_when_exhaustion_sample_is_not_actionable(
+    monkeypatch, tmp_path, auto_select, sample_age, reset_delta
+):
+    config = default_config()
+    config.claude_subscriptions.auto_select = auto_select
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir="/tmp/second-claude", auth_generation="login-1", priority=1
+    )
+    now = time.time()
+    snapshots = {
+        "default": _snapshot(100, captured_at=now - sample_age, resets_at=now + reset_delta),
+        "second": _snapshot(40),
+    }
+    pool = _pool(monkeypatch, config, tmp_path, snapshots)
+
+    selected = pool.select({"client_metadata": {"thread_id": "thread-guarded"}}, {})
+
+    assert selected.profile_name == "default"
+
+
+@pytest.mark.parametrize(
+    ("oauth", "expected"),
+    [
+        ({"refreshToken": "expired", "refreshTokenExpiresAt": 1}, False),
+        ({"accessToken": "expired", "expiresAt": 1}, False),
+        ({"accessToken": "live", "expiresAt": 4_000_000_000_000}, True),
+        ({"refreshToken": "live"}, True),
+    ],
+)
+def test_pool_only_rotates_into_profiles_with_live_oauth(monkeypatch, tmp_path, oauth, expected):
+    config = default_config()
+    pool = _pool(monkeypatch, config, tmp_path)
+    monkeypatch.setattr(
+        pool,
+        "_credential",
+        lambda _name, _profile: SimpleNamespace(_read_keychain=lambda: {"claudeAiOauth": oauth}),
+    )
+
+    assert pool._signed_in("default", config.claude_subscriptions.profiles["default"]) is expected

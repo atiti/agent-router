@@ -127,6 +127,11 @@ matching profile; if a profile named `claude-code` makes a legacy scope ambiguou
 conversation.
 An identity change requires a new conversation and `agentroute bridge profile login <name>`.
 
+New conversations use automatic account selection by default. After `agentroute bridge profile status`
+records current readings, AgentRoute routes new threads away from a profile with a fresh 100% quota
+to a signed-in profile with available or unreported quota. Existing threads keep their account. Set
+`claude_subscriptions.auto_select: false` in `~/.agentroute/config.yaml` to disable it.
+
 Token and context limits return a partial answer with a notice in response metadata.
 
 ## Managing the service

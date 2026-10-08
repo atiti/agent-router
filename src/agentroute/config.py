@@ -203,6 +203,7 @@ class ClaudeSubscriptionProfile(BaseModel):
 
 class ClaudeSubscriptionsConfig(BaseModel):
     active_profile: str = "default"
+    auto_select: bool = True
     profiles: dict[str, ClaudeSubscriptionProfile] = Field(
         default_factory=lambda: {"default": ClaudeSubscriptionProfile(priority=0)}, max_length=20
     )
