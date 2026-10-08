@@ -85,6 +85,10 @@ class ProfileCredential(ClaudeCodeCredential):
         self.profile_name = name
         self.account_identity = profile_account_identity(profile)
         self.profile_scope = profile_scope(name, profile, self.account_identity)
+        legacy_digests = {hashlib.sha256(name.encode()).hexdigest()[:16]}
+        if name == "default":
+            legacy_digests.add(hashlib.sha256(b"claude-code").hexdigest()[:16])
+        self.legacy_profile_digests = tuple(sorted(legacy_digests))
         self.directory = directory
         self.usage_path = profile_usage_path(name, self.account_identity, profile.auth_generation)
         self._file_store = platform.system() != "Darwin"

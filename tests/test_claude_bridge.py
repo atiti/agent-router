@@ -1,5 +1,6 @@
 import base64
 import copy
+import hashlib
 import io
 import json
 import threading
@@ -1238,6 +1239,8 @@ def test_http_bridge_selects_a_profile_and_records_its_usage(bridge_server, tmp_
             mode="claude-code",
             profile_name=name,
             profile_scope=profile_scope(name, profile),
+            account_identity=identity,
+            legacy_profile_digests=(hashlib.sha256(name.encode()).hexdigest()[:16],),
             usage_path=profile_usage_path(name, identity),
             _read_keychain=lambda: {"claudeAiOauth": {"refreshToken": "available"}},
         )
@@ -1309,6 +1312,9 @@ def test_http_bridge_selects_a_profile_and_records_its_usage(bridge_server, tmp_
         ],
     }
     first_payload = post(first_body)
+    affinity = json.loads((tmp_path / "state" / "claude-profile-affinity.json").read_text())
+    assert affinity["version"] == 2
+    assert affinity["threads"][0][3] is True
     first_events = [
         json.loads(line[6:]) for line in first_payload.splitlines() if line.startswith("data: ")
     ]

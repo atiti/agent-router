@@ -119,6 +119,12 @@ each account's subscription usage without refreshing OAuth credentials; unverifi
 route.
 
 `profile use` selects the account for new conversations; existing ones retain it across restarts.
+The bridge persists hashed thread IDs and account identities after Claude accepts the first request.
+Failed first requests do not occupy an affinity slot. It keeps up to 7,000 thread assignments; when
+full, it preserves recorded routes and rejects unrecorded thread assignments instead of silently
+changing an old thread's account. Reasoning items from earlier AgentRoute versions continue on the
+matching profile; if a profile named `claude-code` makes a legacy scope ambiguous, start a new
+conversation.
 An identity change requires a new conversation and `agentroute bridge profile login <name>`.
 
 Token and context limits return a partial answer with a notice in response metadata.

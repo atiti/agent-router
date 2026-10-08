@@ -12,6 +12,7 @@ from agentroute.claude_bridge import (
     CredentialError,
     ProfileIdentityChangedError,
     ResponsesStream,
+    _reasoning_prefix_digests,
     translate_request,
 )
 from agentroute.claude_profile_pool import ClaudeProfilePool
@@ -32,6 +33,19 @@ def _pool(monkeypatch, config, tmp_path):
         lambda name, profile: SimpleNamespace(
             profile_name=name,
             profile_scope=profile_scope(name, profile),
+            account_identity=identity(profile),
+            legacy_profile_digests=tuple(
+                sorted(
+                    {
+                        hashlib.sha256(name.encode()).hexdigest()[:16],
+                        *(
+                            [hashlib.sha256(b"claude-code").hexdigest()[:16]]
+                            if name == "default"
+                            else []
+                        ),
+                    }
+                )
+            ),
             mode="claude-code",
             _read_keychain=lambda: {"claudeAiOauth": {"refreshToken": "present"}},
         ),
@@ -62,6 +76,7 @@ def test_pool_keeps_thread_sticky_when_active_profile_changes(monkeypatch, tmp_p
     pool = _pool(monkeypatch, config, tmp_path)
     body = {"client_metadata": {"thread_id": "thread-1"}}
     assert pool.select(body, {}).profile_name == "second"
+    pool.mark_started(body, {}, pool.select(body, {}))
 
     config.claude_subscriptions.active_profile = "default"
     restarted = _pool(monkeypatch, config, tmp_path)
@@ -81,7 +96,10 @@ def test_pool_rejects_a_sticky_thread_after_profile_identity_changes(monkeypatch
         lambda profile: identities.get(profile.config_dir, "default-account"),
     )
     body = {"client_metadata": {"thread_id": "thread-1"}}
-    assert pool.select(body, {}).profile_name == "second"
+    selected = pool.select(body, {})
+    assert selected.profile_name == "second"
+    selected.account_identity = "account-a"
+    pool.mark_started(body, {}, selected)
     identities["/tmp/second-claude"] = "account-b"
 
     with pytest.raises(ProfileIdentityChangedError, match="start a new conversation"):
@@ -108,6 +126,132 @@ def test_pool_follows_account_bound_reasoning_after_restart(monkeypatch, tmp_pat
     selected = pool.select({"input": [{"type": "reasoning", "encrypted_content": encrypted}]}, {})
 
     assert selected.profile_name == "second"
+
+
+@pytest.mark.parametrize(
+    ("profile_name", "legacy_scope"),
+    [("default", "claude-code"), ("default", "default"), ("second", "second")],
+)
+def test_pool_migrates_legacy_reasoning_to_its_profile(
+    monkeypatch, tmp_path, profile_name, legacy_scope
+):
+    config = default_config()
+    if profile_name == "second":
+        config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+            config_dir="/tmp/second-claude", auth_generation="login-1", priority=1
+        )
+    pool = _pool(monkeypatch, config, tmp_path)
+    legacy_profile = hashlib.sha256(legacy_scope.encode()).hexdigest()[:16]
+    item = {
+        "type": "reasoning",
+        "encrypted_content": REASONING_ITEM_PREFIX
+        + base64.urlsafe_b64encode(
+            json.dumps({"profile": legacy_profile, "prefix": "ignored"}).encode()
+        ).decode(),
+    }
+
+    selected = pool.select({"input": [item]}, {})
+
+    assert selected.profile_name == profile_name
+    assert legacy_profile in selected.legacy_profile_digests
+
+
+def test_pool_rejects_ambiguous_legacy_scope_for_claude_code_named_profile(monkeypatch, tmp_path):
+    config = default_config()
+    config.claude_subscriptions.profiles["claude-code"] = ClaudeSubscriptionProfile(
+        config_dir="/tmp/claude-code-profile", auth_generation="login-1", priority=1
+    )
+    pool = _pool(monkeypatch, config, tmp_path)
+    legacy_profile = hashlib.sha256(b"claude-code").hexdigest()[:16]
+    item = {
+        "type": "reasoning",
+        "encrypted_content": REASONING_ITEM_PREFIX
+        + base64.urlsafe_b64encode(json.dumps({"profile": legacy_profile}).encode()).decode(),
+    }
+
+    with pytest.raises(ProfileIdentityChangedError, match="legacy Claude conversation scope"):
+        pool.select({"input": [item]}, {})
+
+
+@pytest.mark.parametrize(
+    ("profile_name", "legacy_scope"),
+    [("default", "claude-code"), ("second", "second")],
+)
+def test_legacy_reasoning_is_replayed_for_its_selected_profile(profile_name, legacy_scope):
+    body = {
+        "model": "claude-haiku-5-5",
+        "instructions": "Be concise.",
+        "tools": [],
+        "input": [{"type": "message", "role": "user", "content": "Continue."}],
+    }
+    envelope = {
+        "profile": hashlib.sha256(legacy_scope.encode()).hexdigest()[:16],
+        "prefix": _reasoning_prefix_digests(body, body["input"])[-1],
+        "block": {"type": "thinking", "thinking": "legacy context", "signature": "old"},
+    }
+    body["input"].append(
+        {
+            "type": "reasoning",
+            "encrypted_content": REASONING_ITEM_PREFIX
+            + base64.urlsafe_b64encode(json.dumps(envelope).encode()).decode(),
+        }
+    )
+
+    payload, _, _ = translate_request(
+        body,
+        mode="claude-code",
+        profile_scope=f"{profile_name}:current-generation:directory:account",
+        legacy_profile_digests=(hashlib.sha256(legacy_scope.encode()).hexdigest()[:16],),
+    )
+    replayed = [
+        block
+        for message in payload["messages"]
+        for block in message["content"]
+        if block.get("type") == "thinking"
+    ]
+
+    assert replayed == [envelope["block"]]
+
+
+def test_pool_marks_thread_affinity_only_after_upstream_starts(monkeypatch, tmp_path):
+    config = default_config()
+    pool = _pool(monkeypatch, config, tmp_path)
+    body = {"client_metadata": {"thread_id": "thread-pending"}}
+    selected = pool.select(body, {})
+    thread_key = hashlib.sha256(b"thread-pending").hexdigest()
+
+    assert thread_key not in pool._threads
+
+    pool.mark_started(body, {}, selected)
+
+    assert pool._threads[thread_key] == ("default", "account-default", True)
+
+
+def test_pool_discards_unstarted_affinity_records_from_earlier_versions(tmp_path):
+    path = tmp_path / "affinity.json"
+    path.write_text(
+        json.dumps({"version": 2, "threads": [["thread-hash", "default", "account", False]]})
+    )
+
+    pool = ClaudeProfilePool(affinity_path=path)
+
+    assert not pool._threads
+
+
+def test_pool_never_evicts_existing_thread_affinity(monkeypatch, tmp_path):
+    monkeypatch.setattr("agentroute.claude_profile_pool.MAX_THREAD_AFFINITY", 1)
+    config = default_config()
+    pool = _pool(monkeypatch, config, tmp_path)
+    first = {"client_metadata": {"thread_id": "old-thread"}}
+    pool.select(first, {})
+    pool.mark_started(first, {}, pool.select(first, {}))
+
+    with pytest.raises(CredentialError, match="unrecorded thread cannot be assigned safely"):
+        pool.select({"client_metadata": {"thread_id": "new-thread"}}, {})
+
+    config.claude_subscriptions.active_profile = "missing"
+    restarted = _pool(monkeypatch, config, tmp_path)
+    assert restarted.select(first, {}).profile_name == "default"
 
 
 def test_pool_rejects_reasoning_after_same_store_changes_accounts(tmp_path, monkeypatch):
