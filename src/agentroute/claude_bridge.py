@@ -794,7 +794,11 @@ def _reasoning_prefix_digests(body: dict[str, Any], input_items: list[Any]) -> l
 
 
 def _decode_reasoning_item(
-    item: dict[str, Any], *, prefix_digest: str, profile_scope: str
+    item: dict[str, Any],
+    *,
+    prefix_digest: str,
+    profile_scope: str,
+    legacy_profile_digests: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     encoded = item.get("encrypted_content")
     if (
@@ -810,10 +814,11 @@ def _decode_reasoning_item(
         envelope = json.loads(raw)
     except (ValueError, binascii.Error):
         return None
-    if (
-        not isinstance(envelope, dict)
-        or envelope.get("profile") != hashlib.sha256(profile_scope.encode()).hexdigest()[:16]
-    ):
+    accepted_scopes = {
+        hashlib.sha256(profile_scope.encode()).hexdigest()[:16],
+        *legacy_profile_digests,
+    }
+    if not isinstance(envelope, dict) or envelope.get("profile") not in accepted_scopes:
         return None
     if envelope.get("prefix") != prefix_digest:
         return None
@@ -824,7 +829,11 @@ def _decode_reasoning_item(
 
 
 def translate_request(
-    body: dict[str, Any], *, mode: CredentialMode = "api-key", profile_scope: str = "default"
+    body: dict[str, Any],
+    *,
+    mode: CredentialMode = "api-key",
+    profile_scope: str = "default",
+    legacy_profile_digests: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], set[str], dict[str, str]]:
     """Convert a Responses API request body into an Anthropic Messages payload."""
     anthropic_tools, freeform, renames = collect_tools(body.get("tools"))
@@ -926,7 +935,10 @@ def translate_request(
 
         elif item_type == "reasoning":
             block = _decode_reasoning_item(
-                item, prefix_digest=prefix_digests[item_index], profile_scope=profile_scope
+                item,
+                prefix_digest=prefix_digests[item_index],
+                profile_scope=profile_scope,
+                legacy_profile_digests=legacy_profile_digests,
             )
             if block is not None:
                 push({"role": "assistant", "content": [block]})
@@ -2054,6 +2066,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 {**body, "model": model},
                 mode=request_credentials.mode,
                 profile_scope=profile_scope,
+                legacy_profile_digests=tuple(
+                    getattr(request_credentials, "legacy_profile_digests", ())
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - report translation faults to the client
             self.logger(f"translation failed: {exc}")
@@ -2101,6 +2116,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             f"{len(payload.get('tools') or [])} tools, "
             f"tail={message_tail_hint(payload.get('messages') or [])}"
         )
+        mark_started = getattr(self.credentials, "mark_started", None)
         try:
             for event_type, data in self.stream_factory(request_credentials, payload):
                 if event_type == RATE_LIMIT_EVENT:
@@ -2108,6 +2124,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     record_usage_snapshot(data, usage_path)
                     self.logger(f"{model}: {describe_usage(data)}")
                     continue
+                if event_type == "message_start" and callable(mark_started):
+                    mark_started(body, self.headers, request_credentials)
                 if event_type == "message_delta":
                     stop_reason = (data.get("delta") or {}).get("stop_reason") or stop_reason
                 if event_type == "message_stop":
