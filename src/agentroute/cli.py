@@ -72,6 +72,14 @@ from .claude_bridge import (
 from .claude_bridge import (
     serve as serve_claude_bridge,
 )
+from .claude_profile_cli import app as claude_profile_app
+from .claude_profile_pool import ClaudeProfilePool
+from .claude_profiles import (
+    profile_account_identity,
+    profile_credential,
+    profile_status,
+    profile_usage_path,
+)
 from .codex_patch import apply_patch, build_codex, install_binary
 from .config import (
     ExecutionBackendConfig,
@@ -131,6 +139,7 @@ app.add_typer(capacity_app, name="capacity")
 app.add_typer(account_app, name="account")
 app.add_typer(context_app, name="context")
 app.add_typer(bridge_app, name="bridge")
+bridge_app.add_typer(claude_profile_app, name="profile")
 app.add_typer(server_app, name="server")
 app.add_typer(storage_app, name="storage")
 app.add_typer(work_app, name="work")
@@ -581,8 +590,19 @@ def capacity_status_command(
             }
         )
     claude_subscription = None
+    claude_subscriptions = [
+        profile_status(config, name, offline=True) for name in config.claude_subscriptions.profiles
+    ]
     if "claude" in config.backends:
-        usage_state = read_usage_state()
+        active_claude_profile = config.claude_subscriptions.active_profile
+        active_profile = config.claude_subscriptions.profiles[active_claude_profile]
+        usage_state = read_usage_state(
+            profile_usage_path(
+                active_claude_profile,
+                profile_account_identity(active_profile),
+                active_profile.auth_generation,
+            )
+        )
         snapshot = usage_state.get("snapshot")
         snapshot = snapshot if isinstance(snapshot, dict) else {}
         usage_rows = []
@@ -590,7 +610,7 @@ def capacity_status_command(
         if not no_probe:
             try:
                 live_payload = fetch_subscription_usage(
-                    ClaudeCodeCredential(), refresh=False
+                    profile_credential(config, active_claude_profile), refresh=False
                 )
                 usage_rows = summarize_subscription_usage(live_payload)
             except (CredentialError, OSError, TypeError, ValueError):
@@ -603,6 +623,7 @@ def capacity_status_command(
                 usage_status = "recorded"
                 observed_at = usage_state.get("updated_at") or snapshot.get("captured_at")
         claude_subscription = {
+            "profile": active_claude_profile,
             "status": usage_status,
             "observed_at": observed_at,
             "observed_at_local": local_time_description(observed_at),
@@ -633,6 +654,7 @@ def capacity_status_command(
         "backends": backend_rows,
         "profiles": [item.as_dict() for item in profiles],
         "claude_subscription": claude_subscription,
+        "claude_subscriptions": claude_subscriptions,
     }
     if json_output:
         console.print_json(json.dumps(payload, sort_keys=True))
@@ -667,7 +689,11 @@ def capacity_status_command(
                 if claude_subscription["live_read_unavailable"]:
                     usage_source += "; live read unavailable"
             usage_table = Table(
-                "Limit", "Used", "Left", "Reset", "Active",
+                "Limit",
+                "Used",
+                "Left",
+                "Reset",
+                "Active",
                 title=f"Claude subscription usage · {usage_source}",
             )
             for item in limits:
@@ -688,11 +714,27 @@ def capacity_status_command(
             console.print(usage_table)
         elif no_probe:
             console.print(
-                "Claude subscription usage: no recorded sample "
-                "(live quota reads skipped)."
+                "Claude subscription usage: no recorded sample (live quota reads skipped)."
             )
         else:
             console.print("Claude subscription usage: unavailable; no current or recorded sample.")
+    if claude_subscriptions:
+        claude_table = Table(
+            "Claude profile", "Active", "Identity", "Usage", "Limit", "Used", "Reset"
+        )
+        for account in claude_subscriptions:
+            for limit in account["limits"] or [{}]:
+                used = limit.get("percent")
+                claude_table.add_row(
+                    account["name"],
+                    "yes" if account["active"] else "",
+                    account["identity_status"],
+                    account["status"],
+                    str(limit.get("label") or account["error"] or "unavailable"),
+                    f"{used:g}%" if isinstance(used, (int, float)) else "—",
+                    local_time_description(limit.get("resets_at")) or "—",
+                )
+        console.print(claude_table)
     if no_probe and config.capacity.profiles:
         console.print("Profile probes skipped; run without --no-probe for live quota state.")
     elif profiles:
@@ -975,9 +1017,7 @@ def why_command(session: str | None = None) -> None:
         console.print(f"Approved agent request: {row['agent_requested_tier']}")
     goal_routing = json.loads(row["selection_receipt"] or "{}").get("goal_routing")
     if goal_routing:
-        console.print(
-            f"Goal routing: {goal_routing['goal_id']} · {goal_routing['mode']}"
-        )
+        console.print(f"Goal routing: {goal_routing['goal_id']} · {goal_routing['mode']}")
     if row["selection_receipt_hash"]:
         console.print(f"Selection receipt: {row['selection_receipt_hash']}")
     for item in json.loads(row["contributions"]):
@@ -1425,11 +1465,7 @@ def classifier_status_command() -> None:
     )
     age = catalog_age_seconds(active)
     catalog_status = (
-        "unverified"
-        if age is None
-        else "fresh"
-        if age <= active.catalog_ttl_seconds
-        else "stale"
+        "unverified" if age is None else "fresh" if age <= active.catalog_ttl_seconds else "stale"
     )
     console.print(
         f"Catalog: {catalog_status}; checked: {active.catalog_checked_at or 'never'}; "
@@ -1689,7 +1725,8 @@ def classifier_verify_command() -> None:
     settings = config.routing.classifier
     active = settings.jev_shadow if settings.engine == "jev" else settings
     classifier = (
-        JevShadowClassifier(active) if settings.engine == "jev"
+        JevShadowClassifier(active)
+        if settings.engine == "jev"
         else OpenAICompatibleClassifier(settings)
     )
     models, digest, checked_at = classifier.verify_catalog()
@@ -1698,8 +1735,7 @@ def classifier_verify_command() -> None:
     active.catalog_checked_at = checked_at
     save_config(config)
     console.print(
-        f"Verified {active.model} in {len(models)} visible models; "
-        f"catalog {digest[:12]}."
+        f"Verified {active.model} in {len(models)} visible models; catalog {digest[:12]}."
     )
 
 
@@ -1715,7 +1751,8 @@ def classifier_refresh_command() -> None:
     if age is not None and age <= classifier_config.catalog_ttl_seconds:
         return
     classifier = (
-        JevShadowClassifier(classifier_config) if settings.engine == "jev"
+        JevShadowClassifier(classifier_config)
+        if settings.engine == "jev"
         else OpenAICompatibleClassifier(settings)
     )
     models, digest, checked_at = classifier.verify_catalog()
@@ -2162,9 +2199,11 @@ def install_hook_command(path: Path | None = None) -> None:
         console.print(f"Backup: {backup}")
 
 
-def _claude_bridge_credential(credential: str, backend: str):
+def _claude_bridge_credential(credential: str, backend: str, profile: str | None = None):
     try:
         source = resolve_credential(credential)
+        if source.mode == "claude-code":
+            source = profile_credential(load_config(), profile)
     except CredentialError as exc:
         raise typer.BadParameter(str(exc)) from exc
     if source.mode == "claude-code":
@@ -2193,6 +2232,8 @@ def bridge_serve_command(
     config = load_config()
     models = catalog_from_config(config, backend.lower())
     source = _claude_bridge_credential(credential, backend)
+    if source.mode == "claude-code":
+        source = ClaudeProfilePool()
     serve_claude_bridge(source, host=host, port=port, models=models)
 
 
@@ -2234,7 +2275,7 @@ def bridge_install_command(
     console.print("✓ Explicit Fable route available: @fable (not in automatic tier mappings)")
     if update_models:
         console.print(
-            "✓ Updated Claude tiers: Haiku / Sonnet 5.5 medium / "
+            "✓ Updated Claude tiers: Haiku 5.5 low / Sonnet 5.5 medium / "
             "Sonnet 5.5 high / Opus 5.5 high"
         )
     console.print(f"✓ Bridge service installed: {path}")
@@ -2281,12 +2322,13 @@ def bridge_check_command(
     model: str = typer.Option(None, help="Model to test; defaults to the backend FAST tier."),
     backend: str = typer.Option("claude"),
     credential: str = typer.Option("auto"),
+    profile: str | None = typer.Option(None, help="Claude subscription profile to check."),
 ) -> None:
     """Verify the credential and run one live Claude round trip."""
     config = load_config()
     models = catalog_from_config(config, backend.lower())
     chosen = model or models[0][0]
-    source = _claude_bridge_credential(credential, backend)
+    source = _claude_bridge_credential(credential, backend, profile)
     payload, freeform, _ = translate_request(
         {
             "model": chosen,
@@ -2330,9 +2372,19 @@ def bridge_usage_command(
     offline: bool = typer.Option(
         False, "--offline", help="Only report what the bridge has already recorded."
     ),
+    profile: str | None = typer.Option(None, help="Claude subscription profile to report."),
 ) -> None:
     """Show Claude subscription usage: 5h session, weekly, and any scoped weekly caps."""
-    state = read_usage_state()
+    config = load_config()
+    selected = profile or config.claude_subscriptions.active_profile
+    selected_profile = config.claude_subscriptions.profiles.get(selected)
+    if selected_profile is None:
+        raise typer.BadParameter(f"unknown Claude subscription profile: {selected}")
+    state = read_usage_state(
+        profile_usage_path(
+            selected, profile_account_identity(selected_profile), selected_profile.auth_generation
+        )
+    )
     snapshot = state.get("snapshot")
     if isinstance(snapshot, dict):
         windows = snapshot.get("windows")
@@ -2352,7 +2404,7 @@ def bridge_usage_command(
     if offline:
         return
 
-    source = _claude_bridge_credential(credential, "claude")
+    source = _claude_bridge_credential(credential, "claude", selected)
     try:
         payload = fetch_subscription_usage(source)
     except CredentialError as exc:
@@ -2388,9 +2440,9 @@ def bridge_usage_command(
 
 
 @bridge_app.command("refresh")
-def bridge_refresh_command() -> None:
+def bridge_refresh_command(profile: str | None = None) -> None:
     """Renew the Claude Code subscription token now and persist it to Keychain."""
-    source = _claude_bridge_credential("claude-code", "claude")
+    source = _claude_bridge_credential("claude-code", "claude", profile)
     if not isinstance(source, ClaudeCodeCredential):
         raise typer.BadParameter("this command only handles the claude-code credential")
     try:

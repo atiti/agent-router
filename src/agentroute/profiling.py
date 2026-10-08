@@ -370,13 +370,25 @@ def price_usage(record: dict[str, Any], pricing: PricingConfig) -> dict[str, Any
         assumptions.append("cache write TTL missing; using configured default write rate")
     if one_hour and rate.cache_write_1h_per_million is None:
         return {"priced": False, "total_usd": None, "reason": "1h cache write price missing"}
+    multiplier = (
+        rate.long_context_multiplier
+        if rate.long_context_threshold_tokens is not None
+        and usage["input_tokens"] > rate.long_context_threshold_tokens
+        else 1
+    )
     components = {
-        "uncached_input": uncached * rate.input_per_million / 1_000_000,
-        "cache_read": usage["cached_input_tokens"] * rate.cached_input_per_million / 1_000_000,
-        "cache_write_5m": five_minute * write_rate / 1_000_000,
-        "cache_write_1h": one_hour * (rate.cache_write_1h_per_million or 0) / 1_000_000,
-        "cache_write_unknown_ttl": unknown * write_rate / 1_000_000,
-        "output": usage["output_tokens"] * rate.output_per_million / 1_000_000,
+        "uncached_input": uncached * rate.input_per_million * multiplier / 1_000_000,
+        "cache_read": usage["cached_input_tokens"]
+        * rate.cached_input_per_million
+        * multiplier
+        / 1_000_000,
+        "cache_write_5m": five_minute * write_rate * multiplier / 1_000_000,
+        "cache_write_1h": one_hour
+        * (rate.cache_write_1h_per_million or 0)
+        * multiplier
+        / 1_000_000,
+        "cache_write_unknown_ttl": unknown * write_rate * multiplier / 1_000_000,
+        "output": usage["output_tokens"] * rate.output_per_million * multiplier / 1_000_000,
     }
     return {
         "priced": True,

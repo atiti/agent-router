@@ -92,6 +92,48 @@ endpoint refuses, the error names the case: a dead refresh token asks you to run
 `/login`, a Cloudflare block names the cause, and a throttle says to retry.
 `agentroute bridge refresh` forces a renewal on demand.
 
+The Claude backend's FAST tier uses Haiku 5.5. To route AgentRoute's default FAST tier through
+Claude, install the bridge and run:
+
+```sh
+agentroute backend-route fast claude
+```
+
+### Multiple Claude subscriptions
+
+Each profile has its own Claude Code configuration and quota history. Register another account,
+sign in through Claude Code's subscription login, then inspect or select it:
+
+```sh
+agentroute bridge profile add second
+agentroute bridge profile login second
+agentroute bridge profile status
+agentroute bridge profile use second
+```
+
+The default account continues using Claude Code's usual `~/.claude` settings and Keychain item.
+New named accounts use `~/.agentroute/claude-accounts/<name>`; on macOS Claude Code stores their
+OAuth credentials in its own account-specific Keychain item. AgentRoute keeps no copy of the
+tokens. Profile status verifies the account identity from Claude Code's local metadata and displays
+each account's subscription usage without refreshing OAuth credentials; unverified profiles cannot
+route.
+
+`profile use` selects the account for new conversations; existing ones retain it across restarts.
+The bridge persists hashed thread IDs and account identities after Claude accepts the first request.
+Failed first requests do not occupy an affinity slot. It keeps up to 7,000 thread assignments; when
+full, it preserves recorded routes and rejects unrecorded thread assignments instead of silently
+changing an old thread's account. Reasoning items from earlier AgentRoute versions continue on the
+matching profile; if a profile named `claude-code` makes a legacy scope ambiguous, start a new
+conversation.
+An identity change requires a new conversation and `agentroute bridge profile login <name>`.
+
+New conversations use automatic account selection by default. After `agentroute bridge profile status`
+records current readings, AgentRoute routes new threads away from a profile with a fresh 100% quota
+to a signed-in profile with available or unreported quota. Existing threads keep their account. Set
+`claude_subscriptions.auto_select: false` in `~/.agentroute/config.yaml` to disable it.
+
+Token and context limits return a partial answer with a notice in response metadata.
+
 ## Managing the service
 
 ```sh
@@ -157,7 +199,7 @@ The bridge serves the tiers of the `claude` backend and advertises them through
 
 | Tier | Model | Input | Cached input | Cache write (5m) | Output |
 |---|---|---|---|---|---|
-| FAST | `claude-haiku-4-5-20251001` | $1 | $0.10 | $1.25 | $5 |
+| FAST (low effort) | `claude-haiku-5-5` | $0.10 / $0.50 | $0.01 / $0.05 | $0.125 / $0.625 | $0.50 / $2.50 |
 | NORMAL (medium effort) | `claude-sonnet-5-5` | $2 | $0.20 | $2.50 | $10 |
 | SMART (high effort) | `claude-sonnet-5-5` | $2 | $0.20 | $2.50 | $10 |
 | MAX (high effort) | `claude-opus-5-5` | $4 | $0.20 | $5.00 | $20 |
@@ -195,17 +237,22 @@ never consumes Fable tokens just because the worker is Fable.
 
 The bridge forwards Responses `reasoning.effort` as Anthropic `output_config.effort`:
 `low`, `medium`, `high`, and `xhigh` pass through; `ultra` and `persistent` map to `max`;
-`none` and `minimal` map to `low`. Opus 5.5 and Fable cannot disable thinking. Haiku has no
-`effort` parameter, so the bridge omits it and its catalog advertises no effort levels.
+`none` and `minimal` map to `low`. Opus 5.5 and Fable cannot disable thinking. Haiku 5.5 supports all effort levels and uses adaptive thinking. Legacy Haiku 4.5 still
+advertises no effort levels.
 Modern models use adaptive thinking and a default 128k output cap (thinking plus visible text);
 an explicit caller cap is preserved. Top-level effort changes can invalidate Anthropic's prompt
 cache; per-message cache-preserving effort is not implemented by this bridge.
 See [Anthropic effort guidance](https://platform.claude.com/docs/en/build-with-claude/effort).
 
+Haiku 5.5 accepts native forced tool choices; thinking is skipped for those calls.
 Sonnet 5.5, Opus 5.5 and Fable 5.1 reject forced `tool_choice` modes. For required calls the
 bridge uses `auto` plus a tool-call instruction; for a named call it exposes only that tool.
 This is a prompting request, not a provider-enforced guarantee. Legacy models retain native
 forced tool choice. Execution sandbox and approval checks remain enforced by Codex.
+
+Haiku 5.5 has a 1M context window and 128k output cap. Its paired prices above apply
+to prompts at or below / above 100,000 input tokens, including cache reads and writes.
+AgentRoute applies the long-context multiplier to the whole request.
 
 All rates are USD per million tokens, taken from Anthropic's published pricing page. They ship
 with AgentRoute, so `agentroute usage` and `agentroute analytics` report Claude cost alongside

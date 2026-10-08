@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .models import Tier
 
@@ -184,12 +185,45 @@ class CapacityConfig(BaseModel):
     profiles: dict[str, SubscriptionProfileConfig] = Field(default_factory=dict)
 
 
+class ClaudeSubscriptionProfile(BaseModel):
+    """One Claude Code credential store; no credentials live in AgentRoute config."""
+
+    config_dir: str | None = None
+    enabled: bool = True
+    priority: int = Field(default=100, ge=0)
+    auth_generation: str = "default"
+
+    @field_validator("config_dir")
+    @classmethod
+    def absolute_config_dir(cls, value: str | None) -> str | None:
+        if value is not None and not Path(value).expanduser().is_absolute():
+            raise ValueError("Claude config_dir must be an absolute path")
+        return value
+
+
+class ClaudeSubscriptionsConfig(BaseModel):
+    active_profile: str = "default"
+    auto_select: bool = True
+    profiles: dict[str, ClaudeSubscriptionProfile] = Field(
+        default_factory=lambda: {"default": ClaudeSubscriptionProfile(priority=0)}, max_length=20
+    )
+
+    @field_validator("profiles")
+    @classmethod
+    def valid_profile_names(cls, profiles: dict) -> dict:
+        if any(not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", name) for name in profiles):
+            raise ValueError("Claude profile names must be lowercase letters, digits, or hyphens")
+        return profiles
+
+
 class ModelPrice(BaseModel):
     input_per_million: float = Field(ge=0)
     cached_input_per_million: float = Field(ge=0)
     output_per_million: float = Field(ge=0)
     cache_write_per_million: float | None = Field(default=None, ge=0)
     cache_write_1h_per_million: float | None = Field(default=None, ge=0)
+    long_context_threshold_tokens: int | None = Field(default=None, gt=0)
+    long_context_multiplier: float = Field(default=1, ge=1)
 
 
 class ModelCapabilities(BaseModel):
@@ -209,7 +243,7 @@ class CapabilityConfig(BaseModel):
 class PricingConfig(BaseModel):
     currency: str = "USD"
     baseline_model: str = "gpt-6-astra"
-    source_checked_at: str = "2026-09-30"
+    source_checked_at: str = "2026-10-08"
     models: dict[str, ModelPrice] = Field(
         default_factory=lambda: {
             "gpt-5.6-luna": ModelPrice(
@@ -275,6 +309,15 @@ class PricingConfig(BaseModel):
             # Claude rates come from Anthropic's published pricing page
             # (platform.claude.com/docs/en/about-claude/pricing). `cache_write`
             # is the 5-minute cache-write rate; the 1-hour tier costs more.
+            "claude-haiku-5-5": ModelPrice(
+                input_per_million=0.10,
+                cached_input_per_million=0.01,
+                cache_write_per_million=0.125,
+                cache_write_1h_per_million=0.20,
+                output_per_million=0.50,
+                long_context_threshold_tokens=100_000,
+                long_context_multiplier=5,
+            ),
             "claude-haiku-4-5-20251001": ModelPrice(
                 input_per_million=1.00,
                 cached_input_per_million=0.10,
@@ -337,6 +380,9 @@ class AppConfig(BaseModel):
     audit: AuditConfig = Field(default_factory=AuditConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     capacity: CapacityConfig = Field(default_factory=CapacityConfig)
+    claude_subscriptions: ClaudeSubscriptionsConfig = Field(
+        default_factory=ClaudeSubscriptionsConfig
+    )
     pricing: PricingConfig = Field(default_factory=PricingConfig)
     capabilities: CapabilityConfig = Field(default_factory=CapabilityConfig)
     shared_server: SharedServerConfig = Field(default_factory=SharedServerConfig)
@@ -357,7 +403,7 @@ def default_config() -> AppConfig:
             "claude": ProviderConfig(
                 enabled=False,
                 tiers={
-                    "fast": ModelTarget(model="haiku"),
+                    "fast": ModelTarget(model="haiku", reasoning_effort="low"),
                     "normal": ModelTarget(model="sonnet"),
                     "smart": ModelTarget(model="sonnet", reasoning_effort="high"),
                     "max": ModelTarget(model="opus"),
@@ -402,6 +448,10 @@ def default_config() -> AppConfig:
         },
     )
     config.capabilities.models = {
+        "claude-haiku-5-5": ModelCapabilities(
+            tool_calling="apply_patch_only", reasoning=True, vision=True,
+            context_window=1_000_000, pricing_model="claude-haiku-5-5",
+        ),
         "gpt-5.6-luna": ModelCapabilities(
             tool_calling="full", reasoning=True, vision=True,
             pricing_model="gpt-5.6-luna",

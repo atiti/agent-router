@@ -17,7 +17,7 @@ ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 # The tiers the local Claude bridge serves. Kept here so `bridge install` and the
 # documented `backend-add` invocation cannot drift apart.
 CLAUDE_BRIDGE_TIERS: dict[str, str] = {
-    "fast": "claude-haiku-4-5-20251001",
+    "fast": "claude-haiku-5-5",
     "normal": "claude-sonnet-5-5",
     "smart": "claude-sonnet-5-5",
     "max": "claude-opus-5-5",
@@ -37,7 +37,7 @@ def ensure_claude_bridge_backend(
         tier: ModelTarget(
             model=model,
             reasoning_effort={
-                "fast": None,
+                "fast": "low",
                 "normal": "medium",
                 "smart": "high",
                 "max": "high",
