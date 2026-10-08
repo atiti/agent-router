@@ -60,8 +60,11 @@ from .context_profile import (
     summarize_context,
 )
 
-MAX_REASONING_BLOCK_BYTES = 2600
+# The base64 transcript item must stay below 10K characters, leaving its
+# worst-case token count under the 10K per-item context limit.
+MAX_REASONING_BLOCK_BYTES = 6_000
 REASONING_ITEM_PREFIX = "agentroute-thought-v1:"
+MAX_REASONING_ITEM_CHARS = len(REASONING_ITEM_PREFIX) + 4 * ((MAX_REASONING_BLOCK_BYTES + 2) // 3)
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
@@ -171,6 +174,10 @@ class UpstreamRateLimitError(CredentialError):
     def __init__(self, detail: str, snapshot: dict[str, Any] | None) -> None:
         super().__init__(detail)
         self.snapshot = snapshot
+
+
+class ProfileIdentityChangedError(CredentialError):
+    """A Claude profile's account changed while a conversation was in progress."""
 
 
 class ApiKeyCredential:
@@ -765,21 +772,36 @@ def neutralize_codex_identity(instructions: str) -> str:
     return "".join(result)
 
 
-def _reasoning_prefix_digest(body: dict[str, Any], input_prefix: list[Any]) -> str:
-    stable_prefix = {
-        "instructions": body.get("instructions"),
-        "tools": body.get("tools"),
-        "input": input_prefix,
-    }
-    encoded = json.dumps(stable_prefix, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(encoded.encode()).hexdigest()
+def _reasoning_prefix_digests(body: dict[str, Any], input_items: list[Any]) -> list[str]:
+    """Hash every history prefix with one serialization pass through the input list."""
+    instructions = json.dumps(
+        body.get("instructions"), sort_keys=True, separators=(",", ":"), default=str
+    )
+    tools = json.dumps(body.get("tools"), sort_keys=True, separators=(",", ":"), default=str)
+    prefix = hashlib.sha256(b'{"input":[')
+    digests = []
+    for index, item in enumerate(input_items):
+        completed = prefix.copy()
+        completed.update(f'],"instructions":{instructions},"tools":{tools}}}'.encode())
+        digests.append(completed.hexdigest())
+        if index:
+            prefix.update(b",")
+        prefix.update(json.dumps(item, sort_keys=True, separators=(",", ":"), default=str).encode())
+    completed = prefix.copy()
+    completed.update(f'],"instructions":{instructions},"tools":{tools}}}'.encode())
+    digests.append(completed.hexdigest())
+    return digests
 
 
 def _decode_reasoning_item(
-    item: dict[str, Any], *, body: dict[str, Any], index: int, profile_scope: str
+    item: dict[str, Any], *, prefix_digest: str, profile_scope: str
 ) -> dict[str, Any] | None:
     encoded = item.get("encrypted_content")
-    if not isinstance(encoded, str) or not encoded.startswith(REASONING_ITEM_PREFIX):
+    if (
+        not isinstance(encoded, str)
+        or len(encoded) > MAX_REASONING_ITEM_CHARS
+        or not encoded.startswith(REASONING_ITEM_PREFIX)
+    ):
         return None
     try:
         raw = base64.urlsafe_b64decode(encoded.removeprefix(REASONING_ITEM_PREFIX))
@@ -793,8 +815,7 @@ def _decode_reasoning_item(
         or envelope.get("profile") != hashlib.sha256(profile_scope.encode()).hexdigest()[:16]
     ):
         return None
-    prefix = (body.get("input") or [])[:index]
-    if envelope.get("prefix") != _reasoning_prefix_digest(body, prefix):
+    if envelope.get("prefix") != prefix_digest:
         return None
     block = envelope.get("block")
     if not isinstance(block, dict) or block.get("type") not in {"thinking", "redacted_thinking"}:
@@ -833,7 +854,9 @@ def translate_request(
             return
         messages.append(message)
 
-    for item_index, item in enumerate(body.get("input") or []):
+    input_items = body.get("input") or []
+    prefix_digests = _reasoning_prefix_digests(body, input_items)
+    for item_index, item in enumerate(input_items):
         if not isinstance(item, dict):
             push({"role": "user", "content": [{"type": "text", "text": str(item)}]})
             continue
@@ -903,7 +926,7 @@ def translate_request(
 
         elif item_type == "reasoning":
             block = _decode_reasoning_item(
-                item, body=body, index=item_index, profile_scope=profile_scope
+                item, prefix_digest=prefix_digests[item_index], profile_scope=profile_scope
             )
             if block is not None:
                 push({"role": "assistant", "content": [block]})
@@ -1069,6 +1092,7 @@ class ResponsesStream:
         renames: dict[str, str] | None = None,
         request_body: dict[str, Any] | None = None,
         profile_scope: str = "default",
+        profile_name: str | None = None,
     ) -> None:
         self.response_id = response_id
         self.model = model
@@ -1076,12 +1100,15 @@ class ResponsesStream:
         self.renames = renames or {}
         self.request_body = request_body or {}
         self.profile_scope = profile_scope
+        self.profile_name = profile_name
+        self.reasoning_history = list(self.request_body.get("input") or [])
         self.blocks: dict[int, dict[str, Any]] = {}
         self.items: list[dict[str, Any]] = []
         self.usage = {"input_tokens": 0, "output_tokens": 0}
         self.anthropic_usage: dict[str, Any] = {}
         self.actual_model = model
         self.stop_reason: str | None = None
+        self.terminal_error = False
         self.item_counter = 0
         # Item ids are recorded into the Codex transcript, so they must stay
         # unique across the requests of one turn. Scope them to the response.
@@ -1104,6 +1131,8 @@ class ResponsesStream:
         return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
 
     def feed(self, event_type: str, data: dict[str, Any]) -> list[bytes]:
+        if self.terminal_error:
+            return []
         handler = getattr(self, f"_on_{event_type}", None)
         if handler is None:
             return []
@@ -1246,22 +1275,46 @@ class ResponsesStream:
             if block.get("kind") == "thinking":
                 envelope = {
                     "profile": hashlib.sha256(self.profile_scope.encode()).hexdigest()[:16],
-                    "prefix": _reasoning_prefix_digest(
-                        self.request_body, self.request_body.get("input") or []
-                    ),
+                    "prefix": _reasoning_prefix_digests(self.request_body, self.reasoning_history)[
+                        -1
+                    ],
                     "block": block["content"],
                 }
+                if self.profile_name:
+                    envelope["profile_name"] = self.profile_name
                 encoded = json.dumps(envelope, separators=(",", ":")).encode()
-                if len(encoded) <= MAX_REASONING_BLOCK_BYTES:
+                if len(encoded) > MAX_REASONING_BLOCK_BYTES:
+                    self.terminal_error = True
+                    yield self.sse(
+                        "response.failed",
+                        {
+                            "type": "response.failed",
+                            "response": {
+                                "id": self.response_id,
+                                "status": "failed",
+                                "error": {
+                                    "code": "invalid_prompt",
+                                    "message": (
+                                        "Claude returned a thinking block too large for safe "
+                                        "AgentRoute replay; reduce reasoning effort or prompt size."
+                                    ),
+                                },
+                            },
+                        },
+                    )
+                    return
+                else:
                     output_index = len(self.items)
                     item = {
                         "type": "reasoning",
                         "id": self._next_item_id("rs"),
                         "summary": [],
+                        "content": None,
                         "encrypted_content": REASONING_ITEM_PREFIX
                         + base64.urlsafe_b64encode(encoded).decode(),
                     }
                     self.items.append(item)
+                    self.reasoning_history.append(item)
                     yield self.sse(
                         "response.output_item.added",
                         {
@@ -1318,6 +1371,7 @@ class ResponsesStream:
                 "arguments": json.dumps(parsed),
             }
         self.items.append(item)
+        self.reasoning_history.append(item)
         yield self.sse(
             "response.output_item.added",
             {
@@ -1377,6 +1431,7 @@ class ResponsesStream:
             "content": [{"type": "output_text", "text": text}],
         }
         self.items.append(item)
+        self.reasoning_history.append(item)
         yield self.sse(
             "response.output_item.done",
             {
@@ -1407,6 +1462,7 @@ class ResponsesStream:
                 "content": [{"type": "output_text", "text": "Claude declined this request."}],
             }
             self.items.append(item)
+            self.reasoning_history.append(item)
             yield self.sse(
                 "response.output_item.added",
                 {"type": "response.output_item.added", "output_index": output_index, "item": item},
@@ -1416,6 +1472,7 @@ class ResponsesStream:
                 {"type": "response.output_item.done", "output_index": output_index, "item": item},
             )
         incomplete = self.stop_reason in {"max_tokens", "model_context_window_exceeded"}
+        event = "response.completed"
         incomplete_reason = None
         if incomplete:
             incomplete_reason = (
@@ -1436,6 +1493,7 @@ class ResponsesStream:
                 "content": [{"type": "output_text", "text": notice}],
             }
             self.items.append(item)
+            self.reasoning_history.append(item)
             yield self.sse(
                 "response.output_item.added",
                 {"type": "response.output_item.added", "output_index": output_index, "item": item},
@@ -1444,7 +1502,6 @@ class ResponsesStream:
                 "response.output_item.done",
                 {"type": "response.output_item.done", "output_index": output_index, "item": item},
             )
-        event = "response.completed"
         response: dict[str, Any] = {
             "id": self.response_id,
             "object": "response",
@@ -1923,18 +1980,42 @@ class BridgeHandler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self) -> None:  # noqa: N802 - http.server API
-        path = self.path.split("?")[0]
+        parsed_path = urllib.parse.urlsplit(self.path)
+        path = parsed_path.path
         if path in ("/healthz", "/health"):
             self._json(200, {"status": "ok"})
         elif path.endswith("/usage"):
-            state = read_usage_state()
+            usage_path = getattr(self.credentials, "usage_path", None)
+            selected_profile = None
+            if callable(getattr(self.credentials, "select", None)):
+                from . import claude_profiles
+                from .config import load_config
+
+                config = load_config()
+                requested_profile = urllib.parse.parse_qs(parsed_path.query).get("profile", [None])[
+                    0
+                ]
+                selected_profile = requested_profile or config.claude_subscriptions.active_profile
+                profile = config.claude_subscriptions.profiles.get(selected_profile)
+                if profile is None:
+                    self._json(400, {"error": "unknown Claude subscription profile"})
+                    return
+                usage_path = claude_profiles.profile_usage_path(
+                    selected_profile,
+                    claude_profiles.profile_account_identity(profile),
+                    profile.auth_generation,
+                )
+            state = read_usage_state(usage_path)
+            payload = {
+                "updated_at": state.get("updated_at"),
+                "snapshot": state.get("snapshot"),
+                "history": state.get("history"),
+            }
+            if selected_profile is not None:
+                payload["profile"] = selected_profile
             self._json(
                 200,
-                {
-                    "updated_at": state.get("updated_at"),
-                    "snapshot": state.get("snapshot"),
-                    "history": state.get("history"),
-                },
+                payload,
             )
         elif path.endswith("/models"):
             self._json(200, model_catalog(self.models))
@@ -1954,10 +2035,25 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         model = str(body.get("model") or self.default_model)
-        profile_scope = str(getattr(self.credentials, "profile_name", self.credentials.mode))
+        selector = getattr(self.credentials, "select", None)
+        try:
+            request_credentials = (
+                selector(body, self.headers) if callable(selector) else self.credentials
+            )
+        except ProfileIdentityChangedError as exc:
+            self._json(400, {"error": {"code": "invalid_prompt", "message": str(exc)}})
+            return
+        except CredentialError as exc:
+            self._json(502, {"error": str(exc)})
+            return
+        profile_scope = str(getattr(request_credentials, "profile_scope", request_credentials.mode))
+        usage_path = getattr(request_credentials, "usage_path", None)
+        self.usage_snapshot = None
         try:
             payload, freeform, renames = translate_request(
-                {**body, "model": model}, mode=self.credentials.mode, profile_scope=profile_scope
+                {**body, "model": model},
+                mode=request_credentials.mode,
+                profile_scope=profile_scope,
             )
         except Exception as exc:  # noqa: BLE001 - report translation faults to the client
             self.logger(f"translation failed: {exc}")
@@ -1966,12 +2062,18 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         response_id = f"resp_{hashlib.sha256(raw + str(time.time()).encode()).hexdigest()[:24]}"
         stream = ResponsesStream(
-            response_id, model, freeform, renames, request_body=body, profile_scope=profile_scope
+            response_id,
+            model,
+            freeform,
+            renames,
+            request_body=body,
+            profile_scope=profile_scope,
+            profile_name=getattr(request_credentials, "profile_name", None),
         )
         profile: dict[str, Any] | None = None
         if capture_enabled():
             try:
-                before = read_usage_state().get("snapshot") or {}
+                before = read_usage_state(usage_path).get("snapshot") or {}
                 profile = {
                     "version": 1,
                     "source": "anthropic_bridge",
@@ -1980,7 +2082,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "model": model,
                     "provider": "anthropic",
-                    "credential_mode": self.credentials.mode,
+                    "credential_mode": request_credentials.mode,
+                    "subscription_profile": getattr(request_credentials, "profile_name", None),
                     "context_window": dict(self.models).get(model),
                     "context": summarize_context(payload, anthropic=True),
                     "harness_context": summarize_context(body),
@@ -1999,10 +2102,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             f"tail={message_tail_hint(payload.get('messages') or [])}"
         )
         try:
-            for event_type, data in self.stream_factory(self.credentials, payload):
+            for event_type, data in self.stream_factory(request_credentials, payload):
                 if event_type == RATE_LIMIT_EVENT:
                     self.usage_snapshot = data
-                    record_usage_snapshot(data)
+                    record_usage_snapshot(data, usage_path)
                     self.logger(f"{model}: {describe_usage(data)}")
                     continue
                 if event_type == "message_delta":
@@ -2025,9 +2128,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 snapshot = exc.snapshot
                 if snapshot is not None:
                     self.usage_snapshot = snapshot
-                    record_usage_snapshot(snapshot)
+                    record_usage_snapshot(snapshot, usage_path)
                 headers = codex_rate_limit_headers(snapshot)
-                if self.credentials.mode == "claude-code":
+                if request_credentials.mode == "claude-code":
                     headers = {
                         "x-codex-active-limit": "claude",
                         "x-claude-limit-name": "Claude",
@@ -2083,6 +2186,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                         "usage": stream.usage if stream.anthropic_usage else None,
                         "cache_fields_present": "cache_read_input_tokens" in stream.anthropic_usage,
                         "cache_ttl_breakdown_present": "cache_creation" in stream.anthropic_usage,
+                        "subscription_profile": getattr(request_credentials, "profile_name", None),
                         "subscription_windows": (self.usage_snapshot or {}).get("windows", {}),
                         "subscription_sample_at": (self.usage_snapshot or {}).get("captured_at"),
                     }
@@ -2107,7 +2211,7 @@ class BridgeServer(ThreadingHTTPServer):
 
 
 def serve(
-    credentials: ApiKeyCredential | ClaudeCodeCredential,
+    credentials: ApiKeyCredential | ClaudeCodeCredential | Any,
     *,
     host: str = "127.0.0.1",
     port: int = DEFAULT_PORT,
