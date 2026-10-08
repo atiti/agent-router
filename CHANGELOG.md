@@ -2,6 +2,8 @@
 
 ## 0.5.67 — 2026-10-08
 
+- Include the current Claude subscription profile affinity and account rotation changes.
+
 - Pair ChatGPT Daybreak Blue requests with their required access program after model routing, including compaction, while preserving explicit program choices and server-side entitlement checks.
 - Preserve the WebSocket connection across turns that keep the exact same provider; retain isolation for provider switches and mixed-provider history.
 - Preserve startup context and admitted Guardian evidence across compaction, and spawn V2 children through the configured host controller.

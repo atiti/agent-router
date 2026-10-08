@@ -184,7 +184,7 @@ including the Python SDK using Python 3.12; required Bazel lock refresh.
 
 ## Stable 0.161.0 candidate (AgentRoute 0.5.67 / runtime v52)
 
-The candidate pin is `8eb3d4395205eb81536c7ce4286eda4697240ffe` on
+The candidate pin is `8a6355bf8cc061d32ba8c8e1400e0bd3758bf224` on
 `codex/agentroute-stable-0.161.0`, based on OpenAI's stable `rust-v0.161.0`
 (`979011409de0a60b52f179721948e65531d26144`). The complete downstream stack was
 ported in order. Follow-up commits finish API/lock/schema alignment and protect
@@ -213,3 +213,5 @@ and ownership on an isolated temporary profile.
 This candidate is separate from the active installation. Do not replace a running
 shared owner or Desktop while other tasks are active. Full live provider and Desktop
 acceptance remains part of the release gate before a public tag is published.
+
+Release distribution targets macOS and Linux. Full fork CI is not claimed green: an upstream legacy Windows sandbox deletion-enforcement regression remains unresolved. Windows hook/path/snapshot fixtures and a Guardian test thread stack budget have been corrected without removing their assertions. Protected macOS screenshot temporary files can still require saving or attaching the image from an accessible folder.
