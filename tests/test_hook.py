@@ -1026,6 +1026,7 @@ def test_route_message_identifies_managed_runtime(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("backend", ["claude", "fable"])
 def test_claude_subscription_route_shows_recorded_limits(tmp_path, monkeypatch, backend):
+    from agentroute.claude_profiles import profile_account_identity, profile_usage_path
     from agentroute.providers import ensure_claude_bridge_backend
 
     config = default_config()
@@ -1033,7 +1034,11 @@ def test_claude_subscription_route_shows_recorded_limits(tmp_path, monkeypatch, 
     ensure_claude_bridge_backend(config, 8090)
     monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
     monkeypatch.setattr("agentroute.hook.service_credential", lambda: "claude-code")
-    state = tmp_path / "state" / "claude-usage.json"
+    monkeypatch.setattr("agentroute.hook.load_config", lambda: config)
+    profile = config.claude_subscriptions.profiles["default"]
+    state = profile_usage_path(
+        "default", profile_account_identity(profile), profile.auth_generation
+    )
     state.parent.mkdir(parents=True)
     state.write_text(json.dumps({
         "updated_at": "2026-09-27T05:45:25Z",

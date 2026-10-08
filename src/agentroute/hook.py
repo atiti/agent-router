@@ -12,6 +12,7 @@ from .bridge_service import service_credential
 from .capacity import backend_spend, local_time_description, subscription_state
 from .classifier import JevShadowClassifier
 from .claude_bridge import read_usage_state
+from .claude_profiles import profile_account_identity, profile_usage_path
 from .config import AppConfig, codex_home, load_config
 from .context import context_receipt, reference_context, related_memories
 from .efficiency import execution_receipt
@@ -74,7 +75,12 @@ def _runtime_label() -> str | None:
 
 def _claude_route_usage() -> str:
     """Show recorded subscription windows only for an installed subscription bridge."""
-    state = read_usage_state()
+    config = load_config()
+    profile = config.claude_subscriptions.active_profile
+    account = config.claude_subscriptions.profiles[profile]
+    state = read_usage_state(
+        profile_usage_path(profile, profile_account_identity(account), account.auth_generation)
+    )
     snapshot = state.get("snapshot")
     windows = snapshot.get("windows") if isinstance(snapshot, dict) else None
     if not isinstance(windows, dict):

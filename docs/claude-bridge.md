@@ -99,6 +99,25 @@ Claude, install the bridge and run:
 agentroute backend-route fast claude
 ```
 
+### Multiple Claude subscriptions
+
+Each profile has its own Claude Code configuration and quota history. Register another account,
+sign in through Claude Code's subscription login, then inspect or select it:
+
+```sh
+agentroute bridge profile add second
+agentroute bridge profile login second
+agentroute bridge profile status
+agentroute bridge profile use second
+```
+
+The default account continues using Claude Code's usual `~/.claude` settings and Keychain item.
+New named accounts use `~/.agentroute/claude-accounts/<name>`; on macOS Claude Code stores their
+OAuth credentials in its own account-specific Keychain item. AgentRoute keeps no copy of the
+tokens. Profile status verifies the account identity from Claude Code's local metadata and displays
+each account's own subscription usage without refreshing OAuth credentials. `profile use` selects
+the default account for subsequent bridge commands and bridge starts.
+
 ## Managing the service
 
 ```sh
