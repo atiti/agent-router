@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .models import Tier
 
@@ -184,6 +185,36 @@ class CapacityConfig(BaseModel):
     profiles: dict[str, SubscriptionProfileConfig] = Field(default_factory=dict)
 
 
+class ClaudeSubscriptionProfile(BaseModel):
+    """One Claude Code credential store; no credentials live in AgentRoute config."""
+
+    config_dir: str | None = None
+    enabled: bool = True
+    priority: int = Field(default=100, ge=0)
+    auth_generation: str = "default"
+
+    @field_validator("config_dir")
+    @classmethod
+    def absolute_config_dir(cls, value: str | None) -> str | None:
+        if value is not None and not Path(value).expanduser().is_absolute():
+            raise ValueError("Claude config_dir must be an absolute path")
+        return value
+
+
+class ClaudeSubscriptionsConfig(BaseModel):
+    active_profile: str = "default"
+    profiles: dict[str, ClaudeSubscriptionProfile] = Field(
+        default_factory=lambda: {"default": ClaudeSubscriptionProfile(priority=0)}, max_length=20
+    )
+
+    @field_validator("profiles")
+    @classmethod
+    def valid_profile_names(cls, profiles: dict) -> dict:
+        if any(not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", name) for name in profiles):
+            raise ValueError("Claude profile names must be lowercase letters, digits, or hyphens")
+        return profiles
+
+
 class ModelPrice(BaseModel):
     input_per_million: float = Field(ge=0)
     cached_input_per_million: float = Field(ge=0)
@@ -348,6 +379,9 @@ class AppConfig(BaseModel):
     audit: AuditConfig = Field(default_factory=AuditConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     capacity: CapacityConfig = Field(default_factory=CapacityConfig)
+    claude_subscriptions: ClaudeSubscriptionsConfig = Field(
+        default_factory=ClaudeSubscriptionsConfig
+    )
     pricing: PricingConfig = Field(default_factory=PricingConfig)
     capabilities: CapabilityConfig = Field(default_factory=CapabilityConfig)
     shared_server: SharedServerConfig = Field(default_factory=SharedServerConfig)
