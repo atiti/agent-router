@@ -2,6 +2,7 @@
 
 ## 0.5.66 — 2026-10-07
 
+- Use local folder consent for AgentRoute's shared Unix owner, so plain `codex` discovers repository roots beneath an untrusted parent without requiring manual `--cd`.
 - Port the complete AgentRoute routing stack to stable Codex CLI 0.161.0 and the matching official Code Mode host.
 - Filter foreign encrypted reasoning and compaction state during standalone compaction and resume warmup; preserve saved history and the destination provider checkpoints.
 - Keep legacy resumes working when provider metadata is absent, and hard-bound resume prewarm history by serialized bytes.

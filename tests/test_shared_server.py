@@ -72,13 +72,15 @@ def test_launcher_attaches_and_preserves_cwd_model_effort(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     captured = {}
     monkeypatch.setattr(
-        "agentroute.launcher.os.execve", lambda binary, argv, env: captured.update(argv=argv)
+        "agentroute.launcher.os.execve",
+        lambda binary, argv, env: captured.update(argv=argv, env=env),
     )
     launch_codex(Path("/tmp/codex"), ["--model", "custom", "-c", 'model_reasoning_effort="high"'])
     argv = captured["argv"]
     assert argv[1:5] == ["--remote", f"unix://{tmp_path}/s.sock", "--cd", str(tmp_path)]
     assert argv.count("--model") == 1
     assert 'model_reasoning_effort="high"' in argv
+    assert captured["env"]["AGENTROUTE_LOCAL_SERVER_SOCKET"] == str(tmp_path / "s.sock")
 
 
 def test_explicit_remote_does_not_start_local_owner(tmp_path, monkeypatch):
@@ -88,8 +90,35 @@ def test_explicit_remote_does_not_start_local_owner(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "agentroute.shared_server.ensure_server", lambda *a: pytest.fail("must not start")
     )
-    monkeypatch.setattr("agentroute.launcher.os.execve", lambda *a: None)
+    monkeypatch.setenv("AGENTROUTE_LOCAL_SERVER_SOCKET", "stale-owner.sock")
+    captured = {}
+    monkeypatch.setattr(
+        "agentroute.launcher.os.execve", lambda binary, argv, env: captured.update(env=env)
+    )
     launch_codex(Path("/tmp/codex"), ["--remote", "unix:///custom.sock"])
+    assert "AGENTROUTE_LOCAL_SERVER_SOCKET" not in captured["env"]
+
+
+@pytest.mark.parametrize("args", [["resume", "thread-id"], ["fork", "--last"]])
+def test_shared_resume_and_fork_keep_saved_cwd_and_identify_local_owner(
+    tmp_path, monkeypatch, args
+):
+    config = default_config()
+    config.shared_server.enabled = True
+    monkeypatch.setattr("agentroute.launcher.load_config", lambda: config)
+    monkeypatch.setattr("agentroute.shared_server.ensure_server", lambda *a: tmp_path / "s.sock")
+    monkeypatch.setattr("agentroute.shared_server.socket_path", lambda: tmp_path / "s.sock")
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        "agentroute.launcher.os.execve",
+        lambda binary, argv, env: captured.update(argv=argv, env=env),
+    )
+    launch_codex(Path("/tmp/codex"), args)
+    assert captured["argv"][1:3] == ["--remote", f"unix://{tmp_path}/s.sock"]
+    assert "--cd" not in captured["argv"]
+    assert captured["argv"][-len(args) :] == args
+    assert captured["env"]["AGENTROUTE_LOCAL_SERVER_SOCKET"] == str(tmp_path / "s.sock")
 
 
 def test_routed_desktop_joins_canonical_owner_with_stdio_proxy(tmp_path, monkeypatch):

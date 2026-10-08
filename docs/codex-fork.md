@@ -184,7 +184,7 @@ including the Python SDK using Python 3.12; required Bazel lock refresh.
 
 ## Stable 0.161.0 candidate (AgentRoute 0.5.66 / runtime v51)
 
-The candidate pin is `f3d8563d5ca37ee06c4dbf185af91b9e4de89446` on
+The candidate pin is `619cff6dc9bd1448ce6105abd6dd880705d4f73f` on
 `codex/agentroute-stable-0.161.0`, based on OpenAI's stable `rust-v0.161.0`
 (`979011409de0a60b52f179721948e65531d26144`). The complete downstream stack was
 ported in order. Follow-up commits finish API/lock/schema alignment and protect
@@ -195,6 +195,13 @@ rollouts without provider metadata remain resumable. Stored history is preserved
 Native Codex and the official Code Mode host use 0.161.0. The companion shared
 server bootstrap raises only its child's open-file soft limit, to at most 8192
 within the inherited hard limit. It does not change machine or parent limits.
+
+The launcher identifies its verified local Unix socket with
+`AGENTROUTE_LOCAL_SERVER_SOCKET`. The TUI uses local repository discovery and
+folder consent for that exact endpoint, including saved folders on resume and
+fork. Shared task discovery and server management keep their existing behavior.
+Explicit remote launches clear the marker. Trust entries are changed only after
+the user confirms the normal folder-consent prompt.
 
 Validation includes the CLI build, 319 protocol tests, 185 hook tests, ten focused
 provider-state/reviewer/warmup tests, scoped Clippy, stable and experimental app-server
