@@ -1,9 +1,21 @@
 # Changelog
 
-## 0.5.66 — 2026-10-07
+## 0.5.67 — 2026-10-08
 
+- Include the current Claude subscription profile affinity and account rotation changes.
+
+- Pair ChatGPT Daybreak Blue requests with their required access program after model routing, including compaction, while preserving explicit program choices and server-side entitlement checks.
+- Preserve the WebSocket connection across turns that keep the exact same provider; retain isolation for provider switches and mixed-provider history.
+- Preserve startup context and admitted Guardian evidence across compaction, and spawn V2 children through the configured host controller.
+- Preserve saved-folder consent and folder-change checks when resuming through the local daemon or AgentRoute's shared local owner.
+- Align Windows host/target C runtimes and V8 sandbox initialization, and finish native voice CI provisioning for stable Codex 0.161.0.
+
+## 0.5.66 — 2026-10-07 (local candidate)
+
+- Use local folder consent for AgentRoute's shared Unix owner, so plain `codex` discovers repository roots beneath an untrusted parent without requiring manual `--cd`.
 - Port the complete AgentRoute routing stack to stable Codex CLI 0.161.0 and the matching official Code Mode host.
 - Filter foreign encrypted reasoning and compaction state during standalone compaction and resume warmup; preserve saved history and the destination provider checkpoints.
+- Keep legacy resumes working when provider metadata is absent, and hard-bound resume prewarm history by serialized bytes.
 - Raise the shared server child process open-file limit to 8192 within its existing hard limit, preventing the macOS default of 256 from exhausting skills, watchers, and MCP sockets across loaded tasks.
 
 ## 0.5.65 — 2026-10-05

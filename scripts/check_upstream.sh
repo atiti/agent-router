@@ -17,7 +17,16 @@ git -C "$CHECK_ROOT/repo" config user.email 'agentroute-port@example.invalid'
 python3 "$PROJECT_ROOT/scripts/codex_stack.py" "$CHECK_ROOT/repo" \
     --base "$CODEX_BASE" --tip "$CODEX_TIP" --onto "$NEW_BASE" \
     --branch agentroute-port-ci --worktree "$CHECK_ROOT/candidate"
-git -C "$CHECK_ROOT/candidate" diff --check "$NEW_BASE" HEAD
+# Terminal snapshots preserve frame padding; unified patches preserve context prefixes.
+# Keep the full whitespace guard for source and the remaining checks for these fixtures.
+git -C "$CHECK_ROOT/candidate" diff --check "$NEW_BASE" HEAD -- . \
+    ':(exclude)*.snap' ':(exclude)patches/rules_rust_windows_static_crt.patch' \
+    ':(exclude)patches/rules_rust_group_build_script_arg_files.patch' \
+    ':(exclude)patches/opusic-sys_materialize_installed_headers.patch'
+git -C "$CHECK_ROOT/candidate" -c core.whitespace=-blank-at-eol \
+    diff --check "$NEW_BASE" HEAD -- '*.snap' patches/rules_rust_windows_static_crt.patch \
+    patches/rules_rust_group_build_script_arg_files.patch \
+    patches/opusic-sys_materialize_installed_headers.patch
 if [ "$NEW_BASE" = "$CODEX_BASE" ]; then
     test "$(git -C "$CHECK_ROOT/candidate" rev-parse 'HEAD^{tree}')" = \
         "$(git -C "$CHECK_ROOT/repo" rev-parse "$CODEX_TIP^{tree}")"

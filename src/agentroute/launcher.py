@@ -217,6 +217,8 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
             file=sys.stderr,
         )
     environment = os.environ.copy()
+    # Only this invocation's verified shared-owner attachment may request local semantics.
+    environment.pop("AGENTROUTE_LOCAL_SERVER_SOCKET", None)
     from .storage import prepare_capture
 
     prepare_capture(environment)
@@ -240,9 +242,10 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
 
         try:
             client_args = shared_client_args(user_args, socket_path())
-            ensure_server(binary, config, environment)
+            endpoint = ensure_server(binary, config, environment)
         except (OSError, SharedServerError) as error:
             print(f"AgentRoute shared server: {error}", file=sys.stderr)
             raise SystemExit(1) from error
         argv[1:1] = client_args
+        environment["AGENTROUTE_LOCAL_SERVER_SOCKET"] = str(endpoint)
     os.execve(argv[0], argv, environment)
