@@ -162,7 +162,7 @@ def test_ensure_claude_bridge_backend_registers_tiers_and_is_idempotent(tmp_path
     assert backend.base_url == "http://127.0.0.1:8090/v1"
     assert backend.codex_provider == "agentroute-claude"
     assert backend.tiers["max"].model == "claude-opus-5-5"
-    assert backend.review_model == "claude-haiku-4-5-20251001"
+    assert backend.review_model == "claude-haiku-5-5"
 
     # Re-running must not duplicate or discard the backend.
     config.backends["claude"].tiers["fast"].model = "claude-sonnet-5"

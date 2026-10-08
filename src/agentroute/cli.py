@@ -2234,7 +2234,7 @@ def bridge_install_command(
     console.print("✓ Explicit Fable route available: @fable (not in automatic tier mappings)")
     if update_models:
         console.print(
-            "✓ Updated Claude tiers: Haiku / Sonnet 5.5 medium / "
+            "✓ Updated Claude tiers: Haiku 5.5 low / Sonnet 5.5 medium / "
             "Sonnet 5.5 high / Opus 5.5 high"
         )
     console.print(f"✓ Bridge service installed: {path}")

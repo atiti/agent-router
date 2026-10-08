@@ -52,12 +52,18 @@ def token_cost(model: str, usage: dict[str, int | float], pricing: PricingConfig
     uncached = max(0.0, input_tokens - cached - cache_write)
     output = max(0.0, float(usage.get("output_tokens", 0)))
     write_rate = rate.cache_write_per_million or rate.input_per_million
+    multiplier = (
+        rate.long_context_multiplier
+        if rate.long_context_threshold_tokens is not None
+        and input_tokens > rate.long_context_threshold_tokens
+        else 1
+    )
     return (
         uncached * rate.input_per_million
         + cached * rate.cached_input_per_million
         + cache_write * write_rate
         + output * rate.output_per_million
-    ) / 1_000_000
+    ) * multiplier / 1_000_000
 
 
 def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) -> CostReport:

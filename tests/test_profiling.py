@@ -326,6 +326,13 @@ def test_api_equivalent_cost_splits_cache_ttl_and_output(home):
     assert "subscription" not in cost["basis"]
 
 
+def test_haiku55_profile_cost_uses_long_context_multiplier():
+    pricing = default_config().pricing
+    usage = {"input_tokens": 100_001, "output_tokens": 1000}
+    report = price_usage({"model": "claude-haiku-5-5", "usage": usage}, pricing)
+    assert report["total_usd"] == pytest.approx((100_001 * 0.10 + 1000 * 0.50) * 5 / 1_000_000)
+
+
 def test_unknown_prices_and_ttl_are_explicit_and_zero_write_price_is_respected():
     pricing = default_config().pricing
     assert not price_usage({"model": "unknown", "usage": {}}, pricing)["priced"]

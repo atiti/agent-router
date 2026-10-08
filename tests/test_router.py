@@ -719,7 +719,7 @@ def test_typesafe_key_in_prompt_stays_out_of_hosted_classifier():
 @pytest.mark.parametrize(
     "tag,model,effort",
     [
-        ("@claude @fast", "claude-haiku-4-5-20251001", None),
+        ("@claude @fast", "claude-haiku-5-5", "low"),
         ("@claude @normal", "claude-sonnet-5-5", "medium"),
         ("@claude @smart", "claude-sonnet-5-5", "high"),
         ("@claude @max", "claude-opus-5-5", "high"),
