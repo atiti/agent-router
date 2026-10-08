@@ -92,6 +92,13 @@ endpoint refuses, the error names the case: a dead refresh token asks you to run
 `/login`, a Cloudflare block names the cause, and a throttle says to retry.
 `agentroute bridge refresh` forces a renewal on demand.
 
+The Claude backend's FAST tier uses Haiku 5.5. To route AgentRoute's default FAST tier through
+Claude, install the bridge and run:
+
+```sh
+agentroute backend-route fast claude
+```
+
 ## Managing the service
 
 ```sh

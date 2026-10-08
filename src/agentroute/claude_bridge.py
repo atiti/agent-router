@@ -1396,28 +1396,59 @@ class ResponsesStream:
     def _on_message_stop(self, data: dict[str, Any]) -> Iterator[bytes]:
         yield from self._text_items()
         total = self.usage["input_tokens"] + self.usage["output_tokens"]
-        if self.stop_reason == "refusal":
+        if self.stop_reason == "refusal" and not any(
+            item.get("type") == "message" for item in self.items
+        ):
+            output_index = len(self.items)
+            item = {
+                "type": "message",
+                "id": self._next_item_id("msg"),
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Claude declined this request."}],
+            }
+            self.items.append(item)
             yield self.sse(
-                "response.failed",
-                {
-                    "type": "response.failed",
-                    "response": {
-                        "id": self.response_id,
-                        "status": "failed",
-                        "error": {
-                            "code": "refusal",
-                            "message": "Claude declined this request.",
-                        },
-                    },
-                },
+                "response.output_item.added",
+                {"type": "response.output_item.added", "output_index": output_index, "item": item},
             )
-            return
+            yield self.sse(
+                "response.output_item.done",
+                {"type": "response.output_item.done", "output_index": output_index, "item": item},
+            )
         incomplete = self.stop_reason in {"max_tokens", "model_context_window_exceeded"}
-        event = "response.incomplete" if incomplete else "response.completed"
+        incomplete_reason = None
+        if incomplete:
+            incomplete_reason = (
+                "model_context_window_exceeded"
+                if self.stop_reason == "model_context_window_exceeded"
+                else "max_output_tokens"
+            )
+            notice = (
+                "AgentRoute: Claude stopped because its context window was full."
+                if incomplete_reason == "model_context_window_exceeded"
+                else "AgentRoute: Claude stopped at its response token limit."
+            )
+            output_index = len(self.items)
+            item = {
+                "type": "message",
+                "id": self._next_item_id("msg"),
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": notice}],
+            }
+            self.items.append(item)
+            yield self.sse(
+                "response.output_item.added",
+                {"type": "response.output_item.added", "output_index": output_index, "item": item},
+            )
+            yield self.sse(
+                "response.output_item.done",
+                {"type": "response.output_item.done", "output_index": output_index, "item": item},
+            )
+        event = "response.completed"
         response: dict[str, Any] = {
             "id": self.response_id,
             "object": "response",
-            "status": "incomplete" if incomplete else "completed",
+            "status": "completed",
             "model": self.model,
             "output": self.items,
             "usage": {
@@ -1431,8 +1462,8 @@ class ResponsesStream:
                 "total_tokens": total,
             },
         }
-        if incomplete:
-            response["incomplete_details"] = {"reason": "max_output_tokens"}
+        if incomplete_reason:
+            response["metadata"] = {"agentroute_incomplete_reason": incomplete_reason}
         yield self.sse(
             event,
             {"type": event, "response": response},

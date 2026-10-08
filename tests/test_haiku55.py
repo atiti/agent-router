@@ -63,12 +63,12 @@ def test_bridge_install_advertises_selected_haiku55_and_preserves_custom_mapping
 @pytest.mark.parametrize(
     "stop_reason,event,status",
     [
-        ("max_tokens", "response.incomplete", "incomplete"),
-        ("model_context_window_exceeded", "response.incomplete", "incomplete"),
-        ("refusal", "response.failed", "failed"),
+        ("max_tokens", "response.completed", "completed"),
+        ("model_context_window_exceeded", "response.completed", "completed"),
+        ("refusal", "response.completed", "completed"),
     ],
 )
-def test_haiku55_stop_reasons_are_not_reported_as_completed(stop_reason, event, status):
+def test_haiku55_stop_reasons_finish_without_retryable_errors(stop_reason, event, status):
     stream = ResponsesStream("resp_stop", "claude-haiku-5-5")
     stream.feed("message_delta", {"delta": {"stop_reason": stop_reason}})
     completed = [
@@ -76,8 +76,18 @@ def test_haiku55_stop_reasons_are_not_reported_as_completed(stop_reason, event, 
     ]
     assert completed[-1]["type"] == event
     assert completed[-1]["response"]["status"] == status
-    if event == "response.incomplete":
-        assert completed[-1]["response"]["incomplete_details"] == {"reason": "max_output_tokens"}
+    if stop_reason in {"max_tokens", "model_context_window_exceeded"}:
+        assert completed[-1]["response"]["metadata"] == {
+            "agentroute_incomplete_reason": (
+                "model_context_window_exceeded"
+                if stop_reason == "model_context_window_exceeded"
+                else "max_output_tokens"
+            )
+        }
+        notice = completed[-1]["response"]["output"][-1]["content"][0]["text"]
+        assert notice.startswith("AgentRoute: Claude stopped")
+    else:
+        assert "error" not in completed[-1]["response"]
 
 
 def test_haiku55_catalog_reserves_context_for_128k_output():
