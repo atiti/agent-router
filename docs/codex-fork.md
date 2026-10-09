@@ -182,25 +182,25 @@ Validation: 849 tests across rollout-trace, state, thread-store and app-server
 protocol; focused routed-provider core tests; scoped Clippy; schema regeneration
 including the Python SDK using Python 3.12; required Bazel lock refresh.
 
-## Stable 0.161.0 candidate (AgentRoute 0.5.66 / runtime v51)
+## Stable 0.162.0 candidate (AgentRoute 0.5.68 / runtime v53)
 
-The candidate pin is `e7c3db0015098c1aaca6c76d1e7b2b02b59501cd` on
-`codex/agentroute-stable-0.161.0`, based on OpenAI's stable `rust-v0.161.0`
-(`979011409de0a60b52f179721948e65531d26144`). The complete 31-commit
-downstream stack was ported in order. Two follow-up commits finish API/lock/schema
-alignment and protect standalone compaction and resume warmup from replaying
-encrypted state owned by another provider. Stored history is preserved.
+The candidate pin is `7d7c92f8729e0b37a154d5719fbc5750194ecc87` on
+`codex/agentroute-stable-0.162.0`, based on OpenAI's stable `rust-v0.162.0`
+(`c1382380de69521303b416720a52f42d51af6248`). It carries the downstream routing,
+provider-state, Guardian, shared-owner, and Code Mode stack, with a compatibility
+commit for the 0.162 API and lockfile changes. Encrypted state remains scoped to its
+owning provider during resume and compaction; Daybreak Blue receives its required
+access program after routing selects the model.
 
-Native Codex and the official Code Mode host use 0.161.0. The companion shared
-server bootstrap raises only its child's open-file soft limit, to at most 8192
-within the inherited hard limit. It does not change machine or parent limits.
+Native Codex and the official Code Mode host use 0.162.0. The companion shared-server
+bootstrap raises only its child's open-file soft limit, to at most 8192 within the
+inherited hard limit. It does not change machine or parent limits.
 
-Validation includes the CLI build, 319 protocol tests, 185 hook tests, ten focused
-provider-state/reviewer/warmup tests, scoped Clippy, stable and experimental app-server
-exports, hook schema regeneration, formatting, and the required Bazel lock refresh.
-The existing same-provider websocket cache reuse test remains green. The AgentRoute
-shared-client integration exercises Desktop stdio, terminal/mobile RPC, history,
-and ownership on an isolated temporary profile.
+Validation completed: formatting; scoped Clippy builds for core, TUI, app-server,
+app-server protocol, CLI, daemon, and Code Mode host. The matching scoped test command
+did not complete because macOS ran out of disk while linking large Rust integration-test
+binaries; it must pass in release CI before publication. The temporary build tree was
+removed to recover space. Mac is the primary release target and Linux is secondary.
 
 This candidate is separate from the active installation. Do not replace a running
 shared owner or Desktop while other tasks are active. Full live provider and Desktop
