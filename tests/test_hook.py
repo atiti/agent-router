@@ -1125,7 +1125,7 @@ def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, mo
             "reasoning_effort": "high",
         },
         "actual": {
-            "model": "claude-opus-5-5",
+            "model": "claude-opus-5-5@agentroute-profile-second",
             "provider": "agentroute-claude",
             "reasoning_effort": "high",
         },
@@ -1136,7 +1136,7 @@ def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, mo
                 {
                     "session_id": "same-thread",
                     "turn_id": "turn-1",
-                    "model": "claude-opus-5-5",
+                    "model": "claude-opus-5-5@agentroute-profile-second",
                     "agentroute_application": receipt,
                 }
             )
@@ -1144,7 +1144,11 @@ def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, mo
         io.StringIO(),
         store=store,
     )
-    assert store.latest("same-thread")["route_application_state"] == "applied"
+    completed = store.latest("same-thread")
+    assert completed["route_application_state"] == "applied"
+    assert completed["answer_model"] == "claude-opus-5-5"
+    assert completed["reported_answer_model"] == "claude-opus-5-5"
+    assert completed["answer_model_mismatch"] == 0
 
 
 @pytest.mark.parametrize(

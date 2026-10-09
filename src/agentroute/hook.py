@@ -901,14 +901,17 @@ def codex_stop(
         if not isinstance(application_receipt, dict):
             application_receipt = None
         if application_receipt is not None:
-            requested = application_receipt.get("requested")
-            if isinstance(requested, dict) and isinstance(requested.get("model"), str):
-                requested_model, selected_profile = split_profile_model(requested["model"])
-                if selected_profile is not None:
+            for endpoint_name in ("requested", "actual"):
+                endpoint = application_receipt.get(endpoint_name)
+                if isinstance(endpoint, dict) and isinstance(endpoint.get("model"), str):
+                    endpoint_model, selected_profile = split_profile_model(endpoint["model"])
+                    if selected_profile is None:
+                        continue
                     application_receipt = {
                         **application_receipt,
-                        "requested": {**requested, "model": requested_model},
+                        endpoint_name: {**endpoint, "model": endpoint_model},
                     }
+        reported_model, _ = split_profile_model(str(payload.get("model", "")))
         actual = application_receipt.get("actual") if application_receipt else None
         actual_provider = (
             str(actual.get("provider"))
@@ -934,7 +937,7 @@ def codex_stop(
         store.record_completion(
             str(payload["session_id"]),
             str(payload["turn_id"]),
-            str(payload.get("model", "")),
+            reported_model,
             usage,
             outcome=outcome,
             completion_source="stop_hook",
