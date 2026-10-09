@@ -291,7 +291,21 @@ def test_capacity_status_uses_active_profile_telemetry_and_hides_raw_account_id(
         ),
     )
 
-    with patch("agentroute.cli.probe_profiles", return_value=(profile,)):
+    with (
+        patch("agentroute.cli.probe_profiles", return_value=(profile,)),
+        patch(
+            "agentroute.cli.profile_status",
+            return_value={
+                "name": "default",
+                "active": True,
+                "status": "unavailable",
+                "observed_at": None,
+                "identity_status": "unverified",
+                "limits": [],
+                "error": "not signed in",
+            },
+        ),
+    ):
         result = runner.invoke(app, ["capacity", "status", "--json"])
 
     assert result.exit_code == 0
