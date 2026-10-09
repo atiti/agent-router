@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Enable Claude bridge prompt caching by default, with stable tool/system prefixes and automatic conversation caching.
+- Add `bridge cache configure` for auto/off and 5m/1h TTL, applied on the next request without restarting.
+- Add private bounded cache usage reporting by subscription profile and model through `bridge cache status`.
+- Include the running bridge package version and cache settings in its health response.
+
 ## 0.5.67 — 2026-10-09
 
 - Add `@claude:<profile>` prompt routing to select a named Claude subscription explicitly for a conversation.

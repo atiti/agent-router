@@ -72,6 +72,7 @@ from .claude_bridge import (
 from .claude_bridge import (
     serve as serve_claude_bridge,
 )
+from .claude_cache_cli import app as claude_cache_app
 from .claude_profile_cli import app as claude_profile_app
 from .claude_profile_pool import ClaudeProfilePool
 from .claude_profiles import (
@@ -140,6 +141,7 @@ app.add_typer(account_app, name="account")
 app.add_typer(context_app, name="context")
 app.add_typer(bridge_app, name="bridge")
 bridge_app.add_typer(claude_profile_app, name="profile")
+bridge_app.add_typer(claude_cache_app, name="cache")
 app.add_typer(server_app, name="server")
 app.add_typer(storage_app, name="storage")
 app.add_typer(work_app, name="work")
@@ -2310,6 +2312,7 @@ def bridge_check_command(
             "tools": [],
         },
         mode=source.mode,
+        cache_config=config.claude_cache,
     )
     stream = ResponsesStream("resp_check", chosen, freeform, {})
     text: list[str] = []
