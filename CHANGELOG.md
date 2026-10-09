@@ -2,14 +2,13 @@
 
 ## Unreleased
 
+## 0.5.68 — 2026-10-09
+
+- Upgrade the routed CLI and matching Code Mode host to upstream stable Codex 0.162.0.
 - Enable Claude bridge prompt caching by default, with stable tool/system prefixes and automatic conversation caching.
 - Add `bridge cache configure` for auto/off and 5m/1h TTL, applied on the next request without restarting.
 - Add private bounded cache usage reporting by subscription profile and model through `bridge cache status`.
 - Include the running bridge package version and cache settings in its health response.
-
-## 0.5.68 — 2026-10-09
-
-- Upgrade the routed CLI and matching Code Mode host to upstream stable Codex 0.162.0.
 - Add named Claude subscription profile routing, live Claude subscription usage in capacity status, and local reset times across usage surfaces.
 - Preserve normal repository-folder consent when starting, resuming, or forking through AgentRoute's local shared owner, even beneath an untrusted parent directory.
 - Preserve provider-owned encrypted state across resume and compaction, while keeping ordinary same-provider continuation intact.
