@@ -92,14 +92,16 @@ AGENTROUTE_TEST_CODEX_BINARY="$HOME/.agentroute/bin/codex-bin" \
 
 ## Prompt tags
 
-Run `agentroute help` in a terminal to show the currently enabled tag reference. Tags may be
-combined in any order; AgentRoute removes them before your task is sent to the model.
+Run `agentroute help` in a terminal to show the currently enabled tag reference. Tier, backend,
+and reasoning tags may be combined in any order; put a Claude profile selector first. AgentRoute
+removes tags before your task is sent to the model.
 
 | Group | Tags | Purpose |
 |---|---|---|
 | Tier | `@fast` `@normal` `@smart` `@max` | Select the capability tier. |
 | Automatic | `@auto` | Clear a manual tier/backend preference and return to automatic routing. |
 | Backend | `@gpt` `@azure` `@deepseek` `@qwen` | Select an enabled backend. Custom backend names use the same `@name` form. |
+| Claude subscription | `@claude:<profile>` | Select a named Claude Code subscription profile for the conversation. |
 | Reasoning | `@none` `@minimal` `@low` `@medium` `@high` `@xhigh` `@ultra` `@persistent` | Request reasoning effort independently of tier. |
 
 Examples:
@@ -108,8 +110,14 @@ Examples:
 @azure @max @ultra implement this end to end
 @gpt @normal @medium explain this architecture
 @qwen @normal @low fix this focused test failure
+@claude:second @max review this migration
 @auto continue
 ```
+
+Create and sign in to named Claude profiles with `agentroute bridge profile add <name>` and
+`agentroute bridge profile login <name>`. A profile handle pins that conversation's Claude
+requests to the selected account; if the conversation is already pinned to another Claude profile,
+start a new conversation to switch.
 
 If you interrupt a turn and send a correction, the next turn keeps that interrupted turn's
 effective tier, backend/model, and reasoning effort. Any explicit tag overrides only its own

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import tempfile
 import time
 import unicodedata
@@ -21,6 +22,24 @@ from .claude_bridge import (
     usage_state_path,
 )
 from .config import AppConfig, ClaudeSubscriptionProfile
+
+PROFILE_MODEL_MARKER = "@agentroute-profile-"
+PROFILE_MODEL_SUFFIX = re.compile(
+    r"^(?P<model>.+)@agentroute-profile-(?P<profile>[a-z][a-z0-9-]{0,31})$"
+)
+
+
+def model_for_profile(model: str, name: str) -> str:
+    """Encode a subscription profile in the model override sent to the bridge."""
+    return f"{model}{PROFILE_MODEL_MARKER}{name}"
+
+
+def split_profile_model(model: str) -> tuple[str, str | None]:
+    """Return the real Claude model and any internal subscription selector."""
+    match = PROFILE_MODEL_SUFFIX.fullmatch(model)
+    if not match:
+        return model, None
+    return match.group("model"), match.group("profile")
 
 
 def profile_directory(profile: ClaudeSubscriptionProfile) -> Path:

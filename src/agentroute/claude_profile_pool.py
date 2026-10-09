@@ -26,6 +26,7 @@ from .claude_profiles import (
     profile_account_identity,
     profile_scope,
     profile_usage_path,
+    split_profile_model,
 )
 from .config import ClaudeSubscriptionProfile, load_config
 from .context_profile import request_identity
@@ -151,6 +152,18 @@ class ClaudeProfilePool:
         if not eligible:
             raise CredentialError("no enabled Claude subscription profiles are configured")
 
+        _model, manual_profile = split_profile_model(str(body.get("model") or ""))
+        if manual_profile is not None and manual_profile not in profiles:
+            raise ProfileIdentityChangedError(
+                f"Claude profile {manual_profile} is unavailable; check "
+                "`agentroute bridge profile status`"
+            )
+        if manual_profile is not None and not profiles[manual_profile].enabled:
+            raise ProfileIdentityChangedError(
+                f"Claude profile {manual_profile} is disabled; "
+                "re-enable it or choose another profile"
+            )
+
         known_scopes = {
             hashlib.sha256(profile_scope(name, profile).encode()).hexdigest()[:16]: name
             for name, profile in eligible
@@ -226,6 +239,12 @@ class ClaudeProfilePool:
                 )
             requested = hinted_name
 
+        if manual_profile is not None and requested not in {None, manual_profile}:
+            raise ProfileIdentityChangedError(
+                "the requested Claude profile does not match this conversation's saved profile; "
+                "start a new conversation to change profiles"
+            )
+
         identity = request_identity(headers, body)
         raw_thread = identity.get("thread_id") or identity.get("session_id")
         thread_key = hashlib.sha256(raw_thread.encode()).hexdigest() if raw_thread else None
@@ -233,8 +252,18 @@ class ClaudeProfilePool:
             sticky_state = self._threads.get(thread_key) if thread_key else None
             sticky = sticky_state[0] if sticky_state else None
             started = bool(sticky_state and sticky_state[2])
-            is_continuation = requested is not None or started
-            current = requested or sticky
+            if (
+                manual_profile is not None
+                and sticky_state
+                and started
+                and sticky_state[0] != manual_profile
+            ):
+                raise ProfileIdentityChangedError(
+                    f"Claude conversation is pinned to profile {sticky_state[0]}; "
+                    f"start a new conversation to use profile {manual_profile}"
+                )
+            is_continuation = requested is not None or manual_profile is not None or started
+            current = manual_profile or requested or sticky
             current = current or config.claude_subscriptions.active_profile
             selected = next(
                 ((name, profile) for name, profile in eligible if name == current), None

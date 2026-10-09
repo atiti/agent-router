@@ -7,6 +7,7 @@ import pytest
 from agentroute.audit import AuditStore
 from agentroute.capacity import CapacityState, local_time_description
 from agentroute.config import (
+    ClaudeSubscriptionProfile,
     ExecutionBackendConfig,
     ModelTarget,
     SubscriptionProfileConfig,
@@ -923,7 +924,7 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path, 
         "◆ ACCOUNT ROUTE · default · account match\n"
         "◆ MODEL ROUTE · SMART → gpt-6.1-sol · high reasoning "
         "· backend gpt/openai · scope root · source MANUAL "
-        "· rule confidence 100% · rule score -0.5 · AgentRoute v0.5.66"
+        "· rule confidence 100% · rule score -0.5 · AgentRoute v0.5.67"
     )
     assert second["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
     assert len(store.history("same-thread")) == 2
@@ -1020,7 +1021,7 @@ def test_route_message_identifies_managed_runtime(tmp_path, monkeypatch):
     output = invoke(config, AuditStore(tmp_path / "audit.db"), "@fast say hi")
 
     assert output["hookSpecificOutput"]["routeMessage"].endswith(
-        " · AgentRoute v0.5.66 · runtime v8"
+        " · AgentRoute v0.5.67 · runtime v8"
     )
 
 
@@ -1085,6 +1086,150 @@ def test_claude_subscription_route_without_a_sample_names_the_usage_command(
     route = output["hookSpecificOutput"]["routeMessage"]
     assert "Claude limits unavailable; run agentroute bridge usage" in route
     assert "capacity today $" not in route
+
+
+def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, monkeypatch):
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    config.enabled = True
+    ensure_claude_bridge_backend(config, 8090)
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir=str(tmp_path / "claude-accounts" / "second"),
+        auth_generation="login-1",
+        priority=1,
+    )
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    monkeypatch.setattr("agentroute.hook.service_credential", lambda: "claude-code")
+    store = AuditStore(tmp_path / "audit.db")
+
+    output = invoke(
+        config,
+        store,
+        "@claude:second @max review the database migration",
+    )
+
+    specific = output["hookSpecificOutput"]
+    assert specific["model"] == "claude-opus-5-5@agentroute-profile-second"
+    assert specific["modelProvider"] == "agentroute-claude"
+    assert specific["stripPromptPrefixBytes"] == len(b"@claude:second @max ")
+    assert "claude-opus-5-5" in specific["routeMessage"]
+    assert "Claude profile second" in specific["routeMessage"]
+    assert store.latest("same-thread")["model"] == "claude-opus-5-5"
+
+    receipt = {
+        "status": "applied",
+        "requested": {
+            "model": "claude-opus-5-5@agentroute-profile-second",
+            "provider": "agentroute-claude",
+            "reasoning_effort": "high",
+        },
+        "actual": {
+            "model": "claude-opus-5-5@agentroute-profile-second",
+            "provider": "agentroute-claude",
+            "reasoning_effort": "high",
+        },
+    }
+    codex_stop(
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "same-thread",
+                    "turn_id": "turn-1",
+                    "model": "claude-opus-5-5@agentroute-profile-second",
+                    "agentroute_application": receipt,
+                }
+            )
+        ),
+        io.StringIO(),
+        store=store,
+    )
+    completed = store.latest("same-thread")
+    assert completed["route_application_state"] == "applied"
+    assert completed["answer_model"] == "claude-opus-5-5"
+    assert completed["reported_answer_model"] == "claude-opus-5-5"
+    assert completed["answer_model_mismatch"] == 0
+
+
+@pytest.mark.parametrize(
+    "actual_model",
+    [
+        "claude-opus-5-5@agentroute-profile-default",
+        "claude-opus-5-5",
+    ],
+)
+def test_manual_claude_profile_receipt_rejects_a_different_or_missing_profile(
+    tmp_path, monkeypatch, actual_model
+):
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    config.enabled = True
+    ensure_claude_bridge_backend(config, 8090)
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir=str(tmp_path / "claude-accounts" / "second"),
+        auth_generation="login-1",
+        priority=1,
+    )
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    monkeypatch.setattr("agentroute.hook.service_credential", lambda: "claude-code")
+    store = AuditStore(tmp_path / "audit.db")
+    invoke(
+        config,
+        store,
+        "@claude:second @max explain the issue",
+    )
+
+    codex_stop(
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "same-thread",
+                    "turn_id": "turn-1",
+                    "model": actual_model,
+                    "agentroute_application": {
+                        "status": "applied",
+                        "requested": {
+                            "model": "claude-opus-5-5@agentroute-profile-second",
+                            "provider": "agentroute-claude",
+                            "reasoning_effort": "high",
+                        },
+                        "actual": {
+                            "model": actual_model,
+                            "provider": "agentroute-claude",
+                            "reasoning_effort": "high",
+                        },
+                    },
+                }
+            )
+        ),
+        io.StringIO(),
+        store=store,
+    )
+
+    completed = store.latest("same-thread")
+    assert completed["route_application_state"] == "mismatch"
+    assert completed["answer_model"] == "claude-opus-5-5"
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "@claude:missing explain this",
+        "@claude:default @azure explain this",
+        "@claude:default @auto explain this",
+    ],
+)
+def test_manual_claude_profile_rejects_invalid_or_conflicting_routes(tmp_path, prompt):
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    config.enabled = True
+    ensure_claude_bridge_backend(config, 8090)
+    output = invoke(config, AuditStore(tmp_path / "audit.db"), prompt)
+
+    assert output["continue"] is False
+    assert output["stopReason"]
 
 
 def test_subagent_task_is_independently_routed_and_audited(tmp_path):

@@ -1220,7 +1220,7 @@ def test_http_bridge_selects_a_profile_and_records_its_usage(bridge_server, tmp_
         auth_generation="login-1",
         priority=1,
     )
-    config.claude_subscriptions.active_profile = "second"
+    config.claude_subscriptions.active_profile = "default"
     monkeypatch.setattr("agentroute.config.load_config", lambda: config)
     monkeypatch.setattr("agentroute.claude_profile_pool.load_config", lambda: config)
 
@@ -1300,7 +1300,7 @@ def test_http_bridge_selects_a_profile_and_records_its_usage(bridge_server, tmp_
             return response.read().decode()
 
     first_body = {
-        "model": "claude-haiku-5-5",
+        "model": "claude-haiku-5-5@agentroute-profile-second",
         "instructions": "Be concise.",
         "tools": [],
         "input": [
@@ -1344,6 +1344,10 @@ def test_http_bridge_selects_a_profile_and_records_its_usage(bridge_server, tmp_
     assert "event: response.completed" in first_payload
     assert "event: response.completed" in second_payload
     assert [credential.profile_name for credential, _payload in streams] == ["second", "second"]
+    assert [payload["model"] for _credential, payload in streams] == [
+        "claude-haiku-5-5",
+        "claude-haiku-5-5",
+    ]
     replayed_content = [
         block for message in streams[1][1]["messages"] for block in message["content"]
     ]
