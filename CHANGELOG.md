@@ -3,6 +3,7 @@
 ## 0.5.67 — 2026-10-09
 
 - Add `@claude:<profile>` prompt routing to select a named Claude subscription explicitly for a conversation.
+- Clarify capacity status by grouping usage under named GPT and Claude subscription profiles.
 
 ## 0.5.66 — 2026-10-07
 

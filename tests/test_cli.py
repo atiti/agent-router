@@ -1,5 +1,5 @@
 import json
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from rich.text import Text
 from typer.testing import CliRunner
@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 from agentroute.capacity import CapacityState
 from agentroute.cli import app
 from agentroute.config import (
+    ClaudeSubscriptionProfile,
     SubscriptionProfileConfig,
     default_config,
     load_config,
@@ -309,30 +310,78 @@ def test_capacity_status_shows_live_claude_subscription_usage(tmp_path, monkeypa
     monkeypatch.setenv("AGENTROUTE_DATA_DIR", str(tmp_path))
     config = default_config()
     ensure_claude_bridge_backend(config, 8090)
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir=str(tmp_path / "claude-accounts" / "second"), priority=1
+    )
     save_config(config, path)
-    payload = {
-        "limits": [{
-            "kind": "session",
-            "percent": 42,
-            "resets_at": "2026-09-26T22:00:00Z",
-            "is_active": True,
-        }]
+    default_profile = {
+        "name": "default",
+        "active": True,
+        "status": "live",
+        "observed_at": "2026-09-26T21:00:00Z",
+        "identity_status": "verified",
+        "limits": [
+            {
+                "kind": "session",
+                "label": "5-hour session",
+                "percent": 42,
+                "resets_at": "2026-09-26T22:00:00Z",
+                "is_active": True,
+            }
+        ],
+        "error": None,
+    }
+    second_profile = {
+        **default_profile,
+        "name": "second",
+        "active": False,
+        "status": "recorded",
+        "limits": [
+            {
+                "kind": "session",
+                "label": "5-hour session",
+                "percent": 18,
+                "resets_at": "2026-09-26T23:00:00Z",
+                "is_active": True,
+            }
+        ],
     }
 
+    gpt_profile = ProfileStatus(
+        name="default",
+        codex_home=str(tmp_path / "codex"),
+        priority=0,
+        enabled=True,
+        authenticated=True,
+        account_hash="masked-id",
+        capacity=CapacityState("gpt", "healthy", "subscription 20% used", "subscription"),
+    )
     with (
-        patch("agentroute.cli.read_usage_state", return_value={}),
-        patch("agentroute.cli.fetch_subscription_usage", return_value=payload) as fetch,
+        patch("agentroute.cli.profile_status", side_effect=[default_profile, second_profile])
+        as profile_read,
+        patch("agentroute.cli.probe_profiles", return_value=(gpt_profile,)),
     ):
         result = runner.invoke(app, ["capacity", "status", "--json"])
 
     assert result.exit_code == 0, result.output
-    fetch.assert_called_once()
-    assert fetch.call_args.kwargs == {"refresh": False}
+    assert profile_read.call_args_list == [
+        call(config, "default", offline=False),
+        call(config, "second", offline=False),
+    ]
     usage = json.loads(result.output)["claude_subscription"]
     assert usage["status"] == "live"
     assert usage["limits"][0]["used_percent"] == 42.0
     assert usage["limits"][0]["remaining_percent"] == 58.0
     assert usage["limits"][0]["reset_local"]
+
+    profile_read.side_effect = [default_profile, second_profile]
+    overview = runner.invoke(app, ["capacity", "status"])
+    assert overview.exit_code == 0, overview.output
+    assert "GPT subscription profiles" in overview.output
+    assert "Claude subscription profiles" in overview.output
+    assert "Claude subscription usage" not in overview.output
+    assert "default" in overview.output and "second" in overview.output
+    assert "Account hash" in overview.output
 
 
 def test_capacity_status_no_probe_uses_the_recorded_claude_sample(tmp_path, monkeypatch):
@@ -342,21 +391,27 @@ def test_capacity_status_no_probe_uses_the_recorded_claude_sample(tmp_path, monk
     config = default_config()
     ensure_claude_bridge_backend(config, 8090)
     save_config(config, path)
-    state = {
-        "updated_at": "2026-09-27T05:45:25Z",
-        "snapshot": {"windows": {
-            "five_hour": {"used_percent": 79, "resets_at": 1790460000},
-        }},
+    profile = {
+        "name": "default",
+        "active": True,
+        "status": "recorded",
+        "observed_at": "2026-09-27T05:45:25Z",
+        "identity_status": "verified",
+        "limits": [{
+            "kind": "session",
+            "label": "5-hour session",
+            "percent": 79,
+            "resets_at": 1790460000,
+            "is_active": True,
+        }],
+        "error": None,
     }
 
-    with (
-        patch("agentroute.cli.read_usage_state", return_value=state),
-        patch("agentroute.cli.fetch_subscription_usage") as fetch,
-    ):
+    with patch("agentroute.cli.profile_status", return_value=profile) as profile_read:
         result = runner.invoke(app, ["capacity", "status", "--json", "--no-probe"])
 
     assert result.exit_code == 0, result.output
-    fetch.assert_not_called()
+    profile_read.assert_called_once_with(config, "default", offline=True)
     usage = json.loads(result.output)["claude_subscription"]
     assert usage["status"] == "recorded"
     assert usage["limits"][0]["used_percent"] == 79.0
