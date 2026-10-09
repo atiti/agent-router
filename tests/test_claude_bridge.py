@@ -80,7 +80,9 @@ def test_messages_and_instructions_translate_for_api_key_mode():
     assert payload["model"] == "claude-sonnet-5"
     assert payload["stream"] is True
     # An API key request must not impersonate Claude Code.
-    assert payload["system"] == [{"type": "text", "text": "Be terse."}]
+    assert payload["system"] == [
+        {"type": "text", "text": "Be terse.", "cache_control": {"type": "ephemeral", "ttl": "5m"}}
+    ]
     assert [m["role"] for m in payload["messages"]] == ["user", "user"]
     assert payload["messages"][0]["content"] == [{"type": "text", "text": "ignored system role"}]
     assert freeform == set()
@@ -106,7 +108,11 @@ def test_subscription_mode_prepends_claude_code_identity():
     assert len(payload["system"]) == 3
     assert payload["system"][0]["text"].startswith("x-anthropic-billing-header: cc_version=")
     assert payload["system"][1]["text"].startswith("You are Claude Code,")
-    assert payload["system"][2] == {"type": "text", "text": "Be terse."}
+    assert payload["system"][2] == {
+        "type": "text",
+        "text": "Be terse.",
+        "cache_control": {"type": "ephemeral", "ttl": "5m"},
+    }
 
 
 def test_tool_calls_outputs_and_reasoning_history_translate():
@@ -1207,7 +1213,9 @@ def test_http_bridge_streams_responses_events(bridge_server):
     # The handler must call the stream factory with exactly (credentials, payload);
     # a bound-method call would have passed the handler as a third argument.
     assert captured["payload"]["model"] == "claude-sonnet-5"
-    assert captured["payload"]["system"] == [{"type": "text", "text": "Be terse."}]
+    assert captured["payload"]["system"] == [
+        {"type": "text", "text": "Be terse.", "cache_control": {"type": "ephemeral", "ttl": "5m"}}
+    ]
     assert captured["credentials"].mode == "api-key"
 
 
@@ -1363,6 +1371,12 @@ def test_http_bridge_selects_a_profile_and_records_its_usage(bridge_server, tmp_
     assert state["snapshot"]["windows"]["five_hour"]["used_percent"] == 74.0
     assert usage_payload["profile"] == "second"
     assert usage_payload["snapshot"]["windows"]["five_hour"]["used_percent"] == 74.0
+    from agentroute.claude_cache_usage import cache_usage_report
+
+    groups = cache_usage_report()["groups"]
+    assert [(group["profile"], group["model"], group["requests"]) for group in groups] == [
+        ("second", "claude-haiku-5-5", 2)
+    ]
 
 
 def test_http_bridge_retries_first_thread_on_another_profile_after_quota_limit(
@@ -1441,12 +1455,19 @@ def test_http_bridge_retries_first_thread_on_another_profile_after_quota_limit(
     assert calls == ["default", "second"]
 
 
-def test_http_bridge_serves_models_and_health(bridge_server):
+def test_http_bridge_serves_models_and_health(bridge_server, monkeypatch):
+    from agentroute.claude_bridge import __version__
+
+    # A package update on disk must not relabel code already loaded by the service.
+    monkeypatch.setattr("importlib.metadata.version", lambda _: "new-package-on-disk")
     server, _ = bridge_server
     host, port = server.server_address[:2]
 
     with urllib.request.urlopen(f"http://{host}:{port}/healthz", timeout=30) as response:
-        assert json.loads(response.read()) == {"status": "ok"}
+        health = json.loads(response.read())
+    assert health["status"] == "ok"
+    assert health["prompt_cache"] == {"mode": "auto", "ttl": "5m"}
+    assert health["version"] == __version__
 
     with urllib.request.urlopen(f"http://{host}:{port}/v1/models", timeout=30) as response:
         catalog = json.loads(response.read())
@@ -1763,3 +1784,40 @@ def test_effort_catalog_and_opt_in_fable():
             "ultra",
         ]
     assert descriptors["claude-haiku-5-5"]["context_window"] == 1_000_000
+
+
+def test_http_bridge_cache_settings_apply_without_restart(bridge_server):
+    from agentroute.claude_cache_usage import cache_usage_report
+    from agentroute.config import load_config, save_config
+
+    server, captured = bridge_server
+    host, port = server.server_address[:2]
+    body = {
+        "model": "claude-sonnet-5",
+        "instructions": "stable rules",
+        "input": [],
+        "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+    }
+    replies = []
+    for mode, ttl in (("auto", "5m"), ("auto", "1h"), ("off", "5m")):
+        config = load_config()
+        config.claude_cache.mode, config.claude_cache.ttl = mode, ttl
+        save_config(config)
+        request = urllib.request.Request(
+            f"http://{host}:{port}/v1/responses",
+            data=json.dumps(body).encode(),
+            headers={"content-type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            replies.append(response.read())
+        if mode == "off":
+            assert "cache_control" not in json.dumps(captured["payload"])
+        else:
+            marker = {"type": "ephemeral", "ttl": ttl}
+            assert captured["payload"]["cache_control"] == marker
+            assert captured["payload"]["tools"][-1]["cache_control"] == marker
+            assert captured["payload"]["system"][-1]["cache_control"] == marker
+    assert all(b"response.completed" in reply for reply in replies)
+    # End-of-stream records are written before the terminating HTTP chunk.
+    group = cache_usage_report()["groups"][0]
+    assert (group["profile"], group["requests"], group["measured_requests"]) == ("api-key", 3, 3)

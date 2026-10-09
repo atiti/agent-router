@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Enable Claude bridge prompt caching by default, with stable tool/system prefixes and automatic conversation caching.
+- Add `bridge cache configure` for auto/off and 5m/1h TTL, applied on the next request without restarting.
+- Add private bounded cache usage reporting by subscription profile and model through `bridge cache status`.
+- Include the running bridge package version and cache settings in its health response.
+
 ## 0.5.68 — 2026-10-09
 
 - Upgrade the routed CLI and matching Code Mode host to upstream stable Codex 0.162.0.

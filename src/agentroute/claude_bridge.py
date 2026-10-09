@@ -45,6 +45,10 @@ from typing import Any, Literal
 
 from PIL import Image, UnidentifiedImageError
 
+from . import __version__
+from . import config as agentroute_config
+from .claude_cache import apply_prompt_cache, cache_boundaries
+from .claude_cache_usage import record_cache_usage
 from .claude_models import (
     CLAUDE_EFFORT_LEVELS,
     EFFORT_MODELS,
@@ -52,6 +56,7 @@ from .claude_models import (
     MODERN_CLAUDE_MODELS,
     claude_effort,
 )
+from .config import ClaudeCacheConfig
 from .context_profile import (
     capture_enabled,
     normalize_anthropic_usage,
@@ -834,6 +839,7 @@ def translate_request(
     mode: CredentialMode = "api-key",
     profile_scope: str = "default",
     legacy_profile_digests: tuple[str, ...] = (),
+    cache_config: ClaudeCacheConfig | None = None,
 ) -> tuple[dict[str, Any], set[str], dict[str, str]]:
     """Convert a Responses API request body into an Anthropic Messages payload."""
     anthropic_tools, freeform, renames = collect_tools(body.get("tools"))
@@ -1016,6 +1022,7 @@ def translate_request(
                 payload["tool_choice"] = {"type": "tool", "name": name}
         else:
             payload["tool_choice"] = {"type": "auto"}
+    apply_prompt_cache(payload, cache_config or ClaudeCacheConfig())
     return payload, freeform, renames
 
 
@@ -1995,15 +2002,21 @@ class BridgeHandler(BaseHTTPRequestHandler):
         parsed_path = urllib.parse.urlsplit(self.path)
         path = parsed_path.path
         if path in ("/healthz", "/health"):
-            self._json(200, {"status": "ok"})
+            self._json(
+                200,
+                {
+                    "status": "ok",
+                    "version": __version__,
+                    "prompt_cache": agentroute_config.load_config().claude_cache.model_dump(),
+                },
+            )
         elif path.endswith("/usage"):
             usage_path = getattr(self.credentials, "usage_path", None)
             selected_profile = None
             if callable(getattr(self.credentials, "select", None)):
                 from . import claude_profiles
-                from .config import load_config
 
-                config = load_config()
+                config = agentroute_config.load_config()
                 requested_profile = urllib.parse.parse_qs(parsed_path.query).get("profile", [None])[
                     0
                 ]
@@ -2080,6 +2093,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         usage_path = getattr(request_credentials, "usage_path", None)
         self.usage_snapshot = None
         try:
+            cache_config = agentroute_config.load_config().claude_cache
             payload, freeform, renames = translate_request(
                 {**body, "model": model},
                 mode=request_credentials.mode,
@@ -2087,6 +2101,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 legacy_profile_digests=tuple(
                     getattr(request_credentials, "legacy_profile_digests", ())
                 ),
+                cache_config=cache_config,
             )
         except Exception as exc:  # noqa: BLE001 - report translation faults to the client
             self.logger(f"translation failed: {exc}")
@@ -2213,6 +2228,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
                 return
         finally:
+            record_cache_usage(
+                profile=getattr(request_credentials, "profile_name", None)
+                or ("default" if request_credentials.mode == "claude-code" else "api-key"),
+                model=stream.actual_model,
+                mode=cache_config.mode,
+                ttl=cache_config.ttl,
+                outcome=outcome,
+                usage=stream.usage if stream.anthropic_usage else None,
+                boundaries=cache_boundaries(payload),
+            )
             if profile is not None:
                 profile.update(
                     {

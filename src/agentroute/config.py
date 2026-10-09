@@ -216,6 +216,13 @@ class ClaudeSubscriptionsConfig(BaseModel):
         return profiles
 
 
+class ClaudeCacheConfig(BaseModel):
+    """Anthropic prefix caching; telemetry contains only bounded numeric receipts."""
+
+    mode: Literal["auto", "off"] = "auto"
+    ttl: Literal["5m", "1h"] = "5m"
+
+
 class ModelPrice(BaseModel):
     input_per_million: float = Field(ge=0)
     cached_input_per_million: float = Field(ge=0)
@@ -383,6 +390,7 @@ class AppConfig(BaseModel):
     claude_subscriptions: ClaudeSubscriptionsConfig = Field(
         default_factory=ClaudeSubscriptionsConfig
     )
+    claude_cache: ClaudeCacheConfig = Field(default_factory=ClaudeCacheConfig)
     pricing: PricingConfig = Field(default_factory=PricingConfig)
     capabilities: CapabilityConfig = Field(default_factory=CapabilityConfig)
     shared_server: SharedServerConfig = Field(default_factory=SharedServerConfig)

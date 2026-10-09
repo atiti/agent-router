@@ -26,6 +26,39 @@ tiers, writes it into Codex's provider block, installs a per-user background ser
 until the bridge answers on loopback. It is safe to re-run, and an existing `claude` backend
 keeps its own tier choices.
 
+## Prompt caching
+
+The bridge enables Anthropic prompt caching by default: a five-minute automatic breakpoint follows
+the growing conversation, with explicit breakpoints after tools and system instructions to preserve
+those prefixes when later messages change. It keeps the conversation content and order intact.
+
+```sh
+agentroute bridge cache status                 # cache reuse by profile and model
+agentroute bridge cache status --days 7 --json  # numeric counters and prefix sizes
+agentroute bridge cache configure auto --ttl 1h
+agentroute bridge cache configure off
+agentroute bridge cache configure auto --ttl 5m
+```
+
+Settings apply to the next request without restarting the bridge. `GET /healthz` includes the running
+package version and current cache settings, so an older service can be distinguished from a newly
+installed package. Existing services must be restarted once to load the caching implementation.
+
+The optional one-hour TTL helps when turns are farther apart; cache writes cost more under API
+billing. Cache hits depend on an identical prefix, the model's minimum cacheable size, and the TTL.
+Changes to tools, system instructions, thinking, or model settings can invalidate parts of the cache.
+See [Anthropic's prompt caching documentation](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+
+The report keeps at most 2,000 numeric receipts for 30 days in
+`~/.agentroute/state/claude-cache.sqlite3`, grouped by profile and model. It records fresh input,
+cache reads, writes by TTL, output, request outcome, and serialized tools/system/message sizes.
+It stores no prompts, responses, tool results, credentials, account identities, or conversation IDs,
+and requires no raw profiling. Missing provider usage is shown as unmeasured. Telemetry failures
+leave model requests unaffected.
+
+Cached tokens still occupy the context window. Cache read percentages measure provider-reported
+reuse; they do not establish an exact reduction in subscription quota usage.
+
 ## Choosing a credential
 
 | Credential | Flag | Billing |
