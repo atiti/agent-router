@@ -158,3 +158,5 @@ def test_cache_status_reports_counts_without_payloads(tmp_path, monkeypatch):
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
     assert "second" in result.stdout and "90.0%" in result.stdout
+    assert "claude-haiku-5-5" in result.stdout
+    assert "1 of 1 requests measured" in result.stdout

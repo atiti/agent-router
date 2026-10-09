@@ -61,28 +61,31 @@ def status(
     for label in (
         "Profile",
         "Model",
-        "Measured / requests",
         "Read %",
         "Fresh",
         "Reads",
         "Writes 5m / 1h",
-        "Tools / system KB per latest request",
     ):
-        table.add_column(label)
+        table.add_column(label, overflow="fold")
     for group in report["groups"]:
         tokens = group["tokens"]
         percentage = group["cache_read_percent"]
-        context = group["latest_context_bytes"]
         table.add_row(
             group["profile"],
             group["model"],
-            f"{group['measured_requests']} / {group['requests']}",
             f"{percentage:.1f}%" if percentage is not None else "unknown",
             f"{tokens['uncached_input_tokens']:,}",
             f"{tokens['cached_input_tokens']:,}",
             f"{tokens['cache_write_5m_input_tokens']:,} / "
             f"{tokens['cache_write_1h_input_tokens']:,}",
-            f"{context['tools_bytes'] / 1000:.1f} / {context['system_bytes'] / 1000:.1f}",
         )
     console.print(table)
+    for group in report["groups"]:
+        context = group["latest_context_bytes"]
+        console.print(
+            f"{group['profile']} / {group['model']}: "
+            f"{group['measured_requests']} of {group['requests']} requests measured; "
+            f"latest tools {context['tools_bytes'] / 1000:.1f} KB, "
+            f"system {context['system_bytes'] / 1000:.1f} KB."
+        )
     console.print("Cache reads still occupy context. Counts are not subscription quota debits.")
