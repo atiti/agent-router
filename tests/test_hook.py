@@ -1152,6 +1152,67 @@ def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, mo
 
 
 @pytest.mark.parametrize(
+    "actual_model",
+    [
+        "claude-opus-5-5@agentroute-profile-default",
+        "claude-opus-5-5",
+    ],
+)
+def test_manual_claude_profile_receipt_rejects_a_different_or_missing_profile(
+    tmp_path, monkeypatch, actual_model
+):
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    config.enabled = True
+    ensure_claude_bridge_backend(config, 8090)
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir=str(tmp_path / "claude-accounts" / "second"),
+        auth_generation="login-1",
+        priority=1,
+    )
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    monkeypatch.setattr("agentroute.hook.service_credential", lambda: "claude-code")
+    store = AuditStore(tmp_path / "audit.db")
+    invoke(
+        config,
+        store,
+        "@claude:second @max explain the issue",
+    )
+
+    codex_stop(
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "same-thread",
+                    "turn_id": "turn-1",
+                    "model": actual_model,
+                    "agentroute_application": {
+                        "status": "applied",
+                        "requested": {
+                            "model": "claude-opus-5-5@agentroute-profile-second",
+                            "provider": "agentroute-claude",
+                            "reasoning_effort": "high",
+                        },
+                        "actual": {
+                            "model": actual_model,
+                            "provider": "agentroute-claude",
+                            "reasoning_effort": "high",
+                        },
+                    },
+                }
+            )
+        ),
+        io.StringIO(),
+        store=store,
+    )
+
+    completed = store.latest("same-thread")
+    assert completed["route_application_state"] == "mismatch"
+    assert completed["answer_model"] == "claude-opus-5-5"
+
+
+@pytest.mark.parametrize(
     "prompt",
     [
         "@claude:missing explain this",

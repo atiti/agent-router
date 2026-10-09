@@ -627,9 +627,17 @@ class AuditStore:
                 reported_effort,
             )
 
-        allowed = {"applied", "rejected", "target_unavailable"}
+        allowed = {"applied", "mismatch", "rejected", "target_unavailable"}
         if status not in allowed:
             return "unknown", reason, reported_model, reported_provider, reported_effort
+        if status == "mismatch":
+            return (
+                "mismatch",
+                reason or "Codex applied settings differ from the requested route",
+                reported_model,
+                reported_provider,
+                reported_effort,
+            )
         if status == "applied":
             matches = (
                 reported_model == requested_model

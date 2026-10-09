@@ -901,16 +901,29 @@ def codex_stop(
         if not isinstance(application_receipt, dict):
             application_receipt = None
         if application_receipt is not None:
+            receipt_profiles: dict[str, str | None] = {}
             for endpoint_name in ("requested", "actual"):
                 endpoint = application_receipt.get(endpoint_name)
                 if isinstance(endpoint, dict) and isinstance(endpoint.get("model"), str):
                     endpoint_model, selected_profile = split_profile_model(endpoint["model"])
+                    receipt_profiles[endpoint_name] = selected_profile
                     if selected_profile is None:
                         continue
                     application_receipt = {
                         **application_receipt,
                         endpoint_name: {**endpoint, "model": endpoint_model},
                     }
+            if (
+                set(receipt_profiles) == {"requested", "actual"}
+                and receipt_profiles["requested"] != receipt_profiles["actual"]
+                and any(receipt_profiles.values())
+                and application_receipt.get("status") == "applied"
+            ):
+                application_receipt = {
+                    **application_receipt,
+                    "status": "mismatch",
+                    "reason": "Codex applied a different Claude subscription profile",
+                }
         reported_model, _ = split_profile_model(str(payload.get("model", "")))
         actual = application_receipt.get("actual") if application_receipt else None
         actual_provider = (
