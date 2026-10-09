@@ -9,6 +9,7 @@
 - Pair Daybreak Blue requests with their required access program after routing chooses the model.
 - Clarify capacity status by grouping usage under named GPT and Claude subscription profiles.
 - Keep the shared server's child open-file limit within its inherited hard limit.
+- Cap hook-provided model context at 10,000 approximate tokens, including spill failures, and bound resume prewarm history while retaining the latest complete turn.
 
 ## 0.5.65 — 2026-10-05
 
