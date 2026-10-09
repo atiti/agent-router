@@ -371,8 +371,9 @@ def test_capacity_status_shows_live_claude_subscription_usage(tmp_path, monkeypa
         capacity=CapacityState("gpt", "healthy", "subscription 20% used", "subscription"),
     )
     with (
-        patch("agentroute.cli.profile_status", side_effect=[default_profile, second_profile])
-        as profile_read,
+        patch(
+            "agentroute.cli.profile_status", side_effect=[default_profile, second_profile]
+        ) as profile_read,
         patch("agentroute.cli.probe_profiles", return_value=(gpt_profile,)),
     ):
         result = runner.invoke(app, ["capacity", "status", "--json"])
@@ -411,13 +412,15 @@ def test_capacity_status_no_probe_uses_the_recorded_claude_sample(tmp_path, monk
         "status": "recorded",
         "observed_at": "2026-09-27T05:45:25Z",
         "identity_status": "verified",
-        "limits": [{
-            "kind": "session",
-            "label": "5-hour session",
-            "percent": 79,
-            "resets_at": 1790460000,
-            "is_active": True,
-        }],
+        "limits": [
+            {
+                "kind": "session",
+                "label": "5-hour session",
+                "percent": 79,
+                "resets_at": 1790460000,
+                "is_active": True,
+            }
+        ],
         "error": None,
     }
 
