@@ -1819,7 +1819,10 @@ def backend_add_command(
     ),
     tool_compatibility: str = typer.Option(
         "functions_and_apply_patch",
-        help="functions_and_apply_patch (safe default) or full (only after validation).",
+        help=(
+            "functions_and_apply_patch (safe default), "
+            "functions_and_apply_patch_preserve_reasoning, or full."
+        ),
     ),
     review_model: str | None = typer.Option(
         None, help="Dedicated automatic-approval model; defaults to FAST."
@@ -1839,8 +1842,15 @@ def backend_add_command(
         raise typer.BadParameter("--base-url must end in /v1")
     if api_key_header.lower() not in {"authorization", "api-key"}:
         raise typer.BadParameter("--api-key-header must be authorization or api-key")
-    if tool_compatibility not in {"functions_and_apply_patch", "full"}:
-        raise typer.BadParameter("--tool-compatibility must be functions_and_apply_patch or full")
+    if tool_compatibility not in {
+        "functions_and_apply_patch",
+        "functions_and_apply_patch_preserve_reasoning",
+        "full",
+    }:
+        raise typer.BadParameter(
+            "--tool-compatibility must be functions_and_apply_patch, "
+            "functions_and_apply_patch_preserve_reasoning, or full"
+        )
     if api_key_env and not API_KEY_ENV.fullmatch(api_key_env):
         raise typer.BadParameter("--api-key-env must be a valid uppercase environment variable")
 

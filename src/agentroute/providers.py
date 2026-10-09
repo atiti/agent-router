@@ -8,7 +8,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import AppConfig, ExecutionBackendConfig, ModelTarget
+from .config import AppConfig, ExecutionBackendConfig, ModelTarget, agentroute_home
 
 START_MARKER = "# >>> agentroute model providers >>>"
 END_MARKER = "# <<< agentroute model providers <<<"
@@ -22,6 +22,22 @@ CLAUDE_BRIDGE_TIERS: dict[str, str] = {
     "smart": "claude-sonnet-5-5",
     "max": "claude-opus-5-5",
 }
+SIGNED_REASONING_COMPATIBILITY_MIN_RUNTIME = 54
+
+
+def runtime_supports_signed_reasoning_compatibility(build_id: str | None = None) -> bool:
+    """Check the installed runtime receipt before writing its fork-only enum."""
+    if build_id is None:
+        build_id = os.environ.get("AGENTROUTE_RUNTIME_BUILD_ID")
+    if build_id is None:
+        try:
+            build_id = (agentroute_home() / "build-id").read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+    match = re.search(r"(?:^|-)provider-routing-v(\d+)$", build_id)
+    return bool(
+        match and int(match.group(1)) >= SIGNED_REASONING_COMPATIBILITY_MIN_RUNTIME
+    )
 
 
 def ensure_claude_bridge_backend(
@@ -51,12 +67,19 @@ def ensure_claude_bridge_backend(
             codex_provider="agentroute-claude",
             display_name="Claude subscription (AgentRoute bridge)",
             base_url=base_url,
-            tool_compatibility="functions_and_apply_patch",
+            tool_compatibility="functions_and_apply_patch_preserve_reasoning",
             review_model=CLAUDE_BRIDGE_TIERS["fast"],
             tiers=tiers,
         )
     else:
         config.backends["claude"].base_url = base_url
+        if config.backends["claude"].tool_compatibility in {
+            None,
+            "functions_and_apply_patch",
+        }:
+            config.backends["claude"].tool_compatibility = (
+                "functions_and_apply_patch_preserve_reasoning"
+            )
         if update_models:
             config.backends["claude"].tiers = tiers
     # Separate backend: never added to backend_by_tier or a fallback chain.
@@ -67,7 +90,7 @@ def ensure_claude_bridge_backend(
             codex_provider="agentroute-claude-fable",
             display_name="Claude Fable (explicit opt-in)",
             base_url=base_url,
-            tool_compatibility="functions_and_apply_patch",
+            tool_compatibility="functions_and_apply_patch_preserve_reasoning",
             review_model=CLAUDE_BRIDGE_TIERS["fast"],
             tiers={
                 tier: ModelTarget(model="claude-fable-5-1", reasoning_effort="high")
@@ -76,6 +99,13 @@ def ensure_claude_bridge_backend(
         )
     else:
         config.backends["fable"].base_url = base_url
+        if config.backends["fable"].tool_compatibility in {
+            None,
+            "functions_and_apply_patch",
+        }:
+            config.backends["fable"].tool_compatibility = (
+                "functions_and_apply_patch_preserve_reasoning"
+            )
     config.policy.backend_risk_floors.setdefault(
         "claude", {flag: "max" for flag in ("auth", "security", "database_migration", "production")}
     )
@@ -94,7 +124,7 @@ def effective_review_model(config: AppConfig, backend_name: str) -> str:
     return backend.review_model or backend.tiers["fast"].model
 
 
-def _provider_block(config: AppConfig) -> str:
+def _provider_block(config: AppConfig, *, preserve_reasoning_compatibility: bool) -> str:
     lines = [START_MARKER]
     for name, backend in sorted(config.backends.items()):
         if name == "gpt" or not backend.enabled:
@@ -116,8 +146,17 @@ def _provider_block(config: AppConfig) -> str:
         # to the worker tier. Operators can still pin a separately validated model.
         review_target = effective_review_model(config, name)
         lines.append(f"approval_review_model = {_toml_string(review_target)}")
-        if backend.tool_compatibility == "functions_and_apply_patch":
-            lines.append(f"tool_compatibility = {_toml_string(backend.tool_compatibility)}")
+        tool_compatibility = backend.tool_compatibility
+        if (
+            tool_compatibility == "functions_and_apply_patch_preserve_reasoning"
+            and not preserve_reasoning_compatibility
+        ):
+            tool_compatibility = "functions_and_apply_patch"
+        if tool_compatibility in {
+            "functions_and_apply_patch",
+            "functions_and_apply_patch_preserve_reasoning",
+        }:
+            lines.append(f"tool_compatibility = {_toml_string(tool_compatibility)}")
         if backend.api_key_env:
             if backend.api_key_header.lower() == "authorization":
                 lines.append(f"env_key = {_toml_string(backend.api_key_env)}")
@@ -135,6 +174,7 @@ def sync_codex_providers(
     path: Path | None = None,
     *,
     backup: bool = True,
+    preserve_reasoning_compatibility: bool | None = None,
 ) -> tuple[Path, Path | None]:
     """Replace only AgentRoute's marked provider block in Codex configuration."""
     codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
@@ -153,7 +193,20 @@ def sync_codex_providers(
         prefix = original[:start].rstrip()
         suffix = original[end:].lstrip("\r\n")
         current = prefix + ("\n\n" + suffix if prefix and suffix else suffix)
-    rendered = current.rstrip() + "\n\n" + _provider_block(config)
+    if preserve_reasoning_compatibility is None:
+        preserve_reasoning_compatibility = (
+            runtime_supports_signed_reasoning_compatibility()
+            if any(
+                backend.enabled
+                and backend.tool_compatibility
+                == "functions_and_apply_patch_preserve_reasoning"
+                for backend in config.backends.values()
+            )
+            else True
+        )
+    rendered = current.rstrip() + "\n\n" + _provider_block(
+        config, preserve_reasoning_compatibility=preserve_reasoning_compatibility
+    )
     backup_path: Path | None = None
     if path.exists() and path.read_text(encoding="utf-8") != rendered and backup:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

@@ -1034,6 +1034,9 @@ def test_claude_subscription_route_shows_recorded_limits(tmp_path, monkeypatch, 
     config.enabled = True
     ensure_claude_bridge_backend(config, 8090)
     monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    config.claude_subscriptions.profiles["default"].config_dir = str(
+        tmp_path / "claude-accounts" / "default"
+    )
     monkeypatch.setattr("agentroute.hook.service_credential", lambda: "claude-code")
     monkeypatch.setattr("agentroute.hook.load_config", lambda: config)
     profile = config.claude_subscriptions.profiles["default"]
@@ -1089,18 +1092,45 @@ def test_claude_subscription_route_without_a_sample_names_the_usage_command(
 
 
 def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, monkeypatch):
+    from agentroute.claude_profiles import profile_account_identity, profile_usage_path
     from agentroute.providers import ensure_claude_bridge_backend
 
     config = default_config()
     config.enabled = True
     ensure_claude_bridge_backend(config, 8090)
+    config.claude_subscriptions.profiles["default"].config_dir = str(
+        tmp_path / "claude-accounts" / "default"
+    )
     config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
         config_dir=str(tmp_path / "claude-accounts" / "second"),
         auth_generation="login-1",
         priority=1,
     )
     monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    monkeypatch.setattr("agentroute.hook.load_config", lambda: config)
     monkeypatch.setattr("agentroute.hook.service_credential", lambda: "claude-code")
+    for name, used_percent in (("default", 99), ("second", 18)):
+        profile = config.claude_subscriptions.profiles[name]
+        usage_path = profile_usage_path(
+            name, profile_account_identity(profile), profile.auth_generation
+        )
+        usage_path.parent.mkdir(parents=True, exist_ok=True)
+        usage_path.write_text(
+            json.dumps(
+                {
+                    "updated_at": "2026-09-27T05:45:25Z",
+                    "snapshot": {
+                        "windows": {
+                            "five_hour": {
+                                "used_percent": used_percent,
+                                "resets_at": 1790501400,
+                            },
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
     store = AuditStore(tmp_path / "audit.db")
 
     output = invoke(
@@ -1115,6 +1145,8 @@ def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, mo
     assert specific["stripPromptPrefixBytes"] == len(b"@claude:second @max ")
     assert "claude-opus-5-5" in specific["routeMessage"]
     assert "Claude profile second" in specific["routeMessage"]
+    assert "Claude limits 5h 18% used" in specific["routeMessage"]
+    assert "Claude limits 5h 99% used" not in specific["routeMessage"]
     assert store.latest("same-thread")["model"] == "claude-opus-5-5"
 
     receipt = {

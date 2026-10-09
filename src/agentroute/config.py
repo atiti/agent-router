@@ -25,7 +25,11 @@ class ExecutionBackendConfig(BaseModel):
     base_url: str | None = None
     api_key_env: str | None = None
     api_key_header: str = "authorization"
-    tool_compatibility: Literal["full", "functions_and_apply_patch"] | None = None
+    tool_compatibility: Literal[
+        "full",
+        "functions_and_apply_patch",
+        "functions_and_apply_patch_preserve_reasoning",
+    ] | None = None
     review_model: str | None = None
     daily_budget_usd: float | None = Field(default=None, gt=0)
     monthly_budget_usd: float | None = Field(default=None, gt=0)
@@ -595,7 +599,10 @@ def model_capabilities(
     backend = config.backends[backend_name]
     tool_calling = (
         "apply_patch_only"
-        if backend.tool_compatibility == "functions_and_apply_patch"
+        if backend.tool_compatibility in {
+            "functions_and_apply_patch",
+            "functions_and_apply_patch_preserve_reasoning",
+        }
         else "full"
         if (
             backend.tool_compatibility == "full"

@@ -265,6 +265,7 @@ def test_capacity_status_uses_active_profile_telemetry_and_hides_raw_account_id(
     path = tmp_path / "config.yaml"
     monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
     monkeypatch.setenv("AGENTROUTE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute-home"))
     config = default_config()
     config.capacity.enabled = True
     config.capacity.active_profile = "personal"
@@ -322,6 +323,7 @@ def test_capacity_status_shows_live_claude_subscription_usage(tmp_path, monkeypa
     path = tmp_path / "config.yaml"
     monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
     monkeypatch.setenv("AGENTROUTE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute-home"))
     config = default_config()
     ensure_claude_bridge_backend(config, 8090)
     config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
@@ -372,14 +374,18 @@ def test_capacity_status_shows_live_claude_subscription_usage(tmp_path, monkeypa
     )
     with (
         patch(
-            "agentroute.cli.profile_status", side_effect=[default_profile, second_profile]
+            "agentroute.cli.profile_status",
+            side_effect=[default_profile, second_profile] * 2,
         ) as profile_read,
         patch("agentroute.cli.probe_profiles", return_value=(gpt_profile,)),
     ):
         result = runner.invoke(app, ["capacity", "status", "--json"])
+        overview = runner.invoke(app, ["capacity", "status"])
 
     assert result.exit_code == 0, result.output
     assert profile_read.call_args_list == [
+        call(config, "default", offline=False),
+        call(config, "second", offline=False),
         call(config, "default", offline=False),
         call(config, "second", offline=False),
     ]
@@ -389,8 +395,6 @@ def test_capacity_status_shows_live_claude_subscription_usage(tmp_path, monkeypa
     assert usage["limits"][0]["remaining_percent"] == 58.0
     assert usage["limits"][0]["reset_local"]
 
-    profile_read.side_effect = [default_profile, second_profile]
-    overview = runner.invoke(app, ["capacity", "status"])
     assert overview.exit_code == 0, overview.output
     assert "GPT subscription profiles" in overview.output
     assert "Claude subscription profiles" in overview.output
@@ -403,6 +407,7 @@ def test_capacity_status_no_probe_uses_the_recorded_claude_sample(tmp_path, monk
     path = tmp_path / "config.yaml"
     monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
     monkeypatch.setenv("AGENTROUTE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute-home"))
     config = default_config()
     ensure_claude_bridge_backend(config, 8090)
     save_config(config, path)
