@@ -184,7 +184,7 @@ including the Python SDK using Python 3.12; required Bazel lock refresh.
 
 ## Stable 0.162.0 candidate (AgentRoute 0.5.68 / runtime v55)
 
-The candidate pin is `85c8b05b59634608088fe22fe96ad3884afba571` on
+The candidate pin is `883f0082c7bdc5e4e83772435daebf0e912d3e09` on
 `codex/agentroute-stable-0.162.0`, based on OpenAI's stable `rust-v0.162.0`
 (`c1382380de69521303b416720a52f42d51af6248`). It carries the downstream routing,
 provider-state, Guardian, shared-owner, and Code Mode stack, with a compatibility
