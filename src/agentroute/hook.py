@@ -900,6 +900,15 @@ def codex_stop(
         application_receipt = payload.get("agentroute_application")
         if not isinstance(application_receipt, dict):
             application_receipt = None
+        if application_receipt is not None:
+            requested = application_receipt.get("requested")
+            if isinstance(requested, dict) and isinstance(requested.get("model"), str):
+                requested_model, selected_profile = split_profile_model(requested["model"])
+                if selected_profile is not None:
+                    application_receipt = {
+                        **application_receipt,
+                        "requested": {**requested, "model": requested_model},
+                    }
         actual = application_receipt.get("actual") if application_receipt else None
         actual_provider = (
             str(actual.get("provider"))

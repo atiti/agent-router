@@ -1117,6 +1117,35 @@ def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, mo
     assert "Claude profile second" in specific["routeMessage"]
     assert store.latest("same-thread")["model"] == "claude-opus-5-5"
 
+    receipt = {
+        "status": "applied",
+        "requested": {
+            "model": "claude-opus-5-5@agentroute-profile-second",
+            "provider": "agentroute-claude",
+            "reasoning_effort": "high",
+        },
+        "actual": {
+            "model": "claude-opus-5-5",
+            "provider": "agentroute-claude",
+            "reasoning_effort": "high",
+        },
+    }
+    codex_stop(
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "same-thread",
+                    "turn_id": "turn-1",
+                    "model": "claude-opus-5-5",
+                    "agentroute_application": receipt,
+                }
+            )
+        ),
+        io.StringIO(),
+        store=store,
+    )
+    assert store.latest("same-thread")["route_application_state"] == "applied"
+
 
 @pytest.mark.parametrize(
     "prompt",
