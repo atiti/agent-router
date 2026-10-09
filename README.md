@@ -423,9 +423,10 @@ agentroute capacity status
 agentroute analytics --days 30
 ```
 
-`capacity status` includes Claude's live subscription limits when its existing access token is
-valid, or the last bridge-recorded sample when a live read is unavailable. `--no-probe` keeps
-Claude usage offline and shows only the saved sample. Reset times are displayed in local time.
+`capacity status` labels GPT subscription profiles and Claude subscription profiles separately.
+Each Claude profile has its own usage and identity row; `Default` marks the profile used for new
+Claude threads. Account IDs in the GPT profile table are masked hashes. `--no-probe` skips live
+quota reads and shows saved samples only. Reset times are displayed in local time.
 
 When capacity is healthy the route banner includes `capacity healthy · subscription 62% used`.
 At the warning threshold it says `CAPACITY WARNING` and includes the reset time when available.
