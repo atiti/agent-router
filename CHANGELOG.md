@@ -7,16 +7,16 @@
 - Add private bounded cache usage reporting by subscription profile and model through `bridge cache status`.
 - Include the running bridge package version and cache settings in its health response.
 
-## 0.5.67 — 2026-10-09
+## 0.5.68 — 2026-10-09
 
-- Add `@claude:<profile>` prompt routing to select a named Claude subscription explicitly for a conversation.
+- Upgrade the routed CLI and matching Code Mode host to upstream stable Codex 0.162.0.
+- Add named Claude subscription profile routing, live Claude subscription usage in capacity status, and local reset times across usage surfaces.
+- Preserve normal repository-folder consent when starting, resuming, or forking through AgentRoute's local shared owner, even beneath an untrusted parent directory.
+- Preserve provider-owned encrypted state across resume and compaction, while keeping ordinary same-provider continuation intact.
+- Pair Daybreak Blue requests with their required access program after routing chooses the model.
 - Clarify capacity status by grouping usage under named GPT and Claude subscription profiles.
-
-## 0.5.66 — 2026-10-07
-
-- Port the complete AgentRoute routing stack to stable Codex CLI 0.161.0 and the matching official Code Mode host.
-- Filter foreign encrypted reasoning and compaction state during standalone compaction and resume warmup; preserve saved history and the destination provider checkpoints.
-- Raise the shared server child process open-file limit to 8192 within its existing hard limit, preventing the macOS default of 256 from exhausting skills, watchers, and MCP sockets across loaded tasks.
+- Keep the shared server's child open-file limit within its inherited hard limit.
+- Cap hook-provided model context at 10,000 approximate tokens, including spill failures, and bound resume prewarm history while retaining the latest complete turn.
 
 ## 0.5.65 — 2026-10-05
 
