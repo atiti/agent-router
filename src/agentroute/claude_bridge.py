@@ -2046,8 +2046,26 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": f"invalid JSON: {exc}"})
             return
 
-        model = str(body.get("model") or self.default_model)
+        requested_model = str(body.get("model") or self.default_model)
+        # The subscription selector is internal routing metadata. Keep it on the
+        # body for ClaudeProfilePool.select(), but send only the base model upstream.
+        from .claude_profiles import split_profile_model
+
+        model, manual_profile = split_profile_model(requested_model)
         selector = getattr(self.credentials, "select", None)
+        if manual_profile is not None and not callable(selector):
+            self._json(
+                400,
+                {
+                    "error": {
+                        "code": "invalid_prompt",
+                        "message": (
+                            "Explicit Claude profile routing requires subscription profiles."
+                        ),
+                    }
+                },
+            )
+            return
         try:
             request_credentials = (
                 selector(body, self.headers) if callable(selector) else self.credentials

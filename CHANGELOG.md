@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.67 — 2026-10-09
+
+- Add `@claude:<profile>` prompt routing to select a named Claude subscription explicitly for a conversation.
+
 ## 0.5.66 — 2026-10-07
 
 - Port the complete AgentRoute routing stack to stable Codex CLI 0.161.0 and the matching official Code Mode host.

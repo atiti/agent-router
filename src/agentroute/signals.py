@@ -76,6 +76,10 @@ REASONING_EFFORT = re.compile(
     r"^\s*@(?P<effort>none|minimal|low|medium|high|xhigh|ultra|persistent)\b[: ]*",
     re.I,
 )
+CLAUDE_PROFILE = re.compile(
+    r"^\s*@claude:(?P<profile>[a-z][a-z0-9-]{0,31})(?=\s|$)\s*",
+    re.I,
+)
 
 
 def _add(
@@ -189,6 +193,14 @@ def prompt_override(prompt: str) -> tuple[str | None, str]:
     if not match:
         return None, prompt
     return match.group("tier").lower(), prompt[match.end() :].lstrip()
+
+
+def claude_profile_override(prompt: str) -> tuple[str | None, str]:
+    """Parse a leading explicit Claude subscription profile selector."""
+    match = CLAUDE_PROFILE.match(prompt)
+    if not match:
+        return None, prompt
+    return match.group("profile").lower(), prompt[match.end() :].lstrip()
 
 
 def _backend_manual(backends: Iterable[str] | None) -> re.Pattern[str] | None:

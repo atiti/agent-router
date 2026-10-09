@@ -17,7 +17,7 @@ from agentroute.claude_bridge import (
     translate_request,
 )
 from agentroute.claude_profile_pool import ClaudeProfilePool
-from agentroute.claude_profiles import profile_scope
+from agentroute.claude_profiles import model_for_profile, profile_scope
 from agentroute.config import ClaudeSubscriptionProfile, default_config
 
 
@@ -441,6 +441,34 @@ def test_pool_routes_new_threads_away_from_exhausted_profile(monkeypatch, tmp_pa
         pool.select({"client_metadata": {"thread_id": "thread-rotation"}}, {}).profile_name
         == "second"
     )
+
+
+def test_pool_honors_manual_profile_without_failover_and_keeps_it_thread_sticky(
+    monkeypatch, tmp_path
+):
+    config = default_config()
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir="/tmp/second-claude", auth_generation="login-1", priority=1
+    )
+    snapshots = {"default": _snapshot(10), "second": _snapshot(100)}
+    pool = _pool(monkeypatch, config, tmp_path, snapshots)
+    body = {
+        "model": model_for_profile("claude-haiku-5-5", "second"),
+        "client_metadata": {"thread_id": "thread-manual-profile"},
+    }
+
+    selected = pool.select(body, {})
+
+    assert selected.profile_name == "second"
+    pool.mark_started(body, {}, selected)
+    assert pool.select(body, {}).profile_name == "second"
+
+    other_profile = {
+        **body,
+        "model": model_for_profile("claude-haiku-5-5", "default"),
+    }
+    with pytest.raises(ProfileIdentityChangedError, match="pinned to profile second"):
+        pool.select(other_profile, {})
 
 
 def test_pool_can_rotate_a_pending_thread_after_first_request_is_rate_limited(

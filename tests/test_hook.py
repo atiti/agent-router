@@ -7,6 +7,7 @@ import pytest
 from agentroute.audit import AuditStore
 from agentroute.capacity import CapacityState, local_time_description
 from agentroute.config import (
+    ClaudeSubscriptionProfile,
     ExecutionBackendConfig,
     ModelTarget,
     SubscriptionProfileConfig,
@@ -1085,6 +1086,56 @@ def test_claude_subscription_route_without_a_sample_names_the_usage_command(
     route = output["hookSpecificOutput"]["routeMessage"]
     assert "Claude limits unavailable; run agentroute bridge usage" in route
     assert "capacity today $" not in route
+
+
+def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, monkeypatch):
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    config.enabled = True
+    ensure_claude_bridge_backend(config, 8090)
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir=str(tmp_path / "claude-accounts" / "second"),
+        auth_generation="login-1",
+        priority=1,
+    )
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    monkeypatch.setattr("agentroute.hook.service_credential", lambda: "claude-code")
+    store = AuditStore(tmp_path / "audit.db")
+
+    output = invoke(
+        config,
+        store,
+        "@claude:second @max review the database migration",
+    )
+
+    specific = output["hookSpecificOutput"]
+    assert specific["model"] == "claude-opus-5-5@agentroute-profile-second"
+    assert specific["modelProvider"] == "agentroute-claude"
+    assert specific["stripPromptPrefixBytes"] == len(b"@claude:second @max ")
+    assert "claude-opus-5-5" in specific["routeMessage"]
+    assert "Claude profile second" in specific["routeMessage"]
+    assert store.latest("same-thread")["model"] == "claude-opus-5-5"
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "@claude:missing explain this",
+        "@claude:default @azure explain this",
+        "@claude:default @auto explain this",
+    ],
+)
+def test_manual_claude_profile_rejects_invalid_or_conflicting_routes(tmp_path, prompt):
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    config.enabled = True
+    ensure_claude_bridge_backend(config, 8090)
+    output = invoke(config, AuditStore(tmp_path / "audit.db"), prompt)
+
+    assert output["continue"] is False
+    assert output["stopReason"]
 
 
 def test_subagent_task_is_independently_routed_and_audited(tmp_path):

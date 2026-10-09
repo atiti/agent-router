@@ -12,7 +12,12 @@ from .bridge_service import service_credential
 from .capacity import backend_spend, local_time_description, subscription_state
 from .classifier import JevShadowClassifier
 from .claude_bridge import read_usage_state
-from .claude_profiles import profile_account_identity, profile_usage_path
+from .claude_profiles import (
+    model_for_profile,
+    profile_account_identity,
+    profile_usage_path,
+    split_profile_model,
+)
 from .config import AppConfig, codex_home, load_config
 from .context import context_receipt, reference_context, related_memories
 from .efficiency import execution_receipt
@@ -25,7 +30,12 @@ from .profiles import (
     select_turn_profile,
 )
 from .router import Router
-from .signals import continues_previous_task, is_confirmation, route_overrides
+from .signals import (
+    claude_profile_override,
+    continues_previous_task,
+    is_confirmation,
+    route_overrides,
+)
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
 
 
@@ -44,13 +54,16 @@ def _prompt_help(config: AppConfig) -> str:
             "",
             "Tier: @fast @normal @smart @max @auto",
             f"Backend (enabled): {backend_tags}",
+            "Claude subscription: @claude:<profile>",
             "Reasoning: @none @minimal @low @medium @high @xhigh @ultra @persistent",
             "",
-            "Use at most one tier, backend, and reasoning tag in any order.",
+            "Use at most one tier, backend, and reasoning tag; "
+            "put a Claude profile selector first.",
             "Examples:",
             "  @azure @max @ultra implement this end to end",
             "  @gpt @normal @medium explain this architecture",
             "  @qwen @normal @low fix this focused test failure",
+            "  @claude:second @max review this migration",
             "  @auto continue",
             "",
             "Prefixes are removed before the model receives the task. @auto clears a",
@@ -301,11 +314,12 @@ def codex_user_prompt_submit(
         payload: dict[str, Any] = json.load(source)
         config = config or load_config()
         provider = config.providers["codex"]
-        current_model = str(payload.get("model", ""))
+        current_model, _ = split_profile_model(str(payload.get("model", "")))
         current_tier = provider.tier_for_model(current_model)
         store = store or AuditStore()
         session_id = str(payload["session_id"])
         prompt = str(payload.get("prompt", ""))
+        claude_profile, prompt_without_profile = claude_profile_override(prompt)
         route_scope, agent_id = _subagent_identity(payload)
         previous_route = store.latest_route(session_id, route_scope, agent_id)
         previous_tier = store.previous_tier(session_id, route_scope, agent_id)
@@ -313,8 +327,33 @@ def codex_user_prompt_submit(
             session_id, route_scope, agent_id
         )
         tier_override, backend_override, reasoning_effort_override, routed_prompt = route_overrides(
-            prompt, config.backends
+            prompt_without_profile, config.backends
         )
+        if claude_profile is not None:
+            configured_profile = config.claude_subscriptions.profiles.get(claude_profile)
+            claude_backend = config.backends.get("claude")
+            error = None
+            if configured_profile is None or not configured_profile.enabled:
+                error = (
+                    f"Claude profile {claude_profile!r} is unknown or disabled; "
+                    "check `agentroute bridge profile status`."
+                )
+            elif claude_backend is None or not claude_backend.enabled:
+                error = "The Claude backend is not enabled in AgentRoute configuration."
+            elif backend_override not in {None, "claude"} or tier_override == "auto":
+                error = (
+                    "A Claude profile selector cannot be combined with a different "
+                    "backend or @auto."
+                )
+            if error:
+                json.dump(
+                    {"continue": False, "stopReason": error, "systemMessage": error},
+                    sink,
+                    separators=(",", ":"),
+                )
+                sink.write("\n")
+                return 0
+            backend_override = "claude"
         interrupted_route = (
             previous_route
             if previous_route is not None
@@ -343,13 +382,15 @@ def codex_user_prompt_submit(
             )
         goal_id = payload.get("goal_id")
         goal_id = goal_id if isinstance(goal_id, str) and goal_id else None
-        goal_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest() if goal_id else None
+        goal_hash = (
+            hashlib.sha256(prompt_without_profile.encode("utf-8")).hexdigest() if goal_id else None
+        )
         goal_continuation = bool(
             goal_id
             and previous_route is not None
             and store.goal_route_is_current(session_id, route_scope, agent_id, goal_id, goal_hash)
         )
-        if goal_continuation:
+        if goal_continuation and claude_profile is None:
             # Objective tags apply on activation; later explicit turns may change the route.
             tier_override = backend_override = reasoning_effort_override = None
         if goal_id and not goal_continuation:
@@ -395,7 +436,11 @@ def codex_user_prompt_submit(
             inherited_backend = None
         elif backend_override:
             sticky_backend = backend_override
-        routing_input = "continue" if opaque_subagent_followup or goal_continuation else prompt
+        routing_input = (
+            "continue"
+            if opaque_subagent_followup or goal_continuation
+            else prompt_without_profile
+        )
         continuation = continues_previous_task(routing_input)
         classifier_needs_context = (
             config.routing.classifier.enabled
@@ -670,13 +715,17 @@ def codex_user_prompt_submit(
                 ),
             },
         }
-        if routed_prompt != prompt and routed_prompt:
+        if routed_prompt != prompt:
             output["hookSpecificOutput"]["stripPromptPrefixBytes"] = len(
                 prompt.encode("utf-8")
             ) - len(routed_prompt.encode("utf-8"))
         if config.enabled:
             specific = output["hookSpecificOutput"]
-            specific["model"] = decision.model
+            specific["model"] = (
+                model_for_profile(decision.model, claude_profile)
+                if claude_profile is not None and decision.backend == "claude"
+                else decision.model
+            )
             specific["modelProvider"] = decision.model_provider
             if (
                 profile_selection is not None
@@ -777,6 +826,8 @@ def codex_user_prompt_submit(
                     else f" · AgentRoute v{__version__}"
                 )
             )
+            if claude_profile is not None:
+                model_route_message += f" · Claude profile {claude_profile}"
             if (
                 decision.manual_override
                 and previous_route is not None

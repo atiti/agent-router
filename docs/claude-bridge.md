@@ -132,6 +132,20 @@ records current readings, AgentRoute routes new threads away from a profile with
 to a signed-in profile with available or unreported quota. Existing threads keep their account. Set
 `claude_subscriptions.auto_select: false` in `~/.agentroute/config.yaml` to disable it.
 
+To choose an account directly, put its profile handle at the start of the prompt:
+
+```text
+@claude:second explain this stack trace
+@claude:second @max review this migration
+```
+
+The profile selector implies the Claude backend and is removed before the task reaches the model.
+The first Claude request assigns the selected account to that conversation, and later Claude
+requests in the same conversation keep using it. This explicit choice skips automatic quota
+selection: if that account is exhausted, the request reports the limit instead of silently using
+another account. A conversation already pinned to a different Claude profile must be restarted to
+change accounts. Profile names are the lowercase names shown by `agentroute bridge profile status`.
+
 Token and context limits return a partial answer with a notice in response metadata.
 
 ## Managing the service
