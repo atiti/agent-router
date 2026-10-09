@@ -182,9 +182,9 @@ Validation: 849 tests across rollout-trace, state, thread-store and app-server
 protocol; focused routed-provider core tests; scoped Clippy; schema regeneration
 including the Python SDK using Python 3.12; required Bazel lock refresh.
 
-## Stable 0.162.0 candidate (AgentRoute 0.5.68 / runtime v53)
+## Stable 0.162.0 candidate (AgentRoute 0.5.68 / runtime v55)
 
-The candidate pin is `7d7c92f8729e0b37a154d5719fbc5750194ecc87` on
+The candidate pin is `85c8b05b59634608088fe22fe96ad3884afba571` on
 `codex/agentroute-stable-0.162.0`, based on OpenAI's stable `rust-v0.162.0`
 (`c1382380de69521303b416720a52f42d51af6248`). It carries the downstream routing,
 provider-state, Guardian, shared-owner, and Code Mode stack, with a compatibility
@@ -192,16 +192,33 @@ commit for the 0.162 API and lockfile changes. Encrypted state remains scoped to
 owning provider during resume and compaction; Daybreak Blue receives its required
 access program after routing selects the model.
 
+The release fixes also preserve same-provider signed Claude and Fable reasoning with
+its item IDs across multiple thinking blocks, apply provider ownership filtering to
+standalone local compaction, and carry tool compatibility and approval-review settings
+through remote thread configuration.
+
+AgentRoute writes the signed-reasoning compatibility value only after the installed
+runtime receipt reports provider-routing v54 or newer. Older runtimes keep the existing
+function-and-apply-patch mode until the routed runtime is upgraded and providers are
+synchronized again.
+
+The signed reasoning envelope is capped at 6,000 decoded bytes and about 8,022 wire
+characters including its prefix. It stays intact because its signature covers the exact
+block; even a one-token-per-character estimate remains below the 10,000-token context
+item ceiling.
+
 Native Codex and the official Code Mode host use 0.162.0. The companion shared-server
 bootstrap raises only its child's open-file soft limit, to at most 8192 within the
 inherited hard limit. It does not change machine or parent limits.
 
-Validation completed: formatting; scoped Clippy builds for core, TUI, app-server,
-app-server protocol, CLI, daemon, and Code Mode host. The matching scoped test command
-did not complete because macOS ran out of disk while linking large Rust integration-test
-binaries; it must pass in release CI before publication. The temporary build tree was
-removed to recover space. Mac is the primary release target and Linux is secondary.
+Validation completed: schema regeneration, formatting, scoped Clippy, and focused tests
+covering multi-block reasoning replay, local compaction after a provider switch, and
+remote-config roundtrips. The broader 5,545-test
+local package run had prompt-sensitive snapshot changes and timeout failures under the
+local desktop test environment; those snapshots were not accepted. Exact-head macOS/Linux
+CI remains the publication gate. The temporary build tree was isolated outside the user
+Codex home. Mac is the primary release target and Linux is secondary.
 
-This candidate is separate from the active installation. Do not replace a running
-shared owner or Desktop while other tasks are active. Full live provider and Desktop
-acceptance remains part of the release gate before a public tag is published.
+This candidate is separate from the active installation. The locally authorized CLI and
+Desktop replacement will occur after exact-head CI passes. Full live provider and
+Desktop acceptance remains part of the release gate before a public tag is published.

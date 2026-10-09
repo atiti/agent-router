@@ -86,10 +86,10 @@ def _runtime_label() -> str | None:
     return "managed"
 
 
-def _claude_route_usage() -> str:
+def _claude_route_usage(profile_name: str | None = None) -> str:
     """Show recorded subscription windows only for an installed subscription bridge."""
     config = load_config()
-    profile = config.claude_subscriptions.active_profile
+    profile = profile_name or config.claude_subscriptions.active_profile
     account = config.claude_subscriptions.profiles[profile]
     state = read_usage_state(
         profile_usage_path(profile, profile_account_identity(account), account.auth_generation)
@@ -121,12 +121,14 @@ def _claude_route_usage() -> str:
     return f" · Claude limits {'; '.join(parts)}{recorded}"
 
 
-def _capacity_route_detail(decision: RouteDecision) -> str:
+def _capacity_route_detail(
+    decision: RouteDecision, claude_profile: str | None = None
+) -> str:
     if (
         decision.model_provider.startswith("agentroute-claude")
         and service_credential() == "claude-code"
     ):
-        return _claude_route_usage()
+        return _claude_route_usage(claude_profile)
     if decision.capacity_status not in {"disabled", "healthy", "unknown"}:
         return f" · CAPACITY {decision.capacity_status.upper()}: {decision.capacity_detail}"
     if decision.capacity_status == "healthy":
@@ -819,7 +821,7 @@ def codex_user_prompt_submit(
                     if ReasonCode.JEV_LOW_CONFIDENCE in decision.reason_codes
                     else ""
                 )
-                + _capacity_route_detail(decision)
+                + _capacity_route_detail(decision, claude_profile)
                 + (
                     f" · AgentRoute v{__version__} · runtime {runtime_label}"
                     if (runtime_label := _runtime_label())

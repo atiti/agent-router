@@ -15,7 +15,9 @@ from agentroute.providers import (
     START_MARKER,
     backend_readiness,
     effective_review_model,
+    ensure_claude_bridge_backend,
     import_backend_credential,
+    runtime_supports_signed_reasoning_compatibility,
     sync_codex_providers,
 )
 
@@ -86,6 +88,32 @@ def test_sync_codex_providers_uses_active_codex_home(tmp_path, monkeypatch):
     written, _ = sync_codex_providers(default_config(), backup=False)
 
     assert written == active_home / "config.toml"
+
+
+def test_sync_defers_signed_reasoning_compatibility_until_runtime_supports_it(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "agentroute-home"
+    build_id = home / "build-id"
+    build_id.parent.mkdir()
+    monkeypatch.setenv("AGENTROUTE_HOME", str(home))
+    monkeypatch.delenv("AGENTROUTE_RUNTIME_BUILD_ID", raising=False)
+    config = default_config()
+    ensure_claude_bridge_backend(config, 8090)
+    provider_path = tmp_path / "config.toml"
+
+    build_id.write_text("codex-commit-provider-routing-v53\n", encoding="utf-8")
+    sync_codex_providers(config, provider_path, backup=False)
+    rendered = provider_path.read_text(encoding="utf-8")
+    assert 'tool_compatibility = "functions_and_apply_patch"' in rendered
+    assert "functions_and_apply_patch_preserve_reasoning" not in rendered
+    assert not runtime_supports_signed_reasoning_compatibility()
+
+    build_id.write_text("codex-commit-provider-routing-v54\n", encoding="utf-8")
+    sync_codex_providers(config, provider_path, backup=False)
+    rendered = provider_path.read_text(encoding="utf-8")
+    assert "functions_and_apply_patch_preserve_reasoning" in rendered
+    assert runtime_supports_signed_reasoning_compatibility()
 
 
 def test_explicit_review_model_overrides_fast_default(tmp_path):
@@ -236,15 +264,43 @@ def test_imported_credential_refuses_symlink(tmp_path, monkeypatch):
     assert target.read_text(encoding="utf-8") == "untouched\n"
 
 
-def test_bridge_model_update_is_explicit_and_preserves_automatic_routes():
-    from agentroute.providers import ensure_claude_bridge_backend
-
+def test_bridge_model_update_is_explicit_and_preserves_automatic_routes(tmp_path):
     config = default_config()
     routes = dict(config.routing.backend_by_tier)
     ensure_claude_bridge_backend(config, 8090)
+    assert config.backends["claude"].tool_compatibility == (
+        "functions_and_apply_patch_preserve_reasoning"
+    )
+    assert config.backends["fable"].tool_compatibility == (
+        "functions_and_apply_patch_preserve_reasoning"
+    )
+    provider_path = tmp_path / "config.toml"
+    sync_codex_providers(
+        config, provider_path, backup=False, preserve_reasoning_compatibility=True
+    )
+    rendered = provider_path.read_text(encoding="utf-8")
+    assert (
+        'tool_compatibility = "functions_and_apply_patch_preserve_reasoning"'
+        in rendered
+    )
     config.backends["claude"].tiers["smart"] = ModelTarget(model="custom-model")
+    config.backends["claude"].tool_compatibility = "functions_and_apply_patch"
     ensure_claude_bridge_backend(config, 8091)
     assert config.backends["claude"].tiers["smart"].model == "custom-model"
+    assert config.backends["claude"].tool_compatibility == (
+        "functions_and_apply_patch_preserve_reasoning"
+    )
+    config.backends["claude"].tool_compatibility = "full"
+    ensure_claude_bridge_backend(config, 8091)
+    assert config.backends["claude"].tool_compatibility == "full"
+    config.backends["fable"].tool_compatibility = "functions_and_apply_patch"
+    ensure_claude_bridge_backend(config, 8091)
+    assert config.backends["fable"].tool_compatibility == (
+        "functions_and_apply_patch_preserve_reasoning"
+    )
+    config.backends["fable"].tool_compatibility = "full"
+    ensure_claude_bridge_backend(config, 8091)
+    assert config.backends["fable"].tool_compatibility == "full"
     assert config.backends["fable"].base_url == "http://127.0.0.1:8091/v1"
     ensure_claude_bridge_backend(config, 8091, update_models=True)
     assert config.backends["claude"].tiers["smart"].model == "claude-sonnet-5-5"

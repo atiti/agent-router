@@ -140,9 +140,9 @@ def test_release_metadata_uses_current_version_and_runtime():
     assert 'version = "0.5.68"' in package
     assert 'version = "0.5.68"' in lock
     assert '__version__ = "0.5.68"' in public_api
-    assert "provider-routing-v53" in installer
-    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v53"' in doctor
-    assert "6985bf46ee4f5d0fea6b6c3695a4822a2040e39e" in installer
+    assert "provider-routing-v55" in installer
+    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v55"' in doctor
+    assert "85c8b05b59634608088fe22fe96ad3884afba571" in installer
     assert "0.162.0" in installer
     assert "./scripts/check_upstream.sh" in ci
 
@@ -278,7 +278,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert 'agentroute-codex-build.XXXXXX' in installer
     assert 'trap cleanup_build EXIT HUP INT TERM' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v53" in installer
+    assert "provider-routing-v55" in installer
     assert "--locked --profile" in installer
     assert "reset --hard" not in installer
     assert "AGENTROUTE_PATCHES" not in installer
