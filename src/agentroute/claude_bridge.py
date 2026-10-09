@@ -24,7 +24,6 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-import importlib.metadata
 import io
 import json
 import math
@@ -46,6 +45,7 @@ from typing import Any, Literal
 
 from PIL import Image, UnidentifiedImageError
 
+from . import __version__
 from . import config as agentroute_config
 from .claude_cache import apply_prompt_cache, cache_boundaries
 from .claude_cache_usage import record_cache_usage
@@ -2006,7 +2006,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 200,
                 {
                     "status": "ok",
-                    "version": importlib.metadata.version("agentroute"),
+                    "version": __version__,
                     "prompt_cache": agentroute_config.load_config().claude_cache.model_dump(),
                 },
             )

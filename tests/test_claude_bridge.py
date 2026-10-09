@@ -1455,7 +1455,11 @@ def test_http_bridge_retries_first_thread_on_another_profile_after_quota_limit(
     assert calls == ["default", "second"]
 
 
-def test_http_bridge_serves_models_and_health(bridge_server):
+def test_http_bridge_serves_models_and_health(bridge_server, monkeypatch):
+    from agentroute.claude_bridge import __version__
+
+    # A package update on disk must not relabel code already loaded by the service.
+    monkeypatch.setattr("importlib.metadata.version", lambda _: "new-package-on-disk")
     server, _ = bridge_server
     host, port = server.server_address[:2]
 
@@ -1463,7 +1467,7 @@ def test_http_bridge_serves_models_and_health(bridge_server):
         health = json.loads(response.read())
     assert health["status"] == "ok"
     assert health["prompt_cache"] == {"mode": "auto", "ttl": "5m"}
-    assert health["version"]
+    assert health["version"] == __version__
 
     with urllib.request.urlopen(f"http://{host}:{port}/v1/models", timeout=30) as response:
         catalog = json.loads(response.read())
