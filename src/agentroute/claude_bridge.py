@@ -56,6 +56,7 @@ from .claude_models import (
     MODERN_CLAUDE_MODELS,
     claude_effort,
 )
+from .claude_thinking_store import ThinkingReplayError, load_thinking, store_thinking
 from .config import ClaudeCacheConfig
 from .context_profile import (
     capture_enabled,
@@ -827,6 +828,13 @@ def _decode_reasoning_item(
         return None
     if envelope.get("prefix") != prefix_digest:
         return None
+    if "block_ref" in envelope:
+        stored = load_thinking(envelope["block_ref"])
+        if any(
+            stored.get(key) != envelope.get(key) for key in ("profile", "prefix", "profile_name")
+        ):
+            raise ThinkingReplayError("Claude thinking replay reference does not match its scope.")
+        envelope = stored
     block = envelope.get("block")
     if not isinstance(block, dict) or block.get("type") not in {"thinking", "redacted_thinking"}:
         return None
@@ -1302,7 +1310,16 @@ class ResponsesStream:
                 if self.profile_name:
                     envelope["profile_name"] = self.profile_name
                 encoded = json.dumps(envelope, separators=(",", ":")).encode()
-                if len(encoded) > MAX_REASONING_BLOCK_BYTES:
+                try:
+                    if len(encoded) > MAX_REASONING_BLOCK_BYTES:
+                        # The signed block must be returned verbatim to Claude,
+                        # but must not inflate the Codex context item. Persist it
+                        # before emitting a small, profile/prefix-bound reference.
+                        digest = store_thinking(encoded)
+                        envelope.pop("block")
+                        envelope["block_ref"] = digest
+                        encoded = json.dumps(envelope, separators=(",", ":")).encode()
+                except ThinkingReplayError as exc:
                     self.terminal_error = True
                     yield self.sse(
                         "response.failed",
@@ -1313,10 +1330,7 @@ class ResponsesStream:
                                 "status": "failed",
                                 "error": {
                                     "code": "invalid_prompt",
-                                    "message": (
-                                        "Claude returned a thinking block too large for safe "
-                                        "AgentRoute replay; reduce reasoning effort or prompt size."
-                                    ),
+                                    "message": str(exc),
                                 },
                             },
                         },
@@ -2008,6 +2022,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "version": __version__,
                     "prompt_cache": agentroute_config.load_config().claude_cache.model_dump(),
+                    "thinking_replay": "local-reference-v1",
                 },
             )
         elif path.endswith("/usage"):

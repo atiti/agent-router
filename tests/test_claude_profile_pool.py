@@ -405,22 +405,6 @@ def test_profile_reasoning_item_stays_below_context_item_limit():
     assert len(json.dumps(item)) < 10_000
 
 
-def test_oversized_thinking_block_fails_instead_of_disappearing(monkeypatch):
-    monkeypatch.setattr("agentroute.claude_bridge.MAX_REASONING_BLOCK_BYTES", 8)
-    stream = ResponsesStream("resp_large_thought", "claude-haiku-5-5")
-    stream.feed(
-        "content_block_start",
-        {"index": 0, "content_block": {"type": "thinking", "thinking": "too large"}},
-    )
-
-    events = stream.feed("content_block_stop", {"index": 0})
-    failure = json.loads(events[0].split(b"data: ", 1)[1])
-
-    assert failure["type"] == "response.failed"
-    assert failure["response"]["error"]["code"] == "invalid_prompt"
-    assert stream.feed("message_stop", {}) == []
-
-
 def test_pool_routes_new_threads_away_from_exhausted_profile(monkeypatch, tmp_path):
     config = default_config()
     config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(

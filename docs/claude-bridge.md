@@ -291,6 +291,18 @@ an explicit caller cap is preserved. Top-level effort changes can invalidate Ant
 cache; per-message cache-preserving effort is not implemented by this bridge.
 See [Anthropic effort guidance](https://platform.claude.com/docs/en/build-with-claude/effort).
 
+Signed thinking envelopes up to 6 KB remain inline in task history. Larger envelopes are
+stored verbatim in `~/.agentroute/state/claude-thinking/replay.sqlite3` (or under
+`AGENTROUTE_HOME`); history contains a small, content-addressed reference. The bridge
+checks the original profile, history prefix and content hash before replay. This lets
+large thinking responses continue into tool use without enlarging the Codex history item.
+The private replay store survives bridge restarts. Back it up or move it together with
+tasks that use large Claude thinking; those references require a bridge with this feature.
+It contains thinking and signatures, is restricted to the current user, and is separate
+from numeric cache telemetry. Blocks are limited to 4 MiB and total stored content to
+128 MiB. Existing blocks are never evicted automatically. Missing, corrupt or unavailable
+storage produces an explicit error rather than silently discarding signed thinking.
+
 Haiku 5.5 accepts native forced tool choices; thinking is skipped for those calls.
 Sonnet 5.5, Opus 5.5 and Fable 5.1 reject forced `tool_choice` modes. For required calls the
 bridge uses `auto` plus a tool-call instruction; for a named call it exposes only that tool.
