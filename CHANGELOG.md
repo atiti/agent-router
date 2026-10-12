@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve large signed Claude thinking blocks in a private, bounded local replay store, keeping task history items small while allowing tool continuation and resume. Keep profile/history binding and fail explicitly if replay data is missing or corrupt.
+
 ## 0.5.68 — 2026-10-09
 
 - Upgrade the routed CLI and matching Code Mode host to upstream stable Codex 0.162.0.

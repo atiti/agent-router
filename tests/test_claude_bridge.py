@@ -1219,6 +1219,84 @@ def test_http_bridge_streams_responses_events(bridge_server):
     assert captured["credentials"].mode == "api-key"
 
 
+def test_http_bridge_replays_large_thinking_through_tool_continuation(bridge_server, monkeypatch):
+    server, _ = bridge_server
+    host, port = server.server_address[:2]
+    block = {"type": "thinking", "thinking": "analysis " * 2_000, "signature": "signed" * 2_000}
+    forwarded = []
+
+    def upstream(_credentials, payload):
+        forwarded.append(payload)
+        yield "message_start", {"message": {"usage": {"input_tokens": 1}}}
+        if len(forwarded) == 1:
+            yield "content_block_start", {"index": 0, "content_block": block}
+            yield "content_block_stop", {"index": 0}
+            yield (
+                "content_block_start",
+                {
+                    "index": 1,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "read-1",
+                        "name": "read",
+                        "input": {},
+                    },
+                },
+            )
+            yield "content_block_stop", {"index": 1}
+        else:
+            yield "content_block_start", {"index": 0, "content_block": {"type": "text"}}
+            yield (
+                "content_block_delta",
+                {
+                    "index": 0,
+                    "delta": {
+                        "type": "text_delta",
+                        "text": "done",
+                    },
+                },
+            )
+            yield "content_block_stop", {"index": 0}
+        yield "message_stop", {}
+
+    monkeypatch.setattr(BridgeHandler, "stream_factory", staticmethod(upstream))
+    body = {"input": [{"type": "message", "role": "user", "content": "inspect"}]}
+
+    def post(request_body):
+        request = urllib.request.Request(
+            f"http://{host}:{port}/v1/responses",
+            data=json.dumps(request_body).encode(),
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            events = [
+                json.loads(line[6:])
+                for line in response.read().decode().splitlines()
+                if line.startswith("data: ")
+            ]
+        return next(event["response"] for event in events if event["type"] == "response.completed")
+
+    first = post(body)
+    assert [item["type"] for item in first["output"]] == ["reasoning", "function_call"]
+    assert len(json.dumps(first["output"][0])) < 1_000
+    resumed = {
+        **body,
+        "input": [
+            *body["input"],
+            *first["output"],
+            {
+                "type": "function_call_output",
+                "call_id": "read-1",
+                "output": "contents",
+            },
+        ],
+    }
+    second = post(resumed)
+    assert forwarded[1]["messages"][1]["content"][0] == block
+    assert second["output"][0]["content"][0]["text"] == "done"
+
+
 def test_http_bridge_selects_a_profile_and_records_its_usage(bridge_server, tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
     server, captured = bridge_server
@@ -1467,6 +1545,7 @@ def test_http_bridge_serves_models_and_health(bridge_server, monkeypatch):
         health = json.loads(response.read())
     assert health["status"] == "ok"
     assert health["prompt_cache"] == {"mode": "auto", "ttl": "5m"}
+    assert health["thinking_replay"] == "local-reference-v1"
     assert health["version"] == __version__
 
     with urllib.request.urlopen(f"http://{host}:{port}/v1/models", timeout=30) as response:
