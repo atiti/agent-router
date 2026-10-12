@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.69 — 2026-10-12
 
-- Preserve large signed Claude thinking blocks in a private, bounded local replay store, keeping task history items small while allowing tool continuation and resume. Keep profile/history binding and fail explicitly if replay data is missing or corrupt.
+- Keep large signed Claude thinking blocks in a private, bounded local replay store so normal tool turns continue instead of failing at the 6 KB inline-history limit. Revalidate content, profile, and history before replay, with explicit errors for missing or corrupt data.
 
 ## 0.5.68 — 2026-10-09
 
