@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.70 — 2026-10-14
+
+- Review requested Goal completion with a bounded, isolated read-only pass on the active model and provider; persist the latest verdict, show it in `get_goal`, and continue work with concrete feedback when completion is unverified.
+- Generate routed Azure model alias metadata from the installed Codex catalog so Codex accepts the route under a ChatGPT account.
+- Refresh the Codex QUIC dependency to a security-fixed version; retain a documented upstream YAML parser migration item.
+
 ## 0.5.69 — 2026-10-12
 
 - Keep large signed Claude thinking blocks in a private, bounded local replay store so normal tool turns continue instead of failing at the 6 KB inline-history limit. Revalidate content, profile, and history before replay, with explicit errors for missing or corrupt data.
