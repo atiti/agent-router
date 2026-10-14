@@ -14,8 +14,11 @@ def apply_prompt_cache(payload: dict[str, Any], settings: ClaudeCacheConfig) -> 
     # protect the stable tools/system prefixes when later context changes.
     payload["cache_control"] = dict(marker)
     tools = payload.get("tools") or []
-    if tools:
-        tools[-1]["cache_control"] = dict(marker)
+    # Deferred definitions cannot carry cache_control. Cache the last immediate
+    # tool (the native search tool for large catalogs) instead.
+    immediate = [tool for tool in tools if not tool.get("defer_loading")]
+    if immediate:
+        immediate[-1]["cache_control"] = dict(marker)
     system = payload.get("system") or []
     if system:
         system[-1]["cache_control"] = dict(marker)

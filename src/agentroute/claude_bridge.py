@@ -57,6 +57,7 @@ from .claude_models import (
     claude_effort,
 )
 from .claude_thinking_store import ThinkingReplayError, load_thinking, store_thinking
+from .claude_tool_search import SEARCH_BLOCK_TYPES, defer_large_catalog, validate_search_block
 from .config import ClaudeCacheConfig
 from .context_profile import (
     capture_enabled,
@@ -836,8 +837,11 @@ def _decode_reasoning_item(
             raise ThinkingReplayError("Claude thinking replay reference does not match its scope.")
         envelope = stored
     block = envelope.get("block")
-    if not isinstance(block, dict) or block.get("type") not in {"thinking", "redacted_thinking"}:
+    if not isinstance(block, dict) or block.get("type") not in {
+        "thinking", "redacted_thinking", *SEARCH_BLOCK_TYPES,
+    }:
         return None
+    validate_search_block(block)
     return block
 
 
@@ -1030,6 +1034,7 @@ def translate_request(
                 payload["tool_choice"] = {"type": "tool", "name": name}
         else:
             payload["tool_choice"] = {"type": "auto"}
+    defer_large_catalog(payload)
     apply_prompt_cache(payload, cache_config or ClaudeCacheConfig())
     return payload, freeform, renames
 
@@ -1224,7 +1229,7 @@ class ResponsesStream:
                 "json": "",
                 "output_index": None,
             }
-        elif block_type in ("thinking", "redacted_thinking"):
+        elif block_type in ("thinking", "redacted_thinking", *SEARCH_BLOCK_TYPES):
             self.blocks[index] = {
                 "kind": "thinking",
                 "content": dict(block),
@@ -1239,7 +1244,9 @@ class ResponsesStream:
             return
         delta = data.get("delta") or {}
         delta_type = delta.get("type")
-        if block["kind"] == "thinking" and delta_type == "thinking_delta":
+        if block["kind"] == "thinking" and delta_type == "input_json_delta":
+            block["json"] = block.get("json", "") + str(delta.get("partial_json") or "")
+        elif block["kind"] == "thinking" and delta_type == "thinking_delta":
             content = block["content"]
             content["thinking"] = str(content.get("thinking") or "") + str(
                 delta.get("thinking") or ""
@@ -1300,6 +1307,8 @@ class ResponsesStream:
             return
         if block.get("kind") != "tool_use":
             if block.get("kind") == "thinking":
+                if block.get("json"):
+                    block["content"]["input"] = json.loads(block["json"])
                 envelope = {
                     "profile": hashlib.sha256(self.profile_scope.encode()).hexdigest()[:16],
                     "prefix": _reasoning_prefix_digests(self.request_body, self.reasoning_history)[
@@ -1311,7 +1320,11 @@ class ResponsesStream:
                     envelope["profile_name"] = self.profile_name
                 encoded = json.dumps(envelope, separators=(",", ":")).encode()
                 try:
-                    if len(encoded) > MAX_REASONING_BLOCK_BYTES:
+                    validate_search_block(block["content"])
+                    if (
+                        block["content"].get("type") in SEARCH_BLOCK_TYPES
+                        or len(encoded) > MAX_REASONING_BLOCK_BYTES
+                    ):
                         # The signed block must be returned verbatim to Claude,
                         # but must not inflate the Codex context item. Persist it
                         # before emitting a small, profile/prefix-bound reference.
@@ -1600,7 +1613,7 @@ def catalog_from_config(config: Any, backend_name: str = "claude") -> list[tuple
             if other.review_model and other.review_model not in seen:
                 seen.append(other.review_model)
     return [
-        (model, 1_000_000 if model == "claude-haiku-5-5" else DEFAULT_CONTEXT_WINDOW)
+        (model, 1_000_000 if model in MODERN_CLAUDE_MODELS else DEFAULT_CONTEXT_WINDOW)
         for model in seen
     ] or [(DEFAULT_MODEL, DEFAULT_CONTEXT_WINDOW)]
 

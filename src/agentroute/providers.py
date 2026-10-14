@@ -162,6 +162,16 @@ def _installed_codex_catalog(source: Path | None = None) -> dict | None:
 
 
 def _write_model_catalog(config: AppConfig, source: Path | None = None) -> Path | None:
+    # The local provider descriptor must be present in the same catalog Codex
+    # uses for routing. Otherwise unknown Claude slugs inherit GPT fallback limits.
+    from .claude_bridge import catalog_from_config, model_catalog
+
+    claude = config.backends.get("claude")
+    claude_models = (
+        model_catalog(catalog_from_config(config))["models"]
+        if claude is not None and claude.enabled
+        else []
+    )
     aliases = {
         alias: canonical
         for alias, canonical in config.pricing.aliases.items()
@@ -171,11 +181,13 @@ def _write_model_catalog(config: AppConfig, source: Path | None = None) -> Path 
             for backend in config.backends.values()
         )
     }
-    if not aliases:
+    if not aliases and not claude_models:
         return None
     catalog = _installed_codex_catalog(source)
     if catalog is None:
-        raise ValueError("cannot read the installed Codex model catalog for routed aliases")
+        if aliases:
+            raise ValueError("cannot read the installed Codex model catalog for routed aliases")
+        return None  # An uninstalled runtime can still fetch the bridge's catalog.
     by_slug = {
         model["slug"]: model
         for model in catalog["models"]
@@ -188,6 +200,16 @@ def _write_model_catalog(config: AppConfig, source: Path | None = None) -> Path 
         model["slug"] = alias
         model["display_name"] = alias
         catalog["models"] = [item for item in catalog["models"] if item.get("slug") != alias]
+        catalog["models"].append(model)
+    for descriptor in claude_models:
+        # Fill required harness fields from its installed baseline while replacing
+        # provider-specific limits, modalities, guidance and tool capabilities.
+        model = copy.deepcopy(next(iter(by_slug.values()), {}))
+        model.update(descriptor)
+        model["auto_compact_token_limit"] = None
+        catalog["models"] = [
+            item for item in catalog["models"] if item.get("slug") != model["slug"]
+        ]
         catalog["models"].append(model)
     path = agentroute_home() / "models" / "codex-catalog.json"
     path.parent.mkdir(parents=True, exist_ok=True)

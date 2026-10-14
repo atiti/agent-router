@@ -369,6 +369,14 @@ LaunchAgent on macOS and a `systemd --user` unit on Linux, restarting automatica
 to `~/.agentroute/bridge.log`; `agentroute bridge serve` runs the same bridge in the foreground
 for debugging.
 
+Large tool catalogs on current Claude models use Anthropic's native tool search:
+all tools remain available, while their full definitions load only when needed.
+Search results survive tool continuations and resumed tasks in the private local
+replay store. The bridge publishes the models' 1M context limits into Codex's
+routing catalog. After upgrading, run `agentroute bridge install` and restart
+Codex Desktop or your CLI session so it reloads that catalog. Existing tasks can
+be resumed.
+
 For a subscription bridge, the `◆ MODEL ROUTE` notice shows the last recorded 5h and weekly
 usage percentages and their recording time. Use `agentroute bridge usage` for a current account
 read. The Codex runtime and Claude bridge remove Codex identity claims from requests sent
