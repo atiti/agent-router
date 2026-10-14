@@ -488,7 +488,7 @@ def test_catalog_follows_backend_tiers_without_duplicates():
     assert catalog_from_config(config) == [
         ("claude-haiku-4-5-20251001", 200_000),
         ("claude-sonnet-5", 200_000),
-        ("claude-opus-5-5", 200_000),
+        ("claude-opus-5-5", 1_000_000),
     ]
 
 
@@ -1851,7 +1851,7 @@ def test_effort_catalog_and_opt_in_fable():
     config = default_config()
     ensure_claude_bridge_backend(config, 8090)
     models = catalog_from_config(config)
-    assert ("claude-fable-5-1", 200000) in models
+    assert ("claude-fable-5-1", 1000000) in models
     descriptors = {entry["slug"]: entry for entry in model_catalog(models)["models"]}
     for name in ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]:
         assert descriptors[name]["supports_reasoning_effort_updates"] is True

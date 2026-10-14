@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.71 — 2026-10-14
+
+- Defer large Claude tool catalogs through Anthropic's native tool search, retaining every tool schema and replaying search results across tool turns and resumed tasks. Keep cache breakpoints off deferred tools.
+- Advertise the documented 1M context window for current Claude models and include their descriptors in Codex's installed routing catalog, preventing GPT fallback limits from repeatedly compacting otherwise usable Claude context.
+
 ## 0.5.70 — 2026-10-14
 
 - Review requested Goal completion with a bounded, isolated read-only pass on the active model and provider; persist the latest verdict, show it in `get_goal`, and continue work with concrete feedback when completion is unverified.
