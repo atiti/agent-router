@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import copy
+import json
 import os
 import re
 import shlex
 import shutil
+import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,9 +38,7 @@ def runtime_supports_signed_reasoning_compatibility(build_id: str | None = None)
         except OSError:
             return False
     match = re.search(r"(?:^|-)provider-routing-v(\d+)$", build_id)
-    return bool(
-        match and int(match.group(1)) >= SIGNED_REASONING_COMPATIBILITY_MIN_RUNTIME
-    )
+    return bool(match and int(match.group(1)) >= SIGNED_REASONING_COMPATIBILITY_MIN_RUNTIME)
 
 
 def ensure_claude_bridge_backend(
@@ -77,9 +78,9 @@ def ensure_claude_bridge_backend(
             None,
             "functions_and_apply_patch",
         }:
-            config.backends["claude"].tool_compatibility = (
-                "functions_and_apply_patch_preserve_reasoning"
-            )
+            config.backends[
+                "claude"
+            ].tool_compatibility = "functions_and_apply_patch_preserve_reasoning"
         if update_models:
             config.backends["claude"].tiers = tiers
     # Separate backend: never added to backend_by_tier or a fallback chain.
@@ -103,9 +104,9 @@ def ensure_claude_bridge_backend(
             None,
             "functions_and_apply_patch",
         }:
-            config.backends["fable"].tool_compatibility = (
-                "functions_and_apply_patch_preserve_reasoning"
-            )
+            config.backends[
+                "fable"
+            ].tool_compatibility = "functions_and_apply_patch_preserve_reasoning"
     config.policy.backend_risk_floors.setdefault(
         "claude", {flag: "max" for flag in ("auth", "security", "database_migration", "production")}
     )
@@ -124,8 +125,92 @@ def effective_review_model(config: AppConfig, backend_name: str) -> str:
     return backend.review_model or backend.tiers["fast"].model
 
 
-def _provider_block(config: AppConfig, *, preserve_reasoning_compatibility: bool) -> str:
+def _installed_codex_catalog(source: Path | None = None) -> dict | None:
+    """Read the bundled catalog from the exact installed runtime revision."""
+    try:
+        build_id = (agentroute_home() / "build-id").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    match = re.fullmatch(r"([0-9a-f]{40})-provider-routing-v[0-9]+", build_id)
+    if match is None:
+        return None
+    commit = match.group(1)
+    candidates = [source] if source else []
+    if configured_source := os.environ.get("AGENTROUTE_CODEX_SOURCE"):
+        candidates.append(Path(configured_source))
+    candidates.extend((agentroute_home() / "src/codex-stack", agentroute_home() / "src/codex"))
+    for candidate in candidates:
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(candidate),
+                    "show",
+                    f"{commit}:codex-rs/models-manager/models.json",
+                ],
+                capture_output=True,
+                check=True,
+                text=True,
+            )
+            catalog = json.loads(result.stdout)
+            if isinstance(catalog, dict) and isinstance(catalog.get("models"), list):
+                return catalog
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            continue
+    return None
+
+
+def _write_model_catalog(config: AppConfig, source: Path | None = None) -> Path | None:
+    aliases = {
+        alias: canonical
+        for alias, canonical in config.pricing.aliases.items()
+        if alias != canonical
+        and any(
+            backend.enabled and any(target.model == alias for target in backend.tiers.values())
+            for backend in config.backends.values()
+        )
+    }
+    if not aliases:
+        return None
+    catalog = _installed_codex_catalog(source)
+    if catalog is None:
+        raise ValueError("cannot read the installed Codex model catalog for routed aliases")
+    by_slug = {
+        model["slug"]: model
+        for model in catalog["models"]
+        if isinstance(model, dict) and isinstance(model.get("slug"), str)
+    }
+    for alias, canonical in sorted(aliases.items()):
+        if canonical not in by_slug:
+            raise ValueError(f"installed Codex catalog has no metadata for {alias} ({canonical})")
+        model = copy.deepcopy(by_slug[canonical])
+        model["slug"] = alias
+        model["display_name"] = alias
+        catalog["models"] = [item for item in catalog["models"] if item.get("slug") != alias]
+        catalog["models"].append(model)
+    path = agentroute_home() / "models" / "codex-catalog.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rendered = json.dumps(catalog, ensure_ascii=False, separators=(",", ":")) + "\n"
+    if not path.exists() or path.read_text(encoding="utf-8") != rendered:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as temporary:
+            temporary.write(rendered)
+            temporary_path = Path(temporary.name)
+        temporary_path.replace(path)
+    return path
+
+
+def _provider_block(
+    config: AppConfig,
+    *,
+    preserve_reasoning_compatibility: bool,
+    model_catalog_path: Path | None = None,
+) -> str:
     lines = [START_MARKER]
+    if model_catalog_path is not None:
+        lines.extend([f"model_catalog_json = {_toml_string(str(model_catalog_path))}", ""])
     for name, backend in sorted(config.backends.items()):
         if name == "gpt" or not backend.enabled:
             continue
@@ -175,6 +260,7 @@ def sync_codex_providers(
     *,
     backup: bool = True,
     preserve_reasoning_compatibility: bool | None = None,
+    codex_source: Path | None = None,
 ) -> tuple[Path, Path | None]:
     """Replace only AgentRoute's marked provider block in Codex configuration."""
     codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
@@ -198,15 +284,25 @@ def sync_codex_providers(
             runtime_supports_signed_reasoning_compatibility()
             if any(
                 backend.enabled
-                and backend.tool_compatibility
-                == "functions_and_apply_patch_preserve_reasoning"
+                and backend.tool_compatibility == "functions_and_apply_patch_preserve_reasoning"
                 for backend in config.backends.values()
             )
             else True
         )
-    rendered = current.rstrip() + "\n\n" + _provider_block(
-        config, preserve_reasoning_compatibility=preserve_reasoning_compatibility
+    model_catalog_path = _write_model_catalog(config, codex_source)
+    block = _provider_block(
+        config,
+        preserve_reasoning_compatibility=preserve_reasoning_compatibility,
+        model_catalog_path=model_catalog_path,
     )
+    # A TOML table never closes. Keep root keys before the first table.
+    first_table = re.search(r"(?m)^\s*\[[^\n]+\]", current)
+    if first_table:
+        prefix = current[: first_table.start()].rstrip()
+        suffix = current[first_table.start() :].lstrip("\n")
+        rendered = (prefix + "\n\n" if prefix else "") + block + "\n" + suffix
+    else:
+        rendered = current.rstrip() + "\n\n" + block
     backup_path: Path | None = None
     if path.exists() and path.read_text(encoding="utf-8") != rendered and backup:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
