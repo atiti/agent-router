@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Give explicit provider and named Claude profile selections priority over interrupted-turn affinity, including resumed sessions. Preserve the selected provider on subsequent continuation turns.
+
 ## 0.5.69 — 2026-10-12
 
 - Keep large signed Claude thinking blocks in a private, bounded local replay store so normal tool turns continue instead of failing at the 6 KB inline-history limit. Revalidate content, profile, and history before replay, with explicit errors for missing or corrupt data.
