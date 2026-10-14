@@ -222,3 +222,17 @@ Codex home. Mac is the primary release target and Linux is secondary.
 This candidate is separate from the active installation. The locally authorized CLI and
 Desktop replacement will occur after exact-head CI passes. Full live provider and
 Desktop acceptance remains part of the release gate before a public tag is published.
+
+## Goal completion review (AgentRoute 0.5.70 / runtime v56)
+
+The release pin is `1c1c4c0496cfa2c3356189fdc7d3780093fbe93a` on
+`agentroute-release-0.162.0`, still based on OpenAI's stable `rust-v0.162.0`
+(`c1382380de69521303b416720a52f42d51af6248`). It adds the Goal completion reviewer
+as separate modules in the goal extension and core (`goal_completion_review.rs`,
+`ext/goal/src/completion_review.rs`) so upstream merges touch few existing files. The
+reviewer runs read-only on the active provider and model, and the latest bounded verdict
+is persisted with the goal.
+
+CI note: Bazel tests on the fork fail on tests this change does not touch (stale TUI and
+core snapshots already failing on the 0.162.0 port base, plus one live-model flake in the
+Python SDK job). The Goal extension tests pass locally.

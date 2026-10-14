@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.5.70 — 2026-10-14
 
+- Review requested Goal completion with a bounded, isolated read-only pass on the active model and provider; persist the latest verdict, show it in `get_goal`, and continue work with concrete feedback when completion is unverified.
+- Generate routed Azure model alias metadata from the installed Codex catalog so Codex accepts the route under a ChatGPT account.
+- Refresh the Codex QUIC dependency to a security-fixed version; retain a documented upstream YAML parser migration item.
 - Give explicit provider and named Claude profile selections priority over interrupted-turn affinity, including resumed sessions. Preserve the selected provider on subsequent continuation turns.
 
 ## 0.5.69 — 2026-10-12
