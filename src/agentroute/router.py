@@ -114,6 +114,9 @@ class Router:
         override, backend_override, parsed_reasoning_effort, _ = route_overrides(
             context.latest_prompt, self.config.backends
         )
+        # The hook resolves named profile selectors before building latest_prompt.
+        # Explicit provider choices must win over interrupted-turn affinity.
+        backend_override = context.explicit_backend or backend_override
         interrupted_turn_affinity = context.interrupted_turn_affinity and override != "auto"
         reasoning_effort_override = context.requested_reasoning_effort or parsed_reasoning_effort
         contributions = extract_signals(context)
@@ -1093,7 +1096,7 @@ class Router:
             flags.add("production")
         _, explicit_backend, _, _ = route_overrides(context.latest_prompt, self.config.backends)
         backend_name = (
-            explicit_backend or context.requested_backend
+            context.explicit_backend or explicit_backend or context.requested_backend
             or (context.interrupted_backend if context.interrupted_turn_affinity else None)
             or context.sticky_backend or context.inherited_backend
             or self.config.routing.backend_by_tier.get(str(proposed), "gpt")
