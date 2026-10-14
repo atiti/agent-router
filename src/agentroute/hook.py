@@ -487,6 +487,7 @@ def codex_user_prompt_submit(
             agent_id=agent_id,
             latest_prompt=routing_input,
             sticky_backend=sticky_backend,
+            explicit_backend=backend_override,
             requested_backend=requested_backend,
             requested_reasoning_effort=reasoning_effort_override,
             spawn_model_explicit=spawn_model_explicit,

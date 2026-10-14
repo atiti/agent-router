@@ -83,6 +83,7 @@ class RouteContext(BaseModel):
     provider: str = "codex"
     current_model_provider: str = "openai"
     sticky_backend: str | None = None
+    explicit_backend: str | None = None
     requested_backend: str | None = None
     requested_reasoning_effort: str | None = None
     spawn_model_explicit: bool = False

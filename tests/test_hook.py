@@ -1091,6 +1091,71 @@ def test_claude_subscription_route_without_a_sample_names_the_usage_command(
     assert "capacity today $" not in route
 
 
+@pytest.mark.parametrize("outcome", ["interrupted", "completed"])
+@pytest.mark.parametrize("selector", ["@claude:second", "@claude:second @smart"])
+def test_named_profile_overrides_prior_provider_after_interrupt_or_resume(
+    tmp_path, monkeypatch, outcome, selector
+):
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    monkeypatch.setattr("agentroute.hook.service_credential", lambda: "claude-code")
+    config = default_config()
+    config.enabled = True
+    ensure_claude_bridge_backend(config, 8090)
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir=str(tmp_path / "second")
+    )
+    store = AuditStore(tmp_path / "audit.db")
+    invoke(config, store, "@gpt @smart implement the routing change")
+    first = store.latest_route("same-thread")
+    request = {
+        "model": first["model"],
+        "provider": first["model_provider"],
+        "reasoning_effort": first["reasoning_effort"],
+    }
+    store.record_completion(
+        "same-thread",
+        "turn-1",
+        first["model"],
+        outcome=outcome,
+        actual_backend="gpt",
+        application_receipt={"status": "applied", "requested": request, "actual": request},
+    )
+
+    monkeypatch.setattr("agentroute.hook.load_config", lambda: config)
+
+    # Reopen persisted routing state, as a resumed session does.
+    store = AuditStore(tmp_path / "audit.db")
+    output = invoke(config, store, f"{selector} continue", turn_id="turn-2")
+    specific = output.get("hookSpecificOutput")
+    assert specific is not None, output
+    assert specific["modelProvider"] == "agentroute-claude"
+    assert specific["model"] == "claude-sonnet-5-5@agentroute-profile-second"
+    assert specific["stripPromptPrefixBytes"] == len(f"{selector} ".encode())
+    assert "BACKEND_OVERRIDE" in store.latest_route("same-thread")["reason_codes"]
+    assert store.route_preference("same-thread") == "claude"
+
+    store.record_completion(
+        "same-thread",
+        "turn-2",
+        "claude-sonnet-5-5",
+        outcome=outcome,
+        actual_backend="claude",
+    )
+    store = AuditStore(tmp_path / "audit.db")
+    continued = invoke(
+        config,
+        store,
+        "continue",
+        turn_id="turn-3",
+        model="claude-sonnet-5-5",
+        model_provider="agentroute-claude",
+    )
+    assert continued["hookSpecificOutput"]["modelProvider"] == "agentroute-claude"
+    assert store.latest_route("same-thread")["backend"] == "claude"
+
+
 def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, monkeypatch):
     from agentroute.claude_profiles import profile_account_identity, profile_usage_path
     from agentroute.providers import ensure_claude_bridge_backend
