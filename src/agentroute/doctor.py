@@ -245,6 +245,12 @@ def _context_windows_check(
                 window_detail += f", maximum {maximum:,}"
             if declared is not None:
                 window_detail += f", configured {declared:,}"
+            if backend_name != "gpt":
+                window_detail += "; provider limit not independently verified"
+                warnings.append(
+                    f"{backend_name}/{model_name}: provider context limit is not available "
+                    "in the effective Codex catalog"
+                )
             if backend_ready is not None and not backend_ready.get(backend_name, True):
                 window_detail += "; endpoint unavailable, live provider limit unverified"
                 warnings.append(

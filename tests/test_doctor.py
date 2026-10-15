@@ -142,6 +142,22 @@ def test_doctor_reports_configured_context_and_warns_when_local_endpoint_is_offl
     assert "endpoint unavailable, live provider limit unverified" in check.detail
 
 
+def test_doctor_does_not_treat_external_provider_context_as_verified_when_online(
+    tmp_path, monkeypatch
+):
+    config, model = _qwen_context_config()
+    _context_catalog(
+        tmp_path,
+        monkeypatch,
+        [{"slug": model, "context_window": 32_768, "max_context_window": 32_768}],
+    )
+
+    check = _context_windows_check(config, {"qwen": True})
+
+    assert check.status == "warn"
+    assert "provider limit not independently verified" in check.detail
+
+
 def test_doctor_fails_when_configured_context_exceeds_codex_model_maximum(tmp_path, monkeypatch):
     config = default_config()
     for name, backend in config.backends.items():
