@@ -139,10 +139,12 @@ def effective_review_model(config: AppConfig, backend_name: str) -> str:
 
 def _installed_codex_catalog(source: Path | None = None) -> dict | None:
     """Read the bundled catalog from the exact installed runtime revision."""
-    try:
-        build_id = (agentroute_home() / "build-id").read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
+    build_id = os.environ.get("AGENTROUTE_RUNTIME_BUILD_ID")
+    if not build_id:
+        try:
+            build_id = (agentroute_home() / "build-id").read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
     match = re.fullmatch(r"([0-9a-f]{40})-provider-routing-v[0-9]+", build_id)
     if match is None:
         return None

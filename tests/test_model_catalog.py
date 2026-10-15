@@ -11,7 +11,7 @@ from agentroute.config import (
     ModelTarget,
     default_config,
 )
-from agentroute.providers import sync_codex_providers
+from agentroute.providers import _installed_codex_catalog, sync_codex_providers
 
 
 def git(path, *args):
@@ -46,6 +46,7 @@ def test_installed_catalog_aliases_exact_commit_and_keeps_root_config(tmp_path, 
     (home / "build-id").write_text(f"{installed_commit}-provider-routing-v57\n")
     monkeypatch.setenv("AGENTROUTE_HOME", str(home))
     monkeypatch.delenv("AGENTROUTE_CODEX_SOURCE", raising=False)
+    monkeypatch.delenv("AGENTROUTE_RUNTIME_BUILD_ID", raising=False)
     config = default_config()
     config.backends["azure"].enabled = True
     config.backends["azure"].base_url = "https://example.test/openai/v1"
@@ -69,6 +70,33 @@ def test_installed_catalog_aliases_exact_commit_and_keeps_root_config(tmp_path, 
         "slug": "dev-gpt-6-luna",
         "display_name": "dev-gpt-6-luna",
     }
+
+
+def test_installed_catalog_uses_invoking_runtime_build_id(tmp_path, monkeypatch):
+    source = tmp_path / "codex"
+    source.mkdir()
+    git(source, "init")
+    git(source, "config", "user.name", "Test")
+    git(source, "config", "user.email", "test@example.test")
+    models = source / "codex-rs/models-manager/models.json"
+    models.parent.mkdir(parents=True)
+    original = {"models": [{"slug": "gpt-6-luna", "context_window": 42}]}
+    models.write_text(json.dumps(original))
+    git(source, "add", ".")
+    git(source, "commit", "-m", "runtime catalog")
+    runtime_commit = git(source, "rev-parse", "HEAD")
+    models.write_text(json.dumps({"models": [{"slug": "gpt-6-luna", "context_window": 1}]}))
+    git(source, "add", ".")
+    git(source, "commit", "-m", "new cli catalog")
+    cli_commit = git(source, "rev-parse", "HEAD")
+
+    home = tmp_path / "agentroute"
+    home.mkdir()
+    (home / "build-id").write_text(f"{cli_commit}-provider-routing-v57\n")
+    monkeypatch.setenv("AGENTROUTE_HOME", str(home))
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", f"{runtime_commit}-provider-routing-v57")
+
+    assert _installed_codex_catalog(source) == original
 
 
 def test_alias_fails_closed_without_installed_catalog(tmp_path, monkeypatch):
