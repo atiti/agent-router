@@ -268,7 +268,7 @@ def _context_windows_check(
 
 
 def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
-    """Run local, non-networked health checks without exposing credentials."""
+    """Run local, non-networked checks without exposing credentials."""
     checks: list[DoctorCheck] = []
     checks.append(
         DoctorCheck(
@@ -380,9 +380,11 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
         status = "pass" if ready else "warn" if not backend.enabled else "fail"
         checks.append(
             DoctorCheck(
-                f"backend:{name}",
+                f"backend-config:{name}",
                 status,
-                backend.display_name if ready else ", ".join(problems),
+                f"{backend.display_name}; provider not contacted"
+                if ready
+                else ", ".join(problems),
             )
         )
         if backend.enabled:
