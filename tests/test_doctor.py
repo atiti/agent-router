@@ -177,6 +177,27 @@ def test_doctor_fails_when_configured_context_exceeds_codex_model_maximum(tmp_pa
     assert "configured 1,050,000 exceeds Codex maximum 872,000" in check.detail
 
 
+def test_doctor_fails_when_routed_context_is_not_applied_to_launch_catalog(
+    tmp_path, monkeypatch
+):
+    config = default_config()
+    for name, backend in config.backends.items():
+        backend.enabled = name == "azure"
+    model = "dev-gpt-6.1-sol"
+    config.backends["azure"].tiers["fast"].model = model
+    config.pricing.aliases[model] = "gpt-6.1-sol"
+    _context_catalog(
+        tmp_path,
+        monkeypatch,
+        [{"slug": model, "context_window": 272_000, "max_context_window": 872_000}],
+    )
+
+    check = _context_windows_check(config)
+
+    assert check.status == "fail"
+    assert "effective Codex context 272,000 does not match configured 872,000" in check.detail
+
+
 def test_doctor_fails_when_configured_model_is_missing_from_effective_catalog(
     tmp_path, monkeypatch
 ):

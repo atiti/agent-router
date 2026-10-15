@@ -229,6 +229,16 @@ def _context_windows_check(
                     f"{backend_name}/{model_name}: configured {declared:,} exceeds "
                     f"Codex maximum {maximum:,}"
                 )
+            if (
+                backend_name != "gpt"
+                and declared is not None
+                and valid_current
+                and current != declared
+            ):
+                failures.append(
+                    f"{backend_name}/{model_name}: effective Codex context {current:,} "
+                    f"does not match configured {declared:,}"
+                )
             if declared is not None and valid_current and current > declared:
                 warnings.append(
                     f"{backend_name}/{model_name}: Codex currently allows {current:,}, "

@@ -307,12 +307,27 @@ def _write_model_catalog(
         for model in catalog["models"]
         if isinstance(model, dict) and isinstance(model.get("slug"), str)
     }
+    by_slug = {
+        model["slug"]: model
+        for model in catalog["models"]
+        if isinstance(model, dict) and isinstance(model.get("slug"), str)
+    }
     for backend_name, backend in routed_backends:
         for target in backend.tiers.values():
             slug = target.model
-            if slug in known_slugs or slug in aliases:
-                continue
             capabilities = model_capabilities(config, backend_name, slug)
+            if slug in known_slugs or slug in aliases:
+                # Account-specific Codex limits apply to the direct GPT backend.
+                # A routed provider alias must use its configured window; copying
+                # the canonical GPT window would make Azure inherit a smaller
+                # ChatGPT entitlement and compact too early.
+                if (
+                    backend_name != "gpt"
+                    and capabilities.context_window is not None
+                    and slug in by_slug
+                ):
+                    by_slug[slug]["context_window"] = capabilities.context_window
+                continue
             if capabilities.context_window is None:
                 continue
             # A compact descriptor intentionally inherits the Codex fallback
@@ -344,6 +359,7 @@ def _write_model_catalog(
                 model["supports_image_detail_original"] = False
             catalog["models"].append(model)
             known_slugs.add(slug)
+            by_slug[slug] = model
     # An alternate config (including a test fixture) must never overwrite the
     # catalog used by another config or by running Desktop/CLI sessions.
     path = _launch_model_catalog_path(config_path)

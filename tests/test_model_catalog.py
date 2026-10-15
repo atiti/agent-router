@@ -184,7 +184,7 @@ def test_sync_other_config_cannot_replace_live_routed_catalog(tmp_path, monkeypa
     (1, 500_000, 500_000), (25, 500_000, 272_000),
     (1, 2_000_000, 272_000), (1, True, 272_000),
 ])
-def test_fresh_context_limits_preserve_installed_capabilities(
+def test_backend_alias_uses_configured_context_while_gpt_uses_account_limit(
     tmp_path, monkeypatch, age_hours, window, expected
 ):
     from datetime import datetime, timedelta, timezone
@@ -208,10 +208,13 @@ def test_fresh_context_limits_preserve_installed_capabilities(
     config.pricing.aliases["dev-gpt-6.1-sol"] = "gpt-6.1-sol"
     path = refresh_launch_catalog(config)
     models = {m["slug"]: m for m in json.loads(path.read_text())["models"]}
-    for slug in ["gpt-6.1-sol", "dev-gpt-6.1-sol"]:
-        assert models[slug]["context_window"] == expected
-        assert models[slug]["supports_search_tool"] is True
-        assert models[slug]["guardian"] == {"required": True}
+    assert models["gpt-6.1-sol"]["context_window"] == expected
+    assert models["gpt-6.1-sol"]["supports_search_tool"] is True
+    assert models["gpt-6.1-sol"]["guardian"] == {"required": True}
+    assert models["dev-gpt-6.1-sol"]["context_window"] == 872_000
+    assert models["dev-gpt-6.1-sol"]["max_context_window"] == 872_000
+    assert models["dev-gpt-6.1-sol"]["supports_search_tool"] is True
+    assert models["dev-gpt-6.1-sol"]["guardian"] == {"required": True}
     first = path.stat().st_mtime_ns
     refresh_launch_catalog(config)
     assert path.stat().st_mtime_ns == first
