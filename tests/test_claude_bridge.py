@@ -1787,6 +1787,7 @@ def test_http_bridge_profiles_translated_request_without_prompt_text(
     assert errors == 0 and len(rows) == 1
     row = rows[0]
     assert row["outcome"] == "completed"
+    assert 0 <= row["time_to_first_token_ms"] < row["duration_ms"]
     assert row["usage"]["input_tokens"] == 5
     assert row["usage"]["output_tokens"] == 1
     assert row["inference_call_id"] == "i1"

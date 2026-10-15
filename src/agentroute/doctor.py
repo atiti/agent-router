@@ -7,6 +7,11 @@ import plistlib
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    import tomllib
+except ImportError:  # Python 3.10
+    import tomli as tomllib
+
 from .audit import AuditStore
 from .bridge_service import (
     DEFAULT_BRIDGE_PORT,
@@ -18,9 +23,16 @@ from .classifier import JevShadowClassifier, catalog_age_seconds, is_loopback_en
 from .config import AppConfig, agentroute_home, codex_home, config_path, model_capabilities
 from .install import hook_command
 from .profiles import account_credential_home
-from .providers import END_MARKER, START_MARKER, backend_readiness
+from .providers import (
+    END_MARKER,
+    START_MARKER,
+    _installed_codex_catalog,
+    _is_managed_model_catalog_path,
+    backend_readiness,
+    refresh_launch_catalog,
+)
 
-EXPECTED_RUNTIME_REVISION = "provider-routing-v57"
+EXPECTED_RUNTIME_REVISION = "provider-routing-v59"
 
 
 @dataclass(frozen=True)
@@ -120,8 +132,163 @@ def _bridge_check(config: AppConfig) -> DoctorCheck:
     )
 
 
+def _effective_model_catalog(config: AppConfig) -> tuple[dict | None, str]:
+    """Load the catalog that a new routed Codex launch will use."""
+    config_file = codex_home() / "config.toml"
+    try:
+        settings = tomllib.loads(config_file.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        settings = {}
+    configured_path = settings.get("model_catalog_json")
+    if configured_path is not None and not _is_managed_model_catalog_path(
+        configured_path, config_file
+    ):
+        path = Path(configured_path).expanduser()
+        if not path.is_absolute():
+            path = config_file.parent / path
+        return json.loads(path.read_text(encoding="utf-8")), f"configured catalog {path}"
+
+    path = refresh_launch_catalog(config)
+    if path is not None:
+        return json.loads(path.read_text(encoding="utf-8")), f"launch catalog {path}"
+    catalog = _installed_codex_catalog()
+    if catalog is not None:
+        return catalog, "installed Codex catalog"
+    return None, "installed Codex catalog unavailable"
+
+
+def _context_windows_check(
+    config: AppConfig,
+    backend_config_ready: dict[str, bool] | None = None,
+) -> DoctorCheck:
+    """Compare configured model limits with the catalog used by new Codex launches."""
+    try:
+        catalog, source = _effective_model_catalog(config)
+        try:
+            settings = tomllib.loads((codex_home() / "config.toml").read_text())
+        except FileNotFoundError:
+            settings = {}
+    except (OSError, ValueError, TypeError) as error:
+        return DoctorCheck(
+            "context-windows",
+            "fail",
+            f"cannot load effective Codex model catalog: {type(error).__name__}: {error}",
+        )
+    if not isinstance(catalog, dict) or not isinstance(catalog.get("models"), list):
+        return DoctorCheck(
+            "context-windows",
+            "warn",
+            f"{source}; model window sizes cannot be cross-checked",
+        )
+
+    by_slug = {
+        model["slug"]: model
+        for model in catalog["models"]
+        if isinstance(model, dict) and isinstance(model.get("slug"), str)
+    }
+    failures: list[str] = []
+    warnings: list[str] = []
+    details: list[str] = []
+    for backend_name, backend in sorted(config.backends.items()):
+        if not backend.enabled:
+            continue
+        model_names = {target.model for target in backend.tiers.values()}
+        if backend.review_model:
+            model_names.add(backend.review_model)
+        for model_name in sorted(model_names):
+            capabilities = model_capabilities(config, backend_name, model_name)
+            declared = capabilities.context_window
+            slugs = [model_name]
+            if model_name.startswith("dev-"):
+                slugs.append(model_name.removeprefix("dev-"))
+            if model_name in config.pricing.aliases:
+                slugs.append(config.pricing.aliases[model_name])
+            descriptor = next((by_slug[slug] for slug in slugs if slug in by_slug), None)
+            if descriptor is None:
+                if declared is not None:
+                    detail = (
+                        f"{backend_name}/{model_name}: configured {declared:,} tokens, "
+                        "missing from effective Codex catalog"
+                    )
+                else:
+                    detail = f"{backend_name}/{model_name}: context window unknown; missing"
+                (failures if declared is not None else warnings).append(detail)
+                continue
+
+            current = descriptor.get("context_window")
+            maximum = descriptor.get("max_context_window")
+            provider_settings = settings.get("model_providers", {}).get(backend.codex_provider, {})
+            provider_window = provider_settings.get("capabilities", {}).get(
+                "context_windows", {}
+            ).get(model_name)
+            if backend_name != "gpt" and type(provider_window) is int and provider_window > 0:
+                current = provider_window
+            valid_current = type(current) is int and current > 0
+            valid_maximum = type(maximum) is int and maximum > 0
+            if not valid_current:
+                warnings.append(f"{backend_name}/{model_name}: catalog context window missing")
+            if not valid_maximum:
+                warnings.append(f"{backend_name}/{model_name}: catalog maximum window missing")
+            if valid_current and valid_maximum and current > maximum:
+                failures.append(
+                    f"{backend_name}/{model_name}: catalog context {current:,} exceeds "
+                    f"maximum {maximum:,}"
+                )
+            if declared is not None and valid_maximum and declared > maximum:
+                failures.append(
+                    f"{backend_name}/{model_name}: configured {declared:,} exceeds "
+                    f"Codex maximum {maximum:,}"
+                )
+            if (
+                backend_name != "gpt"
+                and declared is not None
+                and valid_current
+                and current != declared
+            ):
+                failures.append(
+                    f"{backend_name}/{model_name}: effective Codex context {current:,} "
+                    f"does not match configured {declared:,}"
+                )
+            if declared is not None and valid_current and current > declared:
+                warnings.append(
+                    f"{backend_name}/{model_name}: Codex currently allows {current:,}, "
+                    f"above configured {declared:,}"
+                )
+
+            window_detail = f"{backend_name}/{model_name}: "
+            if valid_current:
+                window_detail += f"current {current:,}"
+            else:
+                window_detail += "current unknown"
+            if valid_maximum:
+                window_detail += f", maximum {maximum:,}"
+            if declared is not None:
+                window_detail += f", configured {declared:,}"
+            if backend_name != "gpt":
+                window_detail += "; configured locally, provider limit unverified"
+                warnings.append(
+                    f"{backend_name}/{model_name}: provider-reported context limit is "
+                    "unavailable to verify the configured value"
+                )
+            if backend_config_ready is not None and not backend_config_ready.get(
+                backend_name, True
+            ):
+                window_detail += "; backend configuration incomplete"
+                warnings.append(
+                    f"{backend_name}/{model_name}: backend configuration incomplete; "
+                    "provider limit unverified"
+                )
+            details.append(window_detail)
+
+    status = "fail" if failures else "warn" if warnings else "pass"
+    summary = failures + warnings + details
+    if not summary:
+        return DoctorCheck("context-windows", "warn", "no enabled model targets")
+    return DoctorCheck("context-windows", status, f"{source}; " + "; ".join(summary))
+
+
 def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
-    """Run local, non-networked health checks without exposing credentials."""
+    """Run local, non-networked checks without exposing credentials."""
     checks: list[DoctorCheck] = []
     checks.append(
         DoctorCheck(
@@ -226,14 +393,18 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
     except Exception as error:
         checks.append(DoctorCheck("audit-db", "fail", type(error).__name__))
 
+    backend_config_ready: dict[str, bool] = {}
     for name, backend in config.backends.items():
         ready, problems = backend_readiness(config, name)
+        backend_config_ready[name] = ready
         status = "pass" if ready else "warn" if not backend.enabled else "fail"
         checks.append(
             DoctorCheck(
-                f"backend:{name}",
+                f"backend-config:{name}",
                 status,
-                backend.display_name if ready else ", ".join(problems),
+                f"{backend.display_name}; provider not contacted"
+                if ready
+                else ", ".join(problems),
             )
         )
         if backend.enabled:
@@ -276,6 +447,8 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
                         "unpriced models: " + ", ".join(unpriced),
                     )
                 )
+
+    checks.append(_context_windows_check(config, backend_config_ready))
 
     classifier = config.routing.classifier
     if not classifier.enabled:

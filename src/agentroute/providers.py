@@ -8,10 +8,22 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .config import AppConfig, ExecutionBackendConfig, ModelTarget, agentroute_home
+try:
+    import tomllib
+except ImportError:  # Python 3.10
+    import tomli as tomllib
+
+from .config import (
+    AppConfig,
+    ExecutionBackendConfig,
+    ModelTarget,
+    agentroute_home,
+    codex_home,
+    model_capabilities,
+)
 
 START_MARKER = "# >>> agentroute model providers >>>"
 END_MARKER = "# <<< agentroute model providers <<<"
@@ -125,11 +137,34 @@ def effective_review_model(config: AppConfig, backend_name: str) -> str:
     return backend.review_model or backend.tiers["fast"].model
 
 
-def _installed_codex_catalog(source: Path | None = None) -> dict | None:
-    """Read the bundled catalog from the exact installed runtime revision."""
+def _runtime_build_id() -> str | None:
+    build_id = os.environ.get("AGENTROUTE_RUNTIME_BUILD_ID")
+    if build_id:
+        return build_id.strip()
     try:
-        build_id = (agentroute_home() / "build-id").read_text(encoding="utf-8").strip()
+        return (agentroute_home() / "build-id").read_text(encoding="utf-8").strip()
     except OSError:
+        return None
+
+
+def _provider_context_windows(config: AppConfig, backend_name: str) -> dict[str, int]:
+    """Keep provider model limits separate from shared account catalog entries."""
+    if backend_name == "gpt":
+        return {}
+    match = re.search(r"provider-routing-v(\d+)$", _runtime_build_id() or "")
+    if not match or int(match.group(1)) < 59:
+        return {}
+    return {
+        target.model: window
+        for target in config.backends[backend_name].tiers.values()
+        if (window := model_capabilities(config, backend_name, target.model).context_window)
+    }
+
+
+def _installed_codex_catalog(source: Path | None = None) -> dict | None:
+    """Read the bundled catalog from the exact invoking runtime revision."""
+    build_id = _runtime_build_id()
+    if not build_id:
         return None
     match = re.fullmatch(r"([0-9a-f]{40})-provider-routing-v[0-9]+", build_id)
     if match is None:
@@ -161,7 +196,65 @@ def _installed_codex_catalog(source: Path | None = None) -> dict | None:
     return None
 
 
-def _write_model_catalog(config: AppConfig, source: Path | None = None) -> Path | None:
+def _is_managed_model_catalog_path(path: str, config_path: Path) -> bool:
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = config_path.parent / candidate
+    if candidate in {
+        agentroute_home() / "models" / "codex-catalog.json",
+        config_path.with_suffix(".agentroute-models.json"),
+    }:
+        return True
+    return (
+        candidate.parent == config_path.parent
+        and candidate.name.startswith(f"{config_path.stem}.agentroute-models-")
+        and candidate.suffix == ".json"
+    )
+
+
+def _launch_model_catalog_path(config_path: Path) -> Path:
+    build_id = _runtime_build_id() or ""
+    match = re.fullmatch(r"([0-9a-f]{40})-provider-routing-v([0-9]+)", build_id)
+    key = f"{match.group(1)[:12]}-v{match.group(2)}" if match else "unversioned"
+    return config_path.with_name(f"{config_path.stem}.agentroute-models-{key}.json")
+
+
+def _refresh_context_limits(catalog: dict, config_path: Path) -> None:
+    """Use recent account limits without replacing installed harness capabilities."""
+    try:
+        cached = json.loads((config_path.parent / "models_cache.json").read_text())
+        fetched = datetime.fromisoformat(cached["fetched_at"].replace("Z", "+00:00"))
+        age = datetime.now(timezone.utc) - fetched
+        if not timedelta(minutes=-5) <= age <= timedelta(days=1):
+            return
+        models = cached["models"]
+        if not isinstance(models, list):
+            return
+    except (OSError, ValueError, TypeError, KeyError):
+        return
+    by_slug = {
+        m["slug"]: m for m in models
+        if isinstance(m, dict) and isinstance(m.get("slug"), str)
+    }
+    for model in catalog["models"]:
+        fresh = by_slug.get(model.get("slug"), {})
+        window = fresh.get("context_window")
+        maximum = model.get("max_context_window")
+        if type(window) is not int or window <= 0:
+            continue
+        if type(maximum) is not int or not 0 < window <= maximum:
+            continue
+        model["context_window"] = window
+        limit = fresh.get("auto_compact_token_limit")
+        if "auto_compact_token_limit" in fresh and (
+            limit is None or (type(limit) is int and 0 < limit <= window)
+        ):
+            model["auto_compact_token_limit"] = limit
+
+
+def _write_model_catalog(
+    config: AppConfig, source: Path | None = None, *, config_path: Path
+) -> Path | None:
     # The local provider descriptor must be present in the same catalog Codex
     # uses for routing. Otherwise unknown Claude slugs inherit GPT fallback limits.
     from .claude_bridge import catalog_from_config, model_catalog
@@ -181,13 +274,28 @@ def _write_model_catalog(config: AppConfig, source: Path | None = None) -> Path 
             for backend in config.backends.values()
         )
     }
-    if not aliases and not claude_models:
+    routed_backends = [
+        (name, backend)
+        for name, backend in config.backends.items()
+        if backend.enabled and name != "claude"
+    ]
+    account_slugs = {
+        target.model for target in config.backends["gpt"].tiers.values()
+    } if "gpt" in config.backends else set()
+    has_routed_limits = any(
+        capabilities.context_window is not None
+        for name, backend in routed_backends
+        for target in backend.tiers.values()
+        if (capabilities := model_capabilities(config, name, target.model))
+    )
+    if not aliases and not claude_models and not has_routed_limits:
         return None
     catalog = _installed_codex_catalog(source)
     if catalog is None:
         if aliases:
             raise ValueError("cannot read the installed Codex model catalog for routed aliases")
         return None  # An uninstalled runtime can still fetch the bridge's catalog.
+    _refresh_context_limits(catalog, config_path)
     by_slug = {
         model["slug"]: model
         for model in catalog["models"]
@@ -211,7 +319,70 @@ def _write_model_catalog(config: AppConfig, source: Path | None = None) -> Path 
             item for item in catalog["models"] if item.get("slug") != model["slug"]
         ]
         catalog["models"].append(model)
-    path = agentroute_home() / "models" / "codex-catalog.json"
+    known_slugs = {
+        model["slug"]
+        for model in catalog["models"]
+        if isinstance(model, dict) and isinstance(model.get("slug"), str)
+    }
+    by_slug = {
+        model["slug"]: model
+        for model in catalog["models"]
+        if isinstance(model, dict) and isinstance(model.get("slug"), str)
+    }
+    for backend_name, backend in routed_backends:
+        for target in backend.tiers.values():
+            slug = target.model
+            capabilities = model_capabilities(config, backend_name, slug)
+            if slug in known_slugs or slug in aliases:
+                # Account-specific Codex limits apply to the direct GPT backend.
+                # A routed provider alias must use its configured window; copying
+                # the canonical GPT window would make Azure inherit a smaller
+                # ChatGPT entitlement and compact too early.
+                if (
+                    backend_name != "gpt"
+                    and slug not in account_slugs
+                    and capabilities.context_window is not None
+                    and slug in by_slug
+                ):
+                    by_slug[slug]["context_window"] = capabilities.context_window
+                    # Account-specific compaction caps must not constrain another provider.
+                    by_slug[slug]["auto_compact_token_limit"] = None
+                continue
+            if capabilities.context_window is None:
+                continue
+            # A compact descriptor intentionally inherits the Codex fallback
+            # behavior for provider protocol details while replacing the limits
+            # and tool exposure that affect prompt size and compaction.
+            model = copy.deepcopy(next(iter(by_slug.values()), {}))
+            model.update({
+                "slug": slug,
+                "display_name": slug,
+                "description": f"{backend.display_name} model routed through AgentRoute.",
+                "context_window": capabilities.context_window,
+                "max_context_window": capabilities.context_window,
+                "auto_compact_token_limit": None,
+                "effective_context_window_percent": 95,
+                "input_modalities": ["text"] + (["image"] if capabilities.vision else []),
+                "supports_image_detail_original": bool(capabilities.vision),
+                # Plain Responses function support does not imply Codex's special
+                # code-mode or tool-search protocols. Do not invent that support.
+                "tool_mode": "direct",
+                "supports_search_tool": False,
+                "multi_agent_version": None,
+                "multi_agent_reasoning_effort": None,
+            })
+            if capabilities.reasoning is False:
+                model["default_reasoning_level"] = None
+                model["supported_reasoning_levels"] = []
+            if not capabilities.vision:
+                model["input_modalities"] = ["text"]
+                model["supports_image_detail_original"] = False
+            catalog["models"].append(model)
+            known_slugs.add(slug)
+            by_slug[slug] = model
+    # An alternate config (including a test fixture) must never overwrite the
+    # catalog used by another config or by running Desktop/CLI sessions.
+    path = _launch_model_catalog_path(config_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     rendered = json.dumps(catalog, ensure_ascii=False, separators=(",", ":")) + "\n"
     if not path.exists() or path.read_text(encoding="utf-8") != rendered:
@@ -222,6 +393,22 @@ def _write_model_catalog(config: AppConfig, source: Path | None = None) -> Path 
             temporary_path = Path(temporary.name)
         temporary_path.replace(path)
     return path
+
+
+def refresh_launch_catalog(config: AppConfig) -> Path | None:
+    """Repair managed metadata before Codex freezes its catalog at startup.
+
+    Keep a deliberately selected third-party catalog under its owner's control.
+    This only writes the generated sidecar; it never rewrites Codex configuration.
+    """
+    config_path = codex_home() / "config.toml"
+    try:
+        configured = tomllib.loads(config_path.read_text()).get("model_catalog_json")
+    except FileNotFoundError:
+        configured = None
+    if configured is not None and not _is_managed_model_catalog_path(configured, config_path):
+        return None
+    return _write_model_catalog(config, config_path=config_path)
 
 
 def _provider_block(
@@ -253,6 +440,10 @@ def _provider_block(
         # to the worker tier. Operators can still pin a separately validated model.
         review_target = effective_review_model(config, name)
         lines.append(f"approval_review_model = {_toml_string(review_target)}")
+        windows = _provider_context_windows(config, name)
+        if windows:
+            entries = ", ".join(f"{_toml_string(m)} = {w}" for m, w in sorted(windows.items()))
+            lines.append(f"capabilities = {{ context_windows = {{ {entries} }} }}")
         tool_compatibility = backend.tool_compatibility
         if (
             tool_compatibility == "functions_and_apply_patch_preserve_reasoning"
@@ -311,7 +502,7 @@ def sync_codex_providers(
             )
             else True
         )
-    model_catalog_path = _write_model_catalog(config, codex_source)
+    model_catalog_path = _write_model_catalog(config, codex_source, config_path=path)
     block = _provider_block(
         config,
         preserve_reasoning_compatibility=preserve_reasoning_compatibility,

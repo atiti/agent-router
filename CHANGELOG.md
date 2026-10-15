@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Use routed model context limits throughout compaction and token-window reporting, including Azure aliases and repeated routed turns. Doctor detects an effective catalog window that differs from its configured limit.
+- Keep provider-specific context windows separate when GPT and Azure use the same model name, and remove inherited GPT account compaction caps from routed aliases.
+- Reconnect to the routed provider when a queued message changes models during an active turn, preventing Claude model names from reaching the previous ChatGPT connection.
+- Pin runtime v59 with the compaction and provider-switch repairs and the live approximate output token-rate display.
+
+## 0.5.74 — 2026-10-15
+
+- Keep generated model catalogs beside their target Codex configuration so tests and alternate configs cannot remove live provider aliases. Missing aliases disabled deferred tools and caused repeated compaction after every tool call.
+- Repair managed catalogs before native startup and refresh context limits from recent account metadata while preserving installed tool and approval capabilities. Explicit custom catalogs remain under user control.
+- Publish configured Claude, DeepSeek, and local model context limits to Codex. Migrate old bundled DeepSeek limits to the provider's current 1M window while preserving operator overrides. Preserve plain function tools for providers without validated code-mode support.
+- Report per-request effective output tokens/sec, duration, captured provider-session overlap, and rate-limit failures; capture Claude first-token latency.
+- Isolate automated tests from live AgentRoute and Codex homes.
+
 ## 0.5.71 — 2026-10-14
 
 - Defer large Claude tool catalogs through Anthropic's native tool search, retaining every tool schema and replaying search results across tool turns and resumed tasks. Keep cache breakpoints off deferred tools.

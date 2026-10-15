@@ -2169,6 +2169,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             except Exception:  # Telemetry must never reject an otherwise valid request.
                 self.logger("request profiling unavailable")
         profile_started = time.monotonic()
+        first_token_ms = None
         outcome = "incomplete"
         started = False
         stop_reason = None
@@ -2180,6 +2181,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         mark_started = getattr(self.credentials, "mark_started", None)
         try:
             for event_type, data in self.stream_factory(request_credentials, payload):
+                if first_token_ms is None and event_type == "content_block_delta":
+                    delta = data.get("delta") or {}
+                    if any(delta.get(key) for key in ("text", "thinking", "partial_json")):
+                        first_token_ms = (time.monotonic() - profile_started) * 1000
                 if event_type == RATE_LIMIT_EVENT:
                     self.usage_snapshot = data
                     record_usage_snapshot(data, usage_path)
@@ -2272,6 +2277,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                         "outcome": outcome,
                         "model": stream.actual_model,
                         "duration_ms": (time.monotonic() - profile_started) * 1000,
+                        "time_to_first_token_ms": first_token_ms,
                         "usage": stream.usage if stream.anthropic_usage else None,
                         "cache_fields_present": "cache_read_input_tokens" in stream.anthropic_usage,
                         "cache_ttl_breakdown_present": "cache_creation" in stream.anthropic_usage,

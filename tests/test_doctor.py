@@ -1,9 +1,23 @@
 import json
 import plistlib
 
+import pytest
+
 from agentroute.bridge_service import BridgeHealth
-from agentroute.config import default_config, save_config
-from agentroute.doctor import EXPECTED_RUNTIME_REVISION, _desktop_check, run_doctor
+from agentroute.config import (
+    ExecutionBackendConfig,
+    ModelCapabilities,
+    ModelTarget,
+    default_config,
+    save_config,
+)
+from agentroute.doctor import (
+    EXPECTED_RUNTIME_REVISION,
+    _context_windows_check,
+    _desktop_check,
+    _effective_model_catalog,
+    run_doctor,
+)
 from agentroute.install import hook_command
 from agentroute.providers import ensure_claude_bridge_backend
 
@@ -87,6 +101,159 @@ def test_doctor_warns_when_desktop_embeds_an_old_runtime(tmp_path, monkeypatch):
     assert check.status == "warn"
     assert "provider-routing-v21" in check.detail
     assert "provider-routing-v26" in check.detail
+
+
+def _context_catalog(tmp_path, monkeypatch, models):
+    catalog_path = tmp_path / "effective-models.json"
+    catalog_path.write_text(json.dumps({"models": models}), encoding="utf-8")
+    monkeypatch.setattr("agentroute.doctor.refresh_launch_catalog", lambda _config: catalog_path)
+
+
+def _qwen_context_config():
+    config = default_config()
+    for backend in config.backends.values():
+        backend.enabled = False
+    model = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+    config.backends["qwen"] = ExecutionBackendConfig(
+        enabled=True,
+        codex_provider="agentroute-qwen",
+        display_name="Qwen Local",
+        base_url="http://127.0.0.1:8080/v1",
+        tool_compatibility="full",
+        tiers={"normal": ModelTarget(model=model)},
+    )
+    config.capabilities.models[model] = ModelCapabilities(
+        context_window=32_768, tool_calling="full", reasoning=False, vision=False
+    )
+    return config, model
+
+
+@pytest.mark.parametrize("maximum,expected_status", [(32_768, "warn"), (16_384, "fail")])
+def test_doctor_uses_written_provider_window_and_preserves_catalog_maximum(
+    tmp_path, monkeypatch, maximum, expected_status
+):
+    from agentroute.config import codex_home
+
+    config, model = _qwen_context_config()
+    _context_catalog(tmp_path, monkeypatch, [
+        {"slug": model, "context_window": 16_384, "max_context_window": maximum},
+    ])
+    path = codex_home() / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '[model_providers.agentroute-qwen]\n'
+        f'capabilities = {{ context_windows = {{ "{model}" = 32768 }} }}\n'
+    )
+    check = _context_windows_check(config, {"qwen": True})
+    assert check.status == expected_status
+    assert "current 32,768" in check.detail
+    assert "does not match configured" not in check.detail
+
+
+def test_doctor_reports_configured_context_and_warns_when_backend_config_is_incomplete(
+    tmp_path, monkeypatch
+):
+    config, model = _qwen_context_config()
+    _context_catalog(
+        tmp_path,
+        monkeypatch,
+        [{"slug": model, "context_window": 32_768, "max_context_window": 32_768}],
+    )
+
+    check = _context_windows_check(config, {"qwen": False})
+
+    assert check.status == "warn"
+    assert "32,768" in check.detail
+    assert "backend configuration incomplete" in check.detail
+
+
+def test_doctor_does_not_treat_external_provider_context_as_verified_when_online(
+    tmp_path, monkeypatch
+):
+    config, model = _qwen_context_config()
+    _context_catalog(
+        tmp_path,
+        monkeypatch,
+        [{"slug": model, "context_window": 32_768, "max_context_window": 32_768}],
+    )
+
+    check = _context_windows_check(config, {"qwen": True})
+
+    assert check.status == "warn"
+    assert "configured locally, provider limit unverified" in check.detail
+
+
+def test_doctor_fails_when_configured_context_exceeds_codex_model_maximum(tmp_path, monkeypatch):
+    config = default_config()
+    for name, backend in config.backends.items():
+        backend.enabled = name == "gpt"
+    model = "gpt-6.1-sol"
+    config.capabilities.models[model].context_window = 1_050_000
+    _context_catalog(
+        tmp_path,
+        monkeypatch,
+        [{"slug": model, "context_window": 272_000, "max_context_window": 872_000}],
+    )
+
+    check = _context_windows_check(config)
+
+    assert check.status == "fail"
+    assert "configured 1,050,000 exceeds Codex maximum 872,000" in check.detail
+
+
+def test_doctor_fails_when_routed_context_is_not_applied_to_launch_catalog(
+    tmp_path, monkeypatch
+):
+    config = default_config()
+    for name, backend in config.backends.items():
+        backend.enabled = name == "azure"
+    model = "dev-gpt-6.1-sol"
+    config.backends["azure"].tiers["fast"].model = model
+    config.pricing.aliases[model] = "gpt-6.1-sol"
+    _context_catalog(
+        tmp_path,
+        monkeypatch,
+        [{"slug": model, "context_window": 272_000, "max_context_window": 872_000}],
+    )
+
+    check = _context_windows_check(config)
+
+    assert check.status == "fail"
+    assert "effective Codex context 272,000 does not match configured 872,000" in check.detail
+
+
+def test_doctor_fails_when_configured_model_is_missing_from_effective_catalog(
+    tmp_path, monkeypatch
+):
+    config, model = _qwen_context_config()
+    _context_catalog(tmp_path, monkeypatch, [])
+
+    check = _context_windows_check(config)
+
+    assert check.status == "fail"
+    assert "configured 32,768 tokens, missing from effective Codex catalog" in check.detail
+
+
+def test_doctor_refreshes_catalog_when_config_points_at_another_runtime_sidecar(
+    tmp_path, monkeypatch
+):
+    codex_home = tmp_path / "codex"
+    agentroute_home = tmp_path / "agentroute"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("AGENTROUTE_HOME", str(agentroute_home))
+    old_path = codex_home / f"config.agentroute-models-{'1' * 12}-v57.json"
+    new_path = codex_home / f"config.agentroute-models-{'2' * 12}-v57.json"
+    (codex_home / "config.toml").write_text(
+        f'model_catalog_json = "{old_path}"\n', encoding="utf-8"
+    )
+    new_path.write_text(json.dumps({"models": []}), encoding="utf-8")
+    monkeypatch.setattr("agentroute.doctor.refresh_launch_catalog", lambda _config: new_path)
+
+    catalog, source = _effective_model_catalog(default_config())
+
+    assert catalog == {"models": []}
+    assert str(new_path) in source
 
 
 def _doctor_env(tmp_path, monkeypatch):

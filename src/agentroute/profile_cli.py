@@ -126,6 +126,31 @@ def report(
             ),
         )
     console.print(models)
+    if data["performance"]:
+        performance = Table(title="Request performance (latest 20; output includes reasoning)")
+        for name in (
+            "Thread",
+            "Model",
+            "Seconds",
+            "Effective tok/s",
+            "First token ms",
+            "Other sessions",
+            "Outcome",
+        ):
+            performance.add_column(name)
+        for row in data["performance"][-20:]:
+            speed = row["effective_output_tokens_per_second"]
+            first = row["time_to_first_token_ms"]
+            performance.add_row(
+                str(row["thread_id"]),
+                str(row["model"]),
+                f"{row['duration_ms'] / 1000:.2f}",
+                f"{speed:.1f}" if speed is not None else "unknown",
+                f"{first:.0f}" if first is not None else "unavailable",
+                str(row["other_overlapping_provider_sessions"]),
+                "rate_limited" if row["rate_limited"] else str(row["outcome"]),
+            )
+        console.print(performance)
     threads = Table(title="Threads and context growth (classifier input excluded)")
     for name in ("Thread", "Agent", "Requests", "First / last / peak input", "USD estimate"):
         threads.add_column(name)

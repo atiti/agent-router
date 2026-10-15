@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections.abc import Sequence
@@ -224,6 +225,20 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
     prepare_capture(environment)
     argv = codex_argv(binary, user_args, config)
     explicit_remote = any(arg == "--remote" or arg.startswith("--remote=") for arg in user_args)
+    if (
+        not explicit_remote
+        and _launch_command(user_args) in {
+            "start", "resume", "fork", "exec", "review", "app-server"
+        }
+        and not any(arg in {"--help", "-h", "--version", "-V"} for arg in user_args)
+        and not _has_config_override(user_args, "model_catalog_json")
+        and not any(arg in {"-p", "--profile"} or arg.startswith("--profile=") for arg in user_args)
+    ):
+        from .providers import refresh_launch_catalog
+
+        catalog_path = refresh_launch_catalog(config)
+        if catalog_path is not None:
+            argv[1:1] = ["-c", f"model_catalog_json={json.dumps(str(catalog_path))}"]
     desktop_proxy = config.shared_server.enabled and desktop_server_launch(binary, user_args)
     if desktop_proxy:
         from .shared_server import SharedServerError, ensure_server

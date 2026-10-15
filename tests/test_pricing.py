@@ -1,7 +1,7 @@
 import pytest
 
 from agentroute.audit import AuditStore
-from agentroute.config import ModelTarget, _with_default_backends, default_config
+from agentroute.config import ModelCapabilities, ModelTarget, _with_default_backends, default_config
 from agentroute.models import RouteContext, Tier
 from agentroute.pricing import cost_report, token_cost
 from agentroute.router import Router
@@ -38,7 +38,29 @@ def test_gpt_6_1_sol_default_has_published_price_and_capabilities():
         price.cache_write_per_million,
         price.output_per_million,
     ) == (2.0, 0.10, 2.50, 10.0)
-    assert config.capabilities.models["gpt-6.1-sol"].context_window == 1_050_000
+    assert config.capabilities.models["gpt-6.1-sol"].context_window == 872_000
+
+
+def test_old_bundled_gpt_6_1_context_migrates_without_overriding_custom_limit():
+    config = default_config()
+    config.capabilities.models["gpt-6.1-sol"] = ModelCapabilities(
+        tool_calling="full",
+        reasoning=True,
+        vision=True,
+        context_window=1_050_000,
+        pricing_model="gpt-6.1-sol",
+    )
+    assert (
+        _with_default_backends(config).capabilities.models["gpt-6.1-sol"].context_window
+        == 872_000
+    )
+
+    config = default_config()
+    config.capabilities.models["gpt-6.1-sol"].context_window = 900_000
+    assert (
+        _with_default_backends(config).capabilities.models["gpt-6.1-sol"].context_window
+        == 900_000
+    )
 
 
 def test_existing_gpt_smart_default_migrates_without_overriding_custom_target():
