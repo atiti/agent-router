@@ -16,6 +16,8 @@ BASE_CODEX_ARGS = [
     "--enable",
     "code_mode_host",
     "-c",
+    "features.task_awareness=true",
+    "-c",
     "suppress_unstable_features_warning=true",
 ]
 
