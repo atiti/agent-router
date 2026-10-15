@@ -126,7 +126,7 @@ def _qwen_context_config():
     return config, model
 
 
-def test_doctor_reports_configured_context_and_warns_when_local_endpoint_is_offline(
+def test_doctor_reports_configured_context_and_warns_when_backend_config_is_incomplete(
     tmp_path, monkeypatch
 ):
     config, model = _qwen_context_config()
@@ -140,7 +140,7 @@ def test_doctor_reports_configured_context_and_warns_when_local_endpoint_is_offl
 
     assert check.status == "warn"
     assert "32,768" in check.detail
-    assert "endpoint unavailable, live provider limit unverified" in check.detail
+    assert "backend configuration incomplete" in check.detail
 
 
 def test_doctor_does_not_treat_external_provider_context_as_verified_when_online(
@@ -156,7 +156,7 @@ def test_doctor_does_not_treat_external_provider_context_as_verified_when_online
     check = _context_windows_check(config, {"qwen": True})
 
     assert check.status == "warn"
-    assert "provider limit not independently verified" in check.detail
+    assert "configured locally, provider limit unverified" in check.detail
 
 
 def test_doctor_fails_when_configured_context_exceeds_codex_model_maximum(tmp_path, monkeypatch):

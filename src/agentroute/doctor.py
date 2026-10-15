@@ -159,7 +159,7 @@ def _effective_model_catalog(config: AppConfig) -> tuple[dict | None, str]:
 
 def _context_windows_check(
     config: AppConfig,
-    backend_ready: dict[str, bool] | None = None,
+    backend_config_ready: dict[str, bool] | None = None,
 ) -> DoctorCheck:
     """Compare configured model limits with the catalog used by new Codex launches."""
     try:
@@ -245,16 +245,18 @@ def _context_windows_check(
             if declared is not None:
                 window_detail += f", configured {declared:,}"
             if backend_name != "gpt":
-                window_detail += "; provider limit not independently verified"
+                window_detail += "; configured locally, provider limit unverified"
                 warnings.append(
-                    f"{backend_name}/{model_name}: provider context limit is not available "
-                    "in the effective Codex catalog"
+                    f"{backend_name}/{model_name}: provider-reported context limit is "
+                    "unavailable to verify the configured value"
                 )
-            if backend_ready is not None and not backend_ready.get(backend_name, True):
-                window_detail += "; endpoint unavailable, live provider limit unverified"
+            if backend_config_ready is not None and not backend_config_ready.get(
+                backend_name, True
+            ):
+                window_detail += "; backend configuration incomplete"
                 warnings.append(
-                    f"{backend_name}/{model_name}: endpoint unavailable; "
-                    "live provider limit unverified"
+                    f"{backend_name}/{model_name}: backend configuration incomplete; "
+                    "provider limit unverified"
                 )
             details.append(window_detail)
 
@@ -371,10 +373,10 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
     except Exception as error:
         checks.append(DoctorCheck("audit-db", "fail", type(error).__name__))
 
-    backend_ready: dict[str, bool] = {}
+    backend_config_ready: dict[str, bool] = {}
     for name, backend in config.backends.items():
         ready, problems = backend_readiness(config, name)
-        backend_ready[name] = ready
+        backend_config_ready[name] = ready
         status = "pass" if ready else "warn" if not backend.enabled else "fail"
         checks.append(
             DoctorCheck(
@@ -424,7 +426,7 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
                     )
                 )
 
-    checks.append(_context_windows_check(config, backend_ready))
+    checks.append(_context_windows_check(config, backend_config_ready))
 
     classifier = config.routing.classifier
     if not classifier.enabled:
