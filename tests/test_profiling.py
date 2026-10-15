@@ -22,6 +22,7 @@ from agentroute.profiling import (
     read_profiles,
     read_rollout_receipts,
     read_traces,
+    request_performance,
     set_capture,
 )
 
@@ -577,3 +578,73 @@ def test_classifier_only_report_does_not_claim_captured_context(home):
     assert "No assembled request captures yet" in result.output
     assert "Largest captured context" not in result.output
     assert "unknown" in result.output
+
+
+def test_performance_measures_request_latency_and_cross_session_overlap():
+    def row(session, start, duration, *, provider="openai", outcome="completed"):
+        return {
+            "timestamp": f"2026-10-15T10:00:{start:02d}+00:00",
+            "session_id": session,
+            "thread_id": session,
+            "provider": provider,
+            "model": "gpt",
+            "duration_ms": duration,
+            "outcome": outcome,
+            "usage": {"output_tokens": 100},
+        }
+
+    rows = [
+        row("a", 0, 10000),
+        row("b", 5, 2000),
+        row("c", 10, 1000),
+        row("d", 1, 1000, provider="anthropic"),
+        row("e", 2, 1000, outcome="failed"),
+        row("a", 1, 1000),
+    ]
+    rows[0]["time_to_first_token_ms"] = 2000
+    rows[4]["rate_limited"] = True
+    measured = {
+        r["session_id"]: r
+        for r in request_performance(rows)
+        if r["timestamp"] != rows[5]["timestamp"]
+    }
+    assert measured["a"]["effective_output_tokens_per_second"] == 10
+    assert measured["a"]["output_tokens_per_second_after_first_token"] == 12.5
+    assert measured["a"]["other_overlapping_provider_sessions"] == 2
+    assert measured["c"]["other_overlapping_provider_sessions"] == 0
+    assert measured["b"]["time_to_first_token_ms"] is None
+    assert measured["e"]["effective_output_tokens_per_second"] is None
+    assert measured["e"]["rate_limited"] is True
+    assert request_performance([row("x", 0, 0), row("y", 0, float("nan"))]) == []
+
+
+def test_session_filter_keeps_overlap_from_other_sessions(home):
+    root = home / "profiling"
+    make_bundle(
+        root, [("i1", {"input": []}, {"token_usage": {"input_tokens": 1, "output_tokens": 10}})]
+    )
+    log = root / "traces" / "bundle" / "trace.jsonl"
+    events = [json.loads(line) for line in log.read_text().splitlines()]
+    events[1]["wall_time_unix_ms"] += 10000
+    log.write_text("".join(json.dumps(event) + "\n" for event in events))
+    set_capture(True)
+    record_bridge_profile(
+        {
+            "source": "anthropic_bridge",
+            "version": 1,
+            "session_id": "other",
+            "thread_id": "other",
+            "timestamp": datetime.fromtimestamp(
+                events[0]["wall_time_unix_ms"] / 1000 + 1, timezone.utc
+            ).isoformat(),
+            "provider": "openai",
+            "model": "gpt",
+            "duration_ms": 1000,
+            "usage": {"input_tokens": 1, "output_tokens": 20},
+            "outcome": "completed",
+        }
+    )
+    report = profile_report(default_config().pricing, root=root, session="s")
+    assert len(report["performance"]) == 1
+    assert report["performance"][0]["other_overlapping_provider_sessions"] == 1
+    assert report["performance"][0]["effective_output_tokens_per_second"] == 1

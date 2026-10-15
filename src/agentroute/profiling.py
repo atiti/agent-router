@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -238,6 +239,12 @@ def read_traces(root: Path) -> tuple[list[dict[str, Any]], int]:
                             "compaction_request_"
                         )
                         record["response_id"] = payload.get("response_id")
+                        # Retain only the classification, never raw provider error text.
+                        record["rate_limited"] = bool(
+                            re.search(
+                                r"\b429\b|rate[_ -]?limit", str(payload.get("error", "")), re.I
+                            )
+                        )
                         response_ref = payload.get("response_payload") or payload.get(
                             "partial_response_payload"
                         )
@@ -401,6 +408,69 @@ def price_usage(record: dict[str, Any], pricing: PricingConfig) -> dict[str, Any
     }
 
 
+def request_performance(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Measure completed attempts and overlap without assuming provider == account.
+
+    Include all captured sessions before applying a report's session filter. Half-open
+    intervals avoid counting one request ending exactly when another starts.
+    """
+    intervals = []
+    for row in rows:
+        try:
+            start = datetime.fromisoformat(row["timestamp"]).timestamp() * 1000
+            duration = float(row["duration_ms"])
+            if not (0 < duration < float("inf")):
+                continue
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        intervals.append((row, start, start + duration))
+    result = []
+    for row, start, end in intervals:
+        usage = row.get("usage")
+        completed = row.get("outcome") == "completed" and isinstance(usage, dict)
+        tokens = count(usage.get("output_tokens")) if completed else None
+        other_sessions = set()
+        for other, other_start, other_end in intervals:
+            identity = other.get("session_id") or other.get("thread_id")
+            if (
+                other is not row
+                and other.get("provider") == row.get("provider")
+                and identity
+                and identity != (row.get("session_id") or row.get("thread_id"))
+                and other_start < end
+                and other_end > start
+            ):
+                other_sessions.add(identity)
+        first = row.get("time_to_first_token_ms")
+        first = float(first) if isinstance(first, (int, float)) else None
+        if first is not None and not (0 <= first < end - start):
+            first = None
+        result.append(
+            {
+                "inference_call_id": row.get("inference_call_id"),
+                "session_id": row.get("session_id"),
+                "thread_id": row.get("thread_id"),
+                "timestamp": row["timestamp"],
+                "model": row.get("model"),
+                "provider": row.get("provider"),
+                "outcome": row.get("outcome"),
+                "duration_ms": end - start,
+                "output_tokens": tokens,
+                "effective_output_tokens_per_second": tokens * 1000 / (end - start)
+                if tokens is not None
+                else None,
+                "time_to_first_token_ms": first,
+                "output_tokens_per_second_after_first_token": tokens * 1000 / (end - start - first)
+                if tokens is not None and first is not None
+                else None,
+                "other_overlapping_provider_sessions": len(other_sessions),
+                "rate_limited": row.get("rate_limited", False)
+                or row.get("outcome") == "rate_limited",
+            }
+        )
+    return sorted(result, key=lambda row: row["timestamp"])
+
+
 def profile_report(
     pricing: PricingConfig,
     *,
@@ -426,6 +496,7 @@ def profile_report(
         known = {r.get("response_id") for r in rows if r.get("response_id")}
         rows.extend(r for r in receipts if r["response_id"] not in known)
         errors += rollout_errors
+    performance = request_performance(rows)
     selected = []
     for row in rows:
         try:
@@ -533,6 +604,9 @@ def profile_report(
         ),
         default=None,
     )
+    selected_keys = {
+        (row["timestamp"], row.get("inference_call_id"), row.get("thread_id")) for row in selected
+    }
     return {
         "version": 1,
         "root": str(root),
@@ -554,7 +628,15 @@ def profile_report(
         "context_exposure_bytes": exposure,
         "largest_requests": largest,
         "requests": selected,
+        "performance": [
+            item
+            for item in performance
+            if (item["timestamp"], item["inference_call_id"], item["thread_id"]) in selected_keys
+        ],
         "notes": [
+            "Effective tokens/sec includes setup, prefill and waiting; output includes reasoning.",
+            "Overlap counts captured sessions on this machine; shared accounts are unverified.",
+            "Native traces lack first-token timing; usage-only receipts cannot recover latency.",
             "Input includes cache reads/writes; cache still occupies model context.",
             "USD is an API-equivalent estimate from configured prices, not a subscription bill.",
             "Component sizes are measured bytes; component tokens are bytes/4 estimates.",

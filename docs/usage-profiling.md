@@ -152,3 +152,30 @@ copies. It preserves Codex chats, configuration, credentials and source edits.
 Cleanup refuses build paths while Cargo/rustc are running. Source installs now
 use temporary build directories and clean them on failure as well as success.
 `AGENTROUTE_KEEP_BUILD=1` explicitly retains output for development.
+
+## Session performance and concurrency
+
+`agentroute context profile report --session <session-id> --days 1` includes a request
+performance table; `--json` exports all measured attempts under `performance`.
+Effective output tokens/sec is exact reported output tokens divided by request duration.
+It includes connection setup, prompt processing, queueing, and streaming, and excludes tool
+execution between requests. Output includes reasoning. Failed requests have no reported speed.
+
+New Claude bridge captures also record the delay to the first nonempty text, thinking, or
+tool-argument delta. JSON includes output tokens/sec over the interval after that delta,
+which is an observed streaming rate, not a server-side decode benchmark. Native Codex
+traces currently lack first-token timestamps; these values appear as unavailable. Usage-only
+rollout receipts cannot reconstruct request latency. Capture must be enabled before the work.
+
+The overlap column counts distinct other captured sessions with requests overlapping any part
+of this request, on the same provider. A session filter retains this comparison against other
+captured sessions. It does not mean those sessions were all active at once or prove they used
+the same account. Traffic outside retained captures or on other machines is invisible.
+Native errors matching HTTP 429 or rate-limit messages, and explicit Claude rate-limit
+responses, are flagged without retaining error text in reports.
+
+To investigate shared-account throttling, compare the same model and account with similar
+input size, output length, reasoning effort, and cache state during quiet and busy periods.
+Compare effective speed, Claude first-token delay, overlap, and rate-limit outcomes. Overlap
+with slow responses is correlation; it cannot by itself distinguish provider throttling from
+queueing, large prompts, network delays, or local CPU/GPU contention.
