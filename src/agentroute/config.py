@@ -486,7 +486,7 @@ def default_config() -> AppConfig:
         ),
         "gpt-6.1-sol": ModelCapabilities(
             tool_calling="full", reasoning=True, vision=True,
-            context_window=1_050_000, pricing_model="gpt-6.1-sol",
+            context_window=872_000, pricing_model="gpt-6.1-sol",
         ),
         "gpt-6-astra": ModelCapabilities(
             tool_calling="full", reasoning=True, vision=True,
@@ -575,6 +575,15 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
     for model, previous in previous_deepseek_capabilities.items():
         if config.capabilities.models.get(model) == previous:
             config.capabilities.models[model] = defaults.capabilities.models[model]
+    previous_gpt_context = ModelCapabilities(
+        tool_calling="full",
+        reasoning=True,
+        vision=True,
+        context_window=1_050_000,
+        pricing_model="gpt-6.1-sol",
+    )
+    if config.capabilities.models.get("gpt-6.1-sol") == previous_gpt_context:
+        config.capabilities.models["gpt-6.1-sol"] = defaults.capabilities.models["gpt-6.1-sol"]
     for model, capabilities in defaults.capabilities.models.items():
         config.capabilities.models.setdefault(model, capabilities)
     previous_flash_price = ModelPrice(

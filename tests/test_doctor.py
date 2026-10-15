@@ -2,8 +2,19 @@ import json
 import plistlib
 
 from agentroute.bridge_service import BridgeHealth
-from agentroute.config import default_config, save_config
-from agentroute.doctor import EXPECTED_RUNTIME_REVISION, _desktop_check, run_doctor
+from agentroute.config import (
+    ExecutionBackendConfig,
+    ModelCapabilities,
+    ModelTarget,
+    default_config,
+    save_config,
+)
+from agentroute.doctor import (
+    EXPECTED_RUNTIME_REVISION,
+    _context_windows_check,
+    _desktop_check,
+    run_doctor,
+)
 from agentroute.install import hook_command
 from agentroute.providers import ensure_claude_bridge_backend
 
@@ -87,6 +98,78 @@ def test_doctor_warns_when_desktop_embeds_an_old_runtime(tmp_path, monkeypatch):
     assert check.status == "warn"
     assert "provider-routing-v21" in check.detail
     assert "provider-routing-v26" in check.detail
+
+
+def _context_catalog(tmp_path, monkeypatch, models):
+    catalog_path = tmp_path / "effective-models.json"
+    catalog_path.write_text(json.dumps({"models": models}), encoding="utf-8")
+    monkeypatch.setattr("agentroute.doctor.refresh_launch_catalog", lambda _config: catalog_path)
+
+
+def _qwen_context_config():
+    config = default_config()
+    for backend in config.backends.values():
+        backend.enabled = False
+    model = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+    config.backends["qwen"] = ExecutionBackendConfig(
+        enabled=True,
+        codex_provider="agentroute-qwen",
+        display_name="Qwen Local",
+        base_url="http://127.0.0.1:8080/v1",
+        tool_compatibility="full",
+        tiers={"normal": ModelTarget(model=model)},
+    )
+    config.capabilities.models[model] = ModelCapabilities(
+        context_window=32_768, tool_calling="full", reasoning=False, vision=False
+    )
+    return config, model
+
+
+def test_doctor_reports_configured_context_and_warns_when_local_endpoint_is_offline(
+    tmp_path, monkeypatch
+):
+    config, model = _qwen_context_config()
+    _context_catalog(
+        tmp_path,
+        monkeypatch,
+        [{"slug": model, "context_window": 32_768, "max_context_window": 32_768}],
+    )
+
+    check = _context_windows_check(config, {"qwen": False})
+
+    assert check.status == "warn"
+    assert "32,768" in check.detail
+    assert "endpoint unavailable, live provider limit unverified" in check.detail
+
+
+def test_doctor_fails_when_configured_context_exceeds_codex_model_maximum(tmp_path, monkeypatch):
+    config = default_config()
+    for name, backend in config.backends.items():
+        backend.enabled = name == "gpt"
+    model = "gpt-6.1-sol"
+    config.capabilities.models[model].context_window = 1_050_000
+    _context_catalog(
+        tmp_path,
+        monkeypatch,
+        [{"slug": model, "context_window": 272_000, "max_context_window": 872_000}],
+    )
+
+    check = _context_windows_check(config)
+
+    assert check.status == "fail"
+    assert "configured 1,050,000 exceeds Codex maximum 872,000" in check.detail
+
+
+def test_doctor_fails_when_configured_model_is_missing_from_effective_catalog(
+    tmp_path, monkeypatch
+):
+    config, model = _qwen_context_config()
+    _context_catalog(tmp_path, monkeypatch, [])
+
+    check = _context_windows_check(config)
+
+    assert check.status == "fail"
+    assert "configured 32,768 tokens, missing from effective Codex catalog" in check.detail
 
 
 def _doctor_env(tmp_path, monkeypatch):
