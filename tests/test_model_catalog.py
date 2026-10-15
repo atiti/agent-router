@@ -194,12 +194,13 @@ def test_backend_alias_uses_configured_context_while_gpt_uses_account_limit(
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     monkeypatch.setattr("agentroute.providers._installed_codex_catalog", lambda source: {
         "models": [{"slug": "gpt-6.1-sol", "context_window": 272_000,
-                    "max_context_window": 872_000, "supports_search_tool": True,
-                    "guardian": {"required": True}}]
+                    "max_context_window": 872_000, "auto_compact_token_limit": 258_400,
+                    "supports_search_tool": True, "guardian": {"required": True}}]
     })
     (tmp_path / "models_cache.json").write_text(json.dumps({
         "fetched_at": (datetime.now(timezone.utc) - timedelta(hours=age_hours)).isoformat(),
         "models": [{"slug": "gpt-6.1-sol", "context_window": window,
+                    "auto_compact_token_limit": 200_000,
                     "supports_search_tool": False, "guardian": None}],
     }))
     config = default_config()
@@ -211,6 +212,10 @@ def test_backend_alias_uses_configured_context_while_gpt_uses_account_limit(
     assert models["gpt-6.1-sol"]["context_window"] == expected
     assert models["gpt-6.1-sol"]["supports_search_tool"] is True
     assert models["gpt-6.1-sol"]["guardian"] == {"required": True}
+    assert models["gpt-6.1-sol"]["auto_compact_token_limit"] == (
+        200_000 if expected == 500_000 else 258_400
+    )
+    assert models["dev-gpt-6.1-sol"]["auto_compact_token_limit"] is None
     assert models["dev-gpt-6.1-sol"]["context_window"] == 872_000
     assert models["dev-gpt-6.1-sol"]["max_context_window"] == 872_000
     assert models["dev-gpt-6.1-sol"]["supports_search_tool"] is True

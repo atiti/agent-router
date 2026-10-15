@@ -327,6 +327,8 @@ def _write_model_catalog(
                     and slug in by_slug
                 ):
                     by_slug[slug]["context_window"] = capabilities.context_window
+                    # Account-specific compaction caps must not constrain another provider.
+                    by_slug[slug]["auto_compact_token_limit"] = None
                 continue
             if capabilities.context_window is None:
                 continue
