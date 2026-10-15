@@ -47,7 +47,7 @@ def test_installed_catalog_aliases_exact_commit_and_keeps_root_config(tmp_path, 
 
     home = tmp_path / "agentroute"
     home.mkdir()
-    (home / "build-id").write_text(f"{installed_commit}-provider-routing-v57\n")
+    (home / "build-id").write_text(f"{installed_commit}-provider-routing-v58\n")
     monkeypatch.setenv("AGENTROUTE_HOME", str(home))
     monkeypatch.delenv("AGENTROUTE_CODEX_SOURCE", raising=False)
     monkeypatch.delenv("AGENTROUTE_RUNTIME_BUILD_ID", raising=False)
@@ -96,9 +96,9 @@ def test_installed_catalog_uses_invoking_runtime_build_id(tmp_path, monkeypatch)
 
     home = tmp_path / "agentroute"
     home.mkdir()
-    (home / "build-id").write_text(f"{cli_commit}-provider-routing-v57\n")
+    (home / "build-id").write_text(f"{cli_commit}-provider-routing-v58\n")
     monkeypatch.setenv("AGENTROUTE_HOME", str(home))
-    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", f"{runtime_commit}-provider-routing-v57")
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", f"{runtime_commit}-provider-routing-v58")
 
     assert _installed_codex_catalog(source) == original
 
@@ -120,7 +120,7 @@ def test_launch_catalog_sidecars_are_scoped_to_invoking_runtime(tmp_path, monkey
     config.backends["gpt"].tiers["fast"].model = "gpt-6.1-sol"
 
     first_commit = "1" * 40
-    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", f"{first_commit}-provider-routing-v57")
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", f"{first_commit}-provider-routing-v58")
     first = refresh_launch_catalog(config)
     assert first is not None and first.exists()
     (codex_home / "config.toml").write_text(
@@ -128,7 +128,7 @@ def test_launch_catalog_sidecars_are_scoped_to_invoking_runtime(tmp_path, monkey
     )
 
     second_commit = "2" * 40
-    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", f"{second_commit}-provider-routing-v57")
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", f"{second_commit}-provider-routing-v58")
     second = refresh_launch_catalog(config)
 
     assert second is not None and second.exists()
