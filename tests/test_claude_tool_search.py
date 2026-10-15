@@ -1,8 +1,10 @@
 import copy
 import json
 import urllib.request
+from pathlib import Path
 
 import pytest
+import tomllib
 from test_claude_bridge import bridge_server as native_bridge_server  # noqa: F401
 
 from agentroute.claude_bridge import BridgeHandler, translate_request
@@ -74,8 +76,10 @@ def test_codex_catalog_contains_claude_limits_without_pricing_aliases(tmp_path, 
     )
     config = default_config()
     ensure_claude_bridge_backend(config, 8090)
-    sync_codex_providers(config, tmp_path / "config.toml", backup=False)
-    catalog = json.loads((tmp_path / "config.agentroute-models.json").read_text())
+    config_path = tmp_path / "config.toml"
+    sync_codex_providers(config, config_path, backup=False)
+    catalog_path = Path(tomllib.loads(config_path.read_text())["model_catalog_json"])
+    catalog = json.loads(catalog_path.read_text())
     selected = next(model for model in catalog["models"] if model["slug"] == "claude-sonnet-5-5")
     assert {
         key: selected[key]
