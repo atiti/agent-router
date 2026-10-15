@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.73 — 2026-10-15
+
+- Show Goal completion reviewer activity and its verdict in the conversation as Codex continues work.
+- Keep saved task titles current and coordinate exact GitHub issue, file, and bug claims across CLI and Desktop tasks, with visible conflict notices and expiring ownership.
+- Upgrade the AgentRoute Codex runtime to v58 on stable Codex 0.162.0.
+
 ## 0.5.71 — 2026-10-14
 
 - Defer large Claude tool catalogs through Anthropic's native tool search, retaining every tool schema and replaying search results across tool turns and resumed tasks. Keep cache breakpoints off deferred tools.

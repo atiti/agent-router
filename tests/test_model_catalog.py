@@ -38,7 +38,7 @@ def test_installed_catalog_aliases_exact_commit_and_keeps_root_config(tmp_path, 
 
     home = tmp_path / "agentroute"
     home.mkdir()
-    (home / "build-id").write_text(f"{installed_commit}-provider-routing-v57\n")
+    (home / "build-id").write_text(f"{installed_commit}-provider-routing-v58\n")
     monkeypatch.setenv("AGENTROUTE_HOME", str(home))
     monkeypatch.delenv("AGENTROUTE_CODEX_SOURCE", raising=False)
     config = default_config()
