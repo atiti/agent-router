@@ -92,3 +92,25 @@ def test_launch_enables_native_traces_and_preserves_explicit_trace_root(tmp_path
     monkeypatch.setenv("CODEX_ROLLOUT_TRACE_ROOT", "/custom/traces")
     launch_codex(binary, [])
     assert captured["CODEX_ROLLOUT_TRACE_ROOT"] == "/custom/traces"
+
+
+def test_launch_refreshes_managed_catalog_before_native_start(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentroute.launcher.load_config", default_config)
+    catalog = tmp_path / 'path with spaces' / 'config.agentroute-models.json'
+    calls = []
+    monkeypatch.setattr("agentroute.providers.refresh_launch_catalog", lambda config: (
+        calls.append("refresh") or catalog
+    ))
+    monkeypatch.setattr("agentroute.launcher.os.execve", lambda path, argv, env: calls.append(argv))
+    launch_codex(tmp_path / "codex", ["exec", "hello"])
+    assert calls[0] == "refresh"
+    assert f'model_catalog_json="{catalog}"' in calls[1]
+    assert calls[1][-2:] == ["exec", "hello"]
+
+    for args in [["--version"], ["--remote", "unix:///owner"],
+                 ["-c", 'model_catalog_json="/custom/models.json"', "exec", "hello"],
+                 ["-p", "custom", "exec", "hello"]]:
+        calls.clear()
+        launch_codex(tmp_path / "codex", args)
+        assert len(calls) == 1
+        assert calls[0][-len(args):] == args

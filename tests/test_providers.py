@@ -146,7 +146,7 @@ def test_capability_registry_declares_agent_tool_safety_and_pricing():
     assert gpt.tool_calling == "full"
     assert gpt.pricing_model == "gpt-5.6-terra"
     assert deepseek.tool_calling == "apply_patch_only"
-    assert deepseek.context_window == 128_000
+    assert deepseek.context_window == 1_048_576
     assert deepseek.pricing_model == "deepseek-flash"
 
 
@@ -219,6 +219,25 @@ def test_custom_deepseek_mapping_is_not_migrated(tmp_path):
     loaded = load_config(path)
 
     assert loaded.backends["deepseek"].tiers["smart"].model == "custom-smart"
+
+
+def test_old_default_deepseek_context_metadata_migrates_but_custom_limit_survives(tmp_path):
+    path = tmp_path / "config.yaml"
+    payload = default_config().model_dump(mode="json", exclude_none=True)
+    payload["capabilities"]["models"]["deepseek-flash"]["context_window"] = 128_000
+    payload["capabilities"]["models"]["deepseek-flash"]["vision"] = False
+    payload["capabilities"]["models"]["deepseek-v4-pro"].pop("context_window", None)
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    loaded = load_config(path)
+
+    assert loaded.capabilities.models["deepseek-flash"].context_window == 1_048_576
+    assert loaded.capabilities.models["deepseek-v4-pro"].context_window == 1_048_576
+
+    payload["capabilities"]["models"]["deepseek-flash"]["context_window"] = 64_000
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    custom = load_config(path)
+    assert custom.capabilities.models["deepseek-flash"].context_window == 64_000
 
 
 def test_legacy_deepseek_backend_gains_safe_tool_compatibility(tmp_path):

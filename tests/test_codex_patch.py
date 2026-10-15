@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -137,9 +138,9 @@ def test_release_metadata_uses_current_version_and_runtime():
     doctor = (root / "src/agentroute/doctor.py").read_text(encoding="utf-8")
     ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert 'version = "0.5.72"' in package
-    assert 'version = "0.5.72"' in lock
-    assert '__version__ = "0.5.72"' in public_api
+    version = re.search(r'^version = "([^"]+)"$', package, re.MULTILINE).group(1)
+    assert f'version = "{version}"' in lock
+    assert f'__version__ = "{version}"' in public_api
     assert "provider-routing-v57" in installer
     assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v57"' in doctor
     assert "8330a1db8270eb0fcc1fda49c97e86a3c76de35b" in installer

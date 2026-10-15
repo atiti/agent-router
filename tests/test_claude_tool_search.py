@@ -75,7 +75,7 @@ def test_codex_catalog_contains_claude_limits_without_pricing_aliases(tmp_path, 
     config = default_config()
     ensure_claude_bridge_backend(config, 8090)
     sync_codex_providers(config, tmp_path / "config.toml", backup=False)
-    catalog = json.loads((tmp_path / "models/codex-catalog.json").read_text())
+    catalog = json.loads((tmp_path / "config.agentroute-models.json").read_text())
     selected = next(model for model in catalog["models"] if model["slug"] == "claude-sonnet-5-5")
     assert {
         key: selected[key]

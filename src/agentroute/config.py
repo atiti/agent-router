@@ -493,12 +493,12 @@ def default_config() -> AppConfig:
             pricing_model="gpt-6-astra",
         ),
         "deepseek-flash": ModelCapabilities(
-            tool_calling="apply_patch_only", reasoning=True, vision=False,
-            context_window=128_000, pricing_model="deepseek-flash",
+            tool_calling="apply_patch_only", reasoning=True, vision=True,
+            context_window=1_048_576, pricing_model="deepseek-flash",
         ),
         "deepseek-v4-pro": ModelCapabilities(
             tool_calling="none", reasoning=True, vision=False,
-            pricing_model="deepseek-v4-pro",
+            context_window=1_048_576, pricing_model="deepseek-v4-pro",
         ),
     }
     config.capacity.profiles["default"] = SubscriptionProfileConfig(priority=0)
@@ -560,6 +560,21 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
             canonical = target.model.removeprefix("dev-")
             if target.model not in config.pricing.models and canonical in config.pricing.models:
                 config.pricing.aliases.setdefault(target.model, canonical)
+    # Older AgentRoute releases recorded the original DeepSeek Flash limit.
+    # Upgrade only untouched bundled entries so operator overrides survive.
+    previous_deepseek_capabilities = {
+        "deepseek-flash": ModelCapabilities(
+            tool_calling="apply_patch_only", reasoning=True, vision=False,
+            context_window=128_000, pricing_model="deepseek-flash",
+        ),
+        "deepseek-v4-pro": ModelCapabilities(
+            tool_calling="none", reasoning=True, vision=False,
+            pricing_model="deepseek-v4-pro",
+        ),
+    }
+    for model, previous in previous_deepseek_capabilities.items():
+        if config.capabilities.models.get(model) == previous:
+            config.capabilities.models[model] = defaults.capabilities.models[model]
     for model, capabilities in defaults.capabilities.models.items():
         config.capabilities.models.setdefault(model, capabilities)
     previous_flash_price = ModelPrice(
