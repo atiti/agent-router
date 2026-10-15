@@ -222,7 +222,7 @@ def _context_windows_check(
                 "context_windows", {}
             ).get(model_name)
             if backend_name != "gpt" and type(provider_window) is int and provider_window > 0:
-                current = maximum = provider_window
+                current = provider_window
             valid_current = type(current) is int and current > 0
             valid_maximum = type(maximum) is int and maximum > 0
             if not valid_current:

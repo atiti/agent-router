@@ -1,6 +1,8 @@
 import json
 import plistlib
 
+import pytest
+
 from agentroute.bridge_service import BridgeHealth
 from agentroute.config import (
     ExecutionBackendConfig,
@@ -126,14 +128,15 @@ def _qwen_context_config():
     return config, model
 
 
-def test_doctor_uses_written_provider_window_without_replacing_account_metadata(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("maximum,expected_status", [(32_768, "warn"), (16_384, "fail")])
+def test_doctor_uses_written_provider_window_and_preserves_catalog_maximum(
+    tmp_path, monkeypatch, maximum, expected_status
 ):
     from agentroute.config import codex_home
 
     config, model = _qwen_context_config()
     _context_catalog(tmp_path, monkeypatch, [
-        {"slug": model, "context_window": 16_384, "max_context_window": 16_384},
+        {"slug": model, "context_window": 16_384, "max_context_window": maximum},
     ])
     path = codex_home() / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,7 +145,7 @@ def test_doctor_uses_written_provider_window_without_replacing_account_metadata(
         f'capabilities = {{ context_windows = {{ "{model}" = 32768 }} }}\n'
     )
     check = _context_windows_check(config, {"qwen": True})
-    assert check.status == "warn"
+    assert check.status == expected_status
     assert "current 32,768" in check.detail
     assert "does not match configured" not in check.detail
 
