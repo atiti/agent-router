@@ -207,6 +207,12 @@ def test_backend_alias_uses_configured_context_while_gpt_uses_account_limit(
     config.backends["azure"].enabled = True
     config.backends["azure"].tiers["smart"].model = "dev-gpt-6.1-sol"
     config.pricing.aliases["dev-gpt-6.1-sol"] = "gpt-6.1-sol"
+    import copy
+
+    config.backends["azure-direct"] = copy.deepcopy(config.backends["azure"])
+    config.backends["azure-direct"].codex_provider = "agentroute-azure-direct"
+    for target in config.backends["azure-direct"].tiers.values():
+        target.model = target.model.removeprefix("dev-")
     path = refresh_launch_catalog(config)
     models = {m["slug"]: m for m in json.loads(path.read_text())["models"]}
     assert models["gpt-6.1-sol"]["context_window"] == expected

@@ -164,6 +164,10 @@ def _context_windows_check(
     """Compare configured model limits with the catalog used by new Codex launches."""
     try:
         catalog, source = _effective_model_catalog(config)
+        try:
+            settings = tomllib.loads((codex_home() / "config.toml").read_text())
+        except FileNotFoundError:
+            settings = {}
     except (OSError, ValueError, TypeError) as error:
         return DoctorCheck(
             "context-windows",
@@ -213,6 +217,12 @@ def _context_windows_check(
 
             current = descriptor.get("context_window")
             maximum = descriptor.get("max_context_window")
+            provider_settings = settings.get("model_providers", {}).get(backend.codex_provider, {})
+            provider_window = provider_settings.get("capabilities", {}).get(
+                "context_windows", {}
+            ).get(model_name)
+            if backend_name != "gpt" and type(provider_window) is int and provider_window > 0:
+                current = maximum = provider_window
             valid_current = type(current) is int and current > 0
             valid_maximum = type(maximum) is int and maximum > 0
             if not valid_current:

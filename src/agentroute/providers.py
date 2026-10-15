@@ -147,6 +147,20 @@ def _runtime_build_id() -> str | None:
         return None
 
 
+def _provider_context_windows(config: AppConfig, backend_name: str) -> dict[str, int]:
+    """Keep provider model limits separate from shared account catalog entries."""
+    if backend_name == "gpt":
+        return {}
+    match = re.search(r"provider-routing-v(\d+)$", _runtime_build_id() or "")
+    if not match or int(match.group(1)) < 59:
+        return {}
+    return {
+        target.model: window
+        for target in config.backends[backend_name].tiers.values()
+        if (window := model_capabilities(config, backend_name, target.model).context_window)
+    }
+
+
 def _installed_codex_catalog(source: Path | None = None) -> dict | None:
     """Read the bundled catalog from the exact invoking runtime revision."""
     build_id = _runtime_build_id()
@@ -265,6 +279,9 @@ def _write_model_catalog(
         for name, backend in config.backends.items()
         if backend.enabled and name != "claude"
     ]
+    account_slugs = {
+        target.model for target in config.backends["gpt"].tiers.values()
+    } if "gpt" in config.backends else set()
     has_routed_limits = any(
         capabilities.context_window is not None
         for name, backend in routed_backends
@@ -323,6 +340,7 @@ def _write_model_catalog(
                 # ChatGPT entitlement and compact too early.
                 if (
                     backend_name != "gpt"
+                    and slug not in account_slugs
                     and capabilities.context_window is not None
                     and slug in by_slug
                 ):
@@ -422,6 +440,10 @@ def _provider_block(
         # to the worker tier. Operators can still pin a separately validated model.
         review_target = effective_review_model(config, name)
         lines.append(f"approval_review_model = {_toml_string(review_target)}")
+        windows = _provider_context_windows(config, name)
+        if windows:
+            entries = ", ".join(f"{_toml_string(m)} = {w}" for m, w in sorted(windows.items()))
+            lines.append(f"capabilities = {{ context_windows = {{ {entries} }} }}")
         tool_compatibility = backend.tool_compatibility
         if (
             tool_compatibility == "functions_and_apply_patch_preserve_reasoning"

@@ -47,6 +47,27 @@ def test_sync_codex_providers_is_idempotent_and_never_writes_keys(tmp_path):
     assert "secret" not in first.lower()
 
 
+@pytest.mark.parametrize("revision,expected", [(58, None), (59, 1_048_576)])
+def test_provider_context_window_requires_capable_runtime(
+    tmp_path, monkeypatch, revision, expected
+):
+    from agentroute.providers import _provider_block
+
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib
+
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", f"test-provider-routing-v{revision}")
+    config = default_config()
+    config.backends["deepseek"].enabled = True
+    rendered = tomllib.loads(_provider_block(config, preserve_reasoning_compatibility=True))
+    provider = rendered["model_providers"]["agentroute-deepseek"]
+    assert provider.get("capabilities", {}).get("context_windows", {}).get(
+        "deepseek-flash"
+    ) == expected
+
+
 def test_sync_custom_provider_preserves_optional_auth_and_safe_tools(tmp_path):
     path = tmp_path / "config.toml"
     config = default_config()

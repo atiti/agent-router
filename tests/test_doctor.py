@@ -126,6 +126,27 @@ def _qwen_context_config():
     return config, model
 
 
+def test_doctor_uses_written_provider_window_without_replacing_account_metadata(
+    tmp_path, monkeypatch
+):
+    from agentroute.config import codex_home
+
+    config, model = _qwen_context_config()
+    _context_catalog(tmp_path, monkeypatch, [
+        {"slug": model, "context_window": 16_384, "max_context_window": 16_384},
+    ])
+    path = codex_home() / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '[model_providers.agentroute-qwen]\n'
+        f'capabilities = {{ context_windows = {{ "{model}" = 32768 }} }}\n'
+    )
+    check = _context_windows_check(config, {"qwen": True})
+    assert check.status == "warn"
+    assert "current 32,768" in check.detail
+    assert "does not match configured" not in check.detail
+
+
 def test_doctor_reports_configured_context_and_warns_when_backend_config_is_incomplete(
     tmp_path, monkeypatch
 ):

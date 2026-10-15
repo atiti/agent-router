@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Use routed model context limits throughout compaction and token-window reporting, including Azure aliases and repeated routed turns. Doctor detects an effective catalog window that differs from its configured limit.
+- Keep provider-specific context windows separate when GPT and Azure use the same model name, and remove inherited GPT account compaction caps from routed aliases.
 - Reconnect to the routed provider when a queued message changes models during an active turn, preventing Claude model names from reaching the previous ChatGPT connection.
 - Pin runtime v59 with the compaction and provider-switch repairs and the live approximate output token-rate display.
 
