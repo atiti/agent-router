@@ -92,3 +92,18 @@ def test_launch_enables_native_traces_and_preserves_explicit_trace_root(tmp_path
     monkeypatch.setenv("CODEX_ROLLOUT_TRACE_ROOT", "/custom/traces")
     launch_codex(binary, [])
     assert captured["CODEX_ROLLOUT_TRACE_ROOT"] == "/custom/traces"
+
+
+def test_task_awareness_enabled_for_interactive_and_shared_server_launches():
+    from agentroute.shared_server import server_argv
+
+    config = default_config()
+    binary = Path("/tmp/codex-bin")
+    for argv in (codex_argv(binary, [], config), server_argv(binary, config)):
+        index = argv.index("features.task_awareness=true")
+        assert argv[index - 1] == "-c"
+    argv = codex_argv(binary, ["--disable", "task_awareness"], config)
+    assert argv[-2:] == ["--disable", "task_awareness"]
+    config.shared_server.startup_config = ["features.task_awareness=false"]
+    argv = server_argv(binary, config)
+    assert argv.index("features.task_awareness=false") > argv.index("features.task_awareness=true")
