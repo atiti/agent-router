@@ -13,6 +13,7 @@ from agentroute.doctor import (
     EXPECTED_RUNTIME_REVISION,
     _context_windows_check,
     _desktop_check,
+    _effective_model_catalog,
     run_doctor,
 )
 from agentroute.install import hook_command
@@ -186,6 +187,28 @@ def test_doctor_fails_when_configured_model_is_missing_from_effective_catalog(
 
     assert check.status == "fail"
     assert "configured 32,768 tokens, missing from effective Codex catalog" in check.detail
+
+
+def test_doctor_refreshes_catalog_when_config_points_at_another_runtime_sidecar(
+    tmp_path, monkeypatch
+):
+    codex_home = tmp_path / "codex"
+    agentroute_home = tmp_path / "agentroute"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("AGENTROUTE_HOME", str(agentroute_home))
+    old_path = codex_home / f"config.agentroute-models-{'1' * 12}-v57.json"
+    new_path = codex_home / f"config.agentroute-models-{'2' * 12}-v57.json"
+    (codex_home / "config.toml").write_text(
+        f'model_catalog_json = "{old_path}"\n', encoding="utf-8"
+    )
+    new_path.write_text(json.dumps({"models": []}), encoding="utf-8")
+    monkeypatch.setattr("agentroute.doctor.refresh_launch_catalog", lambda _config: new_path)
+
+    catalog, source = _effective_model_catalog(default_config())
+
+    assert catalog == {"models": []}
+    assert str(new_path) in source
 
 
 def _doctor_env(tmp_path, monkeypatch):

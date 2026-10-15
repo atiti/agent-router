@@ -11,7 +11,11 @@ from agentroute.config import (
     ModelTarget,
     default_config,
 )
-from agentroute.providers import _installed_codex_catalog, sync_codex_providers
+from agentroute.providers import (
+    _installed_codex_catalog,
+    refresh_launch_catalog,
+    sync_codex_providers,
+)
 
 
 def git(path, *args):
@@ -97,6 +101,39 @@ def test_installed_catalog_uses_invoking_runtime_build_id(tmp_path, monkeypatch)
     monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", f"{runtime_commit}-provider-routing-v57")
 
     assert _installed_codex_catalog(source) == original
+
+
+def test_launch_catalog_sidecars_are_scoped_to_invoking_runtime(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex"
+    agentroute_home = tmp_path / "agentroute"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("AGENTROUTE_HOME", str(agentroute_home))
+    monkeypatch.setattr(
+        "agentroute.providers._installed_codex_catalog",
+        lambda _source=None: {
+            "models": [
+                {"slug": "gpt-6.1-sol", "context_window": 272_000, "max_context_window": 872_000}
+            ]
+        },
+    )
+    config = default_config()
+    config.backends["gpt"].tiers["fast"].model = "gpt-6.1-sol"
+
+    first_commit = "1" * 40
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", f"{first_commit}-provider-routing-v57")
+    first = refresh_launch_catalog(config)
+    assert first is not None and first.exists()
+    (codex_home / "config.toml").write_text(
+        f"model_catalog_json = {json.dumps(str(first))}\n", encoding="utf-8"
+    )
+
+    second_commit = "2" * 40
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", f"{second_commit}-provider-routing-v57")
+    second = refresh_launch_catalog(config)
+
+    assert second is not None and second.exists()
+    assert second != first
+    assert first.exists()
 
 
 def test_alias_fails_closed_without_installed_catalog(tmp_path, monkeypatch):

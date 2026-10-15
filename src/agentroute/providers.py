@@ -137,14 +137,21 @@ def effective_review_model(config: AppConfig, backend_name: str) -> str:
     return backend.review_model or backend.tiers["fast"].model
 
 
-def _installed_codex_catalog(source: Path | None = None) -> dict | None:
-    """Read the bundled catalog from the exact installed runtime revision."""
+def _runtime_build_id() -> str | None:
     build_id = os.environ.get("AGENTROUTE_RUNTIME_BUILD_ID")
+    if build_id:
+        return build_id.strip()
+    try:
+        return (agentroute_home() / "build-id").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _installed_codex_catalog(source: Path | None = None) -> dict | None:
+    """Read the bundled catalog from the exact invoking runtime revision."""
+    build_id = _runtime_build_id()
     if not build_id:
-        try:
-            build_id = (agentroute_home() / "build-id").read_text(encoding="utf-8").strip()
-        except OSError:
-            return None
+        return None
     match = re.fullmatch(r"([0-9a-f]{40})-provider-routing-v[0-9]+", build_id)
     if match is None:
         return None
@@ -173,6 +180,29 @@ def _installed_codex_catalog(source: Path | None = None) -> dict | None:
         except (OSError, subprocess.CalledProcessError, ValueError):
             continue
     return None
+
+
+def _is_managed_model_catalog_path(path: str, config_path: Path) -> bool:
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = config_path.parent / candidate
+    if candidate in {
+        agentroute_home() / "models" / "codex-catalog.json",
+        config_path.with_suffix(".agentroute-models.json"),
+    }:
+        return True
+    return (
+        candidate.parent == config_path.parent
+        and candidate.name.startswith(f"{config_path.stem}.agentroute-models-")
+        and candidate.suffix == ".json"
+    )
+
+
+def _launch_model_catalog_path(config_path: Path) -> Path:
+    build_id = _runtime_build_id() or ""
+    match = re.fullmatch(r"([0-9a-f]{40})-provider-routing-v([0-9]+)", build_id)
+    key = f"{match.group(1)[:12]}-v{match.group(2)}" if match else "unversioned"
+    return config_path.with_name(f"{config_path.stem}.agentroute-models-{key}.json")
 
 
 def _refresh_context_limits(catalog: dict, config_path: Path) -> None:
@@ -316,7 +346,7 @@ def _write_model_catalog(
             known_slugs.add(slug)
     # An alternate config (including a test fixture) must never overwrite the
     # catalog used by another config or by running Desktop/CLI sessions.
-    path = config_path.with_suffix(".agentroute-models.json")
+    path = _launch_model_catalog_path(config_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     rendered = json.dumps(catalog, ensure_ascii=False, separators=(",", ":")) + "\n"
     if not path.exists() or path.read_text(encoding="utf-8") != rendered:
@@ -340,11 +370,7 @@ def refresh_launch_catalog(config: AppConfig) -> Path | None:
         configured = tomllib.loads(config_path.read_text()).get("model_catalog_json")
     except FileNotFoundError:
         configured = None
-    managed = {
-        str(agentroute_home() / "models" / "codex-catalog.json"),
-        str(config_path.with_suffix(".agentroute-models.json")),
-    }
-    if configured is not None and configured not in managed:
+    if configured is not None and not _is_managed_model_catalog_path(configured, config_path):
         return None
     return _write_model_catalog(config, config_path=config_path)
 

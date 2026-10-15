@@ -27,6 +27,7 @@ from .providers import (
     END_MARKER,
     START_MARKER,
     _installed_codex_catalog,
+    _is_managed_model_catalog_path,
     backend_readiness,
     refresh_launch_catalog,
 )
@@ -139,11 +140,9 @@ def _effective_model_catalog(config: AppConfig) -> tuple[dict | None, str]:
     except FileNotFoundError:
         settings = {}
     configured_path = settings.get("model_catalog_json")
-    managed_paths = {
-        str(agentroute_home() / "models" / "codex-catalog.json"),
-        str(config_file.with_suffix(".agentroute-models.json")),
-    }
-    if configured_path is not None and configured_path not in managed_paths:
+    if configured_path is not None and not _is_managed_model_catalog_path(
+        configured_path, config_file
+    ):
         path = Path(configured_path).expanduser()
         if not path.is_absolute():
             path = config_file.parent / path
