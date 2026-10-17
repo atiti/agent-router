@@ -61,3 +61,24 @@ def test_main_cannot_be_candidate(tmp_path):
     repo, base, tip, upstream = fixture_repo(tmp_path)
     with pytest.raises(ValueError, match="must start"):
         stack.prepare(repo, base, tip, upstream, "main", tmp_path / "candidate")
+
+
+def test_unchanged_base_preserves_merged_stack_tree(tmp_path):
+    repo, base, tip, _ = fixture_repo(tmp_path)
+    run(repo, "checkout", "-b", "side", base)
+    (repo / "feature").write_text("side version\n")
+    run(repo, "add", "feature")
+    run(repo, "commit", "-m", "side feature")
+    run(repo, "checkout", "downstream")
+    merge = subprocess.run(["git", "-C", str(repo), "merge", "side"], check=False)
+    assert merge.returncode != 0
+    (repo / "feature").write_text("resolved version\n")
+    run(repo, "add", "feature")
+    run(repo, "commit", "-m", "resolve merge")
+    merged_tip = run(repo, "rev-parse", "HEAD")
+    target = tmp_path / "candidate"
+    result = stack.prepare(repo, base, merged_tip, base, "agentroute-port-test", target)
+    assert result["status"] == "needs_validation"
+    assert run(target, "rev-parse", "HEAD") == merged_tip
+    assert run(target, "rev-parse", "HEAD^{tree}") == run(repo, "rev-parse", "HEAD^{tree}")
+    assert (target / "feature").read_text() == "resolved version\n"
