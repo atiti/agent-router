@@ -1,11 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.5.75rc1 — 2026-10-17
+
+- Enable shared task awareness in Desktop and CLI. Tasks maintain a current title and short status and claim exact tickets, files and bug signatures in the local registry.
+- Broadcast evolving titles to connected clients while preserving manual renames; recover interrupted title changes after resume.
+- Show visible overlap notices when another active task owns the same resource, including after compaction. Claims are advisory and expire after one hour.
+- Consolidate the staged Codex task features in runtime v60; retain all 0.5.74 model-catalog and provider repairs.
 
 - Use routed model context limits throughout compaction and token-window reporting, including Azure aliases and repeated routed turns. Doctor detects an effective catalog window that differs from its configured limit.
 - Keep provider-specific context windows separate when GPT and Azure use the same model name, and remove inherited GPT account compaction caps from routed aliases.
 - Reconnect to the routed provider when a queued message changes models during an active turn, preventing Claude model names from reaching the previous ChatGPT connection.
-- Pin runtime v59 with the compaction and provider-switch repairs and the live approximate output token-rate display.
+- Retain runtime v59 fixes with the compaction and provider-switch repairs and the live approximate output token-rate display.
 
 ## 0.5.74 — 2026-10-15
 
