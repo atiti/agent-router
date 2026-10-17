@@ -958,3 +958,25 @@ agentroute work new  # local work ID when there is no ticket yet
 The CLI provides this lookup; the closed mobile app does not yet expose the work
 links as a separate UI. Raw profiling is optional and bounded; inspect or clean
 storage using `agentroute storage status` and `agentroute storage prune`.
+
+
+### Automatic task titles and overlap notices
+
+AgentRoute enables native task awareness for saved root tasks in Desktop and CLI. The agent
+maintains a short current title and progress summary through `update_task`; these appear in
+visible `◆ TASK` notices. Task titles refresh after turns through the existing naming API.
+A manual rename after task tracking begins fixes the title until further user management.
+Existing tasks pick this up when resumed; no background title-generation request is added.
+
+Tasks claim exact GitHub issue/PR identifiers, absolute file paths, or explicit bug signatures.
+A competing claim shows `◆ TASK OVERLAP` with the owning task ID before starting another fix.
+Explicit GitHub URLs in a new prompt also trigger an automatic overlap notice. Claims expire
+after one hour without tool activity and release when the agent marks work waiting or complete.
+After expiry, the agent must recheck ownership before continuing tools.
+
+Coordination is local to the same Codex SQLite home. Claims provide coordination guidance;
+exact identifiers must match, and semantic duplicates with different identifiers can be missed.
+Task histories remain separate. Use `--disable task_awareness` to opt out for a standalone
+launch. For shared launches, configure the server with
+`agentroute server configure --codex-config features.task_awareness=false` and restart it
+after its active tasks finish.

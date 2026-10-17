@@ -29,21 +29,26 @@ def prepare(repo, base, tip, onto, branch, worktree):
     if git(repo, "branch", "--list", branch):
         raise ValueError("candidate branch already exists")
     git(repo, "worktree", "add", "-b", branch, str(worktree), old_tip)
-    completed = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(worktree),
-            "-c",
-            "rerere.enabled=true",
-            "rebase",
-            "--onto",
-            new_base,
-            old_base,
-        ]
-    )
+    # An unchanged upstream base validates the immutable tree directly. Replaying
+    # a merged stack here would drop merge resolutions and can require unreachable blobs.
+    failed = False
+    if new_base != old_base:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(worktree),
+                "-c",
+                "rerere.enabled=true",
+                "rebase",
+                "--onto",
+                new_base,
+                old_base,
+            ]
+        )
+        failed = completed.returncode != 0
     return {
-        "status": "needs_conflict_review" if completed.returncode else "needs_validation",
+        "status": "needs_conflict_review" if failed else "needs_validation",
         "base": old_base,
         "original_tip": old_tip,
         "candidate_base": new_base,
