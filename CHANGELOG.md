@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.75rc4 — 2026-10-17
+
+- Request summarized Claude thinking explicitly and stream a bounded 512-byte preview to Desktop and CLI while preserving the full signed provider replay.
+- Keep Claude streams alive while signed thinking and tool arguments are buffered. Report stalled and truncated streams explicitly instead of silently closing them.
+- Bound upstream silence and keepalives without model progress to 120 seconds, and log request-scoped progress counts without prompt or generated text.
+
+## 0.5.75rc2 — 2026-10-17
+
+- Forward Claude stream pings through the Responses bridge so long generations keep the Codex stream alive.
+
 ## 0.5.75rc1 — 2026-10-17
 
 - Enable shared task awareness in Desktop and CLI. Tasks maintain a current title and short status and claim exact tickets, files and bug signatures in the local registry.

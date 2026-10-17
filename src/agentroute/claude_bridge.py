@@ -56,6 +56,8 @@ from .claude_models import (
     MODERN_CLAUDE_MODELS,
     claude_effort,
 )
+from .claude_reasoning_summary import summary_delta
+from .claude_stream_progress import PROGRESS_TIMEOUT_SECONDS, ClaudeStreamError, observe_stream
 from .claude_thinking_store import ThinkingReplayError, load_thinking, store_thinking
 from .claude_tool_search import SEARCH_BLOCK_TYPES, defer_large_catalog, validate_search_block
 from .config import ClaudeCacheConfig
@@ -838,7 +840,9 @@ def _decode_reasoning_item(
         envelope = stored
     block = envelope.get("block")
     if not isinstance(block, dict) or block.get("type") not in {
-        "thinking", "redacted_thinking", *SEARCH_BLOCK_TYPES,
+        "thinking",
+        "redacted_thinking",
+        *SEARCH_BLOCK_TYPES,
     }:
         return None
     validate_search_block(block)
@@ -995,7 +999,7 @@ def translate_request(
     if effort:
         payload["output_config"] = {"effort": effort}
     if model in MODERN_CLAUDE_MODELS:
-        payload["thinking"] = {"type": "adaptive"}
+        payload["thinking"] = {"type": "adaptive", "display": "summarized"}
         # Thinking and visible output share the cap. Respect explicit caller caps.
         if not body.get("max_output_tokens"):
             payload["max_tokens"] = 128000
@@ -1072,7 +1076,7 @@ def anthropic_stream(
         headers=anthropic_headers(credentials.token(), model, credentials.mode),
     )
     try:
-        response = urlopen(request, timeout=900)
+        response = urlopen(request, timeout=PROGRESS_TIMEOUT_SECONDS)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")
         if exc.code in (401, 403):
@@ -1092,7 +1096,7 @@ def anthropic_stream(
             yield RATE_LIMIT_EVENT, snapshot
         event_type = ""
         for raw_line in response:
-            line = raw_line.decode("utf-8", errors="replace").rstrip("\n")
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
             if line.startswith("event:"):
                 event_type = line[6:].strip()
             elif line.startswith("data:"):
@@ -1104,6 +1108,8 @@ def anthropic_stream(
                 except json.JSONDecodeError:
                     continue
                 yield event_type or str(parsed.get("type") or "message"), parsed
+            elif line.startswith(":"):
+                yield "ping", {}
             elif not line:
                 event_type = ""
 
@@ -1235,6 +1241,36 @@ class ResponsesStream:
                 "content": dict(block),
                 "output_index": None,
             }
+            if block_type == "thinking":
+                state = self.blocks[index]
+                state["item_id"] = self._next_item_id("rs")
+                state["output_index"] = len(self.items)
+                item = {
+                    "type": "reasoning",
+                    "id": state["item_id"],
+                    "summary": [],
+                    "content": None,
+                    "encrypted_content": None,
+                }
+                self.items.append(item)
+                yield self.sse(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": state["output_index"],
+                        "item": item,
+                    },
+                )
+                yield self.sse(
+                    "response.reasoning_summary_part.added",
+                    {
+                        "type": "response.reasoning_summary_part.added",
+                        "item_id": state["item_id"],
+                        "output_index": state["output_index"],
+                        "summary_index": 0,
+                        "part": {"type": "summary_text", "text": ""},
+                    },
+                )
         return
         yield  # pragma: no cover - keeps this handler a generator
 
@@ -1251,6 +1287,19 @@ class ResponsesStream:
             content["thinking"] = str(content.get("thinking") or "") + str(
                 delta.get("thinking") or ""
             )
+            if "item_id" in block and (
+                text := summary_delta(block, str(delta.get("thinking") or ""))
+            ):
+                yield self.sse(
+                    "response.reasoning_summary_text.delta",
+                    {
+                        "type": "response.reasoning_summary_text.delta",
+                        "item_id": block["item_id"],
+                        "output_index": block["output_index"],
+                        "summary_index": 0,
+                        "delta": text,
+                    },
+                )
         elif block["kind"] == "thinking" and delta_type == "signature_delta":
             content = block["content"]
             content["signature"] = str(content.get("signature") or "") + str(
@@ -1333,6 +1382,8 @@ class ResponsesStream:
                         envelope["block_ref"] = digest
                         encoded = json.dumps(envelope, separators=(",", ":")).encode()
                 except ThinkingReplayError as exc:
+                    if block.get("output_index") is not None:
+                        self.items.pop(block["output_index"])
                     self.terminal_error = True
                     yield self.sse(
                         "response.failed",
@@ -1350,25 +1401,53 @@ class ResponsesStream:
                     )
                     return
                 else:
-                    output_index = len(self.items)
+                    output_index = block.get("output_index")
+                    announced = output_index is not None
+                    if output_index is None:
+                        output_index = len(self.items)
+                    preview = block.get("summary_text", "")
                     item = {
                         "type": "reasoning",
-                        "id": self._next_item_id("rs"),
-                        "summary": [],
+                        "id": block["item_id"] if announced else self._next_item_id("rs"),
+                        "summary": [{"type": "summary_text", "text": preview}] if preview else [],
                         "content": None,
                         "encrypted_content": REASONING_ITEM_PREFIX
                         + base64.urlsafe_b64encode(encoded).decode(),
                     }
-                    self.items.append(item)
+                    if announced:
+                        self.items[output_index] = item
+                        yield self.sse(
+                            "response.reasoning_summary_text.done",
+                            {
+                                "type": "response.reasoning_summary_text.done",
+                                "item_id": item["id"],
+                                "output_index": output_index,
+                                "summary_index": 0,
+                                "text": preview,
+                            },
+                        )
+                        yield self.sse(
+                            "response.reasoning_summary_part.done",
+                            {
+                                "type": "response.reasoning_summary_part.done",
+                                "item_id": item["id"],
+                                "output_index": output_index,
+                                "summary_index": 0,
+                                "part": {"type": "summary_text", "text": preview},
+                            },
+                        )
+                    else:
+                        self.items.append(item)
                     self.reasoning_history.append(item)
-                    yield self.sse(
-                        "response.output_item.added",
-                        {
-                            "type": "response.output_item.added",
-                            "output_index": output_index,
-                            "item": item,
-                        },
-                    )
+                    if not announced:
+                        yield self.sse(
+                            "response.output_item.added",
+                            {
+                                "type": "response.output_item.added",
+                                "output_index": output_index,
+                                "item": item,
+                            },
+                        )
                     yield self.sse(
                         "response.output_item.done",
                         {
@@ -2180,7 +2259,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         )
         mark_started = getattr(self.credentials, "mark_started", None)
         try:
-            for event_type, data in self.stream_factory(request_credentials, payload):
+            last_heartbeat = time.monotonic()
+            events = observe_stream(
+                self.stream_factory(request_credentials, payload),
+                logger=lambda message: self.logger(f"{response_id} {model}: {message}"),
+            )
+            for event_type, data in events:
                 if first_token_ms is None and event_type == "content_block_delta":
                     delta = data.get("delta") or {}
                     if any(delta.get(key) for key in ("text", "thinking", "partial_json")):
@@ -2189,6 +2273,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     self.usage_snapshot = data
                     record_usage_snapshot(data, usage_path)
                     self.logger(f"{model}: {describe_usage(data)}")
+                    continue
+                if event_type == "ping":
+                    if not started:
+                        self._start_sse()
+                        started = True
+                    if not self._chunk(b'event: ping\ndata: {"type":"ping"}\n\n'):
+                        outcome = "disconnected"
+                        return
                     continue
                 if event_type == "message_start" and callable(mark_started):
                     mark_started(body, self.headers, request_credentials)
@@ -2201,7 +2293,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 if not started:
                     self._start_sse()
                     started = True
-                for chunk in stream.feed(event_type, data):
+                chunks = stream.feed(event_type, data)
+                # Thinking/signature/tool argument deltas can be buffered until
+                # block completion. Keep Codex's transport alive during that work.
+                if not chunks and time.monotonic() - last_heartbeat >= 10:
+                    if not self._chunk(b'event: ping\ndata: {"type":"ping"}\n\n'):
+                        outcome = "disconnected"
+                        return
+                    last_heartbeat = time.monotonic()
+                for chunk in chunks:
                     if not self._chunk(chunk):
                         outcome = "disconnected"
                         return
@@ -2260,6 +2360,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if not started:
                 self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
                 return
+            for chunk in stream.feed(
+                "error",
+                {
+                    "error": {
+                        "type": "api_error",
+                        "message": (
+                            str(exc)
+                            if isinstance(exc, ClaudeStreamError)
+                            else f"Claude stream failed ({type(exc).__name__}). Retry this turn."
+                        ),
+                    }
+                },
+            ):
+                self._chunk(chunk)
         finally:
             record_cache_usage(
                 profile=getattr(request_credentials, "profile_name", None)
