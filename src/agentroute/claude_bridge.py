@@ -1092,7 +1092,7 @@ def anthropic_stream(
             yield RATE_LIMIT_EVENT, snapshot
         event_type = ""
         for raw_line in response:
-            line = raw_line.decode("utf-8", errors="replace").rstrip("\n")
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
             if line.startswith("event:"):
                 event_type = line[6:].strip()
             elif line.startswith("data:"):
@@ -1104,6 +1104,8 @@ def anthropic_stream(
                 except json.JSONDecodeError:
                     continue
                 yield event_type or str(parsed.get("type") or "message"), parsed
+            elif line.startswith(":"):
+                yield "ping", {}
             elif not line:
                 event_type = ""
 
@@ -2189,6 +2191,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     self.usage_snapshot = data
                     record_usage_snapshot(data, usage_path)
                     self.logger(f"{model}: {describe_usage(data)}")
+                    continue
+                if event_type == "ping":
+                    if not started:
+                        self._start_sse()
+                        started = True
+                    if not self._chunk(b'event: ping\ndata: {"type":"ping"}\n\n'):
+                        outcome = "disconnected"
+                        return
                     continue
                 if event_type == "message_start" and callable(mark_started):
                     mark_started(body, self.headers, request_credentials)

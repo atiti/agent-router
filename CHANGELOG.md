@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.75rc2 — 2026-10-17
+
+- Forward Claude stream pings through the Responses bridge so long generations keep the Codex stream alive.
+
 ## 0.5.75rc1 — 2026-10-17
 
 - Enable shared task awareness in Desktop and CLI. Tasks maintain a current title and short status and claim exact tickets, files and bug signatures in the local registry.

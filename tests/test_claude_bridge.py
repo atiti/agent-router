@@ -1128,6 +1128,28 @@ class _FakeCredential:
         return
 
 
+def test_anthropic_stream_surfaces_ping_events_and_sse_comments():
+    response = io.BytesIO(
+        b'event: ping\r\ndata: {"type":"ping"}\r\n\r\n'
+        b": upstream keepalive\r\n\r\n"
+        b'event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n'
+    )
+
+    events = list(
+        anthropic_stream(
+            _FakeCredential(),
+            {"model": "claude-sonnet-5"},
+            urlopen=lambda _request, timeout: response,
+        )
+    )
+
+    assert events == [
+        ("ping", {"type": "ping"}),
+        ("ping", {}),
+        ("message_stop", {"type": "message_stop"}),
+    ]
+
+
 @pytest.fixture
 def bridge_server(tmp_path, monkeypatch):
     """A live bridge with a stubbed stream and isolated capture/account state."""
@@ -1147,6 +1169,8 @@ def bridge_server(tmp_path, monkeypatch):
         captured["payload"] = payload
         if captured.get("rate_limits") is not None:
             yield RATE_LIMIT_EVENT, captured["rate_limits"]
+        if captured.get("upstream_ping"):
+            yield "ping", {"type": "ping"}
         yield "message_start", {"message": {"usage": {"input_tokens": 5}}}
         yield "content_block_start", {"index": 0, "content_block": {"type": "text"}}
         yield (
@@ -1217,6 +1241,40 @@ def test_http_bridge_streams_responses_events(bridge_server):
         {"type": "text", "text": "Be terse.", "cache_control": {"type": "ephemeral", "ttl": "5m"}}
     ]
     assert captured["credentials"].mode == "api-key"
+
+
+def test_http_bridge_forwards_upstream_pings_as_sse_heartbeats(bridge_server):
+    server, captured = bridge_server
+    captured["upstream_ping"] = True
+    host, port = server.server_address[:2]
+    body = json.dumps(
+        {
+            "model": "claude-sonnet-5",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hi"}],
+                }
+            ],
+            "tools": [],
+        }
+    ).encode()
+    request = urllib.request.Request(
+        f"http://{host}:{port}/v1/responses",
+        data=body,
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = response.read().decode()
+
+    assert response.status == 200
+    assert 'event: ping\ndata: {"type":"ping"}\n\n' in payload
+    assert "event: response.created" in payload
+    assert payload.index("event: ping") < payload.index("event: response.created")
+    assert "event: response.completed" in payload
 
 
 def test_http_bridge_replays_large_thinking_through_tool_continuation(bridge_server, monkeypatch):
