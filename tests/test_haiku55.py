@@ -23,7 +23,7 @@ def test_haiku55_adaptive_effort_and_native_tool_choice(choice):
         "tool_choice": choice,
     }
     payload, _, _ = translate_request(body)
-    assert payload["thinking"] == {"type": "adaptive"}
+    assert payload["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert payload["output_config"] == {"effort": "low"}
     assert payload["max_tokens"] == 128_000
     assert payload["tool_choice"] == (

@@ -1277,6 +1277,89 @@ def test_http_bridge_forwards_upstream_pings_as_sse_heartbeats(bridge_server):
     assert "event: response.completed" in payload
 
 
+@pytest.mark.parametrize("failure", [TimeoutError("timed out"), None])
+def test_http_bridge_reports_stalled_or_truncated_stream(bridge_server, monkeypatch, failure):
+    server, _ = bridge_server
+
+    def broken_stream(credentials, payload):
+        yield "message_start", {"message": {}}
+        if failure is not None:
+            raise failure
+
+    monkeypatch.setattr(BridgeHandler, "stream_factory", staticmethod(broken_stream))
+    host, port = server.server_address[:2]
+    request = urllib.request.Request(
+        f"http://{host}:{port}/v1/responses",
+        data=json.dumps(
+            {
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hi"}],
+                    }
+                ]
+            }
+        ).encode(),
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        payload = response.read().decode()
+    assert "event: response.failed" in payload
+    assert "Retry this turn." in payload
+    assert "event: response.completed" not in payload
+
+
+def test_http_bridge_keeps_stream_alive_after_reasoning_preview_is_full(bridge_server, monkeypatch):
+    import agentroute.claude_bridge as bridge_module
+
+    server, _ = bridge_server
+    now = [0.0]
+    fake_time = SimpleNamespace(**vars(time))
+    fake_time.monotonic = lambda: now[0]
+    monkeypatch.setattr(bridge_module, "time", fake_time)
+
+    def thinking_stream(credentials, payload):
+        yield "message_start", {"message": {}}
+        yield "content_block_start", {"index": 0, "content_block": {"type": "thinking"}}
+        yield (
+            "content_block_delta",
+            {
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "x" * 512},
+            },
+        )
+        now[0] = 11
+        yield (
+            "content_block_delta",
+            {
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "more reasoning"},
+            },
+        )
+        yield "content_block_stop", {"index": 0}
+        yield "message_stop", {}
+
+    monkeypatch.setattr(BridgeHandler, "stream_factory", staticmethod(thinking_stream))
+    host, port = server.server_address[:2]
+    request = urllib.request.Request(
+        f"http://{host}:{port}/v1/responses",
+        data=(
+            b'{"input": [{"type":"message","role":"user",'
+            b'"content":[{"type":"input_text","text":"hi"}]}]}'
+        ),
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        payload = response.read().decode()
+    assert 'event: ping\ndata: {"type":"ping"}\n\n' in payload
+    assert payload.index("response.reasoning_summary_text.delta") < payload.index("event: ping")
+    assert payload.index("event: ping") < payload.index("response.reasoning_summary_text.done")
+    assert "event: response.completed" in payload
+
+
 def test_http_bridge_replays_large_thinking_through_tool_continuation(bridge_server, monkeypatch):
     server, _ = bridge_server
     host, port = server.server_address[:2]
@@ -1679,7 +1762,7 @@ def test_anthropic_429_keeps_upstream_limit_headers():
     )
 
     def rejected(_request, timeout):
-        assert timeout == 900
+        assert timeout == 120
         raise error
 
     with pytest.raises(UpstreamRateLimitError) as raised:
@@ -1870,7 +1953,7 @@ def test_http_bridge_profiles_translated_request_without_prompt_text(
 def test_modern_claude_effort_and_adaptive_thinking(model, effort, expected):
     payload, _, _ = translate_request({"model": model, "reasoning": {"effort": effort}})
     assert payload["output_config"] == {"effort": expected}
-    assert payload["thinking"] == {"type": "adaptive"}
+    assert payload["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert payload["max_tokens"] == 128000
 
 
