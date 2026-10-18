@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.5.76rc1 — 2026-10-18
+
+- Upgrade the routed runtime to stable Codex 0.163.0 and its matching Code Mode host, preserving task coordination, provider switching, and Claude stream progress.
+- Bound retained tool output, replay events, and exact diff memory; retain large output on disk for expansion. Include the process-memory monitor and bounded Playwright launcher.
 
 ## 0.5.75rc4 — 2026-10-17
 
@@ -13,9 +16,6 @@
 - Forward Claude stream pings through the Responses bridge so long generations keep the Codex stream alive.
 
 ## 0.5.75rc1 — 2026-10-17
-
-- Add process memory inspection and bounded spike capture, including macOS compressed-memory footprint and peak counters.
-- Add an explicit Playwright launcher with bounded request/event history for long-lived CLI daemons; preserve the upstream package and active daemons.
 
 - Use routed model context limits throughout compaction and token-window reporting, including Azure aliases and repeated routed turns. Doctor detects an effective catalog window that differs from its configured limit.
 - Keep provider-specific context windows separate when GPT and Azure use the same model name, and remove inherited GPT account compaction caps from routed aliases.

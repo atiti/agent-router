@@ -236,3 +236,22 @@ is persisted with the goal.
 CI note: Bazel tests on the fork fail on tests this change does not touch (stale TUI and
 core snapshots already failing on the 0.162.0 port base, plus one live-model flake in the
 Python SDK job). The Goal extension tests pass locally.
+
+
+## Stable 0.163.0 port with memory budgets (runtime v61)
+
+The runtime is based on the exact official `rust-v0.163.0` commit
+`83086188ae0614bd882818ff1aa23f3194962012`, with the existing routed provider,
+compaction, task-coordination, and completion-review integrations carried forward.
+Native Codex and the official Code Mode host both use 0.163.0.
+
+Large terminal tool results and dynamic arguments spill to shared temporary files above
+64 KiB. Compact rendering retains a bounded preview and expanded output reads the exact
+saved text. Replay event payloads are bounded at 8 MiB per thread. Optional exact diff
+tracking stops above 1 MiB per file, 16 MiB retained contents, or 4 MiB aggregate diff;
+committed edits and saved history remain available. Invalid tracking releases baselines.
+
+The port adapts cross-provider history normalization to upstream's new foreground/background
+compaction installation and shared child-spawn APIs. It includes the fixed ZIP 9.0.5 dependency
+and masks extracted Unix privilege bits. Runtime installation requires final-head CI and
+focused acceptance; an already running process keeps its loaded binary until restarted.
