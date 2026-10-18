@@ -61,3 +61,15 @@ def test_main_cannot_be_candidate(tmp_path):
     repo, base, tip, upstream = fixture_repo(tmp_path)
     with pytest.raises(ValueError, match="must start"):
         stack.prepare(repo, base, tip, upstream, "main", tmp_path / "candidate")
+
+
+def test_same_base_preserves_tip_with_merged_release_history(tmp_path):
+    repo, base, tip, upstream = fixture_repo(tmp_path)
+    run(repo, "switch", "downstream")
+    run(repo, "merge", "--no-ff", "main", "-m", "integrate upstream")
+    merged = run(repo, "rev-parse", "HEAD")
+    target = tmp_path / "same-release"
+    result = stack.prepare(repo, upstream, merged, upstream, "agentroute-port-same", target)
+    assert result["status"] == "needs_validation"
+    assert run(target, "rev-parse", "HEAD") == merged
+    assert run(target, "rev-parse", "HEAD^{tree}") == run(repo, "rev-parse", "downstream^{tree}")
