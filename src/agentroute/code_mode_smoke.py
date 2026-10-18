@@ -134,7 +134,11 @@ def smoke_code_mode_host(binary: Path, *, timeout: float = 15.0) -> None:
         raise SmokeError(f"Code Mode host IPC failed: {exc}") from exc
     finally:
         if process.stdin is not None:
-            process.stdin.close()
+            try:
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                # Preserve the original failure if the host closed its IPC pipe first.
+                pass
         try:
             process.wait(timeout=1)
         except subprocess.TimeoutExpired:

@@ -29,7 +29,9 @@ def prepare(repo, base, tip, onto, branch, worktree):
     if git(repo, "branch", "--list", branch):
         raise ValueError("candidate branch already exists")
     git(repo, "worktree", "add", "-b", branch, str(worktree), old_tip)
-    completed = subprocess.run(
+    # Same-release verification must preserve merge ancestry. Replaying it can reapply
+    # older upstream release commits from a previously merged downstream history.
+    completed = subprocess.CompletedProcess([], 0) if old_base == new_base else subprocess.run(
         [
             "git",
             "-C",
