@@ -36,7 +36,7 @@ agentroute = "agentroute.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentroute"]
-artifacts = ["src/agentroute/patches/*.patch"]
+artifacts = ["src/agentroute/patches/*.patch", "src/agentroute/*.cjs"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

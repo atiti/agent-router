@@ -107,6 +107,7 @@ from .hook import _prompt_help, codex_interrupt, codex_stop, codex_user_prompt_s
 from .install import hook_command as installed_hook_command
 from .install import merge_codex_hook, trust_agentroute_hooks
 from .launcher import launch_codex
+from .memory_cli import memory_app
 from .models import RouteContext, Tier
 from .pricing import cost_report
 from .profiles import account_credential_home, probe_profiles, routed_codex_binary
@@ -139,6 +140,7 @@ app.add_typer(desktop_app, name="desktop")
 app.add_typer(capacity_app, name="capacity")
 app.add_typer(account_app, name="account")
 app.add_typer(context_app, name="context")
+app.add_typer(memory_app, name="memory")
 app.add_typer(bridge_app, name="bridge")
 bridge_app.add_typer(claude_profile_app, name="profile")
 bridge_app.add_typer(claude_cache_app, name="cache")
