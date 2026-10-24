@@ -39,13 +39,15 @@ adds `ar` and `focus` commands alongside the existing AgentRoute launcher on PAT
 ```sh
 ar                                # attach/create the persistent workspace
 ar list                           # recent chats plus every loaded chat
+ar list --namespace Markster     # scope the list (repeat -n or use comma-separated names)
+ar board --namespace Private     # scope the live board and keep all alerts active
 ar new --dir ~/build/my-project --name "Billing fix"
 ar open <id-or-title>              # reuse the chat's pane, or open one
 ar move <id-or-title> --tab Markster # move its live pane without restarting Codex
 focus <id-or-title>                # jump to an already-open chat
 focus board                       # return to the live board
 ar tile                           # cycle adaptive vertical/horizontal/stack layouts
-ar group set markster ~/workspace  # optional rule for an ambiguous project root
+ar group set CabinPals ~/build/cabin-pals # route a root into a custom namespace
 ar group list
 ```
 
@@ -56,24 +58,50 @@ standalone process; opening one preserves Codex's writer lock and reports a conf
 ID prefixes/title searches cover the latest 100 chats and every loaded chat; a full
 UUID can address older history. Listing and focusing never resume a chat.
 
-The shared workspace has three tabs: **Sessions** for the live board, **Markster** for
-Markster projects, and **Private** for everything else. New chats route automatically
-from their project path and local Git origin; project directories named `markster-*`
-and AgentRoute itself route to Markster. The board shows each chat's group. Set an
-override with `ar group set markster <project-root>` or `ar group set private <project-root>`;
-the most specific matching root wins. Use `ar group remove <project-root>` to return a
-root to automatic detection. These rules are local to `~/.agentroute`.
+The workspace has a **Sessions** tab for the live board and one tab per configured
+namespace. The default namespaces are **Markster** and **Private**. New chats route
+automatically by configured project root or Git remote; built-in Markster detection
+handles Markster-named project directories, Markster GitHub origins, and AgentRoute.
+Everything else uses the default namespace. Use `--namespace` with `ar list`, `ar board`,
+`ar open`, `focus`, and `ar move` to limit session lookup or display. Repeat the flag or
+pass a comma-separated list to select several namespaces.
 
-Each group tab tiles its chats together, so 10–20 sessions stay in two manageable
+Namespaces and automatic project routing can be configured in `~/.agentroute/config.yaml`:
+
+```yaml
+zellij:
+  default_namespace: Private
+  namespaces:
+    Markster:
+      project_roots:
+        - ~/build/markster-core
+      git_remotes:
+        - github.com/markster-io/*
+        - github.com/atiti/agent-router
+    CabinPals:
+      project_roots:
+        - ~/build/cabin-pals
+    Private: {}
+```
+
+CLI overrides remain convenient for one-off project roots: `ar group set CabinPals <project-root>`.
+An explicit CLI override takes precedence, then the most specific configured project root,
+then Git remote rules. `ar group list` shows configured namespaces and rules, and
+`ar group remove <project-root>` removes a CLI override and returns that root to automatic routing.
+Project root overrides are stored locally in `~/.agentroute/zellij-project-groups.json`.
+
+Each namespace tab tiles its chats together, so 10–20 sessions stay in a few manageable
 views instead of becoming 10–20 terminal windows. Enter on the board opens or focuses
-a chat in its group tab. `focus <id-or-title>` jumps to an already-open pane. To switch
-tabs, unlock with **Ctrl-g**, press **Ctrl-t**, then use **h/l** (or **1/2/3** when the
-group tabs are the first three tabs). Press **Ctrl-g** again to lock Zellij controls.
+a chat in its namespace tab. `focus <id-or-title>` jumps to an already-open pane; add
+`--namespace` when the title is ambiguous. To switch tabs, unlock with **Ctrl-g**, press
+**Ctrl-t**, then use **h/l** or select the namespace tab by name. Press **Ctrl-g** again
+to lock Zellij controls.
 
 Existing panes are left running during setup. Their current tab stays as it is until
-you move them with `ar move <id-or-title> --tab Markster` or `--tab Private`. This moves
-the existing terminal pane, preserving its live Codex process and writer lock. The first
-move asks Zellij to grant AgentRoute's pane mover **Change application state** permission.
+you move them with `ar move <id-or-title> --tab <namespace>`, for example
+`ar move <id-or-title> --tab Markster`. Add `--namespace` to disambiguate the chat lookup.
+This moves the existing terminal pane, preserving its live Codex process and writer lock.
+The first move asks Zellij to grant AgentRoute's pane mover **Change application state** permission.
 
 Zellij starts in locked mode so Codex receives its usual keys. **Ctrl-g** unlocks
 Zellij controls: **Ctrl-p f** zooms the selected pane; **Ctrl-o d** detaches;
