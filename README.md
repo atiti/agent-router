@@ -41,6 +41,7 @@ ar                                # attach/create the persistent workspace
 ar list                           # recent chats plus every loaded chat
 ar new --dir ~/build/my-project --name "Billing fix"
 ar open <id-or-title>              # reuse the chat's pane, or open one
+ar move <id-or-title> --tab Markster # move its live pane without restarting Codex
 focus <id-or-title>                # jump to an already-open chat
 focus board                       # return to the live board
 ar tile                           # cycle adaptive vertical/horizontal/stack layouts
@@ -70,8 +71,9 @@ tabs, unlock with **Ctrl-g**, press **Ctrl-t**, then use **h/l** (or **1/2/3** w
 group tabs are the first three tabs). Press **Ctrl-g** again to lock Zellij controls.
 
 Existing panes are left running during setup. Their current tab stays as it is until
-that pane closes normally; opening the chat again after that routes its new terminal
-view to the matching group. This avoids interrupting active Codex writers.
+you move them with `ar move <id-or-title> --tab Markster` or `--tab Private`. This moves
+the existing terminal pane, preserving its live Codex process and writer lock. The first
+move asks Zellij to grant AgentRoute's pane mover **Change application state** permission.
 
 Zellij starts in locked mode so Codex receives its usual keys. **Ctrl-g** unlocks
 Zellij controls: **Ctrl-p f** zooms the selected pane; **Ctrl-o d** detaches;
