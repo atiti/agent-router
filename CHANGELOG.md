@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add `ar move <chat> --tab Markster|Private` to move a live Codex pane into an existing
+  group tab without restarting its process.
+
 ## 0.5.76rc1 — 2026-10-18
 
 - Upgrade the routed runtime to stable Codex 0.163.0 and its matching Code Mode host, preserving task coordination, provider switching, and Claude stream progress.

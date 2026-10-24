@@ -123,6 +123,74 @@ def test_open_existing_pane_does_not_launch_another_writer(monkeypatch):
     ]
 
 
+def test_move_existing_pane_uses_plugin_and_preserves_the_codex_client(monkeypatch, tmp_path):
+    from contextlib import nullcontext
+
+    plugin = tmp_path / "pane_mover.wasm"
+    plugin.write_bytes(b"wasm")
+    source = {
+        "id": 7,
+        "tab_id": 1,
+        "terminal_command": f"python -m agentroute.cli zellij client --thread {THREAD}",
+    }
+    moved = {**source, "tab_id": 2}
+    monkeypatch.setattr(z, "operation_lock", nullcontext)
+    monkeypatch.setattr(z, "panes", Mock(side_effect=[[source], [moved]]))
+    monkeypatch.setattr(z, "ensure_tab", Mock(return_value="2"))
+    monkeypatch.setattr(z, "pane_mover_plugin_path", lambda: plugin)
+    tile = Mock()
+    monkeypatch.setattr(z, "tile_panes", tile)
+    action = Mock(return_value="")
+    monkeypatch.setattr(z, "action", action)
+
+    result = z.move_thread_pane({"id": THREAD, "name": "Billing fix"}, "private", "test")
+
+    assert result == "Moved 'Billing fix' to Private; focused terminal_7."
+    z.ensure_tab.assert_called_once_with("test", "Private")
+    action.assert_has_calls([
+        call("test", "pipe", "--plugin", f"file:{plugin}", "--name", "agentroute-move-pane",
+             "--floating-plugin", "true", "--plugin-title", "AgentRoute pane mover",
+             "--", "7 2", timeout=90),
+        call("test", "go-to-tab-by-id", "2"),
+        call("test", "focus-pane-id", "terminal_7"),
+    ])
+    tile.assert_called_once_with("test", "2")
+
+
+def test_move_closed_chat_refuses_to_create_a_new_codex_client(monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(z, "operation_lock", nullcontext)
+    monkeypatch.setattr(z, "panes", lambda _: [])
+    ensure_tab = Mock()
+    monkeypatch.setattr(z, "ensure_tab", ensure_tab)
+
+    with pytest.raises(z.SharedServerError, match="no open terminal pane"):
+        z.move_thread_pane({"id": THREAD}, "Markster", "test")
+
+    ensure_tab.assert_not_called()
+
+
+def test_move_to_current_group_tab_only_focuses_the_existing_pane(monkeypatch):
+    from contextlib import nullcontext
+
+    pane = {"id": 7, "tab_id": 2,
+            "terminal_command": f"python -m agentroute.cli zellij client --thread {THREAD}"}
+    monkeypatch.setattr(z, "operation_lock", nullcontext)
+    monkeypatch.setattr(z, "panes", lambda _: [pane])
+    monkeypatch.setattr(z, "ensure_tab", Mock(return_value="2"))
+    action = Mock(return_value="")
+    monkeypatch.setattr(z, "action", action)
+
+    result = z.move_thread_pane({"id": THREAD}, "Markster", "test")
+
+    assert result == "Already in Markster; focused terminal_7."
+    assert action.call_args_list == [
+        call("test", "go-to-tab-by-id", "2"),
+        call("test", "focus-pane-id", "terminal_7"),
+    ]
+
+
 def test_open_new_thread_routes_and_tiles_its_project_tab(monkeypatch):
     from contextlib import nullcontext
 

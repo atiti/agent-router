@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
@@ -50,10 +51,10 @@ def executable(name: str) -> str:
     return path
 
 
-def action(session: str, *args: str) -> str:
+def action(session: str, *args: str, timeout: int = 15) -> str:
     result = subprocess.run(
         [executable("zellij"), "--session", session, "action", *args],
-        capture_output=True, text=True, timeout=15,
+        capture_output=True, text=True, timeout=timeout,
     )
     if result.returncode:
         raise SharedServerError(result.stderr.strip() or result.stdout.strip())
@@ -327,6 +328,63 @@ def open_thread(thread: dict, session: str) -> str:
         return created
 
 
+def pane_mover_plugin_path() -> Path:
+    return Path(__file__).resolve().parent / "plugins" / "pane_mover.wasm"
+
+
+def move_thread_pane(thread: dict, destination: str, session: str) -> str:
+    """Move an existing Codex terminal into a group tab without restarting it."""
+    group = {TAB_MARKSTER.casefold(): TAB_MARKSTER,
+             TAB_PRIVATE.casefold(): TAB_PRIVATE}.get(destination.casefold())
+    if group is None:
+        raise SharedServerError("Tab must be 'Markster' or 'Private'.")
+
+    with operation_lock():
+        pane = thread_panes(panes(session)).get(thread["id"])
+        if pane is None:
+            raise SharedServerError(
+                "That chat has no open terminal pane. Use `ar open <chat>` first."
+            )
+        destination_id = ensure_tab(session, group)
+        pane_id = f"terminal_{pane['id']}"
+        if str(pane.get("tab_id")) == destination_id:
+            action(session, "go-to-tab-by-id", destination_id)
+            action(session, "focus-pane-id", pane_id)
+            return f"Already in {group}; focused {pane_id}."
+
+        plugin = pane_mover_plugin_path()
+        if not plugin.is_file():
+            raise SharedServerError(
+                "The Zellij pane mover plugin is missing from this AgentRoute install. "
+                "Reinstall AgentRoute to restore its packaged plugin."
+            )
+        action(
+            session,
+            "pipe",
+            "--plugin", f"file:{plugin}",
+            "--name", "agentroute-move-pane",
+            "--floating-plugin", "true",
+            "--plugin-title", "AgentRoute pane mover",
+            "--", f"{pane['id']} {destination_id}",
+            timeout=90,
+        )
+
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            moved = thread_panes(panes(session)).get(thread["id"])
+            if moved and str(moved.get("tab_id")) == destination_id:
+                tile_panes(session, destination_id)
+                action(session, "go-to-tab-by-id", destination_id)
+                action(session, "focus-pane-id", f"terminal_{moved['id']}")
+                return f"Moved {title(thread)!r} to {group}; focused terminal_{moved['id']}."
+            time.sleep(0.1)
+
+        raise SharedServerError(
+            "Zellij did not confirm the move. If its pane-mover permission prompt is open, "
+            "approve 'Change application state' and run the command again."
+        )
+
+
 def tile_panes(session: str, tab_id: str | None = None) -> None:
     items = panes(session)
     if tab_id is None:
@@ -577,6 +635,18 @@ def open_command(query: str, session: str = SESSION) -> None:
         with RpcClient(socket_path()) as client:
             thread = resolve(client, query)
         typer.echo(open_thread(thread, session))
+    except ERRORS as error:
+        raise typer.BadParameter(str(error)) from error
+
+
+@zellij_app.command("move")
+def move_command(query: str, tab: str = typer.Option(..., "--tab"),
+                 session: str = SESSION) -> None:
+    """Move an open chat pane into the Markster or Private tab without restarting it."""
+    try:
+        with RpcClient(socket_path()) as client:
+            thread = resolve(client, query)
+        typer.echo(move_thread_pane(thread, tab, session))
     except ERRORS as error:
         raise typer.BadParameter(str(error)) from error
 
