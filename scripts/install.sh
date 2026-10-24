@@ -152,12 +152,15 @@ if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
     fi
     "$AGENTROUTE_STAGED_CODEX" --version >/dev/null
 
-    "$AGENTROUTE_HOME_DIR/venv/bin/python" -c '
+    AGENTROUTE_CODEX_STAGED_PATH="$AGENTROUTE_STAGED_CODEX" \
+    AGENTROUTE_CODEX_DEST_PATH="$AGENTROUTE_BIN_DIR/codex-bin" \
+        "$AGENTROUTE_HOME_DIR/venv/bin/python" -c '
 from pathlib import Path
+import os
 from agentroute.codex_patch import install_binary
 install_binary(
-    Path("'"$AGENTROUTE_STAGED_CODEX"'"),
-    Path("'"$AGENTROUTE_BIN_DIR/codex-bin"'"),
+    Path(os.environ["AGENTROUTE_CODEX_STAGED_PATH"]),
+    Path(os.environ["AGENTROUTE_CODEX_DEST_PATH"]),
 )
 '
     rm -f "$AGENTROUTE_STAGED_CODEX"
