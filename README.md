@@ -44,14 +44,34 @@ ar open <id-or-title>              # reuse the chat's pane, or open one
 focus <id-or-title>                # jump to an already-open chat
 focus board                       # return to the live board
 ar tile                           # cycle adaptive vertical/horizontal/stack layouts
+ar group set markster ~/workspace  # optional rule for an ambiguous project root
+ar group list
 ```
 
 The board uses **j/k** or arrow keys to select, **Enter** to open/focus, **/** to
-filter, and **t** to change layout. Its states distinguish running, approval,
+filter, and **t** to tile the selected project's tab. Its states distinguish running, approval,
 user input, ready, error, and saved chats. Saved chats can still belong to an older
 standalone process; opening one preserves Codex's writer lock and reports a conflict.
 ID prefixes/title searches cover the latest 100 chats and every loaded chat; a full
 UUID can address older history. Listing and focusing never resume a chat.
+
+The shared workspace has three tabs: **Sessions** for the live board, **Markster** for
+Markster projects, and **Private** for everything else. New chats route automatically
+from their project path and local Git origin; project directories named `markster-*`
+and AgentRoute itself route to Markster. The board shows each chat's group. Set an
+override with `ar group set markster <project-root>` or `ar group set private <project-root>`;
+the most specific matching root wins. Use `ar group remove <project-root>` to return a
+root to automatic detection. These rules are local to `~/.agentroute`.
+
+Each group tab tiles its chats together, so 10–20 sessions stay in two manageable
+views instead of becoming 10–20 terminal windows. Enter on the board opens or focuses
+a chat in its group tab. `focus <id-or-title>` jumps to an already-open pane. To switch
+tabs, unlock with **Ctrl-g**, press **Ctrl-t**, then use **h/l** (or **1/2/3** when the
+group tabs are the first three tabs). Press **Ctrl-g** again to lock Zellij controls.
+
+Existing panes are left running during setup. Their current tab stays as it is until
+that pane closes normally; opening the chat again after that routes its new terminal
+view to the matching group. This avoids interrupting active Codex writers.
 
 Zellij starts in locked mode so Codex receives its usual keys. **Ctrl-g** unlocks
 Zellij controls: **Ctrl-p f** zooms the selected pane; **Ctrl-o d** detaches;

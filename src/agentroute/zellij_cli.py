@@ -15,7 +15,9 @@ import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import typer
@@ -31,7 +33,13 @@ from .shared_server import RpcClient, SharedServerError, socket_path, state_dir
 from .work_cli import pages
 
 zellij_app = typer.Typer(no_args_is_help=True, help="Tile, browse, and focus shared Codex chats.")
+group_app = typer.Typer(no_args_is_help=True, help="Set project roots for Zellij tab sorting.")
+zellij_app.add_typer(group_app, name="group")
 SESSION = "agentroute"
+TAB_SESSIONS = "Sessions"
+TAB_MARKSTER = "Markster"
+TAB_PRIVATE = "Private"
+PROJECT_GROUPS_FILE = "zellij-project-groups.json"
 ERRORS = (OSError, ValueError, SharedServerError, WebSocketException, subprocess.SubprocessError)
 
 
@@ -54,6 +62,162 @@ def action(session: str, *args: str) -> str:
 
 def panes(session: str) -> list[dict]:
     return json.loads(action(session, "list-panes", "--all", "--json"))
+
+
+def tabs(session: str) -> list[dict]:
+    result = json.loads(action(session, "list-tabs", "--json"))
+    if isinstance(result, dict):
+        result = result.get("tabs", [])
+    if not isinstance(result, list):
+        raise SharedServerError("Zellij returned an unexpected tab list")
+    return result
+
+
+def tab_name(tab: dict) -> str:
+    return str(tab.get("name") or tab.get("tab_name") or "")
+
+
+def tab_identifier(tab: dict) -> str | None:
+    value = tab.get("tab_id", tab.get("id"))
+    return str(value) if value is not None else None
+
+
+def ensure_tab(session: str, name: str) -> str:
+    for tab in tabs(session):
+        if tab_name(tab).casefold() == name.casefold():
+            identifier = tab_identifier(tab)
+            if identifier is None:
+                raise SharedServerError(f"Zellij did not return an ID for the {name!r} tab")
+            return identifier
+    identifier = action(session, "new-tab", "--name", name, "--no-focus")
+    if not identifier:
+        raise SharedServerError(f"Zellij did not return an ID for the new {name!r} tab")
+    return identifier
+
+
+def project_groups_path() -> Path:
+    return agentroute_home() / PROJECT_GROUPS_FILE
+
+
+def load_project_groups() -> list[dict[str, str]]:
+    try:
+        value = json.loads(project_groups_path().read_text())
+    except FileNotFoundError:
+        return []
+    except (OSError, json.JSONDecodeError) as error:
+        raise SharedServerError(f"Could not read project tab rules: {error}") from error
+    if not isinstance(value, dict) or not isinstance(value.get("roots", []), list):
+        raise SharedServerError("Project tab rules have an invalid format")
+    rules = []
+    for item in value.get("roots", []):
+        if (not isinstance(item, dict) or not isinstance(item.get("path"), str)
+                or item.get("group") not in {"markster", "private"}):
+            raise SharedServerError("Project tab rules have an invalid entry")
+        rules.append({"path": item["path"], "group": item["group"]})
+    return rules
+
+
+def save_project_groups(rules: list[dict[str, str]]) -> None:
+    path = project_groups_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_suffix(f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps({"version": 1, "roots": rules}, indent=2) + "\n")
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+
+@lru_cache(maxsize=512)
+def _origin_is_markster(cwd: str) -> bool:
+    """Read the local Git origin only; this performs no network access."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "config", "--local", "--get", "remote.origin.url"],
+            capture_output=True, text=True, timeout=1,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode:
+        return False
+    remote = result.stdout.strip().casefold()
+    if "://" in remote:
+        path = urlsplit(remote).path
+    else:
+        path = remote.split(":", 1)[-1]
+    owner_repo = [part.removesuffix(".git") for part in path.strip("/").split("/")[:2]]
+    if len(owner_repo) != 2:
+        return False
+    owner, repository = owner_repo
+    return (owner.startswith("markster") or repository.startswith("markster")
+            or (owner == "atiti" and repository == "agent-router"))
+
+
+def project_group(cwd: str | Path) -> str:
+    """Choose the Markster or Private tab from an explicit root or local project identity."""
+    project = Path(cwd).expanduser().resolve()
+    matching = []
+    for rule in load_project_groups():
+        root = Path(rule["path"]).expanduser().resolve()
+        if project == root or root in project.parents:
+            matching.append((len(root.parts), rule["group"]))
+    if matching:
+        return max(matching, key=lambda item: item[0])[1].title()
+    if any(part.casefold() == "agent-router" or part.casefold().startswith("markster")
+           for part in project.parts):
+        return TAB_MARKSTER
+    if _origin_is_markster(str(project)):
+        return TAB_MARKSTER
+    return TAB_PRIVATE
+
+
+def set_project_group(directory: Path, group: str) -> None:
+    canonical = group.casefold()
+    if canonical not in {"markster", "private"}:
+        raise typer.BadParameter("group must be 'markster' or 'private'")
+    root = directory.expanduser().resolve()
+    if not root.is_dir():
+        raise typer.BadParameter(f"project root is not a directory: {root}")
+    rules = [rule for rule in load_project_groups()
+             if Path(rule["path"]).expanduser().resolve() != root]
+    rules.append({"path": str(root), "group": canonical})
+    save_project_groups(rules)
+
+
+@group_app.command("set")
+def group_set_command(group: str, directory: Path) -> None:
+    """Route a project directory and all its children to Markster or Private."""
+    try:
+        set_project_group(directory, group)
+    except (OSError, SharedServerError) as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(f"{directory.expanduser().resolve()} → {group.title()}")
+
+
+@group_app.command("remove")
+def group_remove_command(directory: Path) -> None:
+    """Remove an explicit project rule and return that root to automatic detection."""
+    try:
+        root = directory.expanduser().resolve()
+        rules = [rule for rule in load_project_groups()
+                 if Path(rule["path"]).expanduser().resolve() != root]
+        save_project_groups(rules)
+    except (OSError, SharedServerError) as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(f"Removed project tab override for {root}")
+
+
+@group_app.command("list")
+def group_list_command() -> None:
+    """Show explicit project roots and the automatic fallback rule."""
+    try:
+        rules = load_project_groups()
+    except SharedServerError as error:
+        raise typer.BadParameter(str(error)) from error
+    if not rules:
+        typer.echo("No project overrides. Markster repositories route to Markster; "
+                   "other roots route to Private.")
+        return
+    for rule in sorted(rules, key=lambda item: item["path"]):
+        typer.echo(f"{rule['group'].title():8} {rule['path']}")
 
 
 def session_state(session: str) -> str | None:
@@ -145,25 +309,46 @@ def operation_lock():
 
 def open_thread(thread: dict, session: str) -> str:
     with operation_lock():
-        existing = thread_panes(panes(session)).get(thread["id"])
+        items = panes(session)
+        existing = thread_panes(items).get(thread["id"])
         if existing:
             pane_id = f"terminal_{existing['id']}"
+            if existing.get("tab_id") is not None:
+                action(session, "go-to-tab-by-id", str(existing["tab_id"]))
             action(session, "focus-pane-id", pane_id)
             return pane_id
+        destination = project_group(thread["cwd"])
+        tab = ensure_tab(session, destination)
+        action(session, "go-to-tab-by-id", tab)
         created = action(session, "new-pane", "--name", title(thread), "--cwd", thread["cwd"],
                          "--", *runner(), "client", "--thread", thread["id"])
-        tile_panes(session)
+        tile_panes(session, tab)
         action(session, "focus-pane-id", created)
         return created
 
 
-def tile_panes(session: str) -> None:
+def tile_panes(session: str, tab_id: str | None = None) -> None:
     items = panes(session)
-    focused = next((p for p in items if p.get("is_focused") and not p.get("is_plugin")), None)
-    tab = focused["tab_id"] if focused else next(p["tab_id"] for p in items)
+    if tab_id is None:
+        focused = next((p for p in items if p.get("is_focused") and not p.get("is_plugin")), None)
+        tab_id = str(focused["tab_id"] if focused else next(p["tab_id"] for p in items))
     # Swap layouts rearrange the existing pane objects. Unlike override-layout,
     # they cannot spawn duplicate commands and can target a detached tab by ID.
-    action(session, "next-swap-layout", "--tab-id", str(tab))
+    action(session, "next-swap-layout", "--tab-id", str(tab_id))
+
+
+def setup_workspace_tabs(session: str) -> None:
+    """Name the board tab and create the two grouped chat tabs without moving panes."""
+    items = panes(session)
+    available = tabs(session)
+    board_pane = next((p for p in items if not p.get("is_plugin") and
+                       "zellij board" in (p.get("terminal_command") or "")), None)
+    sessions_tab = next((t for t in available
+                         if tab_name(t).casefold() == TAB_SESSIONS.casefold()), None)
+    if board_pane and sessions_tab is None and board_pane.get("tab_id") is not None:
+        action(session, "rename-tab-by-id", str(board_pane["tab_id"]), TAB_SESSIONS)
+    ensure_tab(session, TAB_MARKSTER)
+    ensure_tab(session, TAB_PRIVATE)
 
 
 def host_path(session: str) -> Path:
@@ -269,7 +454,7 @@ def table(threads: list[dict], mapped: dict[str, dict], selected: int = -1,
         value = status(thread)
         color = {"RUNNING": "green", "APPROVAL": "yellow", "INPUT": "yellow",
                  "ERROR": "red", "READY": "cyan"}.get(value, "dim")
-        label = f"{Path(thread['cwd']).name}\n{title(thread)}"
+        label = f"[{project_group(thread['cwd'])}] {Path(thread['cwd']).name}\n{title(thread)}"
         columns = ["›" if index == selected else ("●" if thread["id"] in mapped else ""),
                    Text(value, style=color), Text(label, overflow="ellipsis", no_wrap=True)]
         if not compact:
@@ -301,6 +486,10 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100))
     previous: dict[str, str] = {}
     console = Console()
     try:
+        try:
+            setup_workspace_tabs(session)
+        except ERRORS as error:
+            message = str(error)
         with keyboard(), Live(console=console, screen=True, auto_refresh=False) as live:
             while True:
                 try:
@@ -352,8 +541,14 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100))
                         message = str(error)
                 elif key == "t":
                     try:
-                        tile_panes(session)
-                        message = "Tiled current tab; all terminal processes retained."
+                        if visible:
+                            destination = project_group(visible[selected]["cwd"])
+                            tab = ensure_tab(session, destination)
+                            tile_panes(session, tab)
+                            message = f"Tiled {destination} tab; all terminal processes retained."
+                        else:
+                            tile_panes(session)
+                            message = "Tiled current tab; all terminal processes retained."
                     except ERRORS as error:
                         message = str(error)
     except KeyboardInterrupt:
@@ -405,6 +600,8 @@ def focus_command(query: str = typer.Argument("board"), session: str = SESSION) 
         if current and current != session:
             action(current, "switch-session", session, "--pane-id", pane_id)
         else:
+            if target.get("tab_id") is not None:
+                action(session, "go-to-tab-by-id", str(target["tab_id"]))
             action(session, "focus-pane-id", pane_id)
             if not current and sys.stdin.isatty():
                 remember_host(session)
@@ -484,6 +681,8 @@ def start_command(session: str = SESSION, background: bool = False) -> None:
                                             or f"Could not create Zellij session {session!r}")
             else:
                 state = "running"
+        if state == "running":
+            setup_workspace_tabs(session)
         if background and state == "exited":
             raise SharedServerError(
                 f"Zellij session {session!r} is saved but exited; run `ar` to resurrect and attach."
