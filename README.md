@@ -31,6 +31,42 @@ AgentRoute supports the interactive Codex CLI, `codex exec`, locally rebuilt Cod
 multiple ChatGPT subscription profiles, Azure OpenAI, and tool-compatible DeepSeek endpoints. See
 [Install](#install) for prerequisites and the review-before-running flow.
 
+## Zellij session cockpit
+
+With Zellij 0.45.1+ installed, run `agentroute zellij install` once. The installer
+adds `ar` and `focus` commands alongside the existing AgentRoute launcher on PATH.
+
+```sh
+ar                                # attach/create the persistent workspace
+ar list                           # recent chats plus every loaded chat
+ar new --dir ~/build/my-project --name "Billing fix"
+ar open <id-or-title>              # reuse the chat's pane, or open one
+focus <id-or-title>                # jump to an already-open chat
+focus board                       # return to the live board
+ar tile                           # cycle adaptive vertical/horizontal/stack layouts
+```
+
+The board uses **j/k** or arrow keys to select, **Enter** to open/focus, **/** to
+filter, and **t** to change layout. Its states distinguish running, approval,
+user input, ready, error, and saved chats. Saved chats can still belong to an older
+standalone process; opening one preserves Codex's writer lock and reports a conflict.
+ID prefixes/title searches cover the latest 100 chats and every loaded chat; a full
+UUID can address older history. Listing and focusing never resume a chat.
+
+Zellij starts in locked mode so Codex receives its usual keys. **Ctrl-g** unlocks
+Zellij controls: **Ctrl-p f** zooms the selected pane; **Ctrl-o d** detaches;
+**Ctrl-g** locks again. Detaching leaves the terminal views and shared owner alive.
+New panes trigger native adaptive layout cycling; `ar tile` rearranges existing
+panes without starting commands again. On restart, Zellij's session resurrection
+asks before rerunning saved commands.
+
+With the matching Overwatchr integration installed, Codex Stop hooks resolve the
+chat's exact Zellij pane through private, per-chat files under the shared owner's
+`zellij-targets/` directory. The running board also observes live approval/input
+status changes and clears alerts when work resumes. Keep a board running for those
+mid-turn alerts. `ar start` records the outer terminal context for Overwatchr focus.
+Mobile stays connected to the same AgentRoute owner independently of Zellij.
+
 ## CLI and mobile on the same session
 
 Opt in to a shared routed app-server on macOS or Linux:

@@ -139,6 +139,11 @@ def server_environment(environment: Mapping[str, str] | None = None) -> dict[str
     from .providers import credentials_path
 
     result = dict(os.environ if environment is None else environment)
+    # The owner serves many terminal views. A pane address inherited from its
+    # first launcher must never become the focus target for every chat's hooks.
+    for name in ("ZELLIJ", "ZELLIJ_PANE_ID", "ZELLIJ_SESSION_NAME",
+                 "OVERWATCHR_TTY", "OVERWATCHR_TITLE"):
+        result.pop(name, None)
     credentials = credentials_path()
     if credentials.exists():
         # Parse the export NAME=<shlex-quoted literal> format produced by AgentRoute.
