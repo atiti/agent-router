@@ -123,6 +123,7 @@ from .router import Router
 from .server_cli import server_app
 from .storage_cli import storage_app
 from .work_cli import sessions_app, work_app
+from .zellij_cli import zellij_app
 
 app = typer.Typer(no_args_is_help=True, help="Local, auditable model routing for coding agents.")
 desktop_app = typer.Typer(no_args_is_help=True, help="Build and manage Codex Desktop locally.")
@@ -148,6 +149,7 @@ app.add_typer(server_app, name="server")
 app.add_typer(storage_app, name="storage")
 app.add_typer(work_app, name="work")
 app.add_typer(sessions_app, name="sessions")
+app.add_typer(zellij_app, name="zellij")
 console = Console()
 
 

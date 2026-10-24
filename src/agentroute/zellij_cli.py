@@ -1,0 +1,495 @@
+"""A persistent terminal cockpit over the existing shared Codex owner.
+
+Zellij owns terminal views; app-server owns chats. Listing/focusing never resumes
+a chat or acquires its writer lock. Only an explicit open/new creates a client.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import select
+import shlex
+import shutil
+import subprocess
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+from uuid import UUID
+
+import typer
+from rich.console import Console
+from rich.live import Live
+from rich.table import Table
+from rich.text import Text
+from websockets.exceptions import WebSocketException
+
+from .config import agentroute_home, load_config, save_config
+from .server_cli import _start
+from .shared_server import RpcClient, SharedServerError, socket_path, state_dir
+from .work_cli import pages
+
+zellij_app = typer.Typer(no_args_is_help=True, help="Tile, browse, and focus shared Codex chats.")
+SESSION = "agentroute"
+ERRORS = (OSError, ValueError, SharedServerError, WebSocketException, subprocess.SubprocessError)
+
+
+def executable(name: str) -> str:
+    path = shutil.which(name)
+    if not path:
+        raise SharedServerError(f"{name} is missing from PATH; install it first")
+    return path
+
+
+def action(session: str, *args: str) -> str:
+    result = subprocess.run(
+        [executable("zellij"), "--session", session, "action", *args],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode:
+        raise SharedServerError(result.stderr.strip() or result.stdout.strip())
+    return result.stdout.strip()
+
+
+def panes(session: str) -> list[dict]:
+    return json.loads(action(session, "list-panes", "--all", "--json"))
+
+
+def thread_panes(items: list[dict]) -> dict[str, dict]:
+    result = {}
+    for pane in items:
+        if pane.get("is_plugin") or pane.get("exited"):
+            continue
+        command = pane.get("terminal_command") or ""
+        # The immutable command launched by us survives terminal title changes.
+        match = re.search(r"\bzellij client --thread ([0-9a-f-]{36})\b", command)
+        if match:
+            result[match[1]] = pane
+    return result
+
+
+def sessions(client: RpcClient, limit: int = 100) -> list[dict]:
+    recent = client.request("thread/list", {
+        "limit": limit, "sortKey": "updated_at", "modelProviders": [], "useStateDbOnly": True,
+    })["data"]
+    by_id = {thread["id"]: thread for thread in recent}
+    # Loaded chats remain visible even when older than the recent-history window.
+    for thread_id in pages(client, "thread/loaded/list", {}):
+        by_id[thread_id] = client.request("thread/read", {"threadId": thread_id})["thread"]
+    return list(by_id.values())
+
+
+def title(thread: dict) -> str:
+    return " ".join((thread.get("name") or thread.get("preview") or "Untitled").split())[:160]
+
+
+def status(thread: dict) -> str:
+    current = thread.get("status", {})
+    flags = current.get("activeFlags", [])
+    if "waitingOnApproval" in flags:
+        return "APPROVAL"
+    if "waitingOnUserInput" in flags:
+        return "INPUT"
+    return {"active": "RUNNING", "idle": "READY", "systemError": "ERROR"}.get(
+        current.get("type"), "SAVED"
+    )
+
+
+def resolve(client: RpcClient, query: str) -> dict:
+    try:
+        thread_id = str(UUID(query))
+    except ValueError:
+        candidates = sessions(client, 100)
+        matches = [t for t in candidates if t["id"].startswith(query)]
+        if not matches:
+            matches = [t for t in candidates if query.casefold() in title(t).casefold()]
+        if len(matches) != 1:
+            raise SharedServerError(
+                f"Expected one chat, found {len(matches)}. Use its full UUID from `ar list`."
+            ) from None
+        return matches[0]
+    return client.request("thread/read", {"threadId": thread_id})["thread"]
+
+
+def runner() -> list[str]:
+    # Use the same Python/package installation as this process, including venvs.
+    return [sys.executable, "-m", "agentroute.cli", "zellij"]
+
+
+@contextmanager
+def operation_lock():
+    import fcntl
+
+    directory = state_dir()
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (directory / "zellij.lock").open("a") as handle:
+        os.chmod(handle.name, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def open_thread(thread: dict, session: str) -> str:
+    with operation_lock():
+        existing = thread_panes(panes(session)).get(thread["id"])
+        if existing:
+            pane_id = f"terminal_{existing['id']}"
+            action(session, "focus-pane-id", pane_id)
+            return pane_id
+        created = action(session, "new-pane", "--name", title(thread), "--cwd", thread["cwd"],
+                         "--", *runner(), "client", "--thread", thread["id"])
+        tile_panes(session)
+        action(session, "focus-pane-id", created)
+        return created
+
+
+def tile_panes(session: str) -> None:
+    items = panes(session)
+    focused = next((p for p in items if p.get("is_focused") and not p.get("is_plugin")), None)
+    tab = focused["tab_id"] if focused else next(p["tab_id"] for p in items)
+    # Swap layouts rearrange the existing pane objects. Unlike override-layout,
+    # they cannot spawn duplicate commands and can target a detached tab by ID.
+    action(session, "next-swap-layout", "--tab-id", str(tab))
+
+
+def host_path(session: str) -> Path:
+    # Hashing also keeps arbitrary session names out of filesystem paths.
+    import hashlib
+
+    key = hashlib.sha256(session.encode()).hexdigest()[:12]
+    return state_dir() / f"zellij-{key}.json"
+
+
+def register_target(thread: str) -> Path:
+    """Per-thread address lets hooks in the shared owner find this terminal view."""
+    session = os.environ["ZELLIJ_SESSION_NAME"]
+    pane_id = int(os.environ["ZELLIJ_PANE_ID"])
+    path = state_dir() / "zellij-targets" / f"{thread}.json"
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        host = json.loads(host_path(session).read_text())
+    except (OSError, ValueError):
+        host = {}
+    temporary = path.with_suffix(f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps({**host, "session": session, "pane_id": pane_id,
+                                     "thread": thread}))
+    temporary.chmod(0o600)
+    temporary.replace(path)
+    return path
+
+
+def remember_host(session: str) -> None:
+    if os.environ.get("ZELLIJ"):
+        return
+    terminal = os.environ.get("TERM_PROGRAM", "")
+    terminal = {"iTerm.app": "iTerm2", "Apple_Terminal": "Terminal"}.get(terminal, terminal)
+    try:
+        tty = os.ttyname(sys.stdin.fileno())
+    except OSError:
+        tty = None
+    path = host_path(session)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.write_text(json.dumps({"terminal": terminal, "tty": tty}))
+    path.chmod(0o600)
+    for target in (state_dir() / "zellij-targets").glob("*.json"):
+        try:
+            address = json.loads(target.read_text())
+            if address.get("session") == session:
+                address.update(terminal=terminal, tty=tty)
+                temporary = target.with_suffix(f".{os.getpid()}.tmp")
+                temporary.write_text(json.dumps(address))
+                temporary.chmod(0o600)
+                temporary.replace(target)
+        except (OSError, ValueError):
+            continue
+
+
+def notify(thread: dict, pane: dict, session: str, event: str) -> None:
+    binary = shutil.which("overwatchr")
+    if not binary:
+        return
+    try:
+        host = json.loads(host_path(session).read_text())
+    except (OSError, ValueError):
+        host = {}
+    args = [binary, event, "--agent", f"codex-{thread['id']}", "--project",
+            Path(thread["cwd"]).name, "--title", title(thread),
+            "--zellij-session", session, "--zellij-pane-id", str(pane["id"]),
+            "--zellij-thread-id", thread["id"]]
+    for field in ("terminal", "tty"):
+        if host.get(field):
+            args.extend([f"--{field}", host[field]])
+    subprocess.run(args, capture_output=True, timeout=5, check=True)
+
+
+def notify_changes(threads: list[dict], mapped: dict[str, dict], previous: dict[str, str],
+                   session: str) -> dict[str, str]:
+    current = {}
+    for thread in threads:
+        thread_id = thread["id"]
+        if thread_id not in mapped:
+            continue
+        value = status(thread)
+        current[thread_id] = value
+        old = previous.get(thread_id)
+        if value == old:
+            continue
+        # Initial READY is a chat waiting at a prompt, not a newly completed turn.
+        event = None
+        if value in {"INPUT", "APPROVAL", "ERROR"} or (value == "READY" and old == "RUNNING"):
+            event = "error" if value == "ERROR" else "alert"
+        elif value == "RUNNING" and old in {"READY", "INPUT", "APPROVAL", "ERROR"}:
+            event = "done"  # Overwatchr's done event clears its attention queue.
+        if event:
+            notify(thread, mapped[thread_id], session, event)
+    return current
+
+
+def table(threads: list[dict], mapped: dict[str, dict], selected: int = -1,
+          compact: bool = False) -> Table:
+    result = Table(title="AgentRoute · shared sessions", expand=True)
+    headings = ("", "State", "Project / chat") if compact else ("", "State", "Project / chat", "ID")
+    for heading in headings:
+        result.add_column(heading, no_wrap=heading in {"", "State", "ID"})
+    for index, thread in enumerate(threads):
+        value = status(thread)
+        color = {"RUNNING": "green", "APPROVAL": "yellow", "INPUT": "yellow",
+                 "ERROR": "red", "READY": "cyan"}.get(value, "dim")
+        label = f"{Path(thread['cwd']).name}\n{title(thread)}"
+        columns = ["›" if index == selected else ("●" if thread["id"] in mapped else ""),
+                   Text(value, style=color), Text(label, overflow="ellipsis", no_wrap=True)]
+        if not compact:
+            columns.append(thread["id"][:8])
+        result.add_row(*columns, style="bold" if index == selected else "")
+    return result
+
+
+@contextmanager
+def keyboard():
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    settings = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+    try:
+        yield
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, settings)
+
+
+@zellij_app.command("board")
+def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100)) -> None:
+    """Live board: j/k select, Enter open/focus, t tile, / filter, q exit."""
+    if not sys.stdin.isatty():
+        raise typer.BadParameter("board needs a terminal; use `ar list` for plain output")
+    selected, query, filtering, message = 0, "", False, ""
+    previous: dict[str, str] = {}
+    console = Console()
+    try:
+        with keyboard(), Live(console=console, screen=True, auto_refresh=False) as live:
+            while True:
+                try:
+                    with RpcClient(socket_path(), name="agentroute_zellij_board") as client:
+                        threads = sessions(client, limit)
+                    mapped = thread_panes(panes(session))
+                    previous = notify_changes(threads, mapped, previous, session)
+                    threads.sort(key=lambda t: (status(t) not in {"APPROVAL", "INPUT", "ERROR"},
+                                                t["id"] not in mapped, -t.get("updatedAt", 0)))
+                    visible = [t for t in threads if query.casefold() in
+                               (title(t) + t["cwd"] + t["id"]).casefold()]
+                    selected = min(selected, max(0, len(visible) - 1))
+                    # Keep the selected row visible when the board is a narrow sidebar.
+                    height = max(1, (console.size.height - 8) // 3)
+                    offset = max(0, selected - height + 1)
+                    from rich.console import Group
+                    footer = Text(f"j/k select · Enter focus · t tile · / search · q quit\n"
+                                  f"Filter: {query}{'_' if filtering else ''}\n{message}")
+                    live.update(Group(table(visible[offset:offset + height], mapped,
+                                            selected - offset, compact=console.size.width < 75),
+                                      footer), refresh=True)
+                except ERRORS as error:
+                    live.update(Text(f"Shared owner/board unavailable: {error}\nq quit; retrying…"),
+                                refresh=True)
+                    visible = []
+                if not select.select([sys.stdin], [], [], 2)[0]:
+                    continue
+                key = os.read(sys.stdin.fileno(), 32).decode(errors="replace")
+                if filtering:
+                    if key in {"\n", "\r", "\x1b"}:
+                        filtering = False
+                    elif key in {"\x7f", "\b"}:
+                        query = query[:-1]
+                    elif key.isprintable():
+                        query += key
+                    selected = 0
+                elif key in {"q", "\x03"}:
+                    return
+                elif key in {"j", "\x1b[B"}:
+                    selected += 1
+                elif key in {"k", "\x1b[A"}:
+                    selected = max(0, selected - 1)
+                elif key == "/":
+                    filtering = True
+                elif key in {"\n", "\r"} and visible:
+                    try:
+                        message = open_thread(visible[selected], session)
+                    except ERRORS as error:
+                        message = str(error)
+                elif key == "t":
+                    try:
+                        tile_panes(session)
+                        message = "Tiled current tab; all terminal processes retained."
+                    except ERRORS as error:
+                        message = str(error)
+    except KeyboardInterrupt:
+        pass
+
+
+@zellij_app.command("list")
+def list_command(as_json: bool = typer.Option(False, "--json"),
+                 limit: int = typer.Option(30, min=1, max=100)) -> None:
+    """Read recent and loaded chats without resuming or changing them."""
+    try:
+        with RpcClient(socket_path()) as client:
+            threads = sessions(client, limit)
+        if as_json:
+            typer.echo(json.dumps(threads, indent=2))
+        else:
+            Console().print(table(threads, {}))
+    except ERRORS as error:
+        raise typer.BadParameter(str(error)) from error
+
+
+@zellij_app.command("open")
+def open_command(query: str, session: str = SESSION) -> None:
+    """Open a chat by full ID, recent ID prefix, or unambiguous title substring."""
+    try:
+        with RpcClient(socket_path()) as client:
+            thread = resolve(client, query)
+        typer.echo(open_thread(thread, session))
+    except ERRORS as error:
+        raise typer.BadParameter(str(error)) from error
+
+
+@zellij_app.command("focus")
+def focus_command(query: str = typer.Argument("board"), session: str = SESSION) -> None:
+    """Focus an existing pane; never opens another client or resumes a chat."""
+    try:
+        items = panes(session)
+        if query == "board":
+            target = next((p for p in items if not p.get("is_plugin") and
+                           "zellij board" in (p.get("terminal_command") or "")), None)
+        else:
+            with RpcClient(socket_path()) as client:
+                thread = resolve(client, query)
+            target = thread_panes(items).get(thread["id"])
+        if not target:
+            raise SharedServerError("No open pane. Run `ar open <chat>` first.")
+        pane_id = f"terminal_{target['id']}"
+        current = os.environ.get("ZELLIJ_SESSION_NAME")
+        if current and current != session:
+            action(current, "switch-session", session, "--pane-id", pane_id)
+        else:
+            action(session, "focus-pane-id", pane_id)
+            if not current and sys.stdin.isatty():
+                remember_host(session)
+                os.execvp("zellij", ["zellij", "attach", session])
+        typer.echo(f"Focused {session}/{pane_id}")
+    except ERRORS as error:
+        raise typer.BadParameter(str(error)) from error
+
+
+@zellij_app.command("new")
+def new_command(directory: Path = typer.Option(Path.cwd(), "--dir", exists=True, file_okay=False),
+                name: str = "", session: str = SESSION) -> None:
+    """Create a shared chat in a project directory and open its terminal view."""
+    try:
+        panes(session)  # Fail before creating a chat if the workspace does not exist.
+        with RpcClient(socket_path(), timeout=30) as client:
+            thread = client.request("thread/start", {"cwd": str(directory.resolve())})["thread"]
+            if name:
+                client.request("thread/name/set", {"threadId": thread["id"], "name": name})
+                thread["name"] = name
+        typer.echo(open_thread(thread, session))
+    except ERRORS as error:
+        raise typer.BadParameter(str(error)) from error
+
+
+@zellij_app.command("client", hidden=True)
+def client_command(thread: str = typer.Option(...)) -> None:
+    """Launch an explicitly shared TUI. Its immutable command identifies the pane."""
+    thread = str(UUID(thread))
+    if not load_config().shared_server.enabled:
+        raise typer.BadParameter("Shared attachment is disabled; run `agentroute server enable`.")
+    command = [sys.executable, "-m", "agentroute.cli", "launch-codex", "--", "resume", thread]
+    target = register_target(thread)
+    try:
+        result = subprocess.run(command, check=False)
+    finally:
+        target.unlink(missing_ok=True)
+    if result.returncode:
+        typer.echo("Could not attach. A chat owned by an older standalone CLI/Desktop must finish "
+                   "and close there before opening here. Writer locks were preserved.", err=True)
+    raise typer.Exit(result.returncode)
+
+
+@zellij_app.command("tile")
+def tile_command(session: str = SESSION) -> None:
+    """Cycle the current tab through adaptive layouts, retaining every terminal process."""
+    try:
+        tile_panes(session)
+    except ERRORS as error:
+        raise typer.BadParameter(str(error)) from error
+
+
+@zellij_app.command("start")
+def start_command(session: str = SESSION, background: bool = False) -> None:
+    """Start/reuse the owner and persistent workspace, then attach to it."""
+    try:
+        _start()
+        settings = load_config()
+        if not settings.shared_server.enabled:
+            settings.shared_server.enabled = True
+            save_config(settings)
+        remember_host(session)
+        config = state_dir() / "zellij.kdl"
+        config.write_text('default_mode "locked"\nauto_layout true\nsession_serialization true\n'
+                          'show_startup_tips false\nshow_release_notes false\n'
+                          'keybinds { locked { bind "Ctrl g" { SwitchToMode "Normal"; }; }; }\n')
+        args = [executable("zellij"), "--config", str(config), "attach",
+                "--create-background", session, "--", *runner(), "board", "--session", session]
+        subprocess.run(args, check=True, timeout=20)
+        if not background:
+            current = os.environ.get("ZELLIJ_SESSION_NAME")
+            if current:
+                if current != session:
+                    action(current, "switch-session", session)
+            else:
+                os.execvp("zellij", ["zellij", "--config", str(config), "attach", session])
+        typer.echo(f"Workspace ready. Attach with: zellij attach {shlex.quote(session)}")
+    except ERRORS as error:
+        raise typer.BadParameter(str(error)) from error
+
+
+@zellij_app.command("install")
+def install_command(bin_dir: Path | None = typer.Option(None)) -> None:
+    """Install ar and focus commands alongside the existing AgentRoute launcher."""
+    directory = bin_dir or agentroute_home() / "bin"
+    directory.mkdir(parents=True, exist_ok=True)
+    launcher = shlex.quote(str(agentroute_home() / "bin" / "agentroute"))
+    scripts = {
+        "ar": ('if [ "$#" -eq 0 ]; then set -- start; fi\n'
+               f'exec {launcher} zellij "$@"\n'),
+        "focus": f'exec {launcher} zellij focus "$@"\n',
+    }
+    for name, body in scripts.items():
+        path = directory / name
+        marker = "# AgentRoute Zellij cockpit"
+        if path.exists() and marker not in path.read_text():
+            raise typer.BadParameter(f"Refusing to replace an unrelated command: {path}")
+        temporary = path.with_suffix(f".{os.getpid()}.tmp")
+        temporary.write_text(f"#!/bin/sh\n{marker}\nset -eu\n{body}")
+        temporary.chmod(0o755)
+        temporary.replace(path)
+    typer.echo(f"Installed ar and focus in {directory}. Ensure this directory is on PATH.")
