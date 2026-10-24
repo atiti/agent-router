@@ -1,6 +1,7 @@
 import json
+import subprocess
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -39,15 +40,109 @@ def test_pane_discovery_uses_immutable_command_not_title():
                            {**valid, "id": 4, "is_plugin": True}]) == {THREAD: valid}
 
 
+def test_project_groups_choose_markster_repositories_and_private_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(z, "agentroute_home", lambda: tmp_path / "agentroute")
+    work = tmp_path / "build" / "markster-core"
+    private = tmp_path / "build" / "ridgify"
+    work.mkdir(parents=True)
+    private.mkdir(parents=True)
+
+    assert z.project_group(work) == "Markster"
+    assert z.project_group(private) == "Private"
+
+
+def test_project_group_overrides_use_the_most_specific_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(z, "agentroute_home", lambda: tmp_path / "agentroute")
+    root = tmp_path / "workspace"
+    nested = root / "private-project"
+    nested.mkdir(parents=True)
+    z.set_project_group(root, "markster")
+    z.set_project_group(nested, "private")
+
+    assert z.project_group(root / "a-chat") == "Markster"
+    assert z.project_group(nested / "a-chat") == "Private"
+    assert z.project_groups_path().stat().st_mode & 0o777 == 0o600
+
+
+def test_project_group_reads_markster_identity_from_local_git_origin(tmp_path, monkeypatch):
+    monkeypatch.setattr(z, "agentroute_home", lambda: tmp_path / "agentroute")
+    project = tmp_path / "general-name"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run([
+        "git", "-C", str(project), "remote", "add", "origin",
+        "git@github.com:markster-io/internal-tool.git",
+    ], check=True)
+
+    assert z.project_group(project) == "Markster"
+
+
+def test_ensure_tab_reuses_or_creates_named_tabs(monkeypatch):
+    action = Mock(side_effect=['[{"tab_id":7,"name":"Markster"}]',
+                               '[{"tab_id":7,"name":"Markster"}]', "8"])
+    monkeypatch.setattr(z, "action", action)
+
+    assert z.ensure_tab("test", "Markster") == "7"
+    assert z.ensure_tab("test", "Private") == "8"
+    assert action.call_args_list == [
+        call("test", "list-tabs", "--json"),
+        call("test", "list-tabs", "--json"),
+        call("test", "new-tab", "--name", "Private", "--no-focus"),
+    ]
+
+
+def test_workspace_setup_names_board_and_creates_group_tabs_without_moving_panes(monkeypatch):
+    monkeypatch.setattr(z, "panes", lambda _: [{
+        "id": 0, "tab_id": 1, "terminal_command": "python -m agentroute.cli zellij board",
+    }])
+    monkeypatch.setattr(z, "tabs", lambda _: [{"tab_id": 1, "name": "agentroute"}])
+    action = Mock(side_effect=["", "2", "3"])
+    monkeypatch.setattr(z, "action", action)
+
+    z.setup_workspace_tabs("test")
+
+    assert action.call_args_list == [
+        call("test", "rename-tab-by-id", "1", "Sessions"),
+        call("test", "new-tab", "--name", "Markster", "--no-focus"),
+        call("test", "new-tab", "--name", "Private", "--no-focus"),
+    ]
+
+
 def test_open_existing_pane_does_not_launch_another_writer(monkeypatch):
     monkeypatch.setattr(z, "operation_lock", __import__("contextlib").nullcontext)
     monkeypatch.setattr(z, "panes", lambda _: [{
-        "id": 7, "terminal_command": f"python -m agentroute.cli zellij client --thread {THREAD}"
+        "id": 7, "tab_id": 9,
+        "terminal_command": f"python -m agentroute.cli zellij client --thread {THREAD}"
     }])
     action = Mock(return_value="")
     monkeypatch.setattr(z, "action", action)
     assert z.open_thread({"id": THREAD}, "test") == "terminal_7"
-    action.assert_called_once_with("test", "focus-pane-id", "terminal_7")
+    assert action.call_args_list == [
+        call("test", "go-to-tab-by-id", "9"),
+        call("test", "focus-pane-id", "terminal_7"),
+    ]
+
+
+def test_open_new_thread_routes_and_tiles_its_project_tab(monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(z, "operation_lock", nullcontext)
+    monkeypatch.setattr(z, "panes", Mock(side_effect=[[], [
+        {"id": 8, "tab_id": 12, "is_focused": True},
+    ]]))
+    monkeypatch.setattr(z, "project_group", lambda _: "Markster")
+    ensure_tab = Mock(return_value="12")
+    monkeypatch.setattr(z, "ensure_tab", ensure_tab)
+    action = Mock(side_effect=["", "terminal_8", "", ""])
+    monkeypatch.setattr(z, "action", action)
+
+    assert z.open_thread({"id": THREAD, "cwd": "/work/markster-core"}, "test") == "terminal_8"
+
+    ensure_tab.assert_called_once_with("test", "Markster")
+    assert action.call_args_list[0].args == ("test", "go-to-tab-by-id", "12")
+    assert action.call_args_list[1].args[:3] == ("test", "new-pane", "--name")
+    assert action.call_args_list[2].args == ("test", "next-swap-layout", "--tab-id", "12")
+    assert action.call_args_list[3].args == ("test", "focus-pane-id", "terminal_8")
 
 
 def test_tiling_retains_all_terminals_and_plugins(monkeypatch):
@@ -148,6 +243,7 @@ def _stub_start(monkeypatch, tmp_path):
     monkeypatch.setattr(z, "load_config", lambda: settings)
     monkeypatch.setattr(z, "save_config", Mock())
     monkeypatch.setattr(z, "remember_host", Mock())
+    monkeypatch.setattr(z, "setup_workspace_tabs", Mock())
     monkeypatch.setattr(z, "state_dir", lambda: tmp_path)
     monkeypatch.setattr(z, "executable", lambda _: "/opt/homebrew/bin/zellij")
     return settings
