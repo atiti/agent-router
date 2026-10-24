@@ -56,6 +56,20 @@ def panes(session: str) -> list[dict]:
     return json.loads(action(session, "list-panes", "--all", "--json"))
 
 
+def session_state(session: str) -> str | None:
+    """Return whether a named Zellij session is running, exited, or absent."""
+    result = subprocess.run(
+        [executable("zellij"), "list-sessions", "--no-formatting"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode:
+        raise SharedServerError(result.stderr.strip() or result.stdout.strip())
+    for line in result.stdout.splitlines():
+        if line == session or line.startswith(f"{session} ["):
+            return "exited" if "(EXITED - attach to resurrect)" in line else "running"
+    return None
+
+
 def thread_panes(items: list[dict]) -> dict[str, dict]:
     result = {}
     for pane in items:
@@ -457,16 +471,39 @@ def start_command(session: str = SESSION, background: bool = False) -> None:
         config.write_text('default_mode "locked"\nauto_layout true\nsession_serialization true\n'
                           'show_startup_tips false\nshow_release_notes false\n'
                           'keybinds { locked { bind "Ctrl g" { SwitchToMode "Normal"; }; }; }\n')
-        args = [executable("zellij"), "--config", str(config), "attach",
-                "--create-background", session, "--", *runner(), "board", "--session", session]
-        subprocess.run(args, check=True, timeout=20)
+        state = session_state(session)
+        if state is None:
+            args = [executable("zellij"), "--config", str(config), "attach",
+                    "--create-background", session, "--", *runner(), "board", "--session", session]
+            result = subprocess.run(args, capture_output=True, text=True, timeout=20)
+            if result.returncode:
+                # Another launcher may have created it after our state check.
+                state = session_state(session)
+                if state is None:
+                    raise SharedServerError(result.stderr.strip() or result.stdout.strip()
+                                            or f"Could not create Zellij session {session!r}")
+            else:
+                state = "running"
+        if background and state == "exited":
+            raise SharedServerError(
+                f"Zellij session {session!r} is saved but exited; run `ar` to resurrect and attach."
+            )
         if not background:
             current = os.environ.get("ZELLIJ_SESSION_NAME")
             if current:
                 if current != session:
+                    if state == "exited":
+                        raise SharedServerError(
+                            f"Zellij session {session!r} is exited; use `ar` from a terminal "
+                            "outside Zellij to resurrect it."
+                        )
                     action(current, "switch-session", session)
             else:
-                os.execvp("zellij", ["zellij", "--config", str(config), "attach", session])
+                attach = ["zellij", "--config", str(config), "attach"]
+                if state == "exited":
+                    attach.append("--force-run-commands")
+                attach.append(session)
+                os.execvp("zellij", attach)
         typer.echo(f"Workspace ready. Attach with: zellij attach {shlex.quote(session)}")
     except ERRORS as error:
         raise typer.BadParameter(str(error)) from error
