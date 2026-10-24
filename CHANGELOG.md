@@ -2,8 +2,10 @@
 
 ## Unreleased
 
-- Add `ar move <chat> --tab Markster|Private` to move a live Codex pane into an existing
-  group tab without restarting its process.
+- Add `ar move <chat> --tab <namespace>` to move a live Codex pane into its namespace tab
+  without restarting its process.
+- Add configurable Zellij namespaces and scope `list`, board, `open`, `focus`, and `move`
+  lookups with repeatable `--namespace` filters.
 
 ## 0.5.76rc1 — 2026-10-18
 

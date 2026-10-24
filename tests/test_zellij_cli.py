@@ -1,11 +1,19 @@
 import json
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, call
 
 import pytest
 
 from agentroute import zellij_cli as z
+from agentroute.config import (
+    ZellijConfig,
+    ZellijNamespaceConfig,
+    default_config,
+    load_config,
+    save_config,
+)
 
 THREAD = "01a16cea-b69e-7772-b0c2-77d9a04435c0"
 
@@ -75,6 +83,150 @@ def test_project_group_reads_markster_identity_from_local_git_origin(tmp_path, m
     ], check=True)
 
     assert z.project_group(project) == "Markster"
+
+
+def test_configured_namespace_roots_git_remotes_and_default(tmp_path, monkeypatch):
+    markster = tmp_path / "work" / "markster"
+    personal = tmp_path / "work" / "personal"
+    markster.mkdir(parents=True)
+    personal.mkdir()
+    config = ZellijConfig(
+        default_namespace="Personal",
+        namespaces={
+            "Markster": ZellijNamespaceConfig(
+                project_roots=[str(markster)], git_remotes=["github.com/markster-io/*"]
+            ),
+            "Personal": ZellijNamespaceConfig(),
+            "CabinPals": ZellijNamespaceConfig(project_roots=[str(personal)]),
+        },
+    )
+    monkeypatch.setattr(z, "load_config", lambda: SimpleNamespace(zellij=config))
+    monkeypatch.setattr(z, "load_project_groups", lambda: [])
+
+    assert z.project_group(markster / "repo") == "Markster"
+    assert z.configured_namespace(
+        tmp_path, "git@github.com:markster-io/site.git", config
+    ) == "Markster"
+    assert z.project_group(personal / "repo") == "CabinPals"
+    assert z.project_group(tmp_path / "unassigned") == "Personal"
+
+
+def test_git_remote_configuration_accepts_ssh_style_patterns():
+    config = ZellijConfig(namespaces={
+        "Work": ZellijNamespaceConfig(git_remotes=["git@github.com:markster-io/*"]),
+        "Private": ZellijNamespaceConfig(),
+    })
+
+    assert z.configured_namespace(
+        Path("/unrelated"), "ssh://git@github.com/markster-io/site.git", config
+    ) == "Work"
+
+
+def test_zellij_namespace_config_round_trips_through_config_yaml(tmp_path):
+    config = default_config()
+    config.zellij = ZellijConfig(
+        default_namespace="Personal",
+        namespaces={
+            "Personal": ZellijNamespaceConfig(project_roots=["~/build/private-project"]),
+            "Work": ZellijNamespaceConfig(git_remotes=["github.com/example/work-*"]),
+        },
+    )
+    path = tmp_path / "config.yaml"
+
+    save_config(config, path)
+    loaded = load_config(path)
+
+    assert loaded.zellij.default_namespace == "Personal"
+    assert loaded.zellij.namespaces["Personal"].project_roots == ["~/build/private-project"]
+    assert loaded.zellij.namespaces["Work"].git_remotes == ["github.com/example/work-*"]
+
+
+def test_zellij_namespace_names_trim_whitespace_and_reject_case_duplicates():
+    config = ZellijConfig(
+        default_namespace=" Personal ",
+        namespaces={" Markster ": ZellijNamespaceConfig(), "Personal": ZellijNamespaceConfig()},
+    )
+
+    assert config.default_namespace == "Personal"
+    assert list(config.namespaces) == ["Markster", "Personal"]
+    with pytest.raises(ValueError, match="unique without regard to case"):
+        ZellijConfig(namespaces={
+            "Work": ZellijNamespaceConfig(), "work": ZellijNamespaceConfig()
+        })
+
+
+def test_scoped_sessions_add_namespace_and_accept_repeated_or_comma_filters(tmp_path, monkeypatch):
+    roots = {name: tmp_path / name.casefold() for name in ("Markster", "Private", "CabinPals")}
+    for root in roots.values():
+        root.mkdir()
+    config = ZellijConfig(
+        namespaces={name: ZellijNamespaceConfig(project_roots=[str(root)])
+                    for name, root in roots.items()}
+    )
+    monkeypatch.setattr(z, "load_config", lambda: SimpleNamespace(zellij=config))
+    monkeypatch.setattr(z, "load_project_groups", lambda: [])
+    threads = [{"id": name, "cwd": str(root / "repo")} for name, root in roots.items()]
+
+    result = z.scoped_sessions(threads, ["markster, CabinPals"])
+
+    assert [(thread["id"], thread["namespace"]) for thread in result] == [
+        ("Markster", "Markster"), ("CabinPals", "CabinPals")
+    ]
+    with pytest.raises(z.SharedServerError, match="Unknown namespace 'Missing'"):
+        z.scoped_sessions(threads, ["Missing"])
+
+
+def test_list_command_scopes_json_to_configured_namespaces(tmp_path, monkeypatch):
+    root = tmp_path / "markster"
+    root.mkdir()
+    config = ZellijConfig(namespaces={
+        "Markster": ZellijNamespaceConfig(project_roots=[str(root)]),
+        "Private": ZellijNamespaceConfig(),
+    })
+    monkeypatch.setattr(z, "load_config", lambda: SimpleNamespace(zellij=config))
+    monkeypatch.setattr(z, "load_project_groups", lambda: [])
+    monkeypatch.setattr(z, "sessions", lambda *_: [
+        {"id": "work", "cwd": str(root / "repo")},
+        {"id": "personal", "cwd": str(tmp_path / "private-repo")},
+    ])
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+    monkeypatch.setattr(z, "RpcClient", lambda *_args, **_kwargs: Client())
+    from typer.testing import CliRunner
+
+    result = CliRunner().invoke(z.zellij_app, ["list", "--namespace", "Markster", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == [{
+        "id": "work", "cwd": str(root / "repo"), "namespace": "Markster"
+    }]
+
+
+def test_resolve_can_disambiguate_a_chat_by_namespace(tmp_path, monkeypatch):
+    roots = {"Markster": tmp_path / "markster", "Private": tmp_path / "private"}
+    for root in roots.values():
+        root.mkdir()
+    config = ZellijConfig(namespaces={
+        name: ZellijNamespaceConfig(project_roots=[str(root)])
+        for name, root in roots.items()
+    })
+    monkeypatch.setattr(z, "load_config", lambda: SimpleNamespace(zellij=config))
+    monkeypatch.setattr(z, "load_project_groups", lambda: [])
+    monkeypatch.setattr(z, "sessions", lambda *_: [
+        {"id": "work", "cwd": str(roots["Markster"]), "name": "Billing"},
+        {"id": "personal", "cwd": str(roots["Private"]), "name": "Billing"},
+    ])
+
+    assert z.resolve(Mock(), "billing", ["Markster"]) == {
+        "id": "work", "cwd": str(roots["Markster"]), "name": "Billing",
+        "namespace": "Markster",
+    }
 
 
 def test_ensure_tab_reuses_or_creates_named_tabs(monkeypatch):

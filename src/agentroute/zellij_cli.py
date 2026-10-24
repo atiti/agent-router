@@ -6,6 +6,7 @@ a chat or acquires its writer lock. Only an explicit open/new creates a client.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -34,7 +35,7 @@ from .shared_server import RpcClient, SharedServerError, socket_path, state_dir
 from .work_cli import pages
 
 zellij_app = typer.Typer(no_args_is_help=True, help="Tile, browse, and focus shared Codex chats.")
-group_app = typer.Typer(no_args_is_help=True, help="Set project roots for Zellij tab sorting.")
+group_app = typer.Typer(no_args_is_help=True, help="Set project roots for namespace sorting.")
 zellij_app.add_typer(group_app, name="group")
 SESSION = "agentroute"
 TAB_SESSIONS = "Sessions"
@@ -106,15 +107,16 @@ def load_project_groups() -> list[dict[str, str]]:
     except FileNotFoundError:
         return []
     except (OSError, json.JSONDecodeError) as error:
-        raise SharedServerError(f"Could not read project tab rules: {error}") from error
+        raise SharedServerError(f"Could not read project namespace rules: {error}") from error
     if not isinstance(value, dict) or not isinstance(value.get("roots", []), list):
-        raise SharedServerError("Project tab rules have an invalid format")
+        raise SharedServerError("Project namespace rules have an invalid format")
     rules = []
     for item in value.get("roots", []):
         if (not isinstance(item, dict) or not isinstance(item.get("path"), str)
-                or item.get("group") not in {"markster", "private"}):
-            raise SharedServerError("Project tab rules have an invalid entry")
-        rules.append({"path": item["path"], "group": item["group"]})
+                or not isinstance(item.get("group"), str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}", item["group"])):
+            raise SharedServerError("Project namespace rules have an invalid entry")
+        rules.append({"path": item["path"], "group": item["group"].strip()})
     return rules
 
 
@@ -128,7 +130,7 @@ def save_project_groups(rules: list[dict[str, str]]) -> None:
 
 
 @lru_cache(maxsize=512)
-def _origin_is_markster(cwd: str) -> bool:
+def _git_origin(cwd: str) -> str | None:
     """Read the local Git origin only; this performs no network access."""
     try:
         result = subprocess.run(
@@ -136,66 +138,170 @@ def _origin_is_markster(cwd: str) -> bool:
             capture_output=True, text=True, timeout=1,
         )
     except (OSError, subprocess.SubprocessError):
-        return False
-    if result.returncode:
-        return False
-    remote = result.stdout.strip().casefold()
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def namespace_names(config=None, rules: list[dict[str, str]] | None = None) -> list[str]:
+    """Return configured namespace names plus explicit project-rule names."""
+    config = config or load_config().zellij
+    rules = load_project_groups() if rules is None else rules
+    names = list(config.namespaces)
+    if config.default_namespace.casefold() not in {name.casefold() for name in names}:
+        names.append(config.default_namespace)
+    for rule in rules:
+        if rule["group"].casefold() not in {name.casefold() for name in names}:
+            names.append(rule["group"])
+    return names
+
+
+def canonical_namespace(value: str, config=None,
+                        rules: list[dict[str, str]] | None = None) -> str | None:
+    return next((name for name in namespace_names(config, rules)
+                 if name.casefold() == value.casefold()), None)
+
+
+def normalized_git_remote(remote: str) -> str:
     if "://" in remote:
-        path = urlsplit(remote).path
+        parsed = urlsplit(remote)
+        host, path = parsed.netloc.rsplit("@", 1)[-1], parsed.path
+    elif "@" in remote and ":" in remote.split("@", 1)[1]:
+        host, path = remote.split("@", 1)[1].split(":", 1)
     else:
-        path = remote.split(":", 1)[-1]
-    owner_repo = [part.removesuffix(".git") for part in path.strip("/").split("/")[:2]]
-    if len(owner_repo) != 2:
-        return False
-    owner, repository = owner_repo
-    return (owner.startswith("markster") or repository.startswith("markster")
-            or (owner == "atiti" and repository == "agent-router"))
+        host, path = "", remote
+    identity = f"{host}/{path.lstrip('/')}" if host else path
+    return identity.strip("/").removesuffix(".git").casefold()
+
+
+def configured_namespace(project: Path, remote: str | None = None, config=None) -> str | None:
+    config = config or load_config().zellij
+    rooted: list[tuple[int, str]] = []
+    for name, rule in config.namespaces.items():
+        for configured_root in rule.project_roots:
+            root = Path(configured_root).expanduser().resolve()
+            if project == root or root in project.parents:
+                rooted.append((len(root.parts), name))
+    if rooted:
+        return max(rooted, key=lambda item: item[0])[1]
+    if remote:
+        identity = normalized_git_remote(remote)
+        for name, rule in config.namespaces.items():
+            if any(fnmatch.fnmatchcase(identity, normalized_git_remote(pattern))
+                   for pattern in rule.git_remotes):
+                return name
+    return None
 
 
 def project_group(cwd: str | Path) -> str:
-    """Choose the Markster or Private tab from an explicit root or local project identity."""
+    """Choose a configured namespace from an explicit root or local project identity."""
     project = Path(cwd).expanduser().resolve()
+    return resolve_project_namespace(project, load_config().zellij, load_project_groups())
+
+
+def resolve_project_namespace(project: Path, config,
+                              rules: list[dict[str, str]]) -> str:
     matching = []
-    for rule in load_project_groups():
+    for rule in rules:
         root = Path(rule["path"]).expanduser().resolve()
         if project == root or root in project.parents:
             matching.append((len(root.parts), rule["group"]))
     if matching:
-        return max(matching, key=lambda item: item[0])[1].title()
-    if any(part.casefold() == "agent-router" or part.casefold().startswith("markster")
-           for part in project.parts):
-        return TAB_MARKSTER
-    if _origin_is_markster(str(project)):
-        return TAB_MARKSTER
-    return TAB_PRIVATE
+        selected = max(matching, key=lambda item: item[0])[1]
+        return canonical_namespace(selected, config, rules) or selected
+
+    remote = _git_origin(str(project))
+    configured = configured_namespace(project, remote, config)
+    if configured:
+        return configured
+
+    names = {name.casefold(): name for name in namespace_names(config, rules)}
+    markster = names.get(TAB_MARKSTER.casefold())
+    if markster and (
+        any(part.casefold() == "agent-router" or part.casefold().startswith("markster")
+            for part in project.parts)
+        or (remote and _remote_is_markster(remote))
+    ):
+        return markster
+    return canonical_namespace(config.default_namespace, config, rules) or config.default_namespace
+
+
+def _remote_is_markster(remote: str) -> bool:
+    identity = normalized_git_remote(remote)
+    host_path = identity.split("/", 1)
+    if len(host_path) != 2:
+        return False
+    owner_repo = host_path[1].split("/")[:2]
+    return len(owner_repo) == 2 and (
+        owner_repo[0].startswith("markster") or owner_repo[1].startswith("markster")
+        or owner_repo == ["atiti", "agent-router"]
+    )
+
+
+def namespace_selection(requested: list[str] | None,
+                        names: list[str] | None = None) -> set[str] | None:
+    if not requested:
+        return None
+    names = names or namespace_names()
+    available = {name.casefold(): name for name in names}
+    selected = set()
+    unknown = []
+    for raw in requested:
+        for name in raw.split(","):
+            name = name.strip()
+            canonical = available.get(name.casefold())
+            if canonical is None:
+                unknown.append(name)
+            else:
+                selected.add(canonical.casefold())
+    if unknown:
+        raise SharedServerError(
+            f"Unknown namespace {', '.join(unknown)!r}. Available namespaces: "
+            f"{', '.join(names)}."
+        )
+    return selected
+
+
+def scoped_sessions(threads: list[dict], requested: list[str] | None = None) -> list[dict]:
+    """Annotate each chat with its namespace and optionally keep selected namespaces."""
+    config = load_config().zellij
+    rules = load_project_groups()
+    names = namespace_names(config, rules)
+    selected = namespace_selection(requested, names)
+    result = []
+    for thread in threads:
+        namespace = resolve_project_namespace(
+            Path(thread.get("cwd") or Path.cwd()).expanduser().resolve(), config, rules
+        )
+        if selected is None or namespace.casefold() in selected:
+            result.append({**thread, "namespace": namespace})
+    return result
 
 
 def set_project_group(directory: Path, group: str) -> None:
-    canonical = group.casefold()
-    if canonical not in {"markster", "private"}:
-        raise typer.BadParameter("group must be 'markster' or 'private'")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}", group.strip()):
+        raise typer.BadParameter("namespace must be 1-32 letters, digits, spaces, dots, _ or -")
     root = directory.expanduser().resolve()
     if not root.is_dir():
         raise typer.BadParameter(f"project root is not a directory: {root}")
     rules = [rule for rule in load_project_groups()
              if Path(rule["path"]).expanduser().resolve() != root]
-    rules.append({"path": str(root), "group": canonical})
+    rules.append({"path": str(root), "group": group.strip()})
     save_project_groups(rules)
 
 
 @group_app.command("set")
 def group_set_command(group: str, directory: Path) -> None:
-    """Route a project directory and all its children to Markster or Private."""
+    """Route a project directory and all its children to a namespace."""
     try:
         set_project_group(directory, group)
     except (OSError, SharedServerError) as error:
         raise typer.BadParameter(str(error)) from error
-    typer.echo(f"{directory.expanduser().resolve()} → {group.title()}")
+    typer.echo(f"{directory.expanduser().resolve()} → {group.strip()}")
 
 
 @group_app.command("remove")
 def group_remove_command(directory: Path) -> None:
-    """Remove an explicit project rule and return that root to automatic detection."""
+    """Remove an explicit namespace rule and return that root to automatic detection."""
     try:
         root = directory.expanduser().resolve()
         rules = [rule for rule in load_project_groups()
@@ -203,22 +309,30 @@ def group_remove_command(directory: Path) -> None:
         save_project_groups(rules)
     except (OSError, SharedServerError) as error:
         raise typer.BadParameter(str(error)) from error
-    typer.echo(f"Removed project tab override for {root}")
+    typer.echo(f"Removed project namespace override for {root}")
 
 
 @group_app.command("list")
 def group_list_command() -> None:
-    """Show explicit project roots and the automatic fallback rule."""
+    """Show configured namespaces, project roots, and the automatic fallback."""
     try:
+        config = load_config().zellij
+        typer.echo(f"Namespaces: {', '.join(namespace_names(config))}")
+        typer.echo(f"Default:    {config.default_namespace}")
+        for name, namespace in config.namespaces.items():
+            for root in namespace.project_roots:
+                typer.echo(f"{name:12} root {Path(root).expanduser()}")
+            for remote in namespace.git_remotes:
+                typer.echo(f"{name:12} git  {remote}")
         rules = load_project_groups()
-    except SharedServerError as error:
+    except ERRORS as error:
         raise typer.BadParameter(str(error)) from error
     if not rules:
-        typer.echo("No project overrides. Markster repositories route to Markster; "
-                   "other roots route to Private.")
+        typer.echo("No CLI project overrides. Configured roots/remotes and Markster "
+                   "detection (when configured) apply before the default namespace.")
         return
     for rule in sorted(rules, key=lambda item: item["path"]):
-        typer.echo(f"{rule['group'].title():8} {rule['path']}")
+        typer.echo(f"{rule['group']:12} {rule['path']}")
 
 
 def session_state(session: str) -> str | None:
@@ -275,20 +389,27 @@ def status(thread: dict) -> str:
     )
 
 
-def resolve(client: RpcClient, query: str) -> dict:
+def resolve(client: RpcClient, query: str, namespaces: list[str] | None = None) -> dict:
     try:
         thread_id = str(UUID(query))
     except ValueError:
-        candidates = sessions(client, 100)
+        candidates = scoped_sessions(sessions(client, 100), namespaces)
         matches = [t for t in candidates if t["id"].startswith(query)]
         if not matches:
             matches = [t for t in candidates if query.casefold() in title(t).casefold()]
         if len(matches) != 1:
             raise SharedServerError(
-                f"Expected one chat, found {len(matches)}. Use its full UUID from `ar list`."
+                f"Expected one chat, found {len(matches)}. Use its full UUID from `ar list` "
+                "or scope the search with `--namespace`."
             ) from None
         return matches[0]
-    return client.request("thread/read", {"threadId": thread_id})["thread"]
+    thread = client.request("thread/read", {"threadId": thread_id})["thread"]
+    scoped = scoped_sessions([thread], namespaces)
+    if not scoped:
+        available = ", ".join(namespaces or [])
+        raise SharedServerError(f"Chat {thread_id} is outside the requested namespace scope"
+                                + (f" ({available})" if available else "."))
+    return scoped[0]
 
 
 def runner() -> list[str]:
@@ -334,10 +455,10 @@ def pane_mover_plugin_path() -> Path:
 
 def move_thread_pane(thread: dict, destination: str, session: str) -> str:
     """Move an existing Codex terminal into a group tab without restarting it."""
-    group = {TAB_MARKSTER.casefold(): TAB_MARKSTER,
-             TAB_PRIVATE.casefold(): TAB_PRIVATE}.get(destination.casefold())
+    group = canonical_namespace(destination)
     if group is None:
-        raise SharedServerError("Tab must be 'Markster' or 'Private'.")
+        raise SharedServerError(f"Unknown namespace {destination!r}. Available namespaces: "
+                                f"{', '.join(namespace_names())}.")
 
     with operation_lock():
         pane = thread_panes(panes(session)).get(thread["id"])
@@ -396,7 +517,7 @@ def tile_panes(session: str, tab_id: str | None = None) -> None:
 
 
 def setup_workspace_tabs(session: str) -> None:
-    """Name the board tab and create the two grouped chat tabs without moving panes."""
+    """Name the board tab and create configured namespace tabs without moving panes."""
     items = panes(session)
     available = tabs(session)
     board_pane = next((p for p in items if not p.get("is_plugin") and
@@ -405,8 +526,8 @@ def setup_workspace_tabs(session: str) -> None:
                          if tab_name(t).casefold() == TAB_SESSIONS.casefold()), None)
     if board_pane and sessions_tab is None and board_pane.get("tab_id") is not None:
         action(session, "rename-tab-by-id", str(board_pane["tab_id"]), TAB_SESSIONS)
-    ensure_tab(session, TAB_MARKSTER)
-    ensure_tab(session, TAB_PRIVATE)
+    for namespace in namespace_names():
+        ensure_tab(session, namespace)
 
 
 def host_path(session: str) -> Path:
@@ -504,15 +625,18 @@ def notify_changes(threads: list[dict], mapped: dict[str, dict], previous: dict[
 
 def table(threads: list[dict], mapped: dict[str, dict], selected: int = -1,
           compact: bool = False) -> Table:
-    result = Table(title="AgentRoute · shared sessions", expand=True)
-    headings = ("", "State", "Project / chat") if compact else ("", "State", "Project / chat", "ID")
+    result = Table(title="AgentRoute · shared sessions by namespace", expand=True)
+    headings = ("", "State", "Namespace / project / chat") if compact else (
+        "", "State", "Namespace / project / chat", "ID"
+    )
     for heading in headings:
         result.add_column(heading, no_wrap=heading in {"", "State", "ID"})
     for index, thread in enumerate(threads):
         value = status(thread)
         color = {"RUNNING": "green", "APPROVAL": "yellow", "INPUT": "yellow",
                  "ERROR": "red", "READY": "cyan"}.get(value, "dim")
-        label = f"[{project_group(thread['cwd'])}] {Path(thread['cwd']).name}\n{title(thread)}"
+        namespace = thread.get("namespace") or project_group(thread["cwd"])
+        label = f"[{namespace}] {Path(thread['cwd']).name}\n{title(thread)}"
         columns = ["›" if index == selected else ("●" if thread["id"] in mapped else ""),
                    Text(value, style=color), Text(label, overflow="ellipsis", no_wrap=True)]
         if not compact:
@@ -536,10 +660,18 @@ def keyboard():
 
 
 @zellij_app.command("board")
-def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100)) -> None:
+def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
+           namespaces: list[str] | None = typer.Option(
+               None, "--namespace", "-n",
+               help="Show only these namespaces; repeat or comma-separate."
+           )) -> None:
     """Live board: j/k select, Enter open/focus, t tile, / filter, q exit."""
     if not sys.stdin.isatty():
         raise typer.BadParameter("board needs a terminal; use `ar list` for plain output")
+    try:
+        selected_namespaces = namespace_selection(namespaces)
+    except ERRORS as error:
+        raise typer.BadParameter(str(error)) from error
     selected, query, filtering, message = 0, "", False, ""
     previous: dict[str, str] = {}
     console = Console()
@@ -553,8 +685,12 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100))
                 try:
                     with RpcClient(socket_path(), name="agentroute_zellij_board") as client:
                         threads = sessions(client, limit)
+                    all_threads = scoped_sessions(threads)
+                    threads = [thread for thread in all_threads if
+                               selected_namespaces is None or
+                               thread["namespace"].casefold() in selected_namespaces]
                     mapped = thread_panes(panes(session))
-                    previous = notify_changes(threads, mapped, previous, session)
+                    previous = notify_changes(all_threads, mapped, previous, session)
                     threads.sort(key=lambda t: (status(t) not in {"APPROVAL", "INPUT", "ERROR"},
                                                 t["id"] not in mapped, -t.get("updatedAt", 0)))
                     visible = [t for t in threads if query.casefold() in
@@ -615,11 +751,15 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100))
 
 @zellij_app.command("list")
 def list_command(as_json: bool = typer.Option(False, "--json"),
-                 limit: int = typer.Option(30, min=1, max=100)) -> None:
+                 limit: int = typer.Option(30, min=1, max=100),
+                 namespaces: list[str] | None = typer.Option(
+                     None, "--namespace", "-n",
+                     help="Show only these namespaces; repeat or comma-separate."
+                 )) -> None:
     """Read recent and loaded chats without resuming or changing them."""
     try:
         with RpcClient(socket_path()) as client:
-            threads = sessions(client, limit)
+            threads = scoped_sessions(sessions(client, limit), namespaces)
         if as_json:
             typer.echo(json.dumps(threads, indent=2))
         else:
@@ -629,11 +769,14 @@ def list_command(as_json: bool = typer.Option(False, "--json"),
 
 
 @zellij_app.command("open")
-def open_command(query: str, session: str = SESSION) -> None:
+def open_command(query: str, session: str = SESSION,
+                 namespaces: list[str] | None = typer.Option(
+                     None, "--namespace", "-n", help="Limit chat lookup to these namespaces."
+                 )) -> None:
     """Open a chat by full ID, recent ID prefix, or unambiguous title substring."""
     try:
         with RpcClient(socket_path()) as client:
-            thread = resolve(client, query)
+            thread = resolve(client, query, namespaces)
         typer.echo(open_thread(thread, session))
     except ERRORS as error:
         raise typer.BadParameter(str(error)) from error
@@ -641,18 +784,24 @@ def open_command(query: str, session: str = SESSION) -> None:
 
 @zellij_app.command("move")
 def move_command(query: str, tab: str = typer.Option(..., "--tab"),
-                 session: str = SESSION) -> None:
-    """Move an open chat pane into the Markster or Private tab without restarting it."""
+                 session: str = SESSION,
+                 namespaces: list[str] | None = typer.Option(
+                     None, "--namespace", "-n", help="Limit chat lookup to these namespaces."
+                 )) -> None:
+    """Move an open chat pane into a namespace tab without restarting it."""
     try:
         with RpcClient(socket_path()) as client:
-            thread = resolve(client, query)
+            thread = resolve(client, query, namespaces)
         typer.echo(move_thread_pane(thread, tab, session))
     except ERRORS as error:
         raise typer.BadParameter(str(error)) from error
 
 
 @zellij_app.command("focus")
-def focus_command(query: str = typer.Argument("board"), session: str = SESSION) -> None:
+def focus_command(query: str = typer.Argument("board"), session: str = SESSION,
+                  namespaces: list[str] | None = typer.Option(
+                      None, "--namespace", "-n", help="Limit chat lookup to these namespaces."
+                  )) -> None:
     """Focus an existing pane; never opens another client or resumes a chat."""
     try:
         items = panes(session)
@@ -661,7 +810,7 @@ def focus_command(query: str = typer.Argument("board"), session: str = SESSION) 
                            "zellij board" in (p.get("terminal_command") or "")), None)
         else:
             with RpcClient(socket_path()) as client:
-                thread = resolve(client, query)
+                thread = resolve(client, query, namespaces)
             target = thread_panes(items).get(thread["id"])
         if not target:
             raise SharedServerError("No open pane. Run `ar open <chat>` first.")
