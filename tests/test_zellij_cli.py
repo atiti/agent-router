@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -139,3 +140,67 @@ def test_focus_accepts_a_positional_chat_or_board(monkeypatch):
     result = CliRunner().invoke(z.zellij_app, ["focus", "board", "--session", "test"])
     assert result.exit_code == 0, result.output
     action.assert_called_once_with("test", "focus-pane-id", "terminal_0")
+
+
+def _stub_start(monkeypatch, tmp_path):
+    settings = SimpleNamespace(shared_server=SimpleNamespace(enabled=True))
+    monkeypatch.setattr(z, "_start", Mock())
+    monkeypatch.setattr(z, "load_config", lambda: settings)
+    monkeypatch.setattr(z, "save_config", Mock())
+    monkeypatch.setattr(z, "remember_host", Mock())
+    monkeypatch.setattr(z, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(z, "executable", lambda _: "/opt/homebrew/bin/zellij")
+    return settings
+
+
+def test_start_reuses_an_existing_running_session(monkeypatch, tmp_path):
+    _stub_start(monkeypatch, tmp_path)
+    run = Mock(return_value=SimpleNamespace(
+        returncode=0, stdout="agentroute [Created 1m ago]\n", stderr=""
+    ))
+    monkeypatch.setattr(z.subprocess, "run", run)
+
+    z.start_command(background=True)
+
+    run.assert_called_once_with(
+        ["/opt/homebrew/bin/zellij", "list-sessions", "--no-formatting"],
+        capture_output=True, text=True, timeout=15,
+    )
+
+
+def test_start_resurrects_an_exited_session_with_saved_commands(monkeypatch, tmp_path):
+    _stub_start(monkeypatch, tmp_path)
+    run = Mock(return_value=SimpleNamespace(
+        returncode=0,
+        stdout="agentroute [Created 1m ago] (EXITED - attach to resurrect)\n",
+        stderr="",
+    ))
+    execvp = Mock()
+    monkeypatch.setattr(z.subprocess, "run", run)
+    monkeypatch.setattr(z.os, "execvp", execvp)
+    monkeypatch.delenv("ZELLIJ_SESSION_NAME", raising=False)
+
+    z.start_command()
+
+    execvp.assert_called_once_with("zellij", [
+        "zellij", "--config", str(tmp_path / "zellij.kdl"), "attach",
+        "--force-run-commands", "agentroute",
+    ])
+
+
+def test_start_creates_a_board_only_when_the_session_is_missing(monkeypatch, tmp_path):
+    _stub_start(monkeypatch, tmp_path)
+    run = Mock(side_effect=[
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ])
+    monkeypatch.setattr(z.subprocess, "run", run)
+
+    z.start_command(background=True)
+
+    assert run.call_count == 2
+    create_args = run.call_args_list[1].args[0]
+    assert create_args[create_args.index("attach") + 1:create_args.index("--")] == [
+        "--create-background", "agentroute",
+    ]
+    assert create_args[-3:] == ["board", "--session", "agentroute"]
