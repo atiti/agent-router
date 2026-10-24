@@ -126,3 +126,16 @@ def test_shared_owner_does_not_inherit_the_first_panes_focus_address(tmp_path, m
     assert "ZELLIJ_PANE_ID" not in result
     assert "OVERWATCHR_TTY" not in result
     assert result["PATH"] == "/bin"
+
+
+def test_focus_accepts_a_positional_chat_or_board(monkeypatch):
+    from typer.testing import CliRunner
+
+    monkeypatch.setattr(z, "panes", lambda _: [
+        {"id": 0, "terminal_command": "python -m agentroute.cli zellij board"}
+    ])
+    action = Mock(return_value="")
+    monkeypatch.setattr(z, "action", action)
+    result = CliRunner().invoke(z.zellij_app, ["focus", "board", "--session", "test"])
+    assert result.exit_code == 0, result.output
+    action.assert_called_once_with("test", "focus-pane-id", "terminal_0")

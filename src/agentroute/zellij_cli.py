@@ -373,7 +373,7 @@ def open_command(query: str, session: str = SESSION) -> None:
 
 
 @zellij_app.command("focus")
-def focus_command(query: str = "board", session: str = SESSION) -> None:
+def focus_command(query: str = typer.Argument("board"), session: str = SESSION) -> None:
     """Focus an existing pane; never opens another client or resumes a chat."""
     try:
         items = panes(session)
