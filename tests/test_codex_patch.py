@@ -281,6 +281,8 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "codex-provider-provenance.patch" not in installer
     assert "provider-routing-v61" in installer
     assert "--locked --profile" in installer
+    assert 'agentroute_bin="$AGENTROUTE_BIN_DIR"' in installer
+    assert 'PATH="$AGENTROUTE_BUILD_PATH"' in installer
     assert "reset --hard" not in installer
     assert "AGENTROUTE_PATCHES" not in installer
     assert "https://github.com/atiti/codex.git" in installer
