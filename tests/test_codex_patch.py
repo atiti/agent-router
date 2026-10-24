@@ -281,8 +281,8 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "codex-provider-provenance.patch" not in installer
     assert "provider-routing-v61" in installer
     assert "--locked --profile" in installer
-    assert 'agentroute_bin="$AGENTROUTE_BIN_DIR"' in installer
-    assert 'PATH="$AGENTROUTE_BUILD_PATH"' in installer
+    assert 'AR="${AR:-/usr/bin/ar}"' in installer
+    assert 'RANLIB="${RANLIB:-/usr/bin/ranlib}"' in installer
     assert 'AGENTROUTE_CODEX_STAGED_PATH="$AGENTROUTE_STAGED_CODEX"' in installer
     assert 'Path(os.environ["AGENTROUTE_CODEX_DEST_PATH"])' in installer
     assert "reset --hard" not in installer

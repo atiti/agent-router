@@ -119,21 +119,10 @@ if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
         printf 'No executable Code Mode host was found.\n' >&2
         exit 1
     fi
-    # AgentRoute installs an `ar` CLI shim in its bin directory. Rust native
-    # build scripts call the system archiver by name, so keep our own shims out
-    # of PATH while compiling the Codex binary.
-    AGENTROUTE_BUILD_PATH=$(printf '%s\n' "$PATH" | awk -v agentroute_bin="$AGENTROUTE_BIN_DIR" '
-        BEGIN { FS = OFS = ":" }
-        {
-            for (i = 1; i <= NF; i++) {
-                if ($i == agentroute_bin) continue
-                if (path != "") path = path ":"
-                path = path $i
-            }
-        }
-        END { print path }
-    ')
-    PATH="$AGENTROUTE_BUILD_PATH" \
+    # AgentRoute's `ar` command can shadow the system archiver required by
+    # Rust native build scripts, so pass the system tool paths explicitly.
+    AR="${AR:-/usr/bin/ar}" \
+    RANLIB="${RANLIB:-/usr/bin/ranlib}" \
     CARGO_TARGET_DIR="$AGENTROUTE_CODEX_TARGET" \
     CARGO_INCREMENTAL=0 \
     CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2} \
