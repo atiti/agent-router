@@ -627,10 +627,10 @@ def table(threads: list[dict], mapped: dict[str, dict], selected: int = -1,
           compact: bool = False) -> Table:
     result = Table(title="AgentRoute · shared sessions by namespace", expand=True)
     headings = ("", "State", "Namespace / project / chat") if compact else (
-        "", "State", "Namespace / project / chat", "ID"
+        "", "State", "Namespace / project / chat", "Created", "Latest", "ID"
     )
     for heading in headings:
-        result.add_column(heading, no_wrap=heading in {"", "State", "ID"})
+        result.add_column(heading, no_wrap=heading in {"", "State", "Created", "Latest", "ID"})
     for index, thread in enumerate(threads):
         value = status(thread)
         color = {"RUNNING": "green", "APPROVAL": "yellow", "INPUT": "yellow",
@@ -640,9 +640,26 @@ def table(threads: list[dict], mapped: dict[str, dict], selected: int = -1,
         columns = ["›" if index == selected else ("●" if thread["id"] in mapped else ""),
                    Text(value, style=color), Text(label, overflow="ellipsis", no_wrap=True)]
         if not compact:
-            columns.append(thread["id"][:8])
+            columns.extend([Text(age(thread.get("createdAt")), style="dim"),
+                            Text(age(thread.get("updatedAt")), style="dim"),
+                            thread["id"][:8]])
         result.add_row(*columns, style="bold" if index == selected else "")
     return result
+
+
+def age(timestamp: object) -> str:
+    """Short relative time, for example 40s, 12m, 3h, or 5d, from a Unix timestamp."""
+    try:
+        seconds = max(0, time.time() - float(timestamp))
+    except (TypeError, ValueError):
+        return "—"
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 86400)}d"
 
 
 @contextmanager
@@ -672,6 +689,9 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
         selected_namespaces = namespace_selection(namespaces)
     except ERRORS as error:
         raise typer.BadParameter(str(error)) from error
+    tabs = ["All"] + [name for name in namespace_names() if
+                      selected_namespaces is None or name.casefold() in selected_namespaces]
+    tab_index = 0
     selected, query, filtering, message = 0, "", False, ""
     previous: dict[str, str] = {}
     console = Console()
@@ -686,9 +706,10 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                     with RpcClient(socket_path(), name="agentroute_zellij_board") as client:
                         threads = sessions(client, limit)
                     all_threads = scoped_sessions(threads)
+                    current_tab = tabs[tab_index]
                     threads = [thread for thread in all_threads if
-                               selected_namespaces is None or
-                               thread["namespace"].casefold() in selected_namespaces]
+                               current_tab == "All" or
+                               thread["namespace"].casefold() == current_tab.casefold()]
                     mapped = thread_panes(panes(session))
                     previous = notify_changes(all_threads, mapped, previous, session)
                     threads.sort(key=lambda t: (status(t) not in {"APPROVAL", "INPUT", "ERROR"},
@@ -700,9 +721,14 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                     height = max(1, (console.size.height - 8) // 3)
                     offset = max(0, selected - height + 1)
                     from rich.console import Group
+                    bar = Text()
+                    for index, name in enumerate(tabs):
+                        style = "bold reverse" if index == tab_index else "dim"
+                        bar.append(f" {name} ", style=style)
+                    bar.append("  Tab or [ ] switch namespace")
                     footer = Text(f"j/k select · Enter focus · t tile · / search · q quit\n"
                                   f"Filter: {query}{'_' if filtering else ''}\n{message}")
-                    live.update(Group(table(visible[offset:offset + height], mapped,
+                    live.update(Group(bar, table(visible[offset:offset + height], mapped,
                                             selected - offset, compact=console.size.width < 75),
                                       footer), refresh=True)
                 except ERRORS as error:
@@ -726,6 +752,12 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                     selected += 1
                 elif key in {"k", "\x1b[A"}:
                     selected = max(0, selected - 1)
+                elif key in {"\t", "]"}:
+                    tab_index = (tab_index + 1) % len(tabs)
+                    selected = 0
+                elif key in {"\x1b[Z", "["}:
+                    tab_index = (tab_index - 1) % len(tabs)
+                    selected = 0
                 elif key == "/":
                     filtering = True
                 elif key in {"\n", "\r"} and visible:
