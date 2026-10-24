@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh Codex session titles immediately when their tracked task topic changes during a turn.
+  Explicit manual session renames remain pinned.
 - Add `ar move <chat> --tab <namespace>` to move a live Codex pane into its namespace tab
   without restarting its process.
 - Add configurable Zellij namespaces and scope `list`, board, `open`, `focus`, and `move`
