@@ -52,7 +52,8 @@ ar group list
 ```
 
 The board uses **j/k** or arrow keys to select, **Enter** to open/focus, **/** to
-filter, and **t** to tile the selected project's tab. Its states distinguish running, approval,
+filter, **m** to move the selected chat to another namespace, and **t** to tile the selected
+chat's namespace tab. Its states distinguish running, approval,
 user input, ready, error, and saved chats. Saved chats can still belong to an older
 standalone process; opening one preserves Codex's writer lock and reports a conflict.
 ID prefixes/title searches cover the latest 100 chats and every loaded chat; a full
@@ -98,9 +99,14 @@ a chat in its namespace tab. `focus <id-or-title>` jumps to an already-open pane
 to lock Zellij controls.
 
 Existing panes are left running during setup. Their current tab stays as it is until
-you move them with `ar move <id-or-title> --tab <namespace>`, for example
-`ar move <id-or-title> --tab Markster`. Add `--namespace` to disambiguate the chat lookup.
-This moves the existing terminal pane, preserving its live Codex process and writer lock.
+you move them. On the board, press **m** on a chat, choose a namespace with **Tab** or **[ ]**,
+then press **Enter**; **Esc** cancels. From a shell, run
+`ar move <id-or-title> --tab Markster`, and add `--namespace` to disambiguate the chat lookup.
+Either way, the chat's namespace is saved in `~/.agentroute/zellij-chat-namespaces.json`, and
+its open terminal moves into that tab without restarting Codex or releasing its writer lock.
+A chat without an open pane keeps the saved namespace and opens there next time. A move changes
+only that chat; other chats in the same project keep their project routing. Use
+`ar group set` to move a whole project folder.
 The first move asks Zellij to grant AgentRoute's pane mover **Change application state** permission.
 
 Zellij starts in locked mode so Codex receives its usual keys. **Ctrl-g** unlocks

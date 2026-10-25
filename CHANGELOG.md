@@ -8,6 +8,9 @@
   without restarting its process.
 - Add configurable Zellij namespaces and scope `list`, board, `open`, `focus`, and `move`
   lookups with repeatable `--namespace` filters.
+- Let the Zellij board move the selected chat to another namespace with **m**. A moved chat keeps
+  its namespace after restarts, and `ar move` now saves the namespace even when the chat has no
+  open pane.
 
 ## 0.5.76rc1 — 2026-10-18
 
