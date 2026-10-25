@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from functools import lru_cache
@@ -414,14 +415,34 @@ def thread_panes(items: list[dict]) -> dict[str, dict]:
     return result
 
 
-def sessions(client: RpcClient, limit: int = 100) -> list[dict]:
+# Codex searches its session files on every read of a chat that has no saved rollout yet.
+# Here each such read takes about 200 ms, so the board reuses those reads for a few seconds.
+UNLISTED_READ_SECONDS = 10.0
+
+
+def sessions(client: RpcClient, limit: int = 100,
+             reads: dict[str, tuple[float, dict]] | None = None) -> list[dict]:
     recent = client.request("thread/list", {
         "limit": limit, "sortKey": "updated_at", "modelProviders": [], "useStateDbOnly": True,
     })["data"]
     by_id = {thread["id"]: thread for thread in recent}
+    listed = set(by_id)
+    loaded = list(pages(client, "thread/loaded/list", {}))
+    now = time.monotonic()
+    if reads is not None:
+        for thread_id in set(reads) - set(loaded):
+            del reads[thread_id]
     # Loaded chats remain visible even when older than the recent-history window.
-    for thread_id in pages(client, "thread/loaded/list", {}):
-        by_id[thread_id] = client.request("thread/read", {"threadId": thread_id})["thread"]
+    for thread_id in loaded:
+        unlisted = reads is not None and thread_id not in listed
+        cached = reads.get(thread_id) if unlisted else None
+        if cached and now - cached[0] < UNLISTED_READ_SECONDS:
+            by_id[thread_id] = cached[1]
+            continue
+        thread = client.request("thread/read", {"threadId": thread_id})["thread"]
+        by_id[thread_id] = thread
+        if unlisted:
+            reads[thread_id] = (now, thread)
     return list(by_id.values())
 
 
@@ -439,6 +460,15 @@ def status(thread: dict) -> str:
     return {"active": "RUNNING", "idle": "READY", "systemError": "ERROR"}.get(
         current.get("type"), "SAVED"
     )
+
+
+def board_sort_key(thread: dict, mapped: dict[str, dict]) -> tuple[bool, bool, float]:
+    try:
+        activity = float(thread.get("updatedAt") or 0)
+    except (TypeError, ValueError):
+        activity = 0
+    return (status(thread) not in {"APPROVAL", "INPUT", "ERROR"},
+            thread["id"] not in mapped, -activity)
 
 
 def resolve(client: RpcClient, query: str, namespaces: list[str] | None = None) -> dict:
@@ -718,7 +748,7 @@ def age(timestamp: object) -> str:
     except (TypeError, ValueError):
         return "—"
     if seconds < 60:
-        return f"{int(seconds)}s"
+        return "now"
     if seconds < 3600:
         return f"{int(seconds // 60)}m"
     if seconds < 86400:
@@ -740,13 +770,75 @@ def keyboard():
         termios.tcsetattr(fd, termios.TCSADRAIN, settings)
 
 
+class BoardFeed:
+    """Refreshes board data on a background thread so key presses never wait on the owner."""
+
+    def __init__(self, session: str, limit: int, interval: float = 2.0) -> None:
+        self.session = session
+        self.limit = limit
+        self.interval = interval
+        self.lock = threading.Lock()
+        self.wake = threading.Event()
+        self.closing = threading.Event()
+        # Only the worker thread reads or writes these two fields.
+        self.reads: dict[str, tuple[float, dict]] = {}
+        self.previous: dict[str, str] = {}
+        self.order: list[str] = []
+        self.threads: list[dict] = []
+        self.mapped: dict[str, dict] = {}
+        self.names: list[str] = namespace_names()
+        self.error = ""
+        self.worker = threading.Thread(target=self._run, name="agentroute-board", daemon=True)
+
+    def start(self) -> None:
+        self.worker.start()
+
+    def close(self) -> None:
+        self.closing.set()
+        self.wake.set()
+
+    def refresh_soon(self) -> None:
+        self.wake.set()
+
+    def snapshot(self) -> tuple[list[dict], dict[str, dict], list[str], str]:
+        with self.lock:
+            return self.threads, self.mapped, self.names, self.error
+
+    def _run(self) -> None:
+        while not self.closing.is_set():
+            self._refresh()
+            self.wake.wait(self.interval)
+            self.wake.clear()
+
+    def _refresh(self) -> None:
+        try:
+            with RpcClient(socket_path(), name="agentroute_zellij_board") as client:
+                all_threads = scoped_sessions(sessions(client, self.limit, self.reads))
+            mapped = thread_panes(panes(self.session))
+            self.previous = notify_changes(all_threads, mapped, self.previous, self.session)
+            by_id = {thread["id"]: thread for thread in all_threads}
+            present = set(by_id)
+            order = [thread_id for thread_id in self.order if thread_id in present]
+            ordered_ids = set(order)
+            new_threads = [thread for thread in all_threads if thread["id"] not in ordered_ids]
+            new_threads.sort(key=lambda thread: board_sort_key(thread, mapped))
+            order.extend(thread["id"] for thread in new_threads)
+            self.order = order
+            all_threads = [by_id[thread_id] for thread_id in order]
+            result = (all_threads, mapped, namespace_names(), "")
+        except ERRORS as error:
+            result = ([], {}, self.names, str(error))
+        with self.lock:
+            self.threads, self.mapped, self.names, self.error = result
+
+
 @zellij_app.command("board")
 def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
            namespaces: list[str] | None = typer.Option(
                None, "--namespace", "-n",
                help="Show only these namespaces; repeat or comma-separate."
            )) -> None:
-    """Live board: j/k select, Enter open/focus, m move namespace, t tile, / filter, q exit."""
+    """Live board: j/k select, Enter open/focus, m move, t tile, / filter, q exit."""
     if not sys.stdin.isatty():
         raise typer.BadParameter("board needs a terminal; use `ar list` for plain output")
     try:
@@ -756,60 +848,74 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
     tabs = ["All"] + [name for name in namespace_names() if
                       selected_namespaces is None or name.casefold() in selected_namespaces]
     tab_index = 0
-    selected, query, filtering, message = 0, "", False, ""
+    selected, selected_id, query, filtering, message = 0, None, "", False, ""
     moving, move_index = False, 0
-    previous: dict[str, str] = {}
     console = Console()
+    feed = BoardFeed(session, limit)
     try:
         try:
             setup_workspace_tabs(session)
         except ERRORS as error:
             message = str(error)
+        feed.start()
+        drawn = None
         with keyboard(), Live(console=console, screen=True, auto_refresh=False) as live:
             while True:
-                try:
-                    with RpcClient(socket_path(), name="agentroute_zellij_board") as client:
-                        threads = sessions(client, limit)
-                    all_threads = scoped_sessions(threads)
-                    current_tab = tabs[tab_index]
+                all_threads, mapped, targets, error = feed.snapshot()
+                current_tab = tabs[tab_index]
+                visible: list[dict] = []
+                if not error:
                     threads = [thread for thread in all_threads if
                                current_tab == "All" or
                                thread["namespace"].casefold() == current_tab.casefold()]
-                    mapped = thread_panes(panes(session))
-                    previous = notify_changes(all_threads, mapped, previous, session)
-                    threads.sort(key=lambda t: (status(t) not in {"APPROVAL", "INPUT", "ERROR"},
-                                                t["id"] not in mapped, -t.get("updatedAt", 0)))
                     visible = [t for t in threads if query.casefold() in
                                (title(t) + t["cwd"] + t["id"]).casefold()]
+                    if selected_id is not None:
+                        selected = next((index for index, thread in enumerate(visible)
+                                         if thread["id"] == selected_id), selected)
                     selected = min(selected, max(0, len(visible) - 1))
-                    # Keep the selected row visible when the board is a narrow sidebar.
-                    height = max(1, (console.size.height - 8) // 3)
-                    offset = max(0, selected - height + 1)
-                    from rich.console import Group
-                    bar = Text()
-                    for index, name in enumerate(tabs):
-                        style = "bold reverse" if index == tab_index else "dim"
-                        bar.append(f" {name} ", style=style)
-                    bar.append("  Tab or [ ] switch namespace")
-                    targets = namespace_names()
-                    if moving:
-                        hint = (f"Move to {targets[move_index % len(targets)]}: Tab or [ ] choose"
-                                " · Enter confirm · Esc cancel")
+                    selected_id = visible[selected]["id"] if visible else None
+                # Avoid redrawing unchanged rows. Relative ages display "now" until a minute.
+                row_state = tuple(
+                    (thread["id"], status(thread), thread.get("namespace"),
+                     Path(thread["cwd"]).name, title(thread), age(thread.get("createdAt")),
+                     age(thread.get("updatedAt")), thread["id"] in mapped)
+                    for thread in visible
+                )
+                state = (row_state, tuple(tabs), tuple(targets), tab_index, selected, query,
+                         filtering, moving, move_index, message, error, console.size.width,
+                         console.size.height)
+                if state != drawn:
+                    drawn = state
+                    if error:
+                        live.update(Text(f"Shared owner/board unavailable: {error}\n"
+                                         "q quit; retrying…"), refresh=True)
                     else:
-                        hint = "j/k select · Enter focus · m move · t tile · / search · q quit"
-                    footer = Text(f"{hint}\nFilter: {query}{'_' if filtering else ''}\n{message}")
-                    live.update(Group(bar, table(visible[offset:offset + height], mapped,
-                                            selected - offset, compact=console.size.width < 75),
-                                      footer), refresh=True)
-                except ERRORS as error:
-                    live.update(Text(f"Shared owner/board unavailable: {error}\nq quit; retrying…"),
-                                refresh=True)
-                    visible = []
-                if not select.select([sys.stdin], [], [], 2)[0]:
+                        from rich.console import Group
+                        # Keep the selected row visible when the board is a narrow sidebar.
+                        height = max(1, (console.size.height - 8) // 3)
+                        offset = max(0, selected - height + 1)
+                        bar = Text()
+                        for index, name in enumerate(tabs):
+                            style = "bold reverse" if index == tab_index else "dim"
+                            bar.append(f" {name} ", style=style)
+                        bar.append("  Tab or [ ] switch namespace")
+                        if moving:
+                            hint = (f"Move to {targets[move_index % len(targets)]}: Tab or [ ] "
+                                    "choose · Enter confirm · Esc cancel")
+                        else:
+                            hint = "j/k select · Enter focus · m move · t tile · / search · q quit"
+                        footer = Text(f"{hint}\nFilter: {query}{'_' if filtering else ''}\n"
+                                      f"{message}")
+                        live.update(Group(bar, table(visible[offset:offset + height], mapped,
+                                                selected - offset,
+                                                compact=console.size.width < 75),
+                                          footer), refresh=True)
+                # The board polls the keyboard often; the owner is refreshed in the background.
+                if not select.select([sys.stdin], [], [], 0.2)[0]:
                     continue
                 key = os.read(sys.stdin.fileno(), 32).decode(errors="replace")
                 if moving:
-                    targets = namespace_names()
                     if key == "\x1b":
                         moving, message = False, "Move cancelled."
                     elif key in {"\t", "]"}:
@@ -824,6 +930,7 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                                     visible[selected], targets[move_index % len(targets)], session,
                                     focus=False,
                                 )
+                                feed.refresh_soon()
                             except ERRORS as error:
                                 message = str(error)
                     continue
@@ -835,28 +942,31 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                     elif key.isprintable():
                         query += key
                     selected = 0
+                    selected_id = None
                 elif key in {"q", "\x03"}:
                     return
                 elif key in {"j", "\x1b[B"}:
-                    selected += 1
+                    selected = min(selected + 1, max(0, len(visible) - 1))
+                    selected_id = visible[selected]["id"] if visible else None
                 elif key in {"k", "\x1b[A"}:
                     selected = max(0, selected - 1)
+                    selected_id = visible[selected]["id"] if visible else None
                 elif key in {"\t", "]"}:
                     tab_index = (tab_index + 1) % len(tabs)
-                    selected = 0
+                    selected, selected_id = 0, None
                 elif key in {"\x1b[Z", "["}:
                     tab_index = (tab_index - 1) % len(tabs)
-                    selected = 0
+                    selected, selected_id = 0, None
                 elif key == "/":
                     filtering = True
                 elif key in {"\n", "\r"} and visible:
                     try:
                         message = open_thread(visible[selected], session)
+                        feed.refresh_soon()
                     except ERRORS as error:
                         message = str(error)
                 elif key == "m":
                     if visible:
-                        targets = namespace_names()
                         current = visible[selected]["namespace"].casefold()
                         current_index = next((index for index, name in enumerate(targets)
                                               if name.casefold() == current), -1)
@@ -878,6 +988,8 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                         message = str(error)
     except KeyboardInterrupt:
         pass
+    finally:
+        feed.close()
 
 
 @zellij_app.command("list")
