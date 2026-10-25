@@ -505,8 +505,12 @@ def pane_mover_plugin_path() -> Path:
     return Path(__file__).resolve().parent / "plugins" / "pane_mover.wasm"
 
 
-def move_chat_to_namespace(thread: dict, destination: str, session: str) -> str:
-    """Set a chat's namespace. Its open terminal moves into that tab without restarting Codex."""
+def move_chat_to_namespace(thread: dict, destination: str, session: str, *,
+                           focus: bool = True) -> str:
+    """Set a chat's namespace. Its open terminal moves into that tab without restarting Codex.
+
+    With focus=False the current view stays where it is, so the board keeps its tab.
+    """
     group = canonical_namespace(destination)
     if group is None:
         raise SharedServerError(f"Unknown namespace {destination!r}. Available namespaces: "
@@ -521,6 +525,8 @@ def move_chat_to_namespace(thread: dict, destination: str, session: str) -> str:
         pane_id = f"terminal_{pane['id']}"
         if str(pane.get("tab_id")) == destination_id:
             remember_chat_namespace(thread["id"], group)
+            if not focus:
+                return f"Already in {group}."
             action(session, "go-to-tab-by-id", destination_id)
             action(session, "focus-pane-id", pane_id)
             return f"Already in {group}; focused {pane_id}."
@@ -550,6 +556,8 @@ def move_chat_to_namespace(thread: dict, destination: str, session: str) -> str:
             moved = thread_panes(panes(session)).get(thread["id"])
             if moved and str(moved.get("tab_id")) == destination_id:
                 tile_panes(session, destination_id)
+                if not focus:
+                    return f"Moved {title(thread)!r} to {group}."
                 action(session, "go-to-tab-by-id", destination_id)
                 action(session, "focus-pane-id", f"terminal_{moved['id']}")
                 return f"Moved {title(thread)!r} to {group}; focused terminal_{moved['id']}."
@@ -813,7 +821,8 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                         if visible:
                             try:
                                 message = move_chat_to_namespace(
-                                    visible[selected], targets[move_index % len(targets)], session
+                                    visible[selected], targets[move_index % len(targets)], session,
+                                    focus=False,
                                 )
                             except ERRORS as error:
                                 message = str(error)
