@@ -58,6 +58,8 @@ user input, ready, error, and saved chats. Saved chats can still belong to an ol
 standalone process; opening one preserves Codex's writer lock and reports a conflict.
 ID prefixes/title searches cover the latest 100 chats and every loaded chat; a full
 UUID can address older history. Listing and focusing never resume a chat.
+Rows begin with chats needing attention and recent activity near the top, then stay in place
+while live status and activity times update. New chats are appended during that board run.
 
 The workspace has a **Sessions** tab for the live board and one tab per configured
 namespace. The default namespaces are **Markster** and **Private**. New chats route
