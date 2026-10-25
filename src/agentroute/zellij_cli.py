@@ -535,12 +535,10 @@ def pane_mover_plugin_path() -> Path:
     return Path(__file__).resolve().parent / "plugins" / "pane_mover.wasm"
 
 
-def move_chat_to_namespace(thread: dict, destination: str, session: str, *,
-                           focus: bool = True) -> str:
-    """Set a chat's namespace. Its open terminal moves into that tab without restarting Codex.
-
-    With focus=False the current view stays where it is, so the board keeps its tab.
-    """
+def request_chat_move_to_namespace(
+    thread: dict, destination: str, session: str,
+) -> tuple[str, subprocess.Popen[str] | None, str | None]:
+    """Request a pane move without blocking the board while Zellij awaits permission."""
     group = canonical_namespace(destination)
     if group is None:
         raise SharedServerError(f"Unknown namespace {destination!r}. Available namespaces: "
@@ -550,16 +548,12 @@ def move_chat_to_namespace(thread: dict, destination: str, session: str, *,
         pane = thread_panes(panes(session)).get(thread["id"])
         if pane is None:
             remember_chat_namespace(thread["id"], group)
-            return f"Moved {title(thread)!r} to {group}; it opens there next time."
+            return f"Moved {title(thread)!r} to {group}; it opens there next time.", None, None
+
         destination_id = ensure_tab(session, group)
-        pane_id = f"terminal_{pane['id']}"
+        remember_chat_namespace(thread["id"], group)
         if str(pane.get("tab_id")) == destination_id:
-            remember_chat_namespace(thread["id"], group)
-            if not focus:
-                return f"Already in {group}."
-            action(session, "go-to-tab-by-id", destination_id)
-            action(session, "focus-pane-id", pane_id)
-            return f"Already in {group}; focused {pane_id}."
+            return f"Already in {group}.", None, destination_id
 
         plugin = pane_mover_plugin_path()
         if not plugin.is_file():
@@ -567,37 +561,40 @@ def move_chat_to_namespace(thread: dict, destination: str, session: str, *,
                 "The Zellij pane mover plugin is missing from this AgentRoute install. "
                 "Reinstall AgentRoute to restore its packaged plugin."
             )
-        # Save the namespace before moving the pane so the board and `ar open` agree on the
-        # target even if Zellij's permission prompt is still open.
-        remember_chat_namespace(thread["id"], group)
-        action(
-            session,
-            "pipe",
+        command = [
+            executable("zellij"), "--session", session, "action", "pipe",
             "--plugin", f"file:{plugin}",
             "--name", "agentroute-move-pane",
             "--floating-plugin", "true",
             "--plugin-title", "AgentRoute pane mover",
             "--", f"{pane['id']} {destination_id}",
-            timeout=90,
+        ]
+        process = subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
+        return (f"Move requested for {title(thread)!r} to {group}; approve Zellij's "
+                "Change application state prompt if it appears.", process, destination_id)
 
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            moved = thread_panes(panes(session)).get(thread["id"])
-            if moved and str(moved.get("tab_id")) == destination_id:
-                tile_panes(session, destination_id)
-                if not focus:
-                    return f"Moved {title(thread)!r} to {group}."
-                action(session, "go-to-tab-by-id", destination_id)
-                action(session, "focus-pane-id", f"terminal_{moved['id']}")
-                return f"Moved {title(thread)!r} to {group}; focused terminal_{moved['id']}."
-            time.sleep(0.1)
 
-        raise SharedServerError(
-            f"{title(thread)!r} is now set to {group}, but Zellij did not confirm its pane move. "
-            "If its pane-mover permission prompt is open, approve 'Change application state' "
-            "and run the move again."
-        )
+def is_escape_key(key: str) -> bool:
+    """Recognize Escape when its byte is batched with another non-sequence byte."""
+    return (key == "\x1b" or re.match(r"^\x1b\[27(?:;\d+)*u", key) is not None
+            or (key.startswith("\x1b") and key[1:2] not in {"[", "O"}))
+
+
+def stop_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
 def tile_panes(session: str, tab_id: str | None = None) -> None:
@@ -850,11 +847,14 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
     tab_index = 0
     selected, selected_id, query, filtering, message = 0, None, "", False, ""
     moving, move_index = False, 0
+    pending_move: dict | None = None
+    board_tab_id: str | None = None
     console = Console()
     feed = BoardFeed(session, limit)
     try:
         try:
             setup_workspace_tabs(session)
+            board_tab_id = ensure_tab(session, TAB_SESSIONS)
         except ERRORS as error:
             message = str(error)
         feed.start()
@@ -862,6 +862,39 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
         with keyboard(), Live(console=console, screen=True, auto_refresh=False) as live:
             while True:
                 all_threads, mapped, targets, error = feed.snapshot()
+                if pending_move is not None:
+                    thread_id = pending_move["thread_id"]
+                    pane = mapped.get(thread_id)
+                    if pane and str(pane.get("tab_id")) == pending_move["destination_id"]:
+                        try:
+                            tile_panes(session, pending_move["destination_id"])
+                            if board_tab_id is not None:
+                                action(session, "go-to-tab-by-id", board_tab_id)
+                            message = (f"Moved {pending_move['title']!r} to "
+                                       f"{pending_move['namespace']}.")
+                        except ERRORS as move_error:
+                            message = str(move_error)
+                        pending_move = None
+                    else:
+                        process = pending_move["process"]
+                        if process is not None and process.poll() is not None:
+                            pending_move["process"] = None
+                            if process.returncode:
+                                message = "Zellij could not start the pane move."
+                                pending_move = None
+                            else:
+                                feed.refresh_soon()
+                        move_age = (time.monotonic() - pending_move["started"]
+                                    if pending_move is not None else 0)
+                        if pending_move is not None and move_age >= 90:
+                            process = pending_move["process"]
+                            if process is not None:
+                                stop_process(process)
+                            message = (
+                                "Zellij did not finish the pane move. Check for its Change "
+                                "application state permission prompt, then try again."
+                            )
+                            pending_move = None
                 current_tab = tabs[tab_index]
                 visible: list[dict] = []
                 if not error:
@@ -916,7 +949,7 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                     continue
                 key = os.read(sys.stdin.fileno(), 32).decode(errors="replace")
                 if moving:
-                    if key == "\x1b":
+                    if is_escape_key(key):
                         moving, message = False, "Move cancelled."
                     elif key in {"\t", "]"}:
                         move_index = (move_index + 1) % len(targets)
@@ -926,16 +959,26 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                         moving = False
                         if visible:
                             try:
-                                message = move_chat_to_namespace(
-                                    visible[selected], targets[move_index % len(targets)], session,
-                                    focus=False,
+                                thread = visible[selected]
+                                namespace = targets[move_index % len(targets)]
+                                message, process, destination_id = request_chat_move_to_namespace(
+                                    thread, namespace, session,
                                 )
                                 feed.refresh_soon()
+                                if process is not None and destination_id is not None:
+                                    pending_move = {
+                                        "thread_id": thread["id"],
+                                        "title": title(thread),
+                                        "namespace": namespace,
+                                        "destination_id": destination_id,
+                                        "process": process,
+                                        "started": time.monotonic(),
+                                    }
                             except ERRORS as error:
                                 message = str(error)
                     continue
                 if filtering:
-                    if key in {"\n", "\r", "\x1b"}:
+                    if key in {"\n", "\r"} or is_escape_key(key):
                         filtering = False
                     elif key in {"\x7f", "\b"}:
                         query = query[:-1]
@@ -966,7 +1009,9 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                     except ERRORS as error:
                         message = str(error)
                 elif key == "m":
-                    if visible:
+                    if pending_move is not None:
+                        message = "Finish the pending pane move before starting another."
+                    elif visible:
                         current = visible[selected]["namespace"].casefold()
                         current_index = next((index for index, name in enumerate(targets)
                                               if name.casefold() == current), -1)
@@ -990,6 +1035,8 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
         pass
     finally:
         feed.close()
+        if pending_move is not None and pending_move["process"] is not None:
+            stop_process(pending_move["process"])
 
 
 @zellij_app.command("list")
@@ -1035,7 +1082,19 @@ def move_command(query: str, tab: str = typer.Option(..., "--tab"),
     try:
         with RpcClient(socket_path()) as client:
             thread = resolve(client, query, namespaces)
-        typer.echo(move_chat_to_namespace(thread, tab, session))
+        message, process, _ = request_chat_move_to_namespace(thread, tab, session)
+        if process is not None:
+            try:
+                process.wait(timeout=90)
+            except subprocess.TimeoutExpired:
+                stop_process(process)
+                raise SharedServerError(
+                    "Zellij did not finish the pane move. Check for its Change application "
+                    "state permission prompt, then try again."
+                ) from None
+            if process.returncode:
+                raise SharedServerError("Zellij could not start the pane move.")
+        typer.echo(message)
     except ERRORS as error:
         raise typer.BadParameter(str(error)) from error
 

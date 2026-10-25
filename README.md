@@ -53,7 +53,9 @@ ar group list
 
 The board uses **j/k** or arrow keys to select, **Enter** to open/focus, **/** to
 filter, **m** to move the selected chat to another namespace, and **t** to tile the selected
-chat's namespace tab. Its states distinguish running, approval,
+chat's namespace tab. Press **Esc** to cancel a move before confirming it. Pane moves run in the
+background, so the board stays responsive while Zellij waits for its permission prompt. Its
+states distinguish running, approval,
 user input, ready, error, and saved chats. Saved chats can still belong to an older
 standalone process; opening one preserves Codex's writer lock and reports a conflict.
 ID prefixes/title searches cover the latest 100 chats and every loaded chat; a full

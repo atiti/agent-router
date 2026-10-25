@@ -33,6 +33,22 @@ def test_status_distinguishes_approval_input_and_idle():
     assert z.status({"status": {"type": "notLoaded"}}) == "SAVED"
 
 
+@pytest.mark.parametrize(("key", "expected"), [
+    ("\x1b", True),
+    ("\x1b\r", True),
+    ("\x1bX", True),
+    ("\x1b[27u", True),
+    ("\x1b[27;1u", True),
+    ("\x1b[27;1u\r", True),
+    ("\x1b[A", False),
+    ("\x1b[Z", False),
+    ("\x1bOQ", False),
+    ("x", False),
+])
+def test_board_escape_detection_handles_batched_terminal_input(key, expected):
+    assert z.is_escape_key(key) is expected
+
+
 def test_recent_list_includes_older_loaded_threads_without_resuming():
     client = Mock()
     client.request.side_effect = [
@@ -280,38 +296,40 @@ def test_open_existing_pane_does_not_launch_another_writer(monkeypatch):
     ]
 
 
-def test_move_existing_pane_uses_plugin_and_preserves_the_codex_client(monkeypatch, tmp_path):
+def test_board_move_request_does_not_wait_for_zellij_plugin(monkeypatch, tmp_path):
     from contextlib import nullcontext
 
     plugin = tmp_path / "pane_mover.wasm"
     plugin.write_bytes(b"wasm")
-    source = {
+    pane = {
         "id": 7,
         "tab_id": 1,
         "terminal_command": f"python -m agentroute.cli zellij client --thread {THREAD}",
     }
-    moved = {**source, "tab_id": 2}
+    process = Mock()
+    popen = Mock(return_value=process)
     monkeypatch.setattr(z, "operation_lock", nullcontext)
-    monkeypatch.setattr(z, "panes", Mock(side_effect=[[source], [moved]]))
+    monkeypatch.setattr(z, "panes", lambda _: [pane])
     monkeypatch.setattr(z, "ensure_tab", Mock(return_value="2"))
     monkeypatch.setattr(z, "pane_mover_plugin_path", lambda: plugin)
-    tile = Mock()
-    monkeypatch.setattr(z, "tile_panes", tile)
-    action = Mock(return_value="")
-    monkeypatch.setattr(z, "action", action)
+    monkeypatch.setattr(z, "executable", lambda _: "/usr/bin/zellij")
+    monkeypatch.setattr(z.subprocess, "Popen", popen)
 
-    result = z.move_chat_to_namespace({"id": THREAD, "name": "Billing fix"}, "private", "test")
+    message, started, destination = z.request_chat_move_to_namespace(
+        {"id": THREAD, "name": "Billing fix"}, "private", "test",
+    )
 
-    assert result == "Moved 'Billing fix' to Private; focused terminal_7."
-    z.ensure_tab.assert_called_once_with("test", "Private")
-    action.assert_has_calls([
-        call("test", "pipe", "--plugin", f"file:{plugin}", "--name", "agentroute-move-pane",
-             "--floating-plugin", "true", "--plugin-title", "AgentRoute pane mover",
-             "--", "7 2", timeout=90),
-        call("test", "go-to-tab-by-id", "2"),
-        call("test", "focus-pane-id", "terminal_7"),
-    ])
-    tile.assert_called_once_with("test", "2")
+    assert started is process
+    assert destination == "2"
+    assert "Move requested" in message
+    popen.assert_called_once_with(
+        ["/usr/bin/zellij", "--session", "test", "action", "pipe",
+         "--plugin", f"file:{plugin}", "--name", "agentroute-move-pane",
+         "--floating-plugin", "true", "--plugin-title", "AgentRoute pane mover",
+         "--", "7 2"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def test_move_closed_chat_only_sets_its_namespace_without_creating_a_client(monkeypatch):
@@ -324,15 +342,19 @@ def test_move_closed_chat_only_sets_its_namespace_without_creating_a_client(monk
     action = Mock()
     monkeypatch.setattr(z, "action", action)
 
-    result = z.move_chat_to_namespace({"id": THREAD, "name": "Billing fix"}, "Markster", "test")
+    result, process, destination = z.request_chat_move_to_namespace(
+        {"id": THREAD, "name": "Billing fix"}, "Markster", "test",
+    )
 
     assert result == "Moved 'Billing fix' to Markster; it opens there next time."
+    assert process is None
+    assert destination is None
     assert z.load_chat_namespaces() == {THREAD: "Markster"}
     ensure_tab.assert_not_called()
     action.assert_not_called()
 
 
-def test_move_to_current_group_tab_only_focuses_the_existing_pane(monkeypatch):
+def test_move_to_current_group_tab_does_not_launch_a_pane_move(monkeypatch):
     from contextlib import nullcontext
 
     pane = {"id": 7, "tab_id": 2,
@@ -340,16 +362,17 @@ def test_move_to_current_group_tab_only_focuses_the_existing_pane(monkeypatch):
     monkeypatch.setattr(z, "operation_lock", nullcontext)
     monkeypatch.setattr(z, "panes", lambda _: [pane])
     monkeypatch.setattr(z, "ensure_tab", Mock(return_value="2"))
-    action = Mock(return_value="")
-    monkeypatch.setattr(z, "action", action)
+    popen = Mock()
+    monkeypatch.setattr(z.subprocess, "Popen", popen)
 
-    result = z.move_chat_to_namespace({"id": THREAD}, "Markster", "test")
+    result, process, destination = z.request_chat_move_to_namespace(
+        {"id": THREAD}, "Markster", "test",
+    )
 
-    assert result == "Already in Markster; focused terminal_7."
-    assert action.call_args_list == [
-        call("test", "go-to-tab-by-id", "2"),
-        call("test", "focus-pane-id", "terminal_7"),
-    ]
+    assert result == "Already in Markster."
+    assert process is None
+    assert destination == "2"
+    popen.assert_not_called()
 
 
 def test_open_new_thread_routes_and_tiles_its_project_tab(monkeypatch):
