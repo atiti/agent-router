@@ -120,6 +120,20 @@ New panes trigger native adaptive layout cycling; `ar tile` rearranges existing
 panes without starting commands again. On restart, Zellij's session resurrection
 asks before rerunning saved commands.
 
+To cycle layouts from Ghostty, use **Option+,** for the previous layout and
+**Option+.** for the next. Ghostty's `macos-option-as-alt = true` already enables
+the other Option shortcuts. Option+[ and Option+] start terminal control sequences,
+so Ghostty should translate them to safe aliases. Add these to
+`~/Library/Application Support/com.mitchellh.ghostty/config.ghostty` to keep the
+bracket keys:
+
+```ini
+keybind = alt+bracket_left=text:\x1b,
+keybind = alt+bracket_right=text:\x1b.
+```
+
+AgentRoute binds those aliases to the previous/next swap layout actions.
+
 With the matching Overwatchr integration installed, Codex Stop hooks resolve the
 chat's exact Zellij pane through private, per-chat files under the shared owner's
 `zellij-targets/` directory. The running board also observes live approval/input

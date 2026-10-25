@@ -510,6 +510,10 @@ def test_start_reuses_an_existing_running_session(monkeypatch, tmp_path):
 
     z.start_command(background=True)
 
+    config = (tmp_path / "zellij.kdl").read_text()
+    assert 'bind "Alt ," { PreviousSwapLayout; }' in config
+    assert 'bind "Alt ." { NextSwapLayout; }' in config
+
     run.assert_called_once_with(
         ["/opt/homebrew/bin/zellij", "list-sessions", "--no-formatting"],
         capture_output=True, text=True, timeout=15,

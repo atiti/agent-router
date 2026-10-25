@@ -1188,7 +1188,10 @@ def start_command(session: str = SESSION, background: bool = False) -> None:
         config = state_dir() / "zellij.kdl"
         config.write_text('default_mode "locked"\nauto_layout true\nsession_serialization true\n'
                           'show_startup_tips false\nshow_release_notes false\n'
-                          'keybinds { locked { bind "Ctrl g" { SwitchToMode "Normal"; }; }; }\n')
+                          'keybinds { locked { bind "Ctrl g" { SwitchToMode "Normal"; }; }; '
+                          'shared_except "locked" { '
+                          'bind "Alt ," { PreviousSwapLayout; }; '
+                          'bind "Alt ." { NextSwapLayout; }; }; }\n')
         state = session_state(session)
         if state is None:
             args = [executable("zellij"), "--config", str(config), "attach",
