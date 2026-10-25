@@ -42,6 +42,7 @@ TAB_SESSIONS = "Sessions"
 TAB_MARKSTER = "Markster"
 TAB_PRIVATE = "Private"
 PROJECT_GROUPS_FILE = "zellij-project-groups.json"
+CHAT_NAMESPACES_FILE = "zellij-chat-namespaces.json"
 ERRORS = (OSError, ValueError, SharedServerError, WebSocketException, subprocess.SubprocessError)
 
 
@@ -127,6 +128,41 @@ def save_project_groups(rules: list[dict[str, str]]) -> None:
     temporary.write_text(json.dumps({"version": 1, "roots": rules}, indent=2) + "\n")
     temporary.chmod(0o600)
     temporary.replace(path)
+
+
+def chat_namespaces_path() -> Path:
+    return agentroute_home() / CHAT_NAMESPACES_FILE
+
+
+def load_chat_namespaces() -> dict[str, str]:
+    """Chats moved by hand, keyed by chat ID. Other chats follow their project routing."""
+    try:
+        value = json.loads(chat_namespaces_path().read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as error:
+        raise SharedServerError(f"Could not read chat namespace moves: {error}") from error
+    chats = value.get("chats") if isinstance(value, dict) else None
+    if not isinstance(chats, dict) or not all(
+            isinstance(thread_id, str) and isinstance(name, str)
+            for thread_id, name in chats.items()):
+        raise SharedServerError("Chat namespace moves have an invalid format")
+    return chats
+
+
+def save_chat_namespaces(chats: dict[str, str]) -> None:
+    path = chat_namespaces_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_suffix(f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps({"version": 1, "chats": chats}, indent=2) + "\n")
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+
+def remember_chat_namespace(thread_id: str, namespace: str) -> None:
+    chats = load_chat_namespaces()
+    chats[thread_id] = namespace
+    save_chat_namespaces(chats)
 
 
 @lru_cache(maxsize=512)
@@ -265,16 +301,32 @@ def scoped_sessions(threads: list[dict], requested: list[str] | None = None) -> 
     """Annotate each chat with its namespace and optionally keep selected namespaces."""
     config = load_config().zellij
     rules = load_project_groups()
+    moves = load_chat_namespaces()
     names = namespace_names(config, rules)
     selected = namespace_selection(requested, names)
     result = []
     for thread in threads:
-        namespace = resolve_project_namespace(
-            Path(thread.get("cwd") or Path.cwd()).expanduser().resolve(), config, rules
-        )
+        namespace = chat_namespace(thread, config, rules, moves)
         if selected is None or namespace.casefold() in selected:
             result.append({**thread, "namespace": namespace})
     return result
+
+
+def chat_namespace(thread: dict, config, rules: list[dict[str, str]],
+                   moves: dict[str, str]) -> str:
+    """A chat moved by hand keeps that namespace; other chats follow their project."""
+    moved = moves.get(thread["id"])
+    if moved:
+        name = canonical_namespace(moved, config, rules)
+        if name:
+            return name
+    project = Path(thread.get("cwd") or Path.cwd()).expanduser().resolve()
+    return resolve_project_namespace(project, config, rules)
+
+
+def thread_namespace(thread: dict) -> str:
+    """Namespace for one chat, including any move saved for it."""
+    return scoped_sessions([thread])[0]["namespace"]
 
 
 def set_project_group(directory: Path, group: str) -> None:
@@ -439,7 +491,7 @@ def open_thread(thread: dict, session: str) -> str:
                 action(session, "go-to-tab-by-id", str(existing["tab_id"]))
             action(session, "focus-pane-id", pane_id)
             return pane_id
-        destination = project_group(thread["cwd"])
+        destination = thread_namespace(thread)
         tab = ensure_tab(session, destination)
         action(session, "go-to-tab-by-id", tab)
         created = action(session, "new-pane", "--name", title(thread), "--cwd", thread["cwd"],
@@ -453,8 +505,8 @@ def pane_mover_plugin_path() -> Path:
     return Path(__file__).resolve().parent / "plugins" / "pane_mover.wasm"
 
 
-def move_thread_pane(thread: dict, destination: str, session: str) -> str:
-    """Move an existing Codex terminal into a group tab without restarting it."""
+def move_chat_to_namespace(thread: dict, destination: str, session: str) -> str:
+    """Set a chat's namespace. Its open terminal moves into that tab without restarting Codex."""
     group = canonical_namespace(destination)
     if group is None:
         raise SharedServerError(f"Unknown namespace {destination!r}. Available namespaces: "
@@ -463,12 +515,12 @@ def move_thread_pane(thread: dict, destination: str, session: str) -> str:
     with operation_lock():
         pane = thread_panes(panes(session)).get(thread["id"])
         if pane is None:
-            raise SharedServerError(
-                "That chat has no open terminal pane. Use `ar open <chat>` first."
-            )
+            remember_chat_namespace(thread["id"], group)
+            return f"Moved {title(thread)!r} to {group}; it opens there next time."
         destination_id = ensure_tab(session, group)
         pane_id = f"terminal_{pane['id']}"
         if str(pane.get("tab_id")) == destination_id:
+            remember_chat_namespace(thread["id"], group)
             action(session, "go-to-tab-by-id", destination_id)
             action(session, "focus-pane-id", pane_id)
             return f"Already in {group}; focused {pane_id}."
@@ -479,6 +531,9 @@ def move_thread_pane(thread: dict, destination: str, session: str) -> str:
                 "The Zellij pane mover plugin is missing from this AgentRoute install. "
                 "Reinstall AgentRoute to restore its packaged plugin."
             )
+        # Save the namespace before moving the pane so the board and `ar open` agree on the
+        # target even if Zellij's permission prompt is still open.
+        remember_chat_namespace(thread["id"], group)
         action(
             session,
             "pipe",
@@ -501,8 +556,9 @@ def move_thread_pane(thread: dict, destination: str, session: str) -> str:
             time.sleep(0.1)
 
         raise SharedServerError(
-            "Zellij did not confirm the move. If its pane-mover permission prompt is open, "
-            "approve 'Change application state' and run the command again."
+            f"{title(thread)!r} is now set to {group}, but Zellij did not confirm its pane move. "
+            "If its pane-mover permission prompt is open, approve 'Change application state' "
+            "and run the move again."
         )
 
 
@@ -682,7 +738,7 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                None, "--namespace", "-n",
                help="Show only these namespaces; repeat or comma-separate."
            )) -> None:
-    """Live board: j/k select, Enter open/focus, t tile, / filter, q exit."""
+    """Live board: j/k select, Enter open/focus, m move namespace, t tile, / filter, q exit."""
     if not sys.stdin.isatty():
         raise typer.BadParameter("board needs a terminal; use `ar list` for plain output")
     try:
@@ -693,6 +749,7 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                       selected_namespaces is None or name.casefold() in selected_namespaces]
     tab_index = 0
     selected, query, filtering, message = 0, "", False, ""
+    moving, move_index = False, 0
     previous: dict[str, str] = {}
     console = Console()
     try:
@@ -726,8 +783,13 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                         style = "bold reverse" if index == tab_index else "dim"
                         bar.append(f" {name} ", style=style)
                     bar.append("  Tab or [ ] switch namespace")
-                    footer = Text(f"j/k select · Enter focus · t tile · / search · q quit\n"
-                                  f"Filter: {query}{'_' if filtering else ''}\n{message}")
+                    targets = namespace_names()
+                    if moving:
+                        hint = (f"Move to {targets[move_index % len(targets)]}: Tab or [ ] choose"
+                                " · Enter confirm · Esc cancel")
+                    else:
+                        hint = "j/k select · Enter focus · m move · t tile · / search · q quit"
+                    footer = Text(f"{hint}\nFilter: {query}{'_' if filtering else ''}\n{message}")
                     live.update(Group(bar, table(visible[offset:offset + height], mapped,
                                             selected - offset, compact=console.size.width < 75),
                                       footer), refresh=True)
@@ -738,6 +800,24 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                 if not select.select([sys.stdin], [], [], 2)[0]:
                     continue
                 key = os.read(sys.stdin.fileno(), 32).decode(errors="replace")
+                if moving:
+                    targets = namespace_names()
+                    if key == "\x1b":
+                        moving, message = False, "Move cancelled."
+                    elif key in {"\t", "]"}:
+                        move_index = (move_index + 1) % len(targets)
+                    elif key in {"\x1b[Z", "["}:
+                        move_index = (move_index - 1) % len(targets)
+                    elif key in {"\n", "\r"}:
+                        moving = False
+                        if visible:
+                            try:
+                                message = move_chat_to_namespace(
+                                    visible[selected], targets[move_index % len(targets)], session
+                                )
+                            except ERRORS as error:
+                                message = str(error)
+                    continue
                 if filtering:
                     if key in {"\n", "\r", "\x1b"}:
                         filtering = False
@@ -765,10 +845,20 @@ def board(session: str = SESSION, limit: int = typer.Option(30, min=1, max=100),
                         message = open_thread(visible[selected], session)
                     except ERRORS as error:
                         message = str(error)
+                elif key == "m":
+                    if visible:
+                        targets = namespace_names()
+                        current = visible[selected]["namespace"].casefold()
+                        current_index = next((index for index, name in enumerate(targets)
+                                              if name.casefold() == current), -1)
+                        move_index = (current_index + 1) % len(targets)
+                        moving, message = True, ""
+                    else:
+                        message = "No chat selected to move."
                 elif key == "t":
                     try:
                         if visible:
-                            destination = project_group(visible[selected]["cwd"])
+                            destination = thread_namespace(visible[selected])
                             tab = ensure_tab(session, destination)
                             tile_panes(session, tab)
                             message = f"Tiled {destination} tab; all terminal processes retained."
@@ -820,11 +910,11 @@ def move_command(query: str, tab: str = typer.Option(..., "--tab"),
                  namespaces: list[str] | None = typer.Option(
                      None, "--namespace", "-n", help="Limit chat lookup to these namespaces."
                  )) -> None:
-    """Move an open chat pane into a namespace tab without restarting it."""
+    """Set a chat's namespace and move its open terminal into that tab."""
     try:
         with RpcClient(socket_path()) as client:
             thread = resolve(client, query, namespaces)
-        typer.echo(move_thread_pane(thread, tab, session))
+        typer.echo(move_chat_to_namespace(thread, tab, session))
     except ERRORS as error:
         raise typer.BadParameter(str(error)) from error
 

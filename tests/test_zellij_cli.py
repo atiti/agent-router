@@ -18,6 +18,11 @@ from agentroute.config import (
 THREAD = "01a16cea-b69e-7772-b0c2-77d9a04435c0"
 
 
+@pytest.fixture(autouse=True)
+def isolated_chat_namespace_moves(tmp_path, monkeypatch):
+    monkeypatch.setattr(z, "chat_namespaces_path", lambda: tmp_path / "chat-namespaces.json")
+
+
 def test_status_distinguishes_approval_input_and_idle():
     assert z.status({"status": {"type": "active"}}) == "RUNNING"
     approval = {"type": "active", "activeFlags": ["waitingOnApproval"]}
@@ -295,7 +300,7 @@ def test_move_existing_pane_uses_plugin_and_preserves_the_codex_client(monkeypat
     action = Mock(return_value="")
     monkeypatch.setattr(z, "action", action)
 
-    result = z.move_thread_pane({"id": THREAD, "name": "Billing fix"}, "private", "test")
+    result = z.move_chat_to_namespace({"id": THREAD, "name": "Billing fix"}, "private", "test")
 
     assert result == "Moved 'Billing fix' to Private; focused terminal_7."
     z.ensure_tab.assert_called_once_with("test", "Private")
@@ -309,18 +314,22 @@ def test_move_existing_pane_uses_plugin_and_preserves_the_codex_client(monkeypat
     tile.assert_called_once_with("test", "2")
 
 
-def test_move_closed_chat_refuses_to_create_a_new_codex_client(monkeypatch):
+def test_move_closed_chat_only_sets_its_namespace_without_creating_a_client(monkeypatch):
     from contextlib import nullcontext
 
     monkeypatch.setattr(z, "operation_lock", nullcontext)
     monkeypatch.setattr(z, "panes", lambda _: [])
     ensure_tab = Mock()
     monkeypatch.setattr(z, "ensure_tab", ensure_tab)
+    action = Mock()
+    monkeypatch.setattr(z, "action", action)
 
-    with pytest.raises(z.SharedServerError, match="no open terminal pane"):
-        z.move_thread_pane({"id": THREAD}, "Markster", "test")
+    result = z.move_chat_to_namespace({"id": THREAD, "name": "Billing fix"}, "Markster", "test")
 
+    assert result == "Moved 'Billing fix' to Markster; it opens there next time."
+    assert z.load_chat_namespaces() == {THREAD: "Markster"}
     ensure_tab.assert_not_called()
+    action.assert_not_called()
 
 
 def test_move_to_current_group_tab_only_focuses_the_existing_pane(monkeypatch):
@@ -334,7 +343,7 @@ def test_move_to_current_group_tab_only_focuses_the_existing_pane(monkeypatch):
     action = Mock(return_value="")
     monkeypatch.setattr(z, "action", action)
 
-    result = z.move_thread_pane({"id": THREAD}, "Markster", "test")
+    result = z.move_chat_to_namespace({"id": THREAD}, "Markster", "test")
 
     assert result == "Already in Markster; focused terminal_7."
     assert action.call_args_list == [
@@ -350,7 +359,7 @@ def test_open_new_thread_routes_and_tiles_its_project_tab(monkeypatch):
     monkeypatch.setattr(z, "panes", Mock(side_effect=[[], [
         {"id": 8, "tab_id": 12, "is_focused": True},
     ]]))
-    monkeypatch.setattr(z, "project_group", lambda _: "Markster")
+    monkeypatch.setattr(z, "thread_namespace", lambda _: "Markster")
     ensure_tab = Mock(return_value="12")
     monkeypatch.setattr(z, "ensure_tab", ensure_tab)
     action = Mock(side_effect=["", "terminal_8", "", ""])
