@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.76rc2 — 2026-10-25
 
 - Refresh Codex session titles immediately when their tracked task topic changes during a turn.
   Explicit manual session renames remain pinned.
@@ -11,6 +11,8 @@
 - Let the Zellij board move the selected chat to another namespace with **m**. A moved chat keeps
   its namespace after restarts, and `ar move` now saves the namespace even when the chat has no
   open pane.
+- Let **Esc** cancel the board's namespace picker, and keep the board responsive while Zellij
+  waits for pane-move permission.
 
 ## 0.5.76rc1 — 2026-10-18
 
