@@ -1169,6 +1169,33 @@ def test_named_profile_overrides_prior_provider_after_interrupt_or_resume(
     assert store.latest_route("same-thread")["backend"] == "claude"
 
 
+@pytest.mark.parametrize("current_profile", [None, "default", "second"])
+def test_claude_account_switch_marks_state_boundary_before_compaction(
+    tmp_path, monkeypatch, current_profile
+):
+    from agentroute.claude_profiles import model_for_profile
+    from agentroute.providers import ensure_claude_bridge_backend
+
+    config = default_config()
+    config.enabled = True
+    ensure_claude_bridge_backend(config, 8090)
+    config.claude_subscriptions.profiles["second"] = ClaudeSubscriptionProfile(
+        config_dir=str(tmp_path / "second")
+    )
+    monkeypatch.setattr("agentroute.hook.load_config", lambda: config)
+    monkeypatch.setattr("agentroute.hook.service_credential", lambda: "claude-code")
+    model = "claude-haiku-5-5"
+    if current_profile is not None:
+        model = model_for_profile(model, current_profile)
+    output = invoke(
+        config, AuditStore(tmp_path / "audit.db"), "@claude:second @fast continue",
+        model=model, model_provider="agentroute-claude",
+    )
+    specific = output["hookSpecificOutput"]
+    assert specific["model"] == "claude-haiku-5-5@agentroute-profile-second"
+    assert bool(specific.get("stripProviderState")) == (current_profile != "second")
+
+
 def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, monkeypatch):
     from agentroute.claude_profiles import profile_account_identity, profile_usage_path
     from agentroute.providers import ensure_claude_bridge_backend
@@ -1219,6 +1246,7 @@ def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, mo
 
     specific = output["hookSpecificOutput"]
     assert specific["model"] == "claude-opus-5-5@agentroute-profile-second"
+    assert specific["stripProviderState"] is True
     assert specific["modelProvider"] == "agentroute-claude"
     assert specific["stripPromptPrefixBytes"] == len(b"@claude:second @max ")
     assert "claude-opus-5-5" in specific["routeMessage"]
