@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Admit configured new models from a fresh account catalog when the pinned runtime catalog predates their release, preserving their actual tool metadata for routed aliases.
+
 ## 0.5.77 — 2026-10-26
 
 - Treat explicit Claude account changes as a provider-state boundary before native compaction,

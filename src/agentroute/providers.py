@@ -219,8 +219,10 @@ def _launch_model_catalog_path(config_path: Path) -> Path:
     return config_path.with_name(f"{config_path.stem}.agentroute-models-{key}.json")
 
 
-def _refresh_context_limits(catalog: dict, config_path: Path) -> None:
-    """Use recent account limits without replacing installed harness capabilities."""
+def _refresh_context_limits(
+    catalog: dict, config_path: Path, required_models: set[str] | None = None
+) -> None:
+    """Refresh limits and admit newly configured models from a recent account catalog."""
     try:
         cached = json.loads((config_path.parent / "models_cache.json").read_text())
         fetched = datetime.fromisoformat(cached["fetched_at"].replace("Z", "+00:00"))
@@ -236,6 +238,16 @@ def _refresh_context_limits(catalog: dict, config_path: Path) -> None:
         m["slug"]: m for m in models
         if isinstance(m, dict) and isinstance(m.get("slug"), str)
     }
+    installed_slugs = {model.get("slug") for model in catalog["models"]}
+    for slug in sorted((required_models or set()) - installed_slugs):
+        fresh = by_slug.get(slug, {})
+        window = fresh.get("context_window")
+        maximum = fresh.get("max_context_window")
+        if type(window) is int and type(maximum) is int and 0 < window <= maximum:
+            # New releases may precede the pinned runtime catalog. Use their actual
+            # account descriptor rather than guessing another model's tool protocol.
+            catalog["models"].append(copy.deepcopy(fresh))
+            catalog.setdefault("agentroute_account_models", []).append(slug)
     for model in catalog["models"]:
         fresh = by_slug.get(model.get("slug"), {})
         window = fresh.get("context_window")
@@ -295,7 +307,25 @@ def _write_model_catalog(
         if aliases:
             raise ValueError("cannot read the installed Codex model catalog for routed aliases")
         return None  # An uninstalled runtime can still fetch the bridge's catalog.
-    _refresh_context_limits(catalog, config_path)
+    required_models = account_slugs | set(aliases.values())
+    _refresh_context_limits(catalog, config_path, required_models)
+    # Once admitted from the account catalog, keep new descriptors in this
+    # runtime's generated sidecar even if its original account sample ages out.
+    # Existing bundled models still use only the runtime's harness metadata.
+    try:
+        previous = json.loads(_launch_model_catalog_path(config_path).read_text())
+        present = {model.get("slug") for model in catalog["models"]}
+        admitted = set(previous.get("agentroute_account_models", []))
+        for model in previous.get("models", []):
+            if (
+                isinstance(model, dict)
+                and model.get("slug") in (required_models - present) & admitted
+            ):
+                catalog["models"].append(model)
+                catalog.setdefault("agentroute_account_models", []).append(model["slug"])
+                present.add(model["slug"])
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
     by_slug = {
         model["slug"]: model
         for model in catalog["models"]
@@ -345,6 +375,10 @@ def _write_model_catalog(
                     and slug in by_slug
                 ):
                     by_slug[slug]["context_window"] = capabilities.context_window
+                    by_slug[slug]["max_context_window"] = max(
+                        capabilities.context_window,
+                        by_slug[slug].get("max_context_window") or 0,
+                    )
                     # Account-specific compaction caps must not constrain another provider.
                     by_slug[slug]["auto_compact_token_limit"] = None
                 continue
