@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.5.76 — 2026-10-26
+## 0.5.77 — 2026-10-26
+
+- Treat explicit Claude account changes as a provider-state boundary before native compaction,
+  so the newly selected account can summarize long history without calling the exhausted account.
+  The unpublished 0.5.76 build was superseded; its tag is retained.
+- Build macOS ARM releases on the supported macOS 15 runner instead of deprecated macOS 14.
 
 - Switch existing conversations between Claude subscription profiles with `@claude:<profile>`.
   Preserve messages and tool calls/results while replaying signed reasoning only for the selected
