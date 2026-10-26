@@ -307,6 +307,11 @@ def test_new_account_model_can_back_routed_alias_without_bundled_descriptor(
         "models": [terra, {**terra, "slug": "unconfigured-model"}],
     }))
     config = default_config()
+    from agentroute.config import ModelCapabilities
+
+    config.capabilities.models["gpt-6.1-terra"] = ModelCapabilities(
+        tool_calling="full", reasoning=True, vision=True, context_window=1_050_000
+    )
     config.backends["gpt"].tiers["normal"].model = "gpt-6.1-terra"
     config.backends["azure"].enabled = True
     config.backends["azure"].tiers["normal"].model = "dev-gpt-6.1-terra"
@@ -319,7 +324,9 @@ def test_new_account_model_can_back_routed_alias_without_bundled_descriptor(
     models = {m["slug"]: m for m in json.loads(path.read_text())["models"]}
     assert models["gpt-6.1-terra"] == terra
     assert models["dev-gpt-6.1-terra"] == {
-        **terra, "slug": "dev-gpt-6.1-terra", "display_name": "dev-gpt-6.1-terra"
+        **terra, "slug": "dev-gpt-6.1-terra", "display_name": "dev-gpt-6.1-terra",
+        "context_window": 1_050_000, "max_context_window": 1_050_000,
+        "auto_compact_token_limit": None,
     }
     assert "unconfigured-model" not in models
     assert models["gpt-6-luna"]["tool_mode"] == "direct"

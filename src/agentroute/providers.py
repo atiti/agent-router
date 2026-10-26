@@ -375,6 +375,10 @@ def _write_model_catalog(
                     and slug in by_slug
                 ):
                     by_slug[slug]["context_window"] = capabilities.context_window
+                    by_slug[slug]["max_context_window"] = max(
+                        capabilities.context_window,
+                        by_slug[slug].get("max_context_window") or 0,
+                    )
                     # Account-specific compaction caps must not constrain another provider.
                     by_slug[slug]["auto_compact_token_limit"] = None
                 continue
