@@ -286,3 +286,47 @@ def test_routed_provider_models_use_configured_context_limits_and_tool_modes(
     assert qwen["context_window"] == 32_768
     assert qwen["tool_mode"] == "direct"
     assert qwen["supports_search_tool"] is False
+
+
+@pytest.mark.parametrize("age_hours", [1, 48])
+def test_new_account_model_can_back_routed_alias_without_bundled_descriptor(
+    tmp_path, monkeypatch, age_hours
+):
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr("agentroute.providers._installed_codex_catalog", lambda source: {
+        "models": [{"slug": "gpt-6-luna", "context_window": 272_000,
+                    "max_context_window": 872_000, "tool_mode": "direct"}]
+    })
+    terra = {"slug": "gpt-6.1-terra", "context_window": 500_000,
+             "max_context_window": 872_000, "tool_mode": "code_mode_only",
+             "supports_search_tool": True, "guardian": {"required": True}}
+    (tmp_path / "models_cache.json").write_text(json.dumps({
+        "fetched_at": (datetime.now(timezone.utc) - timedelta(hours=age_hours)).isoformat(),
+        "models": [terra, {**terra, "slug": "unconfigured-model"}],
+    }))
+    config = default_config()
+    config.backends["gpt"].tiers["normal"].model = "gpt-6.1-terra"
+    config.backends["azure"].enabled = True
+    config.backends["azure"].tiers["normal"].model = "dev-gpt-6.1-terra"
+    config.pricing.aliases["dev-gpt-6.1-terra"] = "gpt-6.1-terra"
+    if age_hours > 24:
+        with pytest.raises(ValueError, match="no metadata for dev-gpt-6.1-terra"):
+            refresh_launch_catalog(config)
+        return
+    path = refresh_launch_catalog(config)
+    models = {m["slug"]: m for m in json.loads(path.read_text())["models"]}
+    assert models["gpt-6.1-terra"] == terra
+    assert models["dev-gpt-6.1-terra"] == {
+        **terra, "slug": "dev-gpt-6.1-terra", "display_name": "dev-gpt-6.1-terra"
+    }
+    assert "unconfigured-model" not in models
+    assert models["gpt-6-luna"]["tool_mode"] == "direct"
+
+    # Launches continue to work after the original discovery sample expires.
+    (tmp_path / "models_cache.json").unlink()
+    assert refresh_launch_catalog(config) == path
+    persisted = {m["slug"]: m for m in json.loads(path.read_text())["models"]}
+    assert persisted["gpt-6.1-terra"] == terra
+    assert persisted["dev-gpt-6.1-terra"]["supports_search_tool"] is True
