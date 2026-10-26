@@ -1143,6 +1143,17 @@ def test_named_profile_overrides_prior_provider_after_interrupt_or_resume(
         "claude-sonnet-5-5",
         outcome=outcome,
         actual_backend="claude",
+        application_receipt={
+            "status": "applied",
+            "requested": {
+                "model": "claude-sonnet-5-5@agentroute-profile-second",
+                "provider": "agentroute-claude",
+            },
+            "actual": {
+                "model": "claude-sonnet-5-5@agentroute-profile-second",
+                "provider": "agentroute-claude",
+            },
+        },
     )
     store = AuditStore(tmp_path / "audit.db")
     continued = invoke(
@@ -1154,6 +1165,7 @@ def test_named_profile_overrides_prior_provider_after_interrupt_or_resume(
         model_provider="agentroute-claude",
     )
     assert continued["hookSpecificOutput"]["modelProvider"] == "agentroute-claude"
+    assert "@agentroute-profile-" not in continued["hookSpecificOutput"]["model"]
     assert store.latest_route("same-thread")["backend"] == "claude"
 
 

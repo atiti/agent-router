@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.76 — 2026-10-26
+
+- Switch existing conversations between Claude subscription profiles with `@claude:<profile>`.
+  Preserve messages and tool calls/results while replaying signed reasoning only for the selected
+  account; retain the last accepted account across bridge restarts and mixed-account history.
+- Automatically move existing conversations off exhausted Claude accounts. Retry live quota
+  rejections before generation once per available account, including after heartbeat pings;
+  report the limit when all accounts are unavailable and avoid replaying started generations.
+- Publish the actual Claude subscription profile in response metadata and keep a previous
+  explicit selector from preventing automatic fallback on an interrupted turn's continuation.
+- Include the Zellij cockpit, configurable namespaces, live pane moves, board activity times,
+  stable responsive rows, and immediate tracked-task title updates from the 0.5.76 candidates.
+- Fix Ghostty layout shortcuts through explicit Option+bracket escape mappings and matching
+  Zellij Option+comma/period bindings.
+- Promote the stable Codex 0.163/runtime v61 upgrade, context-window and compaction repairs,
+  Claude stream progress, and memory safeguards from the release candidates to the stable channel.
+
 ## 0.5.76rc2 — 2026-10-25
 
 - Refresh Codex session titles immediately when their tracked task topic changes during a turn.

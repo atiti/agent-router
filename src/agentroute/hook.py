@@ -370,7 +370,9 @@ def codex_user_prompt_submit(
             interrupted_backend = str(
                 interrupted_route["actual_backend"] or interrupted_route["backend"]
             )
-            interrupted_model = str(interrupted_route["actual_model"] or interrupted_route["model"])
+            interrupted_model, _ = split_profile_model(
+                str(interrupted_route["actual_model"] or interrupted_route["model"])
+            )
             interrupted_model_provider = str(
                 interrupted_route["actual_model_provider"] or interrupted_route["model_provider"]
             )

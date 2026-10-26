@@ -1,4 +1,4 @@
-"""Select and preserve Claude subscription identity for each bridge conversation."""
+"""Select Claude accounts and preserve affinity across safe account transitions."""
 
 import base64
 import hashlib
@@ -36,7 +36,7 @@ LEGACY_DEFAULT_PROFILE_DIGEST = hashlib.sha256(b"claude-code").hexdigest()[:16]
 
 
 class ClaudeProfilePool:
-    """Select a Claude account for each thread and preserve its identity."""
+    """Keep each thread on its last accepted account until a switch or quota fallback."""
 
     mode = "claude-code"
 
@@ -145,7 +145,9 @@ class ClaudeProfilePool:
             active.append(float(used))
         return max(active) if active else None
 
-    def select(self, body: dict[str, Any], headers: Any) -> ProfileCredential:
+    def select(
+        self, body: dict[str, Any], headers: Any, *, excluded: frozenset[str] = frozenset()
+    ) -> ProfileCredential:
         config = load_config()
         profiles = config.claude_subscriptions.profiles
         eligible = [(name, profile) for name, profile in profiles.items() if profile.enabled]
@@ -233,17 +235,9 @@ class ClaudeProfilePool:
                     "Claude profile that produced this reasoning item is unavailable; "
                     "re-enable it or start a new conversation"
                 )
-            if requested is not None and requested != hinted_name:
-                raise ProfileIdentityChangedError(
-                    "Claude reasoning items belong to different profiles; start a new conversation"
-                )
+            # A resumed transcript can contain reasoning from several accounts.
+            # Translation only replays blocks belonging to the selected account.
             requested = hinted_name
-
-        if manual_profile is not None and requested not in {None, manual_profile}:
-            raise ProfileIdentityChangedError(
-                "the requested Claude profile does not match this conversation's saved profile; "
-                "start a new conversation to change profiles"
-            )
 
         identity = request_identity(headers, body)
         raw_thread = identity.get("thread_id") or identity.get("session_id")
@@ -252,18 +246,7 @@ class ClaudeProfilePool:
             sticky_state = self._threads.get(thread_key) if thread_key else None
             sticky = sticky_state[0] if sticky_state else None
             started = bool(sticky_state and sticky_state[2])
-            if (
-                manual_profile is not None
-                and sticky_state
-                and started
-                and sticky_state[0] != manual_profile
-            ):
-                raise ProfileIdentityChangedError(
-                    f"Claude conversation is pinned to profile {sticky_state[0]}; "
-                    f"start a new conversation to use profile {manual_profile}"
-                )
-            is_continuation = requested is not None or manual_profile is not None or started
-            current = manual_profile or requested or sticky
+            current = manual_profile or sticky or requested
             current = current or config.claude_subscriptions.active_profile
             selected = next(
                 ((name, profile) for name, profile in eligible if name == current), None
@@ -284,12 +267,14 @@ class ClaudeProfilePool:
             percent = self._recorded_percent(name, current_identity, profile.auth_generation)
             if (
                 config.claude_subscriptions.auto_select
-                and not is_continuation
-                and percent is not None
-                and percent >= 100
+                and manual_profile is None
+                and (name in excluded or (percent is not None and percent >= 100))
             ):
                 alternatives = sorted(
-                    ((candidate, item) for candidate, item in eligible if candidate != name),
+                    (
+                        (candidate, item) for candidate, item in eligible
+                        if candidate != name and candidate not in excluded
+                    ),
                     key=lambda item: (item[1].priority, item[0]),
                 )
                 signed_in = [item for item in alternatives if self._signed_in(*item)]
@@ -310,7 +295,7 @@ class ClaudeProfilePool:
                     name, profile = available[0]
                     log(
                         f"Claude subscription {current} exhausted; "
-                        f"routing new request through {name}"
+                        f"continuing request through {name} without foreign reasoning"
                     )
                     current_identity = profile_account_identity(profile)
                     if current_identity is None:
@@ -318,7 +303,12 @@ class ClaudeProfilePool:
                             f"Claude account identity is unverified for profile {name}; "
                             f"run `agentroute bridge profile login {name}` before routing"
                         )
-            if sticky_state and started and sticky_state[1] != current_identity:
+            if name in excluded:
+                raise CredentialError("no available Claude subscription profile remains")
+            if (
+                sticky_state and started and sticky_state[0] == name
+                and sticky_state[1] != current_identity
+            ):
                 raise ProfileIdentityChangedError(
                     f"Claude account identity changed for profile {name}; start a new conversation"
                 )
@@ -327,17 +317,23 @@ class ClaudeProfilePool:
                     "Claude account affinity state is full; existing thread routing is "
                     "preserved, but an unrecorded thread cannot be assigned safely"
                 )
-            if thread_key and sticky_state is not None:
-                self._threads[thread_key] = (
-                    name,
-                    current_identity,
-                    started or requested is not None,
-                )
-                self._save_threads()
+            # Commit the new affinity only when upstream accepts the request.
             return self._credential(name, profile)
 
+    def failover(
+        self, body: dict[str, Any], headers: Any, attempted: frozenset[str]
+    ) -> ProfileCredential | None:
+        """Try each available account once, only for automatic subscription routing."""
+        _model, manual = split_profile_model(str(body.get("model") or ""))
+        if manual is not None or not load_config().claude_subscriptions.auto_select:
+            return None
+        try:
+            return self.select(body, headers, excluded=attempted)
+        except CredentialError:
+            return None
+
     def mark_started(self, body: dict[str, Any], headers: Any, credential: Any) -> None:
-        """Persist that the upstream accepted this thread's first request."""
+        """Persist the account whose request upstream accepted, including transitions."""
         identity = getattr(credential, "account_identity", None)
         name = getattr(credential, "profile_name", None)
         request = request_identity(headers, body)
@@ -347,8 +343,8 @@ class ClaudeProfilePool:
         thread_key = hashlib.sha256(raw_thread.encode()).hexdigest()
         with self._lock:
             state = self._threads.get(thread_key)
-            if state is not None and state[2]:
-                if state[:2] != (name, identity):
+            if state is not None and state[2] and state[0] == name:
+                if state[1] != identity:
                     raise ProfileIdentityChangedError(
                         "Claude account identity changed before the thread started; "
                         "start a new conversation"
