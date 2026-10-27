@@ -347,7 +347,8 @@ To roll out new defaults without changing running sessions, set `launch_config` 
 AgentRoute configuration to the path of a complete new configuration. Ordinary `codex` launches
 select that file once and export `AGENTROUTE_CONFIG` for their hooks; existing hook processes
 continue reading their original configuration. Relative paths resolve beside the original file.
-An explicit `AGENTROUTE_CONFIG` always wins. Missing targets and redirect chains are rejected.
+An explicit `AGENTROUTE_CONFIG` always wins. Missing targets, redirect chains and redirected
+configurations with shared-server ownership enabled are rejected; existing owners are not restarted.
 This setting is opt-in, preserves the canonical Codex home and audit directory, and does not
 restart sessions. Refresh and maintain the selected complete configuration as its own settings;
 commands launched without `AGENTROUTE_CONFIG` continue to edit the original configuration.
