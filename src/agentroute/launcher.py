@@ -222,6 +222,10 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
         config = load_config(launch_config_path)
         if config.launch_config:
             raise ValueError("launch_config must select one configuration, not a redirect chain")
+        if config.shared_server.enabled:
+            raise ValueError(
+                "launch_config requires direct sessions; shared-server owners cannot reload it"
+            )
         from .classifier_refresh import refresh_classifier_catalog
 
         try:

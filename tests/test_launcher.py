@@ -195,3 +195,18 @@ def test_launch_config_classifier_failure_keeps_native_launch_fail_open(
     launch_codex(tmp_path / "codex", [])
     assert len(launched) == 1
     assert "classifier credential unavailable" in capsys.readouterr().err
+
+
+def test_redirected_config_does_not_attach_stale_shared_server(tmp_path, monkeypatch):
+    from agentroute.config import save_config
+
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    monkeypatch.delenv("AGENTROUTE_CONFIG", raising=False)
+    base = default_config()
+    base.launch_config = "selected.yaml"
+    selected = default_config()
+    selected.shared_server.enabled = True
+    save_config(base, tmp_path / "config.yaml")
+    save_config(selected, tmp_path / "selected.yaml")
+    with pytest.raises(ValueError, match="shared-server owners"):
+        launch_codex(tmp_path / "codex", [])
