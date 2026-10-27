@@ -118,6 +118,7 @@ class ClassifierConfig(BaseModel):
 
 class RoutingConfig(BaseModel):
     mode: Literal["heuristic", "hybrid", "llm"] = "hybrid"
+    reasoning_effort_policy: Literal["adaptive", "tier_default"] = "adaptive"
     switching: SwitchingConfig = Field(default_factory=SwitchingConfig)
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
     fast_quality_floor: bool = True
@@ -425,6 +426,7 @@ class ZellijConfig(BaseModel):
 class AppConfig(BaseModel):
     preset: str = "balanced"
     enabled: bool = False
+    launch_config: str | None = None
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     providers: dict[str, ProviderConfig]

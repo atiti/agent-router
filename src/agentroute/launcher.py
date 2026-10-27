@@ -6,7 +6,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from .config import AppConfig, agentroute_home, load_config
+from .config import AppConfig, agentroute_home, config_path, load_config
 
 BASE_CODEX_ARGS = [
     "--enable",
@@ -213,6 +213,22 @@ def validate_desktop_startup(user_args: Sequence[str], config: AppConfig) -> Non
 def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | None = None) -> None:
     binary = binary or agentroute_home() / "bin" / "codex-bin"
     config = load_config()
+    launch_config_path: Path | None = None
+    if config.launch_config and not os.environ.get("AGENTROUTE_CONFIG"):
+        launch_config_path = Path(config.launch_config).expanduser()
+        if not launch_config_path.is_absolute():
+            launch_config_path = config_path().parent / launch_config_path
+        launch_config_path = launch_config_path.resolve(strict=True)
+        config = load_config(launch_config_path)
+        if config.launch_config:
+            raise ValueError("launch_config must select one configuration, not a redirect chain")
+        from .classifier_refresh import refresh_classifier_catalog
+
+        try:
+            refresh_classifier_catalog(config, launch_config_path)
+        except (OSError, ValueError, RuntimeError) as error:
+            # Match the ordinary launcher's fail-open classifier refresh behavior.
+            print(f"AgentRoute classifier refresh: {error}", file=sys.stderr)
     if profile is not None:
         print(
             "◆ ACCOUNT NOTICE · --profile no longer changes CODEX_HOME; "
@@ -220,6 +236,10 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
             file=sys.stderr,
         )
     environment = os.environ.copy()
+    if launch_config_path is not None:
+        # Hooks inherit this path. Existing processes keep their original config,
+        # while every new ordinary launch uses the selected complete configuration.
+        environment["AGENTROUTE_CONFIG"] = str(launch_config_path)
     # Only this invocation's verified shared-owner attachment may request local semantics.
     environment.pop("AGENTROUTE_LOCAL_SERVER_SOCKET", None)
     from .storage import prepare_capture

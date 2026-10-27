@@ -337,6 +337,21 @@ availability still depends on the account and its approved access controls.
 
 ## Execution backends
 
+Tier model and reasoning defaults can be kept together with
+`routing.reasoning_effort_policy: tier_default`. The default `adaptive` policy still lets the
+classifier choose reasoning independently. Under `tier_default`, the selected tier's configured
+effort wins over classifier and inherited effort; an explicit reasoning tag still wins, subject to
+the model's required minimum. This also supports `max` effort on models that accept it.
+
+To roll out new defaults without changing running sessions, set `launch_config` in the ordinary
+AgentRoute configuration to the path of a complete new configuration. Ordinary `codex` launches
+select that file once and export `AGENTROUTE_CONFIG` for their hooks; existing hook processes
+continue reading their original configuration. Relative paths resolve beside the original file.
+An explicit `AGENTROUTE_CONFIG` always wins. Missing targets and redirect chains are rejected.
+This setting is opt-in, preserves the canonical Codex home and audit directory, and does not
+restart sessions. Refresh and maintain the selected complete configuration as its own settings;
+commands launched without `AGENTROUTE_CONFIG` continue to edit the original configuration.
+
 The built-in `gpt` backend uses the existing ChatGPT subscription login. Azure OpenAI and
 DeepSeek use API credentials from environment variables; AgentRoute never writes those secrets to
 configuration or audit storage. Enable and map them with:
