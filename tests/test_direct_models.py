@@ -240,6 +240,11 @@ def test_child_rejection_does_not_pollute_parent_history(monkeypatch, tmp_path):
     assert store.latest_route("direct-session", "root", None) is None
     row = store.latest_route("direct-session", "subagent", "child")
     assert row["backend"] == "azure"
+    bad = invoke(config, store, "@terra @sol hello",
+                 subagent={"agent_id": "parse-child", "agent_type": "worker"})
+    assert bad["continue"] is False
+    assert store.latest_route("direct-session", "root", None) is None
+    assert store.latest_route("direct-session", "subagent", "parse-child") is not None
 
 
 def test_account_selection_precedes_direct_account_model_admission(monkeypatch, tmp_path):

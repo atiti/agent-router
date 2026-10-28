@@ -321,6 +321,7 @@ def codex_user_prompt_submit(
     explicit_intent = False
     try:
         payload: dict[str, Any] = json.load(source)
+        route_scope, agent_id = _subagent_identity(payload)
         prompt = str(payload.get("prompt", ""))
         prefix = re.match(r"^\s*(?:@[^\s]+\s*)+", prompt)
         explicit_intent = bool(prefix and re.search(
@@ -349,7 +350,6 @@ def codex_user_prompt_submit(
                 r"@claude:[a-z][a-z0-9-]{0,31}(?=\s|$)",
                 "@claude", prompt, count=1, flags=re.I,
             )
-        route_scope, agent_id = _subagent_identity(payload)
         previous_route = store.latest_route(session_id, route_scope, agent_id)
         previous_tier = store.previous_tier(session_id, route_scope, agent_id)
         previous_reasoning_effort = store.previous_reasoning_effort(
