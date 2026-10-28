@@ -14,6 +14,7 @@ from .models import Tier
 class ModelTarget(BaseModel):
     model: str
     reasoning_effort: str | None = None
+    context_window: int | None = Field(default=None, ge=1)
 
 
 class ExecutionBackendConfig(BaseModel):
@@ -35,6 +36,7 @@ class ExecutionBackendConfig(BaseModel):
     monthly_budget_usd: float | None = Field(default=None, gt=0)
     fallback_backend: str | None = None
     tiers: dict[str, ModelTarget]
+    models: dict[str, ModelTarget] = Field(default_factory=dict)
 
     def target(self, tier: Tier) -> ModelTarget:
         return self.tiers[str(tier)]
@@ -171,6 +173,7 @@ class SubscriptionProfileConfig(BaseModel):
     enabled: bool = True
     priority: int = 100
     tiers: dict[str, ModelTarget] = Field(default_factory=dict)
+    models: dict[str, ModelTarget] = Field(default_factory=dict)
 
     def target(self, tier: Tier, fallback: ModelTarget) -> ModelTarget:
         """Return a profile-compatible target, falling back to the GPT default."""

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 from typing import Any, TextIO
 
@@ -21,6 +22,7 @@ from .claude_profiles import (
 from .config import AppConfig, codex_home, load_config
 from .context import context_receipt, reference_context, related_memories
 from .efficiency import execution_receipt
+from .model_selection import DirectModelError, resolve_model
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
 from .profiles import (
     TurnProfileSelection,
@@ -31,10 +33,9 @@ from .profiles import (
 )
 from .router import Router
 from .signals import (
-    claude_profile_override,
     continues_previous_task,
     is_confirmation,
-    route_overrides,
+    model_route_overrides,
 )
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
 
@@ -54,6 +55,7 @@ def _prompt_help(config: AppConfig) -> str:
             "",
             "Tier: @fast @normal @smart @max @auto",
             f"Backend (enabled): {backend_tags}",
+            "Model: @terra @sol @luna @astra @haiku @sonnet @opus or @model:EXACT_ID",
             "Claude subscription: @claude:<profile>",
             "Reasoning: @none @minimal @low @medium @high @xhigh @ultra @persistent",
             "",
@@ -176,14 +178,18 @@ def _apply_profile_selection(
     backend = config.backends["gpt"]
     profile = config.capacity.profiles.get(selection.selected.name)
     fallback = backend.target(decision.tier)
-    target = profile.target(decision.tier, fallback) if profile else fallback
+    target = (
+        resolve_model(config, "gpt", decision.requested_model, selection.selected.name)
+        if decision.requested_model
+        else profile.target(decision.tier, fallback)
+        if profile
+        else fallback
+    )
     decision.backend = "gpt"
     decision.model_provider = backend.codex_provider
     decision.model = target.model
     decision.reasoning_effort = (
-        decision.requested_reasoning_effort
-        or decision.reasoning_effort
-        or target.reasoning_effort
+        decision.requested_reasoning_effort or decision.reasoning_effort or target.reasoning_effort
     )
     decision.capacity_status = selection.selected.capacity.status
     decision.capacity_detail = (
@@ -223,9 +229,9 @@ def _apply_profile_selection(
         "source": selection.source,
     }
     decision.selection_receipt_hash = hashlib.sha256(
-        json.dumps(
-            decision.selection_receipt, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        json.dumps(decision.selection_receipt, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
     ).hexdigest()
 
 
@@ -312,8 +318,15 @@ def codex_user_prompt_submit(
     store: AuditStore | None = None,
 ) -> int:
     """Handle Codex's UserPromptSubmit JSON protocol, failing open on errors."""
+    explicit_intent = False
     try:
         payload: dict[str, Any] = json.load(source)
+        prompt = str(payload.get("prompt", ""))
+        prefix = re.match(r"^\s*(?:@[^\s]+\s*)+", prompt)
+        explicit_intent = bool(prefix and re.search(
+            r"@(terra|sol|luna|astra|haiku|sonnet|opus)(?=\s|$)|@model:",
+            prefix.group(), re.I,
+        ))
         config = config or load_config()
         provider = config.providers["codex"]
         current_model, current_claude_profile = split_profile_model(str(payload.get("model", "")))
@@ -321,16 +334,43 @@ def codex_user_prompt_submit(
         store = store or AuditStore()
         session_id = str(payload["session_id"])
         prompt = str(payload.get("prompt", ""))
-        claude_profile, prompt_without_profile = claude_profile_override(prompt)
+        (
+            tier_override,
+            backend_override,
+            reasoning_effort_override,
+            requested_model,
+            claude_profile,
+            routed_prompt,
+        ) = model_route_overrides(prompt, config.backends)
+        # Retain a routing prompt without the account selector, as before.
+        prompt_without_profile = prompt
+        if claude_profile is not None:
+            prompt_without_profile = re.sub(
+                r"@claude:[a-z][a-z0-9-]{0,31}(?=\s|$)",
+                "@claude", prompt, count=1, flags=re.I,
+            )
         route_scope, agent_id = _subagent_identity(payload)
         previous_route = store.latest_route(session_id, route_scope, agent_id)
         previous_tier = store.previous_tier(session_id, route_scope, agent_id)
         previous_reasoning_effort = store.previous_reasoning_effort(
             session_id, route_scope, agent_id
         )
-        tier_override, backend_override, reasoning_effort_override, routed_prompt = route_overrides(
-            prompt_without_profile, config.backends
-        )
+        if (
+            requested_model is None
+            and tier_override is None
+            and backend_override is None
+            and previous_route is not None
+            and continues_previous_task(routed_prompt)
+        ):
+            previous_receipt = json.loads(previous_route["selection_receipt"] or "{}")
+            explicit_model = previous_receipt.get("explicit_model") or {}
+            if explicit_model.get("requested") and not explicit_model.get("rejection"):
+                requested_model = str(previous_route["actual_model"] or previous_route["model"])
+                backend_override = str(
+                    previous_route["actual_backend"] or previous_route["backend"]
+                )
+                reasoning_effort_override = reasoning_effort_override or previous_reasoning_effort
+                explicit_intent = True
         if claude_profile is not None:
             configured_profile = config.claude_subscriptions.profiles.get(claude_profile)
             claude_backend = config.backends.get("claude")
@@ -394,7 +434,7 @@ def codex_user_prompt_submit(
             and previous_route is not None
             and store.goal_route_is_current(session_id, route_scope, agent_id, goal_id, goal_hash)
         )
-        if goal_continuation and claude_profile is None:
+        if goal_continuation and claude_profile is None and requested_model is None:
             # Objective tags apply on activation; later explicit turns may change the route.
             tier_override = backend_override = reasoning_effort_override = None
         if goal_id and not goal_continuation:
@@ -441,9 +481,7 @@ def codex_user_prompt_submit(
         elif backend_override:
             sticky_backend = backend_override
         routing_input = (
-            "continue"
-            if opaque_subagent_followup or goal_continuation
-            else prompt_without_profile
+            "continue" if opaque_subagent_followup or goal_continuation else prompt_without_profile
         )
         continuation = continues_previous_task(routing_input)
         classifier_needs_context = (
@@ -492,6 +530,7 @@ def codex_user_prompt_submit(
             explicit_backend=backend_override,
             requested_backend=requested_backend,
             requested_reasoning_effort=reasoning_effort_override,
+            requested_model=requested_model,
             spawn_model_explicit=spawn_model_explicit,
             inherited_backend=inherited_backend,
             current_model=current_model,
@@ -519,9 +558,28 @@ def codex_user_prompt_submit(
             previous_capacity_status=previous_capacity_status,
             previous_capacity_backend=previous_capacity_backend,
         )
-        decision = Router(config).route(context)
+        route_config = config
+        explicit_profile_selection = None
+        direct_backend = (
+            backend_override or requested_backend or sticky_backend or inherited_backend
+            or (interrupted_backend if interrupted_route is not None else None)
+            or ("claude" if requested_model in {"haiku", "sonnet", "opus"} else None)
+            or config.routing.backend_by_tier.get("normal", "gpt")
+        )
+        if requested_model and direct_backend == "gpt":
+            explicit_profile_selection = select_turn_profile(
+                config, current_subscription, current_account_id=current_account_id,
+                sticky_profile=sticky_profile,
+            )
+            if (
+                explicit_profile_selection is not None
+                and explicit_profile_selection.selected is not None
+            ):
+                route_config = config.model_copy(deep=True)
+                route_config.capacity.active_profile = explicit_profile_selection.selected.name
+        decision = Router(route_config).route(context)
         profile_selection = (
-            select_turn_profile(
+            explicit_profile_selection or select_turn_profile(
                 config,
                 current_subscription,
                 current_account_id=current_account_id,
@@ -553,9 +611,7 @@ def codex_user_prompt_submit(
             )
             profile = config.capacity.profiles.get(selected_name or "")
             eligible = bool(
-                selected_name
-                and profile
-                and profile_has_daybreak_blue(selected_name, profile)
+                selected_name and profile and profile_has_daybreak_blue(selected_name, profile)
             )
             if eligible:
                 decision.model = "gpt-daybreak-blue-latest"
@@ -592,6 +648,7 @@ def codex_user_prompt_submit(
         if interrupted_route is not None:
             preserve_interrupted_model = bool(
                 interrupted_model
+                and not decision.requested_model
                 and tier_override is None
                 and decision.tier == previous_tier
                 and decision.backend == interrupted_backend
@@ -708,9 +765,7 @@ def codex_user_prompt_submit(
         )
         jev_first_pass = decision.selection_receipt.get("jev_first_pass", {})
         jev_confidence = (
-            float(jev_first_pass.get("confidence", 0))
-            if isinstance(jev_first_pass, dict)
-            else 0.0
+            float(jev_first_pass.get("confidence", 0)) if isinstance(jev_first_pass, dict) else 0.0
         )
         output: dict[str, Any] = {
             "continue": not decision.capacity_blocked,
@@ -754,9 +809,7 @@ def codex_user_prompt_submit(
                 and decision.backend == "gpt"
                 and decision.model_provider == "openai"
             ):
-                reviewer_fallbacks = reviewer_fallback_profiles(
-                    config, profile_selection.selected
-                )
+                reviewer_fallbacks = reviewer_fallback_profiles(config, profile_selection.selected)
                 specific["reviewerProfileName"] = profile_selection.selected.name
                 if reviewer_fallbacks:
                     specific["reviewerFallbackProfiles"] = [
@@ -776,9 +829,7 @@ def codex_user_prompt_submit(
             if decision.reasoning_effort:
                 specific["reasoningEffort"] = decision.reasoning_effort
             effort = (
-                f" · {decision.reasoning_effort} reasoning"
-                if decision.reasoning_effort
-                else ""
+                f" · {decision.reasoning_effort} reasoning" if decision.reasoning_effort else ""
             )
             model_route_message = (
                 f"◆ MODEL ROUTE · {decision.tier.name} → {decision.model}{effort}"
@@ -787,11 +838,7 @@ def codex_user_prompt_submit(
                 f" · source {route_source}"
                 f" · {confidence_kind} {decision.confidence:.0%}"
                 f" · rule score {decision.raw_score:g}"
-                + (
-                    f" · {decision.classifier_task_type}"
-                    if decision.classifier_task_type
-                    else ""
-                )
+                + (f" · {decision.classifier_task_type}" if decision.classifier_task_type else "")
                 + (
                     " · INTERRUPTED TURN AFFINITY"
                     if ReasonCode.INTERRUPTED_TURN_AFFINITY in decision.reason_codes
@@ -880,11 +927,44 @@ def codex_user_prompt_submit(
         json.dump(output, sink, separators=(",", ":"))
         sink.write("\n")
         return 0
+    except DirectModelError as error:
+        try:
+            requested = locals().get("requested_model")
+            rejected = RouteDecision(
+                tier=Tier.NORMAL, model=requested or str(payload.get("model", "")),
+                requested_model=requested, confidence=1, raw_score=0,
+                reason_codes=[ReasonCode.MODEL_OVERRIDE],
+                contributions=[ScoreContribution(
+                    code=ReasonCode.MODEL_OVERRIDE, weight=0, detail=str(error)
+                )],
+                provider="codex", session_id=str(payload["session_id"]),
+                backend=locals().get("backend_override") or "gpt",
+                route_scope=locals().get("route_scope") or "root",
+                agent_id=locals().get("agent_id"),
+                turn_id=str(payload.get("turn_id") or ""),
+                prompt_hash=hashlib.sha256(str(payload.get("prompt", "")).encode()).hexdigest(),
+                manual_override=True, capacity_blocked=True, capacity_detail=str(error),
+                selection_receipt={"explicit_model": {"requested": requested,
+                                                      "rejection": str(error)}},
+            )
+            (store or AuditStore()).record(rejected, Tier.NORMAL, application_state="not_requested")
+        except Exception:
+            pass  # Explicit rejection stays fail-closed even if audit is unavailable.
+        json.dump({"continue": False, "stopReason": str(error), "systemMessage": str(error)}, sink)
+        sink.write("\n")
+        return 0
     except Exception as error:  # Hooks must not make Codex unusable.
         json.dump(
             {
-                "continue": True,
-                "systemMessage": f"AgentRoute failed open: {type(error).__name__}: {error}",
+                "continue": not explicit_intent,
+                "systemMessage": (
+                    f"Direct model selection failed: {type(error).__name__}: {error}. "
+                    "No substitute model was run."
+                    if explicit_intent else
+                    f"AgentRoute failed open: {type(error).__name__}: {error}"
+                ),
+                **({"stopReason": "Direct model selection could not be verified."}
+                   if explicit_intent else {}),
             },
             sink,
             separators=(",", ":"),
