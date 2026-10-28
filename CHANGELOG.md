@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.5.78 — 2026-10-28
 
 - Admit configured new models from a fresh account catalog when the pinned runtime catalog predates their release, preserving their actual tool metadata for routed aliases.
+- Add the opt-in `routing.reasoning_effort_policy: tier_default` so a tier's configured reasoning effort wins over the classifier; explicit reasoning tags and model minimums still apply, and `max` ranks above `xhigh`.
+- Add the opt-in `launch_config` setting so new ordinary `codex` launches select a complete updated configuration while running sessions keep their original mappings. Missing targets, redirect chains and shared-server owners are rejected.
 
 ## 0.5.77 — 2026-10-26
 
