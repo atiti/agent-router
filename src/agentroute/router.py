@@ -387,10 +387,16 @@ class Router:
             )
         max_tier = Tier.parse(self.config.policy.max_tier)
         if requested_model and model_target is not None:
+            policy_profile = (
+                self.config.capacity.profiles.get(self.config.capacity.active_profile or "")
+                if backend_override == "gpt" else None
+            )
             model_tiers = [
                 Tier.parse(name)
                 for name, value in self.config.backends[backend_override].tiers.items()
-                if value.model == model_target.model
+                if (
+                    policy_profile.target(Tier.parse(name), value) if policy_profile else value
+                ).model == model_target.model
             ]
             if model_tiers and min(model_tiers) > max_tier:
                 raise DirectModelError(

@@ -184,6 +184,14 @@ def test_explicit_model_respects_policy_cap(monkeypatch):
         Router(config).route(RouteContext(
             session_id="masked-cap", latest_prompt="@gpt @normal @astra hello"
         ))
+    config.capacity.active_profile = "team"
+    config.capacity.profiles["team"] = SubscriptionProfileConfig(
+        tiers={"max": ModelTarget(model="gpt-5.6-sol")}
+    )
+    with pytest.raises(DirectModelError, match="max_tier"):
+        Router(config).route(RouteContext(
+            session_id="profile-cap", latest_prompt="@gpt @normal @model:gpt-5.6-sol hello"
+        ))
 
 
 def test_no_account_selection_result_preserves_valid_gpt_direct_model(monkeypatch, tmp_path):
