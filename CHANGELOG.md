@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add an opt-in Codex progress review for long-running ordinary prompts and Goals, with a ten-minute active-work interval and an earlier repeated-failure trigger. Include a portable goal-checkpoint skill and usage guidance.
+
 ## 0.5.78 — 2026-10-28
 
 - Admit configured new models from a fresh account catalog when the pinned runtime catalog predates their release, preserving their actual tool metadata for routed aliases.

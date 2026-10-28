@@ -39,6 +39,12 @@ def test_explicit_model_keeps_default_provider_but_not_default_model():
     assert args[-2:] == ["--model", "custom"]
 
 
+@pytest.mark.parametrize("flag", ["--enable", "--disable"])
+def test_progress_review_flag_is_forwarded_to_codex(flag):
+    args = codex_argv(Path("/tmp/codex-bin"), [flag, "progress_review"], default_config())
+    assert args[-2:] == [flag, "progress_review"]
+
+
 def test_launch_profile_preserves_canonical_codex_home_before_exec(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     profile_home = tmp_path / "profile"

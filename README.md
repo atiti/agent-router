@@ -31,6 +31,9 @@ AgentRoute supports the interactive Codex CLI, `codex exec`, locally rebuilt Cod
 multiple ChatGPT subscription profiles, Azure OpenAI, and tool-compatible DeepSeek endpoints. See
 [Install](#install) for prerequisites and the review-before-running flow.
 
+The optional [progress review](docs/progress-review.md) checks the direction of long-running
+work, including ordinary prompts, when enabled in a compatible Codex build.
+
 ## Zellij session cockpit
 
 With Zellij 0.45.1+ installed, run `agentroute zellij install` once. The installer

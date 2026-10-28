@@ -58,6 +58,51 @@ def test_missing_or_malformed_receipt_is_not_zero_work(tmp_path):
     assert execution_receipt(str(path), None) == {}
 
 
+def test_progress_review_receipts_are_bounded_deduplicated_and_private(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    item = {
+        "id": "goal-review-1",
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "Independent progress review: adjust. private detail\n"
+                    "Reviewer usage: input=100 cached=20 output=8"
+                ),
+            }
+        ],
+    }
+    missing = {
+        "id": "goal-review-2",
+        "content": [
+            {
+                "type": "text",
+                "text": "Independent progress review: continue. fine\nReviewer usage: unavailable",
+            }
+        ],
+    }
+    path.write_text(
+        "\n".join(
+            json.dumps(record)
+            for record in [
+                event("task_started"),
+                event("item_completed", item=item),
+                event("item_completed", item=item),
+                event("item_completed", item=missing),
+            ]
+        )
+    )
+    receipt = execution_receipt(str(path), "t")
+    assert receipt["progress_review_count"] == 2
+    assert receipt["progress_review_usage_observed"] == 1
+    assert (
+        receipt["progress_review_input_tokens"],
+        receipt["progress_review_cached_input_tokens"],
+        receipt["progress_review_output_tokens"],
+    ) == (100, 20, 8)
+    assert "private detail" not in json.dumps(receipt)
+
+
 def test_partial_receipt_and_mcp_error(tmp_path):
     path = tmp_path / "partial"
     path.write_text(
@@ -95,8 +140,12 @@ def test_stop_persists_execution_receipt_idempotently(tmp_path):
     config = default_config()
     config.enabled = True
     prompt = {"session_id": "s", "turn_id": "t", "prompt": "@normal hello"}
-    assert codex_user_prompt_submit(io.StringIO(json.dumps(prompt)), io.StringIO(),
-                                    config=config, store=store) == 0
+    assert (
+        codex_user_prompt_submit(
+            io.StringIO(json.dumps(prompt)), io.StringIO(), config=config, store=store
+        )
+        == 0
+    )
     transcript = tmp_path / "turn.jsonl"
     transcript.write_text(json.dumps(event("task_started")))
     payload = {"session_id": "s", "turn_id": "t", "transcript_path": str(transcript)}

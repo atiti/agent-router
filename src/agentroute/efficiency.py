@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
     tools: dict[tuple[str, str], dict] = {}
     started = False
     compactions = 0
+    progress_reviews: dict[str, tuple[int, int, int] | None] = {}
     for line in lines:
         try:
             event = json.loads(line)
@@ -58,11 +60,28 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
                 started = True
             elif kind == "context_compacted":
                 compactions += 1
+            elif kind == "item_completed":
+                item = payload.get("item")
+                if isinstance(item, dict) and str(item.get("id", "")).startswith("goal-review-"):
+                    content = item.get("content")
+                    if isinstance(content, list):
+                        text = "\n".join(
+                            part.get("text", "")
+                            for part in content
+                            if isinstance(part, dict) and isinstance(part.get("text"), str)
+                        )
+                        if text.startswith("Independent progress review:"):
+                            match = re.search(
+                                r"\nReviewer usage: input=(\d+) cached=(\d+) output=(\d+)$", text
+                            )
+                            progress_reviews[item["id"]] = (
+                                tuple(map(int, match.groups())) if match else None
+                            )
             elif kind in {"exec_command_end", "mcp_tool_call_end"}:
                 call_id = payload.get("call_id")
                 if isinstance(call_id, str) and call_id:
                     tools[(kind, call_id)] = payload
-    if not responses and not tools and not started and not compactions:
+    if not responses and not tools and not started and not compactions and not progress_reviews:
         return {}
     durations = []
     failures = 0
@@ -99,6 +118,19 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
         "tool_duration_receipts": len(durations),
         "tool_work_ms": sum(durations) if durations else None,
         "observed_compactions": compactions,
+        "progress_review_count": len(progress_reviews),
+        "progress_review_usage_observed": sum(
+            value is not None for value in progress_reviews.values()
+        ),
+        "progress_review_input_tokens": sum(
+            value[0] for value in progress_reviews.values() if value is not None
+        ),
+        "progress_review_cached_input_tokens": sum(
+            value[1] for value in progress_reviews.values() if value is not None
+        ),
+        "progress_review_output_tokens": sum(
+            value[2] for value in progress_reviews.values() if value is not None
+        ),
         "root_turn_id": last.get("root_turn_id"),
         "last_response_usage": {key: int(_number(last_usage.get(key)) or 0) for key in totals},
         **totals,
