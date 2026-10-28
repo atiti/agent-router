@@ -138,9 +138,10 @@ def test_review_cost_uses_observed_route_and_labels_missing_pricing(tmp_path):
     report = efficiency_report([{"execution_receipt": json.dumps(receipt)}], pricing)
     assert report["progress_review_priced_count"] == 1
     assert report["progress_review_unpriced_or_unobserved_count"] == 1
-    assert report["progress_review_estimated_cost_usd"] == token_cost(
+    assert report["progress_review_estimated_cost"] == token_cost(
         model, receipt["progress_review_receipts"][0], pricing
     )
+    assert report["progress_review_cost_currency"] == pricing.currency
 
 
 def test_review_receipt_uses_runtime_route_and_rejects_inconsistent_cache(tmp_path):

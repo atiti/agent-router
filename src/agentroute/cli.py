@@ -1212,7 +1212,7 @@ def analytics_command(
         f"observed tool failures: {efficiency['observed_tool_failures']}; "
         f"tool work: {_format_duration(efficiency['tool_work_ms'])} (may overlap)"
     )
-    review_cost = efficiency["progress_review_estimated_cost_usd"]
+    review_cost = efficiency["progress_review_estimated_cost"]
     if (
         efficiency["progress_review_priced_count"]
         or efficiency["progress_review_unpriced_or_unobserved_count"]

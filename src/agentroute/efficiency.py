@@ -212,11 +212,12 @@ def efficiency_report(rows: list, pricing: Any = None) -> dict[str, Any]:
             r.get("progress_review_count", 0) for r in receipts
         )
         - len(priced),
-        "progress_review_estimated_cost_usd": sum(
+        "progress_review_estimated_cost": sum(
             token_cost(review["model"], review, pricing) for review in priced
         )
         if priced
         else None,
+        "progress_review_cost_currency": pricing.currency if priced else None,
         "cached_input_fraction": min(1.0, cached / inputs) if inputs else None,
         "model_latency_ms": None,
         "note": "Observed tool work can overlap; model latency is not derived by subtraction.",
