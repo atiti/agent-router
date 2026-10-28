@@ -45,6 +45,36 @@ def test_progress_review_flag_is_forwarded_to_codex(flag):
     assert args[-2:] == [flag, "progress_review"]
 
 
+def test_progress_review_route_is_independent_and_user_overrides_win():
+    config = default_config()
+    config.backends["azure"].enabled = True
+    config.routing.progress_review_backend = "azure"
+    config.routing.progress_review_tier = "fast"
+    args = codex_argv(Path("/tmp/codex-bin"), [], config)
+    assert 'progress_review_provider="agentroute-azure"' in args
+    assert f'progress_review_model="{config.backends["azure"].tiers["fast"].model}"' in args
+    args = codex_argv(Path("/tmp/codex-bin"), ["-c", 'progress_review_model="custom"'], config)
+    assert sum(arg.startswith("progress_review_model=") for arg in args) == 1
+
+
+def test_disabled_progress_review_backend_fails_closed():
+    config = default_config()
+    config.routing.progress_review_backend = "azure"
+    with pytest.raises(ValueError, match="missing or disabled"):
+        codex_argv(Path("/tmp/codex-bin"), [], config)
+
+
+def test_shared_server_receives_progress_review_route(tmp_path):
+    from agentroute.shared_server import server_argv
+
+    config = default_config()
+    config.backends["azure"].enabled = True
+    config.routing.progress_review_backend = "azure"
+    args = server_argv(tmp_path / "codex-bin", config)
+    assert 'progress_review_provider="agentroute-azure"' in args
+    assert f'progress_review_model="{config.backends["azure"].tiers["fast"].model}"' in args
+
+
 def test_launch_profile_preserves_canonical_codex_home_before_exec(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     profile_home = tmp_path / "profile"
