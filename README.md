@@ -217,8 +217,8 @@ and effort; a new source/tier selector or `@auto` returns to that routing mode. 
 submits the next prompt there; it does not automatically replay a failed provider operation.
 
 Run `agentroute help` in a terminal to show the currently enabled tag reference. Tier, backend,
-and reasoning tags may be combined in any order; put a Claude profile selector first. AgentRoute
-removes tags before your task is sent to the model.
+model, reasoning and Claude profile selectors may be combined in any order within the leading
+prefix. AgentRoute removes tags before your task is sent to the model.
 
 | Group | Tags | Purpose |
 |---|---|---|
