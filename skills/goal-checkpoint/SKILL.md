@@ -5,7 +5,7 @@ description: Keep long research or implementation tasks aligned with the user's 
 
 # Goal checkpoint
 
-Capture the user's objective, later corrections, acceptance criteria, constraints, and next bounded action. Preserve uncertainty and link evidence to each criterion. Report meaningful progress and remaining work to the user; do not treat reports as completion.
+Capture the user's objective, later corrections, acceptance criteria, constraints, and next bounded action. Preserve uncertainty and link evidence to each criterion. About every ten minutes of active work, at a safe boundary, report the objective, evidenced progress, remaining work or blockers, and next useful step. Continue working; do not treat reports as completion or interrupt a running operation just to report.
 
 When the Codex `progress_review` feature is enabled, the runtime schedules independent direction reviews. If `request_progress_review` is available, call it at meaningful milestones with the relevant acceptance criteria or specific questions. The request is asynchronous and subject to a cooldown. Consider each verdict as fallible evidence. Adopt its recommendation or explain why another action is better. Do not cancel or restart a running operation solely because a review arrives.
 
