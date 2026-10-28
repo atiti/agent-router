@@ -186,6 +186,8 @@ chmod 755 "$AGENTROUTE_BIN_DIR/codex"
 
 if [ "${AGENTROUTE_INSTALL_ACTIVATE:-1}" = 1 ]; then
     "$AGENTROUTE_BIN_DIR/agentroute" setup
+    sh "$AGENTROUTE_PROJECT_ROOT/scripts/install-progress-skill.sh" \
+        "$AGENTROUTE_PROJECT_ROOT/skills/goal-checkpoint" "${CODEX_HOME:-$HOME/.codex}/skills"
 
     AGENTROUTE_SHELL_RC=${ZDOTDIR:-"$HOME"}/.zshrc
     AGENTROUTE_PATH_LINE='export PATH="$HOME/.agentroute/bin:$PATH" # agentroute'
