@@ -39,7 +39,7 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
     tools: dict[tuple[str, str], dict] = {}
     started = False
     compactions = 0
-    progress_reviews: dict[str, tuple[int, int, int] | None] = {}
+    progress_reviews: dict[str, dict[str, Any] | None] = {}
     for line in lines:
         try:
             event = json.loads(line)
@@ -74,9 +74,35 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
                             match = re.search(
                                 r"\nReviewer usage: input=(\d+) cached=(\d+) output=(\d+)$", text
                             )
-                            progress_reviews[item["id"]] = (
-                                tuple(map(int, match.groups())) if match else None
-                            )
+                            usage = None
+                            if match:
+                                input_tokens, cached, output = map(int, match.groups())
+                                usage = {
+                                    "input_tokens": input_tokens,
+                                    "cached_input_tokens": cached,
+                                    "output_tokens": output,
+                                }
+                                route_match = re.search(r"\nReviewer route: (\{[^\n]*\})\n", text)
+                                if route_match:
+                                    try:
+                                        route = json.loads(route_match.group(1))
+                                    except ValueError:
+                                        route = None
+                                    if isinstance(route, dict):
+                                        for key in ("model", "provider"):
+                                            value = route.get(key)
+                                            if isinstance(value, str) and re.fullmatch(
+                                                r"[A-Za-z0-9_.@/-]{1,160}", value
+                                            ):
+                                                usage[key] = value
+                                        write = route.get("cache_write_input_tokens")
+                                        if (
+                                            isinstance(write, int)
+                                            and not isinstance(write, bool)
+                                            and 0 <= write <= input_tokens
+                                        ):
+                                            usage["cache_write_input_tokens"] = write
+                            progress_reviews[item["id"]] = usage
             elif kind in {"exec_command_end", "mcp_tool_call_end"}:
                 call_id = payload.get("call_id")
                 if isinstance(call_id, str) and call_id:
@@ -123,21 +149,24 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
             value is not None for value in progress_reviews.values()
         ),
         "progress_review_input_tokens": sum(
-            value[0] for value in progress_reviews.values() if value is not None
+            value["input_tokens"] for value in progress_reviews.values() if value is not None
         ),
         "progress_review_cached_input_tokens": sum(
-            value[1] for value in progress_reviews.values() if value is not None
+            value["cached_input_tokens"] for value in progress_reviews.values() if value is not None
         ),
         "progress_review_output_tokens": sum(
-            value[2] for value in progress_reviews.values() if value is not None
+            value["output_tokens"] for value in progress_reviews.values() if value is not None
         ),
+        "progress_review_receipts": [
+            value for value in progress_reviews.values() if value is not None
+        ],
         "root_turn_id": last.get("root_turn_id"),
         "last_response_usage": {key: int(_number(last_usage.get(key)) or 0) for key in totals},
         **totals,
     }
 
 
-def efficiency_report(rows: list) -> dict[str, Any]:
+def efficiency_report(rows: list, pricing: Any = None) -> dict[str, Any]:
     """Aggregate measured receipts and label unavailable timings honestly."""
     receipts = []
     for row in rows:
@@ -149,6 +178,22 @@ def efficiency_report(rows: list) -> dict[str, Any]:
             receipts.append(receipt)
     inputs = sum(r.get("input_tokens", 0) for r in receipts)
     cached = sum(r.get("cached_input_tokens", 0) for r in receipts)
+    reviews = [
+        review
+        for receipt in receipts
+        for review in receipt.get("progress_review_receipts", [])
+        if isinstance(review, dict)
+    ]
+    from .pricing import canonical_model, token_cost
+
+    priced = [
+        review
+        for review in reviews
+        if pricing is not None
+        and isinstance(review.get("model"), str)
+        and canonical_model(review["model"], pricing) in pricing.models
+        and "cache_write_input_tokens" in review
+    ]
     return {
         "measured_turns": len(receipts),
         "unmeasured_turns": len(rows) - len(receipts),
@@ -158,6 +203,16 @@ def efficiency_report(rows: list) -> dict[str, Any]:
         "observed_tool_failures": sum(r.get("observed_tool_failures", 0) for r in receipts),
         "tool_work_ms": sum(r.get("tool_work_ms") or 0 for r in receipts),
         "observed_compactions": sum(r.get("observed_compactions", 0) for r in receipts),
+        "progress_review_priced_count": len(priced),
+        "progress_review_unpriced_or_unobserved_count": sum(
+            r.get("progress_review_count", 0) for r in receipts
+        )
+        - len(priced),
+        "progress_review_estimated_cost_usd": sum(
+            token_cost(review["model"], review, pricing) for review in priced
+        )
+        if priced
+        else None,
         "cached_input_fraction": min(1.0, cached / inputs) if inputs else None,
         "model_latency_ms": None,
         "note": "Observed tool work can overlap; model latency is not derived by subtraction.",

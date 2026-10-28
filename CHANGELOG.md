@@ -4,6 +4,7 @@
 
 - Add an opt-in Codex progress review for long-running ordinary prompts and Goals, with a ten-minute active-work interval and an earlier repeated-failure trigger. Install the portable goal-checkpoint skill on activation without replacing an existing copy.
 - Allow an independent progress-review backend and tier for direct and shared-server sessions.
+- Attribute observed reviewer usage to its session route and estimate cost when pricing is available.
 
 ## 0.5.78 — 2026-10-28
 

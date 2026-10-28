@@ -103,6 +103,46 @@ def test_progress_review_receipts_are_bounded_deduplicated_and_private(tmp_path)
     assert "private detail" not in json.dumps(receipt)
 
 
+def test_review_cost_uses_observed_route_and_labels_missing_pricing(tmp_path):
+    from agentroute.config import default_config
+    from agentroute.pricing import token_cost
+
+    pricing = default_config().pricing
+    model = next(iter(pricing.models))
+    route = json.dumps({"model": model, "provider": "openai", "cache_write_input_tokens": 10})
+    item = {
+        "id": "goal-review-1",
+        "content": [
+            {
+                "text": (
+                    f"Independent progress review: continue. fine\nReviewer route: {route}\n"
+                    "Reviewer usage: input=100 cached=20 output=8"
+                )
+            }
+        ],
+    }
+    legacy = {
+        "id": "goal-review-2",
+        "content": [
+            {
+                "text": (
+                    "Independent progress review: continue. fine\n"
+                    "Reviewer usage: input=2 cached=0 output=1"
+                )
+            }
+        ],
+    }
+    path = tmp_path / "rollout"
+    path.write_text("\n".join(json.dumps(event("item_completed", item=x)) for x in [item, legacy]))
+    receipt = execution_receipt(str(path), "t")
+    report = efficiency_report([{"execution_receipt": json.dumps(receipt)}], pricing)
+    assert report["progress_review_priced_count"] == 1
+    assert report["progress_review_unpriced_or_unobserved_count"] == 1
+    assert report["progress_review_estimated_cost_usd"] == token_cost(
+        model, receipt["progress_review_receipts"][0], pricing
+    )
+
+
 def test_partial_receipt_and_mcp_error(tmp_path):
     path = tmp_path / "partial"
     path.write_text(

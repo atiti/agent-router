@@ -1187,7 +1187,7 @@ def analytics_command(
             "reconciliation": asdict(report.reconciliation),
             "capacity": asdict(report.capacity),
             "calibration": asdict(report.calibration),
-            "efficiency": efficiency_report(rows),
+            "efficiency": efficiency_report(rows, config.pricing),
             "longest_turns": [asdict(item) for item in report.longest_turns],
         }
         console.print_json(json.dumps(payload, sort_keys=True))
@@ -1204,7 +1204,7 @@ def analytics_command(
         f"Turns: {report.rows}; token receipts: {report.overall.measured_turns}; "
         f"without token receipt: {report.overall.unmeasured_turns}"
     )
-    efficiency = efficiency_report(rows)
+    efficiency = efficiency_report(rows, config.pricing)
     console.print(
         f"Execution receipts: {efficiency['measured_turns']} "
         f"({efficiency['partial_turns']} partial); "
