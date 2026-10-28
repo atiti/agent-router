@@ -282,26 +282,3 @@ def test_rejected_model_is_not_inherited_on_continuation(monkeypatch, tmp_path):
     assert invoke(config, store, "@azure @model:missing hello")["continue"] is False
     result = invoke(config, store, "continue")
     assert result["hookSpecificOutput"]["model"] != "missing"
-
-
-def test_direct_model_rejects_unsupported_effort(monkeypatch):
-    config = configured(monkeypatch)
-    config.backends["azure"].models["gpt-5.1"] = ModelTarget(
-        model="gpt-5.1", context_window=272000, reasoning_effort="medium",
-        supported_reasoning_efforts=["none", "low", "medium", "high"]
-    )
-    with pytest.raises(DirectModelError, match="does not support"):
-        Router(config).route(RouteContext(
-            session_id="unsupported-effort", latest_prompt="@azure @model:gpt-5.1 @xhigh hello"
-        ))
-
-
-def test_nonreasoning_direct_model_does_not_send_tier_effort(monkeypatch):
-    config = configured(monkeypatch)
-    config.backends["azure"].models["gpt-4.1"] = ModelTarget(
-        model="gpt-4.1", context_window=1014808, supported_reasoning_efforts=[]
-    )
-    decision = Router(config).route(RouteContext(
-        session_id="nonreasoning", latest_prompt="@azure @model:gpt-4.1 hello"
-    ))
-    assert decision.reasoning_effort is None

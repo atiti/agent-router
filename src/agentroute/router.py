@@ -710,17 +710,6 @@ class Router:
         selected_reasoning_effort = reasoning_effort_override or (
             target.reasoning_effort if tier_effort_policy else automatic_effort
         )
-        if model_target and model_target.supported_reasoning_efforts is not None:
-            allowed = model_target.supported_reasoning_efforts
-            if reasoning_effort_override and reasoning_effort_override not in allowed:
-                raise DirectModelError(
-                    f"Model {target.model} does not support reasoning {reasoning_effort_override}. "
-                    f"Supported: {', '.join(allowed) or 'no reasoning parameter'}."
-                )
-            if not allowed:
-                selected_reasoning_effort = None
-            elif selected_reasoning_effort not in allowed:
-                selected_reasoning_effort = model_target.reasoning_effort or allowed[0]
         minimum_reasoning_effort = _minimum_model_reasoning_effort(backend_name, target.model)
         if (
             minimum_reasoning_effort

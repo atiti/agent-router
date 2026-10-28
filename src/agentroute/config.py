@@ -15,7 +15,6 @@ class ModelTarget(BaseModel):
     model: str
     reasoning_effort: str | None = None
     context_window: int | None = Field(default=None, ge=1)
-    supported_reasoning_efforts: list[str] | None = None
 
 
 class ExecutionBackendConfig(BaseModel):
