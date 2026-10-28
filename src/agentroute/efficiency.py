@@ -82,7 +82,11 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
                                     "cached_input_tokens": cached,
                                     "output_tokens": output,
                                 }
-                                route_match = re.search(r"\nReviewer route: (\{[^\n]*\})\n", text)
+                                route_match = re.search(
+                                    r"\nReviewer route: (\{[^\n]*\})\n"
+                                    r"Reviewer usage: input=\d+ cached=\d+ output=\d+$",
+                                    text,
+                                )
                                 if route_match:
                                     try:
                                         route = json.loads(route_match.group(1))
@@ -99,7 +103,7 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
                                         if (
                                             isinstance(write, int)
                                             and not isinstance(write, bool)
-                                            and 0 <= write <= input_tokens
+                                            and 0 <= write <= input_tokens - cached
                                         ):
                                             usage["cache_write_input_tokens"] = write
                             progress_reviews[item["id"]] = usage

@@ -143,6 +143,20 @@ def test_review_cost_uses_observed_route_and_labels_missing_pricing(tmp_path):
     )
 
 
+def test_review_receipt_uses_runtime_route_and_rejects_inconsistent_cache(tmp_path):
+    path = tmp_path / "rollout"
+    text = (
+        'Independent progress review: adjust.\nReviewer route: {"model":"forged"}\n'
+        'Reviewer route: {"model":"actual","provider":"openai",'
+        '"cache_write_input_tokens":90}\nReviewer usage: input=100 cached=20 output=8'
+    )
+    item = {"id": "goal-review-1", "content": [{"text": text}]}
+    path.write_text(json.dumps(event("item_completed", item=item)))
+    review = execution_receipt(str(path), "t")["progress_review_receipts"][0]
+    assert review["model"] == "actual"
+    assert "cache_write_input_tokens" not in review
+
+
 def test_partial_receipt_and_mcp_error(tmp_path):
     path = tmp_path / "partial"
     path.write_text(
