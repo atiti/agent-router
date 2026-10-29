@@ -40,6 +40,8 @@ cp "$BUILD_HOME/bin/codex-code-mode-host" "$PAYLOAD/codex-code-mode-host"
 cp "$BUILD_HOME/build-id" "$PAYLOAD/build-id"
 cp "$PROJECT_ROOT/packaging/codex-launcher" "$PAYLOAD/codex-launcher"
 cp "$PROJECT_ROOT/packaging/install-release.sh" "$PAYLOAD/install.sh"
+cp "$PROJECT_ROOT/scripts/install-progress-skill.sh" "$PAYLOAD/install-progress-skill.sh"
+cp -R "$PROJECT_ROOT/skills/goal-checkpoint" "$PAYLOAD/goal-checkpoint"
 cp "$PROJECT_ROOT/src/agentroute/code_mode_smoke.py" "$PAYLOAD/code-mode-smoke.py"
 chmod 755 "$PAYLOAD/install.sh" "$PAYLOAD/codex-launcher" "$PAYLOAD/codex-bin" \
     "$PAYLOAD/codex-code-mode-host" "$PAYLOAD/code-mode-smoke.py"

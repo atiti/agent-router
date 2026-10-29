@@ -47,7 +47,9 @@ Public macOS release builds fail closed without signing secrets. Configure these
 These names intentionally match Overwatchr's signing setup. Do not tag a public release until all
 six are present. Each macOS matrix job imports the certificate into an ephemeral keychain, signs
 both native binaries with hardened runtime and a secure timestamp, submits their CDHashes for Apple
-notarization, and requires Gatekeeper assessment to pass. Ad-hoc signatures remain appropriate for
+notarization, and requires strict Developer ID signature verification and accepted notarization.
+The payload contains standalone command-line executables, so validation does not use `spctl`'s
+app-bundle assessment, which can reject valid CLI tools as not being apps. Ad-hoc signatures remain appropriate for
 local source builds, but are deliberately rejected by the release artifact builder because a
 downloaded ad-hoc binary can be blocked by macOS Gatekeeper.
 
