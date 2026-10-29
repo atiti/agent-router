@@ -246,3 +246,26 @@ def test_redirected_config_does_not_attach_stale_shared_server(tmp_path, monkeyp
     save_config(selected, tmp_path / "selected.yaml")
     with pytest.raises(ValueError, match="shared-server owners"):
         launch_codex(tmp_path / "codex", [])
+
+
+@pytest.mark.parametrize("override", [
+    ["-c", 'progress_review_model="review-only"'],
+    ["--config=progress_review_model=review-only"],
+    ["-cprogress_review_model=review-only"],
+])
+def test_reviewer_override_preserves_worker_startup_model(override):
+    config = default_config()
+    config.backends["azure"].enabled = True
+    config.routing.backend_by_tier["normal"] = "azure"
+    args = startup_route_args(config, override)
+    assert args[args.index("--model") + 1] == config.backends["azure"].tiers["normal"].model
+    assert 'model_provider="agentroute-azure"' in args
+
+
+@pytest.mark.parametrize("override", [
+    ["-c", 'model = "worker-only"'],
+    ["--config=model=worker-only"],
+    ["-cmodel=worker-only"],
+])
+def test_exact_model_override_suppresses_worker_startup_default(override):
+    assert "--model" not in startup_route_args(default_config(), override)

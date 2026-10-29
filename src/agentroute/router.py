@@ -15,7 +15,7 @@ from .classifier import (
 from .claude_models import EFFORT_MODELS, claude_effort
 from .config import AppConfig, load_config, model_capabilities
 from .economics import cache_switch_estimate
-from .model_selection import DirectModelError, resolve_model
+from .model_selection import DirectModelError, resolve_model, source_models
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
 from .providers import backend_readiness
 from .signals import (
@@ -124,6 +124,16 @@ class Router:
         reasoning_effort_override = context.requested_reasoning_effort or parsed_reasoning_effort
         requested_model = context.requested_model or parsed_model
         model_target = None
+        if (
+            requested_model is None
+            and context.requested_backend in self.config.backends
+            and context.spawn_model_explicit
+            and context.current_model in source_models(
+                self.config, context.requested_backend,
+                self.config.capacity.active_profile if context.requested_backend == "gpt" else None,
+            )
+        ):
+            requested_model = context.current_model
         if requested_model:
             backend_override = (
                 backend_override
@@ -465,7 +475,10 @@ class Router:
             and context.spawn_model_explicit
             and backend is not None
             and context.current_model
-            and context.current_model not in {target.model for target in backend.tiers.values()}
+            and context.current_model not in source_models(
+                self.config, backend_name,
+                self.config.capacity.active_profile if backend_name == "gpt" else None,
+            )
         )
         unavailable_requested_backend: str | None = None
         unavailable_locked = False

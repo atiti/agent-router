@@ -23,8 +23,18 @@ BASE_CODEX_ARGS = [
 
 
 def _has_config_override(args: Sequence[str], key: str) -> bool:
-    assignment = f"{key}="
-    return any(assignment in arg for arg in args)
+    for index, arg in enumerate(args):
+        if arg in {"-c", "--config"}:
+            assignment = args[index + 1] if index + 1 < len(args) else ""
+        elif arg.startswith("--config="):
+            assignment = arg.removeprefix("--config=")
+        elif arg.startswith("-c"):
+            assignment = arg[2:]
+        else:
+            continue
+        if assignment.partition("=")[0].strip() == key and "=" in assignment:
+            return True
+    return False
 
 
 def _has_model_override(args: Sequence[str]) -> bool:

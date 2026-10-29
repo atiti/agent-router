@@ -480,6 +480,10 @@ def codex_user_prompt_submit(
             inherited_backend = None
         elif backend_override:
             sticky_backend = backend_override
+        if requested_model is None and spawn_model_explicit and requested_backend == "gpt":
+            # Resolve profile-owned declarations before the router validates this child.
+            requested_model = current_model
+            explicit_intent = True
         routing_input = (
             "continue" if opaque_subagent_followup or goal_continuation else prompt_without_profile
         )
@@ -794,6 +798,8 @@ def codex_user_prompt_submit(
                 else decision.model
             )
             specific["modelProvider"] = decision.model_provider
+            if decision.requested_model:
+                specific["requireAppliedRoute"] = True
             if (
                 profile_selection is not None
                 and profile_selection.selected is not None
