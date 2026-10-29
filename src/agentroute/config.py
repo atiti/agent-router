@@ -120,6 +120,8 @@ class ClassifierConfig(BaseModel):
 
 class RoutingConfig(BaseModel):
     mode: Literal["heuristic", "hybrid", "llm"] = "hybrid"
+    progress_review_backend: str | None = None
+    progress_review_tier: Literal["fast", "normal", "smart", "max"] = "fast"
     reasoning_effort_policy: Literal["adaptive", "tier_default"] = "adaptive"
     switching: SwitchingConfig = Field(default_factory=SwitchingConfig)
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
