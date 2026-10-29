@@ -202,9 +202,23 @@ AGENTROUTE_TEST_CODEX_BINARY="$HOME/.agentroute/bin/codex-bin" \
 
 ## Prompt tags
 
+Select a model directly with a source and optional effort, for example
+`@azure @terra @xhigh`, `@gpt @luna @xhigh`, or `@claude @sonnet @medium`.
+Use `@model:EXACT_ID` for an exact deployment identifier. Source, model, tier and effort prefixes
+may appear in any order. `@max` remains the MAX tier; `@ultra` selects maximum reasoning.
+
+Family names resolve only within the selected source's configured tier models and explicit
+`models` declarations. Unknown or ambiguous models block the turn instead of silently selecting
+another model or source. Additional source models use their exact identifier as the map key and
+declare `model`, `reasoning_effort` and `context_window`; GPT account-specific declarations belong
+to that account profile. Declaring a model records operator access knowledge; it does not grant
+provider access, which still needs verification. Ordinary continuation retains an explicit model
+and effort; a new source/tier selector or `@auto` returns to that routing mode. Switching sources
+submits the next prompt there; it does not automatically replay a failed provider operation.
+
 Run `agentroute help` in a terminal to show the currently enabled tag reference. Tier, backend,
-and reasoning tags may be combined in any order; put a Claude profile selector first. AgentRoute
-removes tags before your task is sent to the model.
+model, reasoning and Claude profile selectors may be combined in any order within the leading
+prefix. AgentRoute removes tags before your task is sent to the model.
 
 | Group | Tags | Purpose |
 |---|---|---|
