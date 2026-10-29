@@ -15,6 +15,7 @@ from .classifier import (
 from .claude_models import EFFORT_MODELS, claude_effort
 from .config import AppConfig, load_config, model_capabilities
 from .economics import cache_switch_estimate
+from .model_selection import DirectModelError, resolve_model
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
 from .providers import backend_readiness
 from .signals import (
@@ -22,6 +23,7 @@ from .signals import (
     continues_previous_task,
     extract_signals,
     is_confirmation,
+    model_route_overrides,
     reason_codes,
     route_overrides,
 )
@@ -112,14 +114,41 @@ class Router:
     def route(self, context: RouteContext) -> RouteDecision:
         self._last_classifier = None
         self._jev_observation = None
-        override, backend_override, parsed_reasoning_effort, _ = route_overrides(
-            context.latest_prompt, self.config.backends
+        override, backend_override, parsed_reasoning_effort, parsed_model, _, _ = (
+            model_route_overrides(context.latest_prompt, self.config.backends)
         )
         # The hook resolves named profile selectors before building latest_prompt.
         # Explicit provider choices must win over interrupted-turn affinity.
         backend_override = context.explicit_backend or backend_override
         interrupted_turn_affinity = context.interrupted_turn_affinity and override != "auto"
         reasoning_effort_override = context.requested_reasoning_effort or parsed_reasoning_effort
+        requested_model = context.requested_model or parsed_model
+        model_target = None
+        if requested_model:
+            backend_override = (
+                backend_override
+                or context.requested_backend
+                or context.sticky_backend
+                or context.inherited_backend
+                or (context.interrupted_backend if interrupted_turn_affinity else None)
+                or ("claude" if requested_model in {"haiku", "sonnet", "opus"} else None)
+                or self.config.routing.backend_by_tier.get("normal", "gpt")
+            )
+            backend = self.config.backends.get(backend_override)
+            if (
+                backend is None
+                or not backend.enabled
+                or not backend_readiness(self.config, backend_override)[0]
+            ):
+                raise DirectModelError(
+                    f"Source {backend_override} is unavailable; no fallback requested."
+                )
+            model_target = resolve_model(
+                self.config,
+                backend_override,
+                requested_model,
+                self.config.capacity.active_profile if backend_override == "gpt" else None,
+            )
         contributions = extract_signals(context)
         if reasoning_effort_override:
             contributions.append(
@@ -132,7 +161,7 @@ class Router:
         raw_score = sum(item.weight for item in contributions)
         inherited = False
         task_context_used = False
-        manual = override not in (None, "auto")
+        manual = override not in (None, "auto") or requested_model is not None
         classification_source = "heuristic"
         classifier_confidence: float | None = None
         classifier_task_type: str | None = None
@@ -140,14 +169,49 @@ class Router:
         classifier_reason_hash: str | None = None
 
         if manual:
-            proposed = Tier.parse(override or "normal")
+            matching_tiers = (
+                [
+                    name
+                    for name, target in self.config.backends[backend_override].tiers.items()
+                    if model_target is not None and target.model == model_target.model
+                ]
+                if model_target is not None
+                else []
+            )
+            proposed = Tier.parse(
+                override
+                or (
+                    "normal"
+                    if "normal" in matching_tiers
+                    else matching_tiers[0]
+                    if matching_tiers
+                    else "normal"
+                )
+            )
+            if model_target is not None:
+                selected_backend = self.config.backends[backend_override]
+                tier_target = selected_backend.target(proposed)
+                if backend_override == "gpt":
+                    profile = self.config.capacity.profiles.get(
+                        self.config.capacity.active_profile or ""
+                    )
+                    if profile:
+                        tier_target = profile.target(proposed, tier_target)
+                if tier_target.model == model_target.model:
+                    model_target = tier_target
             confidence = 1.0
             classification_source = "manual"
             contributions.append(
                 ScoreContribution(
-                    code=ReasonCode.MANUAL_OVERRIDE,
+                    code=ReasonCode.MODEL_OVERRIDE
+                    if requested_model
+                    else ReasonCode.MANUAL_OVERRIDE,
                     weight=0,
-                    detail=f"explicit @{override} override",
+                    detail=(
+                        f"explicit model {requested_model} resolved to {model_target.model}"
+                        if model_target
+                        else f"explicit @{override} override"
+                    ),
                 )
             )
         elif interrupted_turn_affinity and context.previous_task_tier is not None:
@@ -322,7 +386,28 @@ class Router:
                 )
             )
         max_tier = Tier.parse(self.config.policy.max_tier)
+        if requested_model and model_target is not None:
+            policy_profile = (
+                self.config.capacity.profiles.get(self.config.capacity.active_profile or "")
+                if backend_override == "gpt" else None
+            )
+            model_tiers = [
+                Tier.parse(name)
+                for name, value in self.config.backends[backend_override].tiers.items()
+                if (
+                    policy_profile.target(Tier.parse(name), value) if policy_profile else value
+                ).model == model_target.model
+            ]
+            if model_tiers and min(model_tiers) > max_tier:
+                raise DirectModelError(
+                    f"Direct model exceeds policy max_tier {max_tier.name}; "
+                    "an explicit tier cannot bypass that limit."
+                )
         if proposed > max_tier:
+            if requested_model:
+                raise DirectModelError(
+                    f"Direct model requires {proposed.name}, above policy max_tier {max_tier.name}."
+                )
             proposed = max_tier
             contributions.append(
                 ScoreContribution(code=ReasonCode.QUOTA_LIMIT, weight=0, detail="policy max tier")
@@ -366,9 +451,7 @@ class Router:
                 ScoreContribution(
                     code=ReasonCode.PROVIDER_INHERITANCE,
                     weight=0,
-                    detail=(
-                        f"subagent retained inherited {context.inherited_backend} provider"
-                    ),
+                    detail=(f"subagent retained inherited {context.inherited_backend} provider"),
                 )
             )
         backend_unavailable = bool(
@@ -376,16 +459,13 @@ class Router:
             or not backend.enabled
             or not backend_readiness(self.config, backend_name)[0]
         )
-        explicit_child_backend_unavailable = bool(
-            context.requested_backend and backend_unavailable
-        )
+        explicit_child_backend_unavailable = bool(context.requested_backend and backend_unavailable)
         explicit_child_model_mismatch = bool(
             context.requested_backend
             and context.spawn_model_explicit
             and backend is not None
             and context.current_model
-            and context.current_model
-            not in {target.model for target in backend.tiers.values()}
+            and context.current_model not in {target.model for target in backend.tiers.values()}
         )
         unavailable_requested_backend: str | None = None
         unavailable_locked = False
@@ -470,6 +550,11 @@ class Router:
                 )
             )
 
+        if requested_model and backend_name != backend_override:
+            raise DirectModelError(
+                "The selected source changed during routing; direct models cannot fall back."
+            )
+
         capacity_requested_backend = backend_name
         capacity = backend_state(
             self.config,
@@ -488,9 +573,7 @@ class Router:
         capacity_trigger = capacity.trigger
         capacity_status = capacity.status
         capacity_locked = bool(
-            backend_override
-            or context.requested_backend
-            or context.sticky_backend == backend_name
+            backend_override or context.requested_backend or context.sticky_backend == backend_name
         )
         if explicit_child_model_mismatch:
             capacity_blocked = True
@@ -614,7 +697,7 @@ class Router:
                             detail=capacity_detail,
                         )
                     )
-        target = backend.target(proposed)
+        target = model_target or backend.target(proposed)
         inherited_effort = (
             context.previous_reasoning_effort if inherited or interrupted_turn_affinity else None
         )
@@ -656,8 +739,7 @@ class Router:
                 else "classifier"
                 if classifier_reasoning_effort
                 else "inheritance"
-                if (inherited or interrupted_turn_affinity)
-                and context.previous_reasoning_effort
+                if (inherited or interrupted_turn_affinity) and context.previous_reasoning_effort
                 else "tier_default"
             )
         if target.model in EFFORT_MODELS:
@@ -728,9 +810,13 @@ class Router:
         )
         task_context_used = resolved_task_inherited or previous_context_sent
         active_config = getattr(
-            self._last_classifier, "config",
-            (classifier_config.jev_shadow
-             if classifier_config.engine == "jev" else classifier_config),
+            self._last_classifier,
+            "config",
+            (
+                classifier_config.jev_shadow
+                if classifier_config.engine == "jev"
+                else classifier_config
+            ),
         )
         catalog_age = catalog_age_seconds(active_config)
         if catalog_age is None:
@@ -806,9 +892,7 @@ class Router:
                 "catalog_hash": active_config.catalog_hash,
                 "catalog_checked_at": active_config.catalog_checked_at,
                 "catalog_status": catalog_status,
-                "provider_response": getattr(
-                    self._last_classifier, "last_response_metadata", {}
-                ),
+                "provider_response": getattr(self._last_classifier, "last_response_metadata", {}),
                 "request_hash": classifier_request_hash,
                 "latency_ms": classifier_latency_ms,
                 "usage": classifier_usage,
@@ -827,6 +911,9 @@ class Router:
                 "model_provider": backend.codex_provider,
                 "reasoning_effort": selected_reasoning_effort,
             },
+            "explicit_model": {"requested": requested_model, "resolved": target.model}
+            if requested_model
+            else None,
             "capacity": {
                 "status": capacity_status,
                 "detail": capacity_detail,
@@ -861,6 +948,7 @@ class Router:
             model=target.model,
             reasoning_effort=selected_reasoning_effort,
             requested_reasoning_effort=reasoning_effort_override,
+            requested_model=requested_model,
             confidence=confidence,
             raw_score=round(raw_score, 2),
             reason_codes=reason_codes(contributions),
@@ -887,6 +975,7 @@ class Router:
             switched=(
                 proposed != comparison_tier
                 or backend.codex_provider != context.current_model_provider
+                or (requested_model is not None and target.model != context.current_model)
             ),
             proposed_tier=score_proposed,
             comparison_tier=comparison_tier,
@@ -933,9 +1022,7 @@ class Router:
         if routing.mode == "heuristic" or self.classifier is None:
             return proposed, confidence, "heuristic", None, None, None, None
         codes = {item.code for item in contributions}
-        if ReasonCode.CREDENTIAL_EXPOSURE in codes or contains_credential(
-            context.task_definition
-        ):
+        if ReasonCode.CREDENTIAL_EXPOSURE in codes or contains_credential(context.task_definition):
             return proposed, confidence, "heuristic_sensitive", None, None, None, None
         if (
             routing.mode == "hybrid"
@@ -946,8 +1033,7 @@ class Router:
         if (
             routing.classifier.engine == "jev"
             and proposed is Tier.FAST
-            and confidence
-            >= routing.classifier.jev_shadow.deterministic_fast_bypass_confidence
+            and confidence >= routing.classifier.jev_shadow.deterministic_fast_bypass_confidence
         ):
             return proposed, confidence, "heuristic", None, None, None, None
         try:
@@ -979,8 +1065,7 @@ class Router:
             }
         if (
             self.classifier.source in {"local_jev", "cloud_jev"}
-            and result.confidence
-            < self.config.routing.classifier.jev_shadow.acceptance_threshold
+            and result.confidence < self.config.routing.classifier.jev_shadow.acceptance_threshold
         ):
             contributions.append(
                 ScoreContribution(
@@ -1066,9 +1151,7 @@ class Router:
         )
 
     @staticmethod
-    def _score(
-        raw_score: float, contributions: list[ScoreContribution]
-    ) -> tuple[Tier, float]:
+    def _score(raw_score: float, contributions: list[ScoreContribution]) -> tuple[Tier, float]:
         proposed = tier_from_score(raw_score)
         confidence = confidence_for(raw_score, proposed, len(contributions))
         codes = {item.code for item in contributions}
@@ -1104,9 +1187,12 @@ class Router:
             flags.add("production")
         _, explicit_backend, _, _ = route_overrides(context.latest_prompt, self.config.backends)
         backend_name = (
-            context.explicit_backend or explicit_backend or context.requested_backend
+            context.explicit_backend
+            or explicit_backend
+            or context.requested_backend
             or (context.interrupted_backend if context.interrupted_turn_affinity else None)
-            or context.sticky_backend or context.inherited_backend
+            or context.sticky_backend
+            or context.inherited_backend
             or self.config.routing.backend_by_tier.get(str(proposed), "gpt")
         )
         backend_floors = self.config.policy.backend_risk_floors.get(backend_name, {})

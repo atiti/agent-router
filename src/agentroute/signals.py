@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
+from .model_selection import MODEL_FAMILIES, DirectModelError
 from .models import ReasonCode, RouteContext, ScoreContribution
 
 MECHANICAL = re.compile(
@@ -218,30 +219,72 @@ def _backend_manual(backends: Iterable[str] | None) -> re.Pattern[str] | None:
 def route_overrides(
     prompt: str, backends: Iterable[str] | None = None
 ) -> tuple[str | None, str | None, str | None, str]:
-    """Parse tier, backend, and reasoning prefixes in any order."""
+    """Compatibility view of the complete leading-prefix parser."""
+    tier, backend, effort, _model, _profile, remaining = model_route_overrides(prompt, backends)
+    return tier, backend, effort, remaining
+
+
+def model_route_overrides(
+    prompt: str, backends: Iterable[str] | None = None
+) -> tuple[str | None, str | None, str | None, str | None, str | None, str]:
+    """Parse source, model, tier, effort and Claude profile in any order."""
     tier: str | None = None
     backend: str | None = None
     reasoning_effort: str | None = None
+    model: str | None = None
+    profile: str | None = None
     remaining = prompt
     backend_manual = _backend_manual(backends)
-    for _ in range(3):
+    for _ in range(8):
+        token = re.match(r"^\s*@(?P<value>[^\s]+)(?:\s+|$)", remaining)
+        if not token:
+            break
+        value = token.group("value")
+        profile_match = CLAUDE_PROFILE.match(remaining)
+        explicit_model = re.fullmatch(r"model:([A-Za-z0-9][A-Za-z0-9._/-]{0,127})", value)
+        family_model = value.lower() in MODEL_FAMILIES and not (
+            backend_manual and backend_manual.match(remaining)
+        )
         tier_match = MANUAL.match(remaining)
         backend_match = backend_manual.match(remaining) if backend_manual else None
         effort_match = REASONING_EFFORT.match(remaining)
-        if tier_match and tier is None:
+        if profile_match:
+            if profile is not None or backend not in (None, "claude"):
+                raise DirectModelError("Conflicting Claude profile/source selectors.")
+            profile = profile_match.group("profile").lower()
+            backend = "claude"
+            remaining = remaining[profile_match.end() :].lstrip()
+            continue
+        if explicit_model or family_model:
+            if model is not None:
+                raise DirectModelError("Use only one model selector per turn.")
+            model = explicit_model.group(1) if explicit_model else value.lower()
+            remaining = remaining[token.end() :].lstrip()
+            continue
+        if value.lower().startswith("model:"):
+            raise DirectModelError("Invalid model selector; use @model:EXACT_ID.")
+        if tier_match:
+            if tier is not None:
+                raise DirectModelError("Use only one tier selector per turn.")
             tier = tier_match.group("tier").lower()
             remaining = remaining[tier_match.end() :].lstrip()
             continue
-        if backend_match and backend is None:
+        if backend_match:
+            if backend is not None:
+                raise DirectModelError("Use only one source selector per turn.")
             backend = backend_match.group("backend").lower()
             remaining = remaining[backend_match.end() :].lstrip()
             continue
-        if effort_match and reasoning_effort is None:
+        if effort_match:
+            if reasoning_effort is not None:
+                raise DirectModelError("Use only one reasoning selector per turn.")
             reasoning_effort = effort_match.group("effort").lower()
             remaining = remaining[effort_match.end() :].lstrip()
             continue
         break
-    return tier, backend, reasoning_effort, remaining
+    if model and tier == "auto":
+        raise DirectModelError("@auto cannot be combined with an explicit model; choose one mode.")
+    return tier, backend, reasoning_effort, model, profile, remaining
 
 
 def is_confirmation(prompt: str) -> bool:
