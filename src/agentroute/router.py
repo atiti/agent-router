@@ -43,6 +43,7 @@ REASONING_EFFORT_RANK = {
     "medium": 3,
     "high": 4,
     "xhigh": 5,
+    "max": 6,
     "ultra": 6,
     "persistent": 7,
 }
@@ -617,10 +618,14 @@ class Router:
         inherited_effort = (
             context.previous_reasoning_effort if inherited or interrupted_turn_affinity else None
         )
-        selected_reasoning_effort = reasoning_effort_override or (
+        tier_effort_policy = self.config.routing.reasoning_effort_policy == "tier_default"
+        automatic_effort = (
             _stronger_reasoning_effort(classifier_reasoning_effort, inherited_effort)
             if classifier_reasoning_effort or inherited_effort
             else target.reasoning_effort
+        )
+        selected_reasoning_effort = reasoning_effort_override or (
+            target.reasoning_effort if tier_effort_policy else automatic_effort
         )
         minimum_reasoning_effort = _minimum_model_reasoning_effort(backend_name, target.model)
         if (
@@ -644,6 +649,8 @@ class Router:
             reasoning_effort_source = (
                 "manual"
                 if reasoning_effort_override
+                else "tier_default"
+                if tier_effort_policy
                 else "classifier+inheritance"
                 if classifier_reasoning_effort and inherited_effort
                 else "classifier"
@@ -834,6 +841,7 @@ class Router:
                 "reasoning_effort_override": reasoning_effort_override,
                 "classifier_reasoning_effort": classifier_reasoning_effort,
                 "reasoning_effort_source": reasoning_effort_source,
+                "reasoning_effort_policy": self.config.routing.reasoning_effort_policy,
                 "minimum_model_reasoning_effort": minimum_reasoning_effort,
             },
             "context": {
