@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import agentroute_home
+from .config import codex_home as configured_codex_home
 
 
 def hook_command(event: str = "user-prompt-submit") -> str:
@@ -152,7 +153,7 @@ def _merge_command(
 
 def merge_codex_hook(path: Path | None = None) -> tuple[Path, Path | None]:
     """Merge AgentRoute into hooks.json and preserve any existing configuration."""
-    path = path or Path.home() / ".codex" / "hooks.json"
+    path = path or configured_codex_home() / "hooks.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     backup: Path | None = None
     if path.exists():
@@ -196,7 +197,7 @@ def trust_agentroute_hooks(
 ) -> int:
     """Trust only the exact AgentRoute hooks using hashes computed by Codex itself."""
     if hooks_path is None:
-        home = codex_home or Path.home() / ".codex"
+        home = codex_home or configured_codex_home()
         hooks_path = home / "hooks.json"
     hooks_path = hooks_path.resolve()
     cwd = (cwd or Path.cwd()).resolve()

@@ -7,6 +7,14 @@ import pytest
 from agentroute.install import merge_codex_hook, trust_agentroute_hooks
 
 
+def test_hook_install_uses_configured_codex_home(tmp_path, monkeypatch):
+    custom_home = tmp_path / "custom-codex"
+    monkeypatch.setenv("CODEX_HOME", str(custom_home))
+    path, _ = merge_codex_hook()
+    assert path == custom_home / "hooks.json"
+    assert "UserPromptSubmit" in json.loads(path.read_text())["hooks"]
+
+
 def test_progress_skill_installer_creates_skill_and_preserves_existing(tmp_path):
     root = Path(__file__).parents[1]
     installer = root / "scripts/install-progress-skill.sh"
