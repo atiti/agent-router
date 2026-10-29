@@ -78,10 +78,11 @@ def test_direct_terra_bypasses_classifier_and_interrupt_affinity(monkeypatch):
     assert decision.selection_receipt["explicit_model"]["requested"] == "terra"
 
 
-def invoke(config, store, prompt, model="gpt-6.1-sol", provider="agentroute-azure", subagent=None):
+def invoke(config, store, prompt, model="gpt-6.1-sol", provider="agentroute-azure",
+           subagent=None, **metadata):
     source = io.StringIO(json.dumps({"session_id": "direct-session", "turn_id": prompt,
                                     "model": model, "model_provider": provider,
-                                    "prompt": prompt, "subagent": subagent}))
+                                    "prompt": prompt, "subagent": subagent, **metadata}))
     sink = io.StringIO()
     codex_user_prompt_submit(source, sink, config=config, store=store)
     return json.loads(sink.getvalue())
@@ -93,6 +94,7 @@ def test_hook_enforces_model_and_strips_unicode_prefix(monkeypatch, tmp_path):
                     "@azure @terra @xhigh Árvíz")
     assert output["continue"]
     assert output["hookSpecificOutput"]["model"] == "gpt-6.1-terra"
+    assert output["hookSpecificOutput"]["requireAppliedRoute"] is True
     assert output["hookSpecificOutput"]["reasoningEffort"] == "xhigh"
     assert output["hookSpecificOutput"]["stripPromptPrefixBytes"] == len(
         b"@azure @terra @xhigh "
@@ -282,3 +284,49 @@ def test_rejected_model_is_not_inherited_on_continuation(monkeypatch, tmp_path):
     assert invoke(config, store, "@azure @model:missing hello")["continue"] is False
     result = invoke(config, store, "continue")
     assert result["hookSpecificOutput"]["model"] != "missing"
+
+
+@pytest.mark.parametrize("prompt", [
+    "Review implementation", "@model:gpt-6.1-terra Review implementation",
+])
+def test_explicit_child_can_use_declared_source_model(monkeypatch, prompt):
+    config = configured(monkeypatch)
+    decision = Router(config).route(RouteContext(
+        session_id="child-direct", latest_prompt=prompt,
+        requested_backend="azure", spawn_model_explicit=True,
+        current_model="gpt-6.1-terra", current_model_provider="agentroute-azure",
+    ))
+    assert not decision.capacity_blocked
+    assert decision.backend == "azure"
+    assert decision.model == "gpt-6.1-terra"
+
+
+@pytest.mark.parametrize("model, admitted", [
+    ("profile-only", True), ("missing-profile-model", False),
+])
+def test_explicit_gpt_child_resolves_selected_profile_before_routing(
+    monkeypatch, tmp_path, model, admitted,
+):
+    from unittest.mock import patch
+
+    from agentroute.capacity import CapacityState
+    from agentroute.profiles import ProfileStatus, TurnProfileSelection
+
+    config = configured(monkeypatch)
+    config.capacity.active_profile = None
+    config.capacity.profiles["selected"] = SubscriptionProfileConfig(models={
+        "profile-only": ModelTarget(model="profile-only", context_window=272000)
+    })
+    status = ProfileStatus("selected", str(tmp_path), 0, True, True, "hash",
+                           CapacityState("gpt", "healthy", "healthy"))
+    selected = TurnProfileSelection("selected", status, status, False, "account_match", False)
+    with patch("agentroute.hook.select_turn_profile", return_value=selected):
+        result = invoke(config, AuditStore(tmp_path / "audit.db"), "Review implementation",
+                        model=model, provider="openai", subagent={"agent_id":"child-profile"},
+                        requested_backend="gpt", spawn_model_explicit=True)
+    assert result["continue"] is admitted
+    if admitted:
+        assert result["hookSpecificOutput"]["model"] == model
+        assert result["hookSpecificOutput"]["requireAppliedRoute"] is True
+    else:
+        assert "not declared" in result["stopReason"]

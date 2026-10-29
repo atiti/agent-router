@@ -1540,6 +1540,35 @@ def test_explicit_subagent_model_can_cross_from_inherited_azure_to_gpt(
     assert output["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
 
 
+@pytest.mark.parametrize("requested_backend", [None, "gpt"])
+@pytest.mark.parametrize("model", ["profile-only", "unknown-model"])
+def test_explicit_child_resolves_selected_profile_before_model_validation(
+    tmp_path, monkeypatch, requested_backend, model
+):
+    home = tmp_path / "work"
+    write_profile_auth(home, "work-account")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    config = default_config()
+    config.enabled = True
+    config.capacity.profiles["work"] = SubscriptionProfileConfig(
+        codex_home=str(home),
+        tiers={"smart": {"model": "profile-only", "reasoning_effort": "high"}},
+    )
+    output = invoke(
+        config, AuditStore(tmp_path / "audit.db"), "Review the implementation",
+        model=model, model_provider="openai", spawn_model_explicit=True,
+        flat_agent_id="child-profile", requested_backend=requested_backend,
+        account_id="work-account",
+    )
+    if model == "profile-only":
+        assert output.get("continue", True) is True
+        assert output["hookSpecificOutput"]["model"] == model
+        assert output["hookSpecificOutput"]["modelProvider"] == "openai"
+    else:
+        assert output["continue"] is False
+        assert model in output["stopReason"]
+
+
 def test_ambiguous_subagent_model_preserves_inherited_provider(tmp_path, monkeypatch):
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
     config = default_config()

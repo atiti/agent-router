@@ -255,3 +255,22 @@ The port adapts cross-provider history normalization to upstream's new foregroun
 compaction installation and shared child-spawn APIs. It includes the fixed ZIP 9.0.5 dependency
 and masks extracted Unix privilege bits. Runtime installation requires final-head CI and
 focused acceptance; an already running process keeps its loaded binary until restarted.
+
+## Stable 0.165 port (AgentRoute 0.5.79)
+
+The runtime is based on exact upstream `rust-v0.165.0`
+(`360319d8dee62d87e2d59fc0c21805d79519cfed`). The inherited fork port,
+completion hardening, ordinary-prompt progress review, provider context fixes, and
+compatibility follow-ups remain separate commits on the release branch. Older
+release branches retain their original history.
+
+State database migrations 60–63 shipped in the 0.163 fork remain unchanged. The
+new attached-parent migration is 64. Official upstream 0.165 databases are recognized
+only by exact migration checksums and rekeyed atomically before normal migration;
+unknown, dirty, or conflicting records fail without ledger mutation. Existing data
+and receipts are preserved. The shipped fork can reopen this canonical ledger.
+Unpatched official upstream uses different migration numbering and requires its
+pre-upgrade database backup to roll back. Test upgrades on disposable copies first.
+
+Progress review works for ordinary long-running prompts and explicit Goals. See
+[progress-review.md](progress-review.md) for activation and limitations.

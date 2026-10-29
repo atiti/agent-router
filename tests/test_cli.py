@@ -206,7 +206,7 @@ def test_default_account_uses_canonical_auth_and_named_account_uses_credential_s
     assert config.capacity.profiles["markster"].credential_home == str(
         canonical / "accounts" / "markster"
     )
-    assert "credentials only" in result.output
+    assert "credentials only" in " ".join(result.output.split())
 
 
 def test_capacity_profile_model_sets_and_clears_override(tmp_path, monkeypatch):
