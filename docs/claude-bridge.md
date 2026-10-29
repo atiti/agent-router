@@ -151,7 +151,8 @@ tokens. Profile status verifies the account identity from Claude Code's local me
 each account's subscription usage without refreshing OAuth credentials; unverified profiles cannot
 route.
 
-`profile use` selects the account for new conversations; existing ones retain it across restarts.
+`profile use` selects the account for new conversations; existing ones retain their last
+accepted account across restarts unless explicitly switched or automatically failed over.
 The bridge persists hashed thread IDs and account identities after Claude accepts the first request.
 Failed first requests do not occupy an affinity slot. It keeps up to 7,000 thread assignments; when
 full, it preserves recorded routes and rejects unrecorded thread assignments instead of silently
@@ -160,9 +161,12 @@ matching profile; if a profile named `claude-code` makes a legacy scope ambiguou
 conversation.
 An identity change requires a new conversation and `agentroute bridge profile login <name>`.
 
-New conversations use automatic account selection by default. After `agentroute bridge profile status`
-records current readings, AgentRoute routes new threads away from a profile with a fresh 100% quota
-to a signed-in profile with available or unreported quota. Existing threads keep their account. Set
+Conversations use automatic account selection by default. After `agentroute bridge profile status`
+records current readings, AgentRoute routes requests away from a profile with a fresh 100% quota
+to a signed-in profile with available or unreported quota, including existing threads. A live quota
+rejection before generation also retries available profiles once each in the same request, even
+after heartbeat pings. Once generation starts, errors are returned without replaying the request.
+Set
 `claude_subscriptions.auto_select: false` in `~/.agentroute/config.yaml` to disable it.
 
 To choose an account directly, put its profile handle at the start of the prompt:
@@ -173,11 +177,16 @@ To choose an account directly, put its profile handle at the start of the prompt
 ```
 
 The profile selector implies the Claude backend and is removed before the task reaches the model.
-The first Claude request assigns the selected account to that conversation, and later Claude
-requests in the same conversation keep using it. This explicit choice skips automatic quota
+The first accepted Claude request assigns the selected account to that conversation, and later
+requests keep using it. You can switch an existing conversation with `@claude:second`.
+The bridge retains messages and tool calls/results while excluding the other account's signed
+reasoning from the upstream request. Mixed-account history remains resumable across restarts;
+only reasoning for the selected account is replayed. Normal context compaction still applies
+when needed, and switching accounts does not require the exhausted account to summarize history.
+The new account is saved only after it accepts a request. This explicit choice skips automatic quota
 selection: if that account is exhausted, the request reports the limit instead of silently using
-another account. A conversation already pinned to a different Claude profile must be restarted to
-change accounts. Profile names are the lowercase names shown by `agentroute bridge profile status`.
+another account for that request. Later prompts without a selector permit automatic fallback.
+Profile names are the lowercase names shown by `agentroute bridge profile status`.
 
 Token and context limits return a partial answer with a notice in response metadata.
 

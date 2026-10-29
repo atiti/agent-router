@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-14, macos-15-intel]
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -91,7 +91,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          release_flags=()
+          if [[ "${GITHUB_REF_NAME}" =~ rc[0-9]+$ ]]; then
+            release_flags+=(--prerelease)
+          fi
           gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 || \
             gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
-              --verify-tag --generate-notes
+              "${release_flags[@]}" --verify-tag --generate-notes
           gh release upload "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}"

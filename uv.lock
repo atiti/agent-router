@@ -4,7 +4,7 @@ requires-python = ">=3.10"
 
 [[package]]
 name = "agentroute"
-version = "0.5.76rc1"
+version = "0.5.78"
 source = { editable = "." }
 dependencies = [
     { name = "pillow" },
