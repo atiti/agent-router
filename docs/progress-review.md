@@ -1,0 +1,15 @@
+# Experimental progress review
+
+The Codex `progress_review` feature reviews direction during a long-running root turn, including ordinary prompts without a Goal. It defaults off. Start an AgentRoute-managed Codex session with:
+
+```sh
+codex --enable progress_review
+```
+
+Disable it with `--disable progress_review`. The selected Codex build must include the feature; an older installed binary will not recognize it. Existing sessions keep their original runtime configuration.
+
+The reviewer runs after ten minutes of active work, accumulating across turns; idle time is excluded. Three consecutive tool failures, input usage reaching 80% of a known context window, or an agent or skill calling `request_progress_review` may trigger it sooner after a two-minute cooldown. It is isolated, read-only and bounded by the same two-minute timeout as the completion reviewer. By default it inherits the current model and provider. To select a separate AgentRoute backend and tier, set `routing.progress_review_backend` and optionally `routing.progress_review_tier` in AgentRoute's configuration. The backend must be enabled; the tier defaults to `fast`. Managed provider restrictions still apply. Shared-server sessions require a fresh server configuration. A verdict is advice to the working agent, not permission to mutate files or cancel a process. History is bounded and may omit earlier context. The clock and previous verdict are saved under the Codex home by thread ID at turn boundaries and reviews; work since the last save may be lost on a crash. The working agent should use the `goal-checkpoint` skill to keep the outcome and constraints clear.
+
+When a completed review exposes usage and its item is present in the parent rollout, AgentRoute's execution receipt records reviewer tokens and the session's model and provider without retaining review text. Usage analytics estimate cost where configured model prices and cache-write usage are available; missing usage, unknown prices, and truncated or legacy rollout tails remain unmeasured. Internal reviews skip the normal AgentRoute subagent routing hooks.
+
+The AgentRoute installer installs `goal-checkpoint` into the active Codex home when activating. It preserves an existing skill of the same name; update a customized or older copy manually if needed. Start a new session to refresh the skill catalog.
