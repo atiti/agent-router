@@ -143,7 +143,7 @@ def test_release_metadata_uses_current_version_and_runtime():
     assert f'__version__ = "{version}"' in public_api
     assert "provider-routing-v61" in installer
     assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v61"' in doctor
-    assert "11446200bd1a3c1ebfa56057a7661f2b380d9879" in installer
+    assert "a2072c21f55088ef0519f10a50201fea213dfee5" in installer
     assert "0.163.0" in installer
     assert "./scripts/check_upstream.sh" in ci
 
@@ -281,6 +281,10 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert "codex-provider-provenance.patch" not in installer
     assert "provider-routing-v61" in installer
     assert "--locked --profile" in installer
+    assert 'AR="${AR:-/usr/bin/ar}"' in installer
+    assert 'RANLIB="${RANLIB:-/usr/bin/ranlib}"' in installer
+    assert 'AGENTROUTE_CODEX_STAGED_PATH="$AGENTROUTE_STAGED_CODEX"' in installer
+    assert 'Path(os.environ["AGENTROUTE_CODEX_DEST_PATH"])' in installer
     assert "reset --hard" not in installer
     assert "AGENTROUTE_PATCHES" not in installer
     assert "https://github.com/atiti/codex.git" in installer
