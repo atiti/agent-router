@@ -423,7 +423,7 @@ def test_pool_routes_new_threads_away_from_exhausted_profile(monkeypatch, tmp_pa
     snapshots["second"] = _snapshot(100)
     assert (
         pool.select({"client_metadata": {"thread_id": "thread-rotation"}}, {}).profile_name
-        == "second"
+        == "third"
     )
 
 
@@ -451,8 +451,15 @@ def test_pool_honors_manual_profile_without_failover_and_keeps_it_thread_sticky(
         **body,
         "model": model_for_profile("claude-haiku-5-5", "default"),
     }
-    with pytest.raises(ProfileIdentityChangedError, match="pinned to profile second"):
-        pool.select(other_profile, {})
+    switched = pool.select(other_profile, {})
+    assert switched.profile_name == "default"
+    # An unsuccessful attempt must not change the saved account.
+    assert pool.select(body, {}).profile_name == "second"
+    pool.mark_started(other_profile, {}, switched)
+    resumed = _pool(monkeypatch, config, tmp_path, snapshots)
+    assert resumed.select(
+        {"client_metadata": body["client_metadata"]}, {}
+    ).profile_name == "default"
 
 
 def test_pool_can_rotate_a_pending_thread_after_first_request_is_rate_limited(
