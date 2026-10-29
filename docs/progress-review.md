@@ -12,4 +12,4 @@ The reviewer runs after ten minutes of active work, accumulating across turns; i
 
 When a completed review exposes usage and its item is present in the parent rollout, AgentRoute's execution receipt records reviewer tokens and the session's model and provider without retaining review text. Usage analytics estimate cost where configured model prices and cache-write usage are available; missing usage, unknown prices, and truncated or legacy rollout tails remain unmeasured. Internal reviews skip the normal AgentRoute subagent routing hooks.
 
-The AgentRoute installer installs `goal-checkpoint` into the active Codex home when activating. It preserves an existing skill of the same name; update a customized or older copy manually if needed. Start a new session to refresh the skill catalog.
+The source and published-release installers install `goal-checkpoint` into the active Codex home when activating. They preserve an existing skill of the same name; update a customized or older copy manually if needed. Start a new session to refresh the skill catalog.

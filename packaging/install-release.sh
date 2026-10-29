@@ -43,7 +43,8 @@ if ! command -v uv >/dev/null 2>&1; then
     printf 'Missing uv. Install it from https://docs.astral.sh/uv/ and retry.\n' >&2
     exit 1
 fi
-for required in codex-bin codex-code-mode-host codex-launcher code-mode-smoke.py; do
+for required in codex-bin codex-code-mode-host codex-launcher code-mode-smoke.py \
+    install-progress-skill.sh goal-checkpoint/SKILL.md; do
     if [ ! -f "$PAYLOAD_ROOT/$required" ]; then
         printf 'Release payload is incomplete: missing %s\n' "$required" >&2
         exit 1
@@ -100,6 +101,8 @@ fi
     "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
 
 "$AGENTROUTE_BIN_DIR/agentroute" setup
+sh "$PAYLOAD_ROOT/install-progress-skill.sh" "$PAYLOAD_ROOT/goal-checkpoint" \
+    "${CODEX_HOME:-$HOME/.codex}/skills"
 case "${SHELL:-}" in
     */zsh) SHELL_RC=${ZDOTDIR:-"$HOME"}/.zshrc ;;
     *) SHELL_RC="$HOME/.profile" ;;
