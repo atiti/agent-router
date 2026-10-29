@@ -480,7 +480,11 @@ def codex_user_prompt_submit(
             inherited_backend = None
         elif backend_override:
             sticky_backend = backend_override
-        if requested_model is None and spawn_model_explicit and requested_backend == "gpt":
+        if (
+            requested_model is None
+            and spawn_model_explicit
+            and (requested_backend or inherited_backend) == "gpt"
+        ):
             # Resolve profile-owned declarations before the router validates this child.
             requested_model = current_model
             explicit_intent = True
