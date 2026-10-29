@@ -1187,7 +1187,7 @@ def analytics_command(
             "reconciliation": asdict(report.reconciliation),
             "capacity": asdict(report.capacity),
             "calibration": asdict(report.calibration),
-            "efficiency": efficiency_report(rows),
+            "efficiency": efficiency_report(rows, config.pricing),
             "longest_turns": [asdict(item) for item in report.longest_turns],
         }
         console.print_json(json.dumps(payload, sort_keys=True))
@@ -1204,7 +1204,7 @@ def analytics_command(
         f"Turns: {report.rows}; token receipts: {report.overall.measured_turns}; "
         f"without token receipt: {report.overall.unmeasured_turns}"
     )
-    efficiency = efficiency_report(rows)
+    efficiency = efficiency_report(rows, config.pricing)
     console.print(
         f"Execution receipts: {efficiency['measured_turns']} "
         f"({efficiency['partial_turns']} partial); "
@@ -1212,6 +1212,17 @@ def analytics_command(
         f"observed tool failures: {efficiency['observed_tool_failures']}; "
         f"tool work: {_format_duration(efficiency['tool_work_ms'])} (may overlap)"
     )
+    review_cost = efficiency["progress_review_estimated_cost"]
+    if (
+        efficiency["progress_review_priced_count"]
+        or efficiency["progress_review_unpriced_or_unobserved_count"]
+    ):
+        estimate = f"{currency} {review_cost:.6f}" if review_cost is not None else "unavailable"
+        console.print(
+            f"Progress reviews: estimated cost {estimate}; "
+            f"priced {efficiency['progress_review_priced_count']}; "
+            f"unpriced or unobserved {efficiency['progress_review_unpriced_or_unobserved_count']}"
+        )
     console.print(
         f"Completed: {report.duration.completed_turns}; "
         f"duration avg {_format_duration(report.duration.average_ms)}; "
