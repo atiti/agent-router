@@ -130,6 +130,65 @@ def test_hybrid_uses_llm_for_ambiguous_prompt():
     assert next(item for item in candidates if item["tier"] == "max")["eligible"] is False
 
 
+@pytest.mark.parametrize(
+    ("tier", "target_effort", "classifier_effort"),
+    [(Tier.FAST, "medium", "low"), (Tier.NORMAL, "xhigh", "low"),
+     (Tier.SMART, "max", "high"), (Tier.MAX, "max", "xhigh")],
+)
+def test_tier_default_policy_preserves_operator_effort(
+    tier, target_effort, classifier_effort, monkeypatch
+):
+    config = default_config()
+    config.routing.reasoning_effort_policy = "tier_default"
+    config.routing.mode = "llm"
+    config.routing.classifier.enabled = True
+    config.routing.fast_quality_floor = False
+    config.routing.switching.upgrade_confidence = 0
+    config.routing.switching.downgrade_confidence = 0
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    config.backends["azure"].tiers[str(tier)] = ModelTarget(
+        model="gpt-6.1-terra", reasoning_effort=target_effort
+    )
+    config.routing.backend_by_tier = {str(t): "azure" for t in Tier}
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    classifier = FakeClassifier(tier=tier, confidence=1, reasoning_effort=classifier_effort)
+    decision = Router(config, classifier=classifier).route(
+        RouteContext(session_id="tier-default", latest_prompt="Please handle this",
+                     current_tier=tier)
+    )
+    assert decision.tier == tier
+    assert decision.reasoning_effort == target_effort
+    assert decision.reasoning_effort_source == "tier_default"
+    assert decision.classifier_reasoning_effort == classifier_effort
+    assert decision.selection_receipt["policy"]["reasoning_effort_policy"] == "tier_default"
+
+
+def test_tier_default_policy_keeps_explicit_effort_and_model_minimum():
+    config = default_config()
+    config.routing.reasoning_effort_policy = "tier_default"
+    config.backends["gpt"].tiers["normal"] = ModelTarget(
+        model="gpt-6.1-sol", reasoning_effort="max"
+    )
+    explicit = Router(config).route(RouteContext(
+        session_id="explicit", latest_prompt="@normal @low Please handle this"
+    ))
+    assert explicit.reasoning_effort == "low"
+    assert explicit.reasoning_effort_source == "manual"
+    config.backends["gpt"].tiers["normal"].model = "gpt-6-luna"
+    floored = Router(config).route(RouteContext(
+        session_id="minimum", latest_prompt="@normal @low Please handle this"
+    ))
+    assert floored.reasoning_effort == "xhigh"
+    assert floored.reasoning_effort_source == "model_floor"
+
+
+def test_max_effort_remains_stronger_than_xhigh_in_adaptive_inheritance():
+    from agentroute.router import _stronger_reasoning_effort
+
+    assert _stronger_reasoning_effort("max", "xhigh") == "max"
+
+
 def test_hybrid_skips_llm_for_high_confidence_rule():
     classifier = FakeClassifier()
     decision = hybrid_route("any outstanding commits?", classifier, current_tier=Tier.NORMAL)

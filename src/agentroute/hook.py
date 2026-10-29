@@ -316,7 +316,7 @@ def codex_user_prompt_submit(
         payload: dict[str, Any] = json.load(source)
         config = config or load_config()
         provider = config.providers["codex"]
-        current_model, _ = split_profile_model(str(payload.get("model", "")))
+        current_model, current_claude_profile = split_profile_model(str(payload.get("model", "")))
         current_tier = provider.tier_for_model(current_model)
         store = store or AuditStore()
         session_id = str(payload["session_id"])
@@ -370,7 +370,9 @@ def codex_user_prompt_submit(
             interrupted_backend = str(
                 interrupted_route["actual_backend"] or interrupted_route["backend"]
             )
-            interrupted_model = str(interrupted_route["actual_model"] or interrupted_route["model"])
+            interrupted_model, _ = split_profile_model(
+                str(interrupted_route["actual_model"] or interrupted_route["model"])
+            )
             interrupted_model_provider = str(
                 interrupted_route["actual_model_provider"] or interrupted_route["model_provider"]
             )
@@ -632,6 +634,13 @@ def codex_user_prompt_submit(
             store.provider_state_is_mixed(session_id, route_scope, agent_id)
             or decision.model_provider != context.current_model_provider
             or (profile_selection.use_profile_home if profile_selection is not None else False)
+            # Account changes must use the routed account for pre-turn compaction,
+            # even when both accounts share the Claude provider identifier.
+            or (
+                decision.backend == "claude"
+                and claude_profile is not None
+                and claude_profile != current_claude_profile
+            )
         )
         # @auto clears affinity even though the router's ordinary backend choice may be GPT.
         if tier_override == "auto":
