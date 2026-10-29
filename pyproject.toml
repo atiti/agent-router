@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentroute"
-version = "0.5.76rc1"
+version = "0.5.78"
 description = "A local, auditable intelligence scheduler for coding agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,7 +36,11 @@ agentroute = "agentroute.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentroute"]
-artifacts = ["src/agentroute/patches/*.patch", "src/agentroute/*.cjs"]
+artifacts = [
+  "src/agentroute/patches/*.patch",
+  "src/agentroute/*.cjs",
+  "src/agentroute/plugins/*.wasm",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

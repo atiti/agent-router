@@ -1484,22 +1484,23 @@ def test_http_bridge_selects_a_profile_and_records_its_usage(bridge_server, tmp_
         if captured.get("rate_limits") is not None:
             yield RATE_LIMIT_EVENT, captured["rate_limits"]
         yield "message_start", {"message": {"usage": {"input_tokens": 5}}}
-        if len(streams) == 1:
-            yield (
-                "content_block_start",
-                {
-                    "index": 0,
-                    "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+        yield (
+            "content_block_start",
+            {
+                "index": 0,
+                "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+            },
+        )
+        yield (
+            "content_block_delta",
+            {
+                "index": 0,
+                "delta": {
+                    "type": "signature_delta", "signature": f"sig-{credentials.profile_name}"
                 },
-            )
-            yield (
-                "content_block_delta",
-                {
-                    "index": 0,
-                    "delta": {"type": "signature_delta", "signature": "sig-second"},
-                },
-            )
-            yield "content_block_stop", {"index": 0}
+            },
+        )
+        yield "content_block_stop", {"index": 0}
         yield "content_block_start", {"index": 1, "content_block": {"type": "text"}}
         yield (
             "content_block_delta",
@@ -1557,6 +1558,14 @@ def test_http_bridge_selects_a_profile_and_records_its_usage(bridge_server, tmp_
             *first_body["input"],
             reasoning,
             {
+                "type": "function_call", "call_id": "checkpoint-1", "name": "checkpoint",
+                "arguments": "{}",
+            },
+            {
+                "type": "function_call_output", "call_id": "checkpoint-1",
+                "output": "checkpoint saved",
+            },
+            {
                 "type": "message",
                 "role": "user",
                 "content": [{"type": "input_text", "text": "continue"}],
@@ -1597,9 +1606,43 @@ def test_http_bridge_selects_a_profile_and_records_its_usage(bridge_server, tmp_
         ("second", "claude-haiku-5-5", 2)
     ]
 
+    # Switch accounts inside the same thread, retaining the full visible history.
+    third_body = {**second_body, "model": "claude-haiku-5-5@agentroute-profile-default"}
+    third_payload = post(third_body)
+    assert "event: response.completed" in third_payload
+    blocks = [block for msg in streams[-1][1]["messages"] for block in msg["content"]]
+    assert not any(block["type"] == "thinking" for block in blocks)
+    assert any(block.get("text") == "first" for block in blocks)
+    assert any(block.get("text") == "continue" for block in blocks)
+    assert any(block.get("type") == "tool_use" for block in blocks)
+    assert any(block.get("type") == "tool_result" for block in blocks)
+    default_reasoning = next(
+        event["item"]
+        for line in third_payload.splitlines() if line.startswith("data: ")
+        for event in [json.loads(line[6:])]
+        if event.get("type") == "response.output_item.done"
+        and event["item"].get("type") == "reasoning"
+    )
+    # A restart must accept mixed-account history and replay only the current account.
+    BridgeHandler.credentials = ClaudeProfilePool()
+    fourth_body = {
+        **third_body, "model": "claude-haiku-5-5",
+        "input": [*third_body["input"], default_reasoning,
+                  {"type": "message", "role": "user", "content": "resume"}],
+    }
+    assert "event: response.completed" in post(fourth_body)
+    assert streams[-1][0].profile_name == "default"
+    blocks = [block for msg in streams[-1][1]["messages"] for block in msg["content"]]
+    assert [block["signature"] for block in blocks if block["type"] == "thinking"] == [
+        "sig-default"
+    ]
 
+
+@pytest.mark.parametrize("ping", [False, True])
+@pytest.mark.parametrize("existing_thread", [False, True])
+@pytest.mark.parametrize("failure", ["quota", "no_windows", "all_limited", "after_start"])
 def test_http_bridge_retries_first_thread_on_another_profile_after_quota_limit(
-    bridge_server, tmp_path, monkeypatch
+    bridge_server, tmp_path, monkeypatch, ping, failure, existing_thread
 ):
     server, _captured = bridge_server
     config = default_config()
@@ -1645,8 +1688,14 @@ def test_http_bridge_retries_first_thread_on_another_profile_after_quota_limit(
 
     def fake_stream(credentials, _payload):
         calls.append(credentials.profile_name)
-        if len(calls) == 1:
-            raise UpstreamRateLimitError("subscription exhausted", snapshot)
+        if ping:
+            yield "ping", {"type": "ping"}
+        if failure == "after_start":
+            yield "message_start", {"message": {"usage": {"input_tokens": 5}}}
+        if len(calls) == 1 or failure == "all_limited":
+            raise UpstreamRateLimitError(
+                "subscription exhausted", None if failure == "no_windows" else snapshot
+            )
         yield "message_start", {"message": {"usage": {"input_tokens": 5}}}
         yield "message_stop", {}
 
@@ -1656,22 +1705,29 @@ def test_http_bridge_retries_first_thread_on_another_profile_after_quota_limit(
         "tools": [],
         "input": [{"type": "message", "role": "user", "content": "try this"}],
     }
+    if existing_thread:
+        headers = {"thread-id": "thread-first-429"}
+        pool = BridgeHandler.credentials
+        pool.mark_started(body, headers, pool.select(body, headers))
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
         headers={"content-type": "application/json", "thread-id": "thread-first-429"},
         method="POST",
     )
-    with pytest.raises(urllib.error.HTTPError) as rejected:
-        urllib.request.urlopen(request, timeout=30)
-    assert rejected.value.code == 429
-
-    with urllib.request.urlopen(request, timeout=30) as response:
-        payload = response.read().decode()
-
-    assert response.status == 200
-    assert "event: response.completed" in payload
-    assert calls == ["default", "second"]
+    if failure == "all_limited" and not ping:
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            urllib.request.urlopen(request, timeout=30)
+        assert rejected.value.code == 429
+    else:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = response.read().decode()
+        assert response.status == 200
+        if failure in {"all_limited", "after_start"}:
+            assert "event: response.failed" in payload
+        else:
+            assert "event: response.completed" in payload
+    assert calls == (["default"] if failure == "after_start" else ["default", "second"])
 
 
 def test_http_bridge_serves_models_and_health(bridge_server, monkeypatch):
