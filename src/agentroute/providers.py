@@ -156,8 +156,14 @@ def _provider_context_windows(config: AppConfig, backend_name: str) -> dict[str,
         return {}
     return {
         target.model: window
-        for target in config.backends[backend_name].tiers.values()
-        if (window := model_capabilities(config, backend_name, target.model).context_window)
+        for target in (
+            *config.backends[backend_name].tiers.values(),
+            *config.backends[backend_name].models.values(),
+        )
+        if (
+            window := target.context_window
+            or model_capabilities(config, backend_name, target.model).context_window
+        )
     }
 
 
@@ -282,7 +288,11 @@ def _write_model_catalog(
         for alias, canonical in config.pricing.aliases.items()
         if alias != canonical
         and any(
-            backend.enabled and any(target.model == alias for target in backend.tiers.values())
+            backend.enabled
+            and any(
+                target.model == alias
+                for target in (*backend.tiers.values(), *backend.models.values())
+            )
             for backend in config.backends.values()
         )
     }
@@ -291,13 +301,22 @@ def _write_model_catalog(
         for name, backend in config.backends.items()
         if backend.enabled and name != "claude"
     ]
-    account_slugs = {
-        target.model for target in config.backends["gpt"].tiers.values()
-    } if "gpt" in config.backends else set()
+    account_slugs = (
+        {target.model for target in (
+            *config.backends["gpt"].tiers.values(), *config.backends["gpt"].models.values()
+        )}
+        if "gpt" in config.backends
+        else set()
+    )
+    account_slugs.update(
+        target.model
+        for profile in config.capacity.profiles.values()
+        for target in (*profile.tiers.values(), *profile.models.values())
+    )
     has_routed_limits = any(
-        capabilities.context_window is not None
+        target.context_window is not None or capabilities.context_window is not None
         for name, backend in routed_backends
-        for target in backend.tiers.values()
+        for target in (*backend.tiers.values(), *backend.models.values())
         if (capabilities := model_capabilities(config, name, target.model))
     )
     if not aliases and not claude_models and not has_routed_limits:
@@ -331,6 +350,13 @@ def _write_model_catalog(
         for model in catalog["models"]
         if isinstance(model, dict) and isinstance(model.get("slug"), str)
     }
+    # Account declarations cannot fabricate protocol metadata or widen a shared
+    # account descriptor. Their exact model must already be admitted by the
+    # installed or freshly retrieved account catalog.
+    for profile in config.capacity.profiles.values():
+        for target in profile.models.values():
+            if target.model not in by_slug:
+                raise ValueError(f"No admitted account metadata for direct model {target.model}")
     for alias, canonical in sorted(aliases.items()):
         if canonical not in by_slug:
             raise ValueError(f"installed Codex catalog has no metadata for {alias} ({canonical})")
@@ -360,9 +386,13 @@ def _write_model_catalog(
         if isinstance(model, dict) and isinstance(model.get("slug"), str)
     }
     for backend_name, backend in routed_backends:
-        for target in backend.tiers.values():
+        for target in (*backend.tiers.values(), *backend.models.values()):
             slug = target.model
             capabilities = model_capabilities(config, backend_name, slug)
+            if target.context_window:
+                capabilities = capabilities.model_copy(
+                    update={"context_window": target.context_window}
+                )
             if slug in known_slugs or slug in aliases:
                 # Account-specific Codex limits apply to the direct GPT backend.
                 # A routed provider alias must use its configured window; copying
@@ -388,23 +418,25 @@ def _write_model_catalog(
             # behavior for provider protocol details while replacing the limits
             # and tool exposure that affect prompt size and compaction.
             model = copy.deepcopy(next(iter(by_slug.values()), {}))
-            model.update({
-                "slug": slug,
-                "display_name": slug,
-                "description": f"{backend.display_name} model routed through AgentRoute.",
-                "context_window": capabilities.context_window,
-                "max_context_window": capabilities.context_window,
-                "auto_compact_token_limit": None,
-                "effective_context_window_percent": 95,
-                "input_modalities": ["text"] + (["image"] if capabilities.vision else []),
-                "supports_image_detail_original": bool(capabilities.vision),
-                # Plain Responses function support does not imply Codex's special
-                # code-mode or tool-search protocols. Do not invent that support.
-                "tool_mode": "direct",
-                "supports_search_tool": False,
-                "multi_agent_version": None,
-                "multi_agent_reasoning_effort": None,
-            })
+            model.update(
+                {
+                    "slug": slug,
+                    "display_name": slug,
+                    "description": f"{backend.display_name} model routed through AgentRoute.",
+                    "context_window": capabilities.context_window,
+                    "max_context_window": capabilities.context_window,
+                    "auto_compact_token_limit": None,
+                    "effective_context_window_percent": 95,
+                    "input_modalities": ["text"] + (["image"] if capabilities.vision else []),
+                    "supports_image_detail_original": bool(capabilities.vision),
+                    # Plain Responses function support does not imply Codex's special
+                    # code-mode or tool-search protocols. Do not invent that support.
+                    "tool_mode": "direct",
+                    "supports_search_tool": False,
+                    "multi_agent_version": None,
+                    "multi_agent_reasoning_effort": None,
+                }
+            )
             if capabilities.reasoning is False:
                 model["default_reasoning_level"] = None
                 model["supported_reasoning_levels"] = []

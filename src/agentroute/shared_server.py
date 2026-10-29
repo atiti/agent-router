@@ -94,7 +94,7 @@ class RpcClient:
 
 
 def server_argv(binary: Path, config: AppConfig) -> list[str]:
-    from .launcher import BASE_CODEX_ARGS, startup_route_args
+    from .launcher import BASE_CODEX_ARGS, progress_review_route_args, startup_route_args
 
     route = startup_route_args(config, [])
     # --model is a TUI setting; app-server loads its default from config overrides.
@@ -104,6 +104,7 @@ def server_argv(binary: Path, config: AppConfig) -> list[str]:
         str(binary.resolve()),
         *BASE_CODEX_ARGS,
         *route,
+        *progress_review_route_args(config, []),
         *(arg for setting in config.shared_server.startup_config for arg in ("-c", setting)),
         "app-server",
         "--listen",
