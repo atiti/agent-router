@@ -2,11 +2,10 @@
 
 ## 0.5.79 — 2026-10-29
 
-- Upgrade the routed Codex runtime to exact upstream stable 0.165.0 with its matching official Code Mode host. Preserve shipped fork SQLite migration records and data, and safely recognize stock upstream migration records by exact checksums.
+- Upgrade the routed Codex runtime to exact upstream stable 0.165.0 with its matching official Code Mode host. Preserve shipped fork SQLite migration records and data, and safely recognize stock upstream migration records by exact checksums. Serialize concurrent upgrades and roll back the entire repair if a migration fails.
 - Restore destination context limits when switching providers, retain custom developer directives, and normalize encrypted provider/account state from upstream 0.165.
 - Enforce explicit model selections across worker, child, launcher, and reviewer settings. Resolve profile-owned child models before validation and reject unsupported explicit selections.
 - Integrate reviewed dependency and Actions updates.
-
 - Add an opt-in Codex progress review for long-running ordinary prompts and Goals, with a ten-minute active-work interval and an earlier repeated-failure trigger. Install the portable goal-checkpoint skill on activation without replacing an existing copy.
 - Allow an independent progress-review backend and tier for direct and shared-server sessions.
 - Attribute observed reviewer usage to its session route and estimate cost when pricing is available.
