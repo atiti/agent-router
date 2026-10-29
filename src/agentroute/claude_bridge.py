@@ -1689,6 +1689,9 @@ def catalog_from_config(config: Any, backend_name: str = "claude") -> list[tuple
         target = backend.tiers.get(tier)
         if target and target.model not in seen:
             seen.append(target.model)
+    for target in backend.models.values():
+        if target.model not in seen:
+            seen.append(target.model)
     for other in config.backends.values():
         if other.enabled and other.base_url == backend.base_url:
             for target in other.tiers.values():
