@@ -1644,8 +1644,13 @@ class ResponsesStream:
                 "total_tokens": total,
             },
         }
+        metadata = {}
+        if self.profile_name:
+            metadata["agentroute_claude_profile"] = self.profile_name
         if incomplete_reason:
-            response["metadata"] = {"agentroute_incomplete_reason": incomplete_reason}
+            metadata["agentroute_incomplete_reason"] = incomplete_reason
+        if metadata:
+            response["metadata"] = metadata
         yield self.sse(
             event,
             {"type": event, "response": response},
@@ -1683,6 +1688,9 @@ def catalog_from_config(config: Any, backend_name: str = "claude") -> list[tuple
     for tier in ("fast", "normal", "smart", "max"):
         target = backend.tiers.get(tier)
         if target and target.model not in seen:
+            seen.append(target.model)
+    for target in backend.models.values():
+        if target.model not in seen:
             seen.append(target.model)
     for other in config.backends.values():
         if other.enabled and other.base_url == backend.base_url:
@@ -2166,6 +2174,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": f"invalid JSON: {exc}"})
             return
 
+        self._respond(body, raw)
+
+    def _respond(
+        self,
+        body: dict[str, Any],
+        raw: bytes,
+        *,
+        selected_credentials: Any = None,
+        attempted_profiles: frozenset[str] = frozenset(),
+        sse_started: bool = False,
+    ) -> None:
         requested_model = str(body.get("model") or self.default_model)
         # The subscription selector is internal routing metadata. Keep it on the
         # body for ClaudeProfilePool.select(), but send only the base model upstream.
@@ -2187,7 +2206,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             )
             return
         try:
-            request_credentials = (
+            request_credentials = selected_credentials or (
                 selector(body, self.headers) if callable(selector) else self.credentials
             )
         except ProfileIdentityChangedError as exc:
@@ -2250,7 +2269,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         profile_started = time.monotonic()
         first_token_ms = None
         outcome = "incomplete"
-        started = False
+        started = sse_started
+        upstream_started = False
         stop_reason = None
         self.logger(
             f"{model}: {len(payload.get('messages') or [])} messages, "
@@ -2265,6 +2285,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 logger=lambda message: self.logger(f"{response_id} {model}: {message}"),
             )
             for event_type, data in events:
+                if event_type not in {RATE_LIMIT_EVENT, "ping"}:
+                    upstream_started = True
                 if first_token_ms is None and event_type == "content_block_delta":
                     delta = data.get("delta") or {}
                     if any(delta.get(key) for key in ("text", "thinking", "partial_json")):
@@ -2308,11 +2330,37 @@ class BridgeHandler(BaseHTTPRequestHandler):
         except UpstreamRateLimitError as exc:
             outcome = "rate_limited"
             self.logger(f"upstream rate limit for {model}: {exc}")
-            if not started:
-                snapshot = exc.snapshot
-                if snapshot is not None:
+            snapshot = exc.snapshot
+            if snapshot is not None:
+                self.usage_snapshot = snapshot
+                record_usage_snapshot(snapshot, usage_path)
+            failover = getattr(self.credentials, "failover", None)
+            attempted_profiles = attempted_profiles | {
+                str(getattr(request_credentials, "profile_name", "default"))
+            }
+            alternative = (
+                failover(body, self.headers, attempted_profiles)
+                if not upstream_started and callable(failover)
+                else None
+            )
+            if alternative is not None:
+                self.logger(
+                    f"Claude account fallback: {request_credentials.profile_name} "
+                    f"-> {alternative.profile_name} before generation"
+                )
+                # Transfer the SSE transport if only heartbeat pings were sent.
+                # No model output has been exposed, so retry cannot duplicate work.
+                transport_started, started = started, False
+                try:
+                    self._respond(
+                        body, raw, selected_credentials=alternative,
+                        attempted_profiles=attempted_profiles, sse_started=transport_started,
+                    )
+                finally:
+                    # Each attempt's receipt must retain its own account's quota.
                     self.usage_snapshot = snapshot
-                    record_usage_snapshot(snapshot, usage_path)
+                return
+            if not started:
                 headers = codex_rate_limit_headers(snapshot)
                 if request_credentials.mode == "claude-code":
                     headers = {

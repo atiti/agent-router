@@ -31,6 +31,119 @@ AgentRoute supports the interactive Codex CLI, `codex exec`, locally rebuilt Cod
 multiple ChatGPT subscription profiles, Azure OpenAI, and tool-compatible DeepSeek endpoints. See
 [Install](#install) for prerequisites and the review-before-running flow.
 
+The optional [progress review](docs/progress-review.md) checks the direction of long-running
+work, including ordinary prompts, when enabled in a compatible Codex build.
+
+## Zellij session cockpit
+
+With Zellij 0.45.1+ installed, run `agentroute zellij install` once. The installer
+adds `ar` and `focus` commands alongside the existing AgentRoute launcher on PATH.
+
+```sh
+ar                                # attach/create the persistent workspace
+ar list                           # recent chats plus every loaded chat
+ar list --namespace Markster     # scope the list (repeat -n or use comma-separated names)
+ar board --namespace Private     # scope the live board and keep all alerts active
+ar new --dir ~/build/my-project --name "Billing fix"
+ar open <id-or-title>              # reuse the chat's pane, or open one
+ar move <id-or-title> --tab Markster # move its live pane without restarting Codex
+focus <id-or-title>                # jump to an already-open chat
+focus board                       # return to the live board
+ar tile                           # cycle adaptive vertical/horizontal/stack layouts
+ar group set CabinPals ~/build/cabin-pals # route a root into a custom namespace
+ar group list
+```
+
+The board uses **j/k** or arrow keys to select, **Enter** to open/focus, **/** to
+filter, **m** to move the selected chat to another namespace, and **t** to tile the selected
+chat's namespace tab. Press **Esc** to cancel a move before confirming it. Pane moves run in the
+background, so the board stays responsive while Zellij waits for its permission prompt. Its
+states distinguish running, approval,
+user input, ready, error, and saved chats. Saved chats can still belong to an older
+standalone process; opening one preserves Codex's writer lock and reports a conflict.
+ID prefixes/title searches cover the latest 100 chats and every loaded chat; a full
+UUID can address older history. Listing and focusing never resume a chat.
+Rows begin with chats needing attention and recent activity near the top, then stay in place
+while live status and activity times update. New chats are appended during that board run.
+
+The workspace has a **Sessions** tab for the live board and one tab per configured
+namespace. The default namespaces are **Markster** and **Private**. New chats route
+automatically by configured project root or Git remote; built-in Markster detection
+handles Markster-named project directories, Markster GitHub origins, and AgentRoute.
+Everything else uses the default namespace. Use `--namespace` with `ar list`, `ar board`,
+`ar open`, `focus`, and `ar move` to limit session lookup or display. Repeat the flag or
+pass a comma-separated list to select several namespaces.
+
+Namespaces and automatic project routing can be configured in `~/.agentroute/config.yaml`:
+
+```yaml
+zellij:
+  default_namespace: Private
+  namespaces:
+    Markster:
+      project_roots:
+        - ~/build/markster-core
+      git_remotes:
+        - github.com/markster-io/*
+        - github.com/atiti/agent-router
+    CabinPals:
+      project_roots:
+        - ~/build/cabin-pals
+    Private: {}
+```
+
+CLI overrides remain convenient for one-off project roots: `ar group set CabinPals <project-root>`.
+An explicit CLI override takes precedence, then the most specific configured project root,
+then Git remote rules. `ar group list` shows configured namespaces and rules, and
+`ar group remove <project-root>` removes a CLI override and returns that root to automatic routing.
+Project root overrides are stored locally in `~/.agentroute/zellij-project-groups.json`.
+
+Each namespace tab tiles its chats together, so 10–20 sessions stay in a few manageable
+views instead of becoming 10–20 terminal windows. Enter on the board opens or focuses
+a chat in its namespace tab. `focus <id-or-title>` jumps to an already-open pane; add
+`--namespace` when the title is ambiguous. To switch tabs, unlock with **Ctrl-g**, press
+**Ctrl-t**, then use **h/l** or select the namespace tab by name. Press **Ctrl-g** again
+to lock Zellij controls.
+
+Existing panes are left running during setup. Their current tab stays as it is until
+you move them. On the board, press **m** on a chat, choose a namespace with **Tab** or **[ ]**,
+then press **Enter**; **Esc** cancels. From a shell, run
+`ar move <id-or-title> --tab Markster`, and add `--namespace` to disambiguate the chat lookup.
+Either way, the chat's namespace is saved in `~/.agentroute/zellij-chat-namespaces.json`, and
+its open terminal moves into that tab without restarting Codex or releasing its writer lock.
+A chat without an open pane keeps the saved namespace and opens there next time. A move changes
+only that chat; other chats in the same project keep their project routing. Use
+`ar group set` to move a whole project folder.
+The first move asks Zellij to grant AgentRoute's pane mover **Change application state** permission.
+
+Zellij starts in locked mode so Codex receives its usual keys. **Ctrl-g** unlocks
+Zellij controls: **Ctrl-p f** zooms the selected pane; **Ctrl-o d** detaches;
+**Ctrl-g** locks again. Detaching leaves the terminal views and shared owner alive.
+New panes trigger native adaptive layout cycling; `ar tile` rearranges existing
+panes without starting commands again. On restart, Zellij's session resurrection
+asks before rerunning saved commands.
+
+To cycle layouts from Ghostty, use **Option+,** for the previous layout and
+**Option+.** for the next. Ghostty's `macos-option-as-alt = true` already enables
+the other Option shortcuts. Option+[ and Option+] start terminal control sequences,
+so Ghostty should translate them to safe aliases. Add these to
+`~/Library/Application Support/com.mitchellh.ghostty/config.ghostty` to keep the
+bracket keys:
+
+```ini
+keybind = alt+bracket_left=text:\x1b,
+keybind = alt+bracket_right=text:\x1b.
+```
+
+AgentRoute binds those aliases to the previous/next swap layout actions.
+
+With the matching Overwatchr integration installed, Codex Stop hooks resolve the
+chat's exact Zellij pane through private, per-chat files under the shared owner's
+`zellij-targets/` directory. The running board also observes live approval/input
+status changes and clears alerts when work resumes. Keep a board running for those
+mid-turn alerts. `ar start` records the outer terminal context for Overwatchr focus.
+Mobile stays connected to the same AgentRoute owner independently of Zellij.
+
 ## CLI and mobile on the same session
 
 Opt in to a shared routed app-server on macOS or Linux:
@@ -92,9 +205,23 @@ AGENTROUTE_TEST_CODEX_BINARY="$HOME/.agentroute/bin/codex-bin" \
 
 ## Prompt tags
 
+Select a model directly with a source and optional effort, for example
+`@azure @terra @xhigh`, `@gpt @luna @xhigh`, or `@claude @sonnet @medium`.
+Use `@model:EXACT_ID` for an exact deployment identifier. Source, model, tier and effort prefixes
+may appear in any order. `@max` remains the MAX tier; `@ultra` selects maximum reasoning.
+
+Family names resolve only within the selected source's configured tier models and explicit
+`models` declarations. Unknown or ambiguous models block the turn instead of silently selecting
+another model or source. Additional source models use their exact identifier as the map key and
+declare `model`, `reasoning_effort` and `context_window`; GPT account-specific declarations belong
+to that account profile. Declaring a model records operator access knowledge; it does not grant
+provider access, which still needs verification. Ordinary continuation retains an explicit model
+and effort; a new source/tier selector or `@auto` returns to that routing mode. Switching sources
+submits the next prompt there; it does not automatically replay a failed provider operation.
+
 Run `agentroute help` in a terminal to show the currently enabled tag reference. Tier, backend,
-and reasoning tags may be combined in any order; put a Claude profile selector first. AgentRoute
-removes tags before your task is sent to the model.
+model, reasoning and Claude profile selectors may be combined in any order within the leading
+prefix. AgentRoute removes tags before your task is sent to the model.
 
 | Group | Tags | Purpose |
 |---|---|---|
@@ -226,6 +353,22 @@ Daybreak access, refresh its Codex model catalog by starting a new Codex session
 availability still depends on the account and its approved access controls.
 
 ## Execution backends
+
+Tier model and reasoning defaults can be kept together with
+`routing.reasoning_effort_policy: tier_default`. The default `adaptive` policy still lets the
+classifier choose reasoning independently. Under `tier_default`, the selected tier's configured
+effort wins over classifier and inherited effort; an explicit reasoning tag still wins, subject to
+the model's required minimum. This also supports `max` effort on models that accept it.
+
+To roll out new defaults without changing running sessions, set `launch_config` in the ordinary
+AgentRoute configuration to the path of a complete new configuration. Ordinary `codex` launches
+select that file once and export `AGENTROUTE_CONFIG` for their hooks; existing hook processes
+continue reading their original configuration. Relative paths resolve beside the original file.
+An explicit `AGENTROUTE_CONFIG` always wins. Missing targets, redirect chains and redirected
+configurations with shared-server ownership enabled are rejected; existing owners are not restarted.
+This setting is opt-in, preserves the canonical Codex home and audit directory, and does not
+restart sessions. Refresh and maintain the selected complete configuration as its own settings;
+commands launched without `AGENTROUTE_CONFIG` continue to edit the original configuration.
 
 The built-in `gpt` backend uses the existing ChatGPT subscription login. Azure OpenAI and
 DeepSeek use API credentials from environment variables; AgentRoute never writes those secrets to

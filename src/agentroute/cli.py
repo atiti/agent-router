@@ -54,6 +54,7 @@ from .classifier import (
     is_private_endpoint,
     read_api_key,
 )
+from .classifier_refresh import refresh_classifier_catalog
 from .claude_bridge import (
     DEFAULT_PORT as CLAUDE_BRIDGE_DEFAULT_PORT,
 )
@@ -123,6 +124,7 @@ from .router import Router
 from .server_cli import server_app
 from .storage_cli import storage_app
 from .work_cli import sessions_app, work_app
+from .zellij_cli import zellij_app
 
 app = typer.Typer(no_args_is_help=True, help="Local, auditable model routing for coding agents.")
 desktop_app = typer.Typer(no_args_is_help=True, help="Build and manage Codex Desktop locally.")
@@ -148,6 +150,7 @@ app.add_typer(server_app, name="server")
 app.add_typer(storage_app, name="storage")
 app.add_typer(work_app, name="work")
 app.add_typer(sessions_app, name="sessions")
+app.add_typer(zellij_app, name="zellij")
 console = Console()
 
 
@@ -1184,7 +1187,7 @@ def analytics_command(
             "reconciliation": asdict(report.reconciliation),
             "capacity": asdict(report.capacity),
             "calibration": asdict(report.calibration),
-            "efficiency": efficiency_report(rows),
+            "efficiency": efficiency_report(rows, config.pricing),
             "longest_turns": [asdict(item) for item in report.longest_turns],
         }
         console.print_json(json.dumps(payload, sort_keys=True))
@@ -1201,7 +1204,7 @@ def analytics_command(
         f"Turns: {report.rows}; token receipts: {report.overall.measured_turns}; "
         f"without token receipt: {report.overall.unmeasured_turns}"
     )
-    efficiency = efficiency_report(rows)
+    efficiency = efficiency_report(rows, config.pricing)
     console.print(
         f"Execution receipts: {efficiency['measured_turns']} "
         f"({efficiency['partial_turns']} partial); "
@@ -1209,6 +1212,17 @@ def analytics_command(
         f"observed tool failures: {efficiency['observed_tool_failures']}; "
         f"tool work: {_format_duration(efficiency['tool_work_ms'])} (may overlap)"
     )
+    review_cost = efficiency["progress_review_estimated_cost"]
+    if (
+        efficiency["progress_review_priced_count"]
+        or efficiency["progress_review_unpriced_or_unobserved_count"]
+    ):
+        estimate = f"{currency} {review_cost:.6f}" if review_cost is not None else "unavailable"
+        console.print(
+            f"Progress reviews: estimated cost {estimate}; "
+            f"priced {efficiency['progress_review_priced_count']}; "
+            f"unpriced or unobserved {efficiency['progress_review_unpriced_or_unobserved_count']}"
+        )
     console.print(
         f"Completed: {report.duration.completed_turns}; "
         f"duration avg {_format_duration(report.duration.average_ms)}; "
@@ -1713,23 +1727,7 @@ def classifier_verify_command() -> None:
 def classifier_refresh_command() -> None:
     """Refresh a missing or stale remote catalog; otherwise return immediately."""
     config = load_config()
-    settings = config.routing.classifier
-    classifier_config = settings.jev_shadow if settings.engine == "jev" else settings
-    if not settings.enabled or is_loopback_endpoint(classifier_config.endpoint):
-        return
-    age = catalog_age_seconds(classifier_config)
-    if age is not None and age <= classifier_config.catalog_ttl_seconds:
-        return
-    classifier = (
-        JevShadowClassifier(classifier_config)
-        if settings.engine == "jev"
-        else OpenAICompatibleClassifier(settings)
-    )
-    models, digest, checked_at = classifier.verify_catalog()
-    classifier_config.catalog_models = models
-    classifier_config.catalog_hash = digest
-    classifier_config.catalog_checked_at = checked_at
-    save_config(config)
+    refresh_classifier_catalog(config)
 
 
 @app.command("classifier-disable")

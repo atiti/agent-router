@@ -94,7 +94,7 @@ class RpcClient:
 
 
 def server_argv(binary: Path, config: AppConfig) -> list[str]:
-    from .launcher import BASE_CODEX_ARGS, startup_route_args
+    from .launcher import BASE_CODEX_ARGS, progress_review_route_args, startup_route_args
 
     route = startup_route_args(config, [])
     # --model is a TUI setting; app-server loads its default from config overrides.
@@ -104,6 +104,7 @@ def server_argv(binary: Path, config: AppConfig) -> list[str]:
         str(binary.resolve()),
         *BASE_CODEX_ARGS,
         *route,
+        *progress_review_route_args(config, []),
         *(arg for setting in config.shared_server.startup_config for arg in ("-c", setting)),
         "app-server",
         "--listen",
@@ -139,6 +140,11 @@ def server_environment(environment: Mapping[str, str] | None = None) -> dict[str
     from .providers import credentials_path
 
     result = dict(os.environ if environment is None else environment)
+    # The owner serves many terminal views. A pane address inherited from its
+    # first launcher must never become the focus target for every chat's hooks.
+    for name in ("ZELLIJ", "ZELLIJ_PANE_ID", "ZELLIJ_SESSION_NAME",
+                 "OVERWATCHR_TTY", "OVERWATCHR_TITLE"):
+        result.pop(name, None)
     credentials = credentials_path()
     if credentials.exists():
         # Parse the export NAME=<shlex-quoted literal> format produced by AgentRoute.

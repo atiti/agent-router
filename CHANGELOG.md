@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+- Add an opt-in Codex progress review for long-running ordinary prompts and Goals, with a ten-minute active-work interval and an earlier repeated-failure trigger. Install the portable goal-checkpoint skill on activation without replacing an existing copy.
+- Allow an independent progress-review backend and tier for direct and shared-server sessions.
+- Attribute observed reviewer usage to its session route and estimate cost when pricing is available.
+
+## 0.5.78 — 2026-10-28
+
+- Admit configured new models from a fresh account catalog when the pinned runtime catalog predates their release, preserving their actual tool metadata for routed aliases.
+- Add the opt-in `routing.reasoning_effort_policy: tier_default` so a tier's configured reasoning effort wins over the classifier; explicit reasoning tags and model minimums still apply, and `max` ranks above `xhigh`.
+- Add the opt-in `launch_config` setting so new ordinary `codex` launches select a complete updated configuration while running sessions keep their original mappings. Missing targets, redirect chains and shared-server owners are rejected.
+
+## 0.5.77 — 2026-10-26
+
+- Treat explicit Claude account changes as a provider-state boundary before native compaction,
+  so the newly selected account can summarize long history without calling the exhausted account.
+  The unpublished 0.5.76 build was superseded; its tag is retained.
+- Build macOS ARM releases on the supported macOS 15 runner instead of deprecated macOS 14.
+
+- Switch existing conversations between Claude subscription profiles with `@claude:<profile>`.
+  Preserve messages and tool calls/results while replaying signed reasoning only for the selected
+  account; retain the last accepted account across bridge restarts and mixed-account history.
+- Automatically move existing conversations off exhausted Claude accounts. Retry live quota
+  rejections before generation once per available account, including after heartbeat pings;
+  report the limit when all accounts are unavailable and avoid replaying started generations.
+- Publish the actual Claude subscription profile in response metadata and keep a previous
+  explicit selector from preventing automatic fallback on an interrupted turn's continuation.
+- Include the Zellij cockpit, configurable namespaces, live pane moves, board activity times,
+  stable responsive rows, and immediate tracked-task title updates from the 0.5.76 candidates.
+- Fix Ghostty layout shortcuts through explicit Option+bracket escape mappings and matching
+  Zellij Option+comma/period bindings.
+- Promote the stable Codex 0.163/runtime v61 upgrade, context-window and compaction repairs,
+  Claude stream progress, and memory safeguards from the release candidates to the stable channel.
+
+## 0.5.76rc2 — 2026-10-25
+
+- Refresh Codex session titles immediately when their tracked task topic changes during a turn.
+  Explicit manual session renames remain pinned.
+- Add `ar move <chat> --tab <namespace>` to move a live Codex pane into its namespace tab
+  without restarting its process.
+- Add configurable Zellij namespaces and scope `list`, board, `open`, `focus`, and `move`
+  lookups with repeatable `--namespace` filters.
+- Let the Zellij board move the selected chat to another namespace with **m**. A moved chat keeps
+  its namespace after restarts, and `ar move` now saves the namespace even when the chat has no
+  open pane.
+- Let **Esc** cancel the board's namespace picker, and keep the board responsive while Zellij
+  waits for pane-move permission.
+
 ## 0.5.76rc1 — 2026-10-18
 
 - Upgrade the routed runtime to stable Codex 0.163.0 and its matching Code Mode host, preserving task coordination, provider switching, and Claude stream progress.

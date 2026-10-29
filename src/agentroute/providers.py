@@ -156,8 +156,14 @@ def _provider_context_windows(config: AppConfig, backend_name: str) -> dict[str,
         return {}
     return {
         target.model: window
-        for target in config.backends[backend_name].tiers.values()
-        if (window := model_capabilities(config, backend_name, target.model).context_window)
+        for target in (
+            *config.backends[backend_name].tiers.values(),
+            *config.backends[backend_name].models.values(),
+        )
+        if (
+            window := target.context_window
+            or model_capabilities(config, backend_name, target.model).context_window
+        )
     }
 
 
@@ -219,8 +225,10 @@ def _launch_model_catalog_path(config_path: Path) -> Path:
     return config_path.with_name(f"{config_path.stem}.agentroute-models-{key}.json")
 
 
-def _refresh_context_limits(catalog: dict, config_path: Path) -> None:
-    """Use recent account limits without replacing installed harness capabilities."""
+def _refresh_context_limits(
+    catalog: dict, config_path: Path, required_models: set[str] | None = None
+) -> None:
+    """Refresh limits and admit newly configured models from a recent account catalog."""
     try:
         cached = json.loads((config_path.parent / "models_cache.json").read_text())
         fetched = datetime.fromisoformat(cached["fetched_at"].replace("Z", "+00:00"))
@@ -236,6 +244,16 @@ def _refresh_context_limits(catalog: dict, config_path: Path) -> None:
         m["slug"]: m for m in models
         if isinstance(m, dict) and isinstance(m.get("slug"), str)
     }
+    installed_slugs = {model.get("slug") for model in catalog["models"]}
+    for slug in sorted((required_models or set()) - installed_slugs):
+        fresh = by_slug.get(slug, {})
+        window = fresh.get("context_window")
+        maximum = fresh.get("max_context_window")
+        if type(window) is int and type(maximum) is int and 0 < window <= maximum:
+            # New releases may precede the pinned runtime catalog. Use their actual
+            # account descriptor rather than guessing another model's tool protocol.
+            catalog["models"].append(copy.deepcopy(fresh))
+            catalog.setdefault("agentroute_account_models", []).append(slug)
     for model in catalog["models"]:
         fresh = by_slug.get(model.get("slug"), {})
         window = fresh.get("context_window")
@@ -270,7 +288,11 @@ def _write_model_catalog(
         for alias, canonical in config.pricing.aliases.items()
         if alias != canonical
         and any(
-            backend.enabled and any(target.model == alias for target in backend.tiers.values())
+            backend.enabled
+            and any(
+                target.model == alias
+                for target in (*backend.tiers.values(), *backend.models.values())
+            )
             for backend in config.backends.values()
         )
     }
@@ -279,13 +301,22 @@ def _write_model_catalog(
         for name, backend in config.backends.items()
         if backend.enabled and name != "claude"
     ]
-    account_slugs = {
-        target.model for target in config.backends["gpt"].tiers.values()
-    } if "gpt" in config.backends else set()
+    account_slugs = (
+        {target.model for target in (
+            *config.backends["gpt"].tiers.values(), *config.backends["gpt"].models.values()
+        )}
+        if "gpt" in config.backends
+        else set()
+    )
+    account_slugs.update(
+        target.model
+        for profile in config.capacity.profiles.values()
+        for target in (*profile.tiers.values(), *profile.models.values())
+    )
     has_routed_limits = any(
-        capabilities.context_window is not None
+        target.context_window is not None or capabilities.context_window is not None
         for name, backend in routed_backends
-        for target in backend.tiers.values()
+        for target in (*backend.tiers.values(), *backend.models.values())
         if (capabilities := model_capabilities(config, name, target.model))
     )
     if not aliases and not claude_models and not has_routed_limits:
@@ -295,12 +326,37 @@ def _write_model_catalog(
         if aliases:
             raise ValueError("cannot read the installed Codex model catalog for routed aliases")
         return None  # An uninstalled runtime can still fetch the bridge's catalog.
-    _refresh_context_limits(catalog, config_path)
+    required_models = account_slugs | set(aliases.values())
+    _refresh_context_limits(catalog, config_path, required_models)
+    # Once admitted from the account catalog, keep new descriptors in this
+    # runtime's generated sidecar even if its original account sample ages out.
+    # Existing bundled models still use only the runtime's harness metadata.
+    try:
+        previous = json.loads(_launch_model_catalog_path(config_path).read_text())
+        present = {model.get("slug") for model in catalog["models"]}
+        admitted = set(previous.get("agentroute_account_models", []))
+        for model in previous.get("models", []):
+            if (
+                isinstance(model, dict)
+                and model.get("slug") in (required_models - present) & admitted
+            ):
+                catalog["models"].append(model)
+                catalog.setdefault("agentroute_account_models", []).append(model["slug"])
+                present.add(model["slug"])
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
     by_slug = {
         model["slug"]: model
         for model in catalog["models"]
         if isinstance(model, dict) and isinstance(model.get("slug"), str)
     }
+    # Account declarations cannot fabricate protocol metadata or widen a shared
+    # account descriptor. Their exact model must already be admitted by the
+    # installed or freshly retrieved account catalog.
+    for profile in config.capacity.profiles.values():
+        for target in profile.models.values():
+            if target.model not in by_slug:
+                raise ValueError(f"No admitted account metadata for direct model {target.model}")
     for alias, canonical in sorted(aliases.items()):
         if canonical not in by_slug:
             raise ValueError(f"installed Codex catalog has no metadata for {alias} ({canonical})")
@@ -330,9 +386,13 @@ def _write_model_catalog(
         if isinstance(model, dict) and isinstance(model.get("slug"), str)
     }
     for backend_name, backend in routed_backends:
-        for target in backend.tiers.values():
+        for target in (*backend.tiers.values(), *backend.models.values()):
             slug = target.model
             capabilities = model_capabilities(config, backend_name, slug)
+            if target.context_window:
+                capabilities = capabilities.model_copy(
+                    update={"context_window": target.context_window}
+                )
             if slug in known_slugs or slug in aliases:
                 # Account-specific Codex limits apply to the direct GPT backend.
                 # A routed provider alias must use its configured window; copying
@@ -345,6 +405,10 @@ def _write_model_catalog(
                     and slug in by_slug
                 ):
                     by_slug[slug]["context_window"] = capabilities.context_window
+                    by_slug[slug]["max_context_window"] = max(
+                        capabilities.context_window,
+                        by_slug[slug].get("max_context_window") or 0,
+                    )
                     # Account-specific compaction caps must not constrain another provider.
                     by_slug[slug]["auto_compact_token_limit"] = None
                 continue
@@ -354,23 +418,25 @@ def _write_model_catalog(
             # behavior for provider protocol details while replacing the limits
             # and tool exposure that affect prompt size and compaction.
             model = copy.deepcopy(next(iter(by_slug.values()), {}))
-            model.update({
-                "slug": slug,
-                "display_name": slug,
-                "description": f"{backend.display_name} model routed through AgentRoute.",
-                "context_window": capabilities.context_window,
-                "max_context_window": capabilities.context_window,
-                "auto_compact_token_limit": None,
-                "effective_context_window_percent": 95,
-                "input_modalities": ["text"] + (["image"] if capabilities.vision else []),
-                "supports_image_detail_original": bool(capabilities.vision),
-                # Plain Responses function support does not imply Codex's special
-                # code-mode or tool-search protocols. Do not invent that support.
-                "tool_mode": "direct",
-                "supports_search_tool": False,
-                "multi_agent_version": None,
-                "multi_agent_reasoning_effort": None,
-            })
+            model.update(
+                {
+                    "slug": slug,
+                    "display_name": slug,
+                    "description": f"{backend.display_name} model routed through AgentRoute.",
+                    "context_window": capabilities.context_window,
+                    "max_context_window": capabilities.context_window,
+                    "auto_compact_token_limit": None,
+                    "effective_context_window_percent": 95,
+                    "input_modalities": ["text"] + (["image"] if capabilities.vision else []),
+                    "supports_image_detail_original": bool(capabilities.vision),
+                    # Plain Responses function support does not imply Codex's special
+                    # code-mode or tool-search protocols. Do not invent that support.
+                    "tool_mode": "direct",
+                    "supports_search_tool": False,
+                    "multi_agent_version": None,
+                    "multi_agent_reasoning_effort": None,
+                }
+            )
             if capabilities.reasoning is False:
                 model["default_reasoning_level"] = None
                 model["supported_reasoning_levels"] = []

@@ -1,8 +1,43 @@
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 
 from agentroute.install import merge_codex_hook, trust_agentroute_hooks
+
+
+def test_progress_skill_installer_creates_skill_and_preserves_existing(tmp_path):
+    root = Path(__file__).parents[1]
+    installer = root / "scripts/install-progress-skill.sh"
+    source = root / "skills/goal-checkpoint"
+    destination = tmp_path / "skills/goal-checkpoint/SKILL.md"
+    command = ["sh", str(installer), str(source), str(destination.parent.parent)]
+
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    assert destination.read_bytes() == (source / "SKILL.md").read_bytes()
+    destination.write_text("user customization")
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    assert destination.read_text() == "user customization"
+
+
+def test_progress_skill_installer_preserves_existing_symlink(tmp_path):
+    root = Path(__file__).parents[1]
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    (skills / "goal-checkpoint").symlink_to(tmp_path / "missing")
+    subprocess.run(
+        [
+            "sh",
+            str(root / "scripts/install-progress-skill.sh"),
+            str(root / "skills/goal-checkpoint"),
+            str(skills),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert (skills / "goal-checkpoint").is_symlink()
 
 
 def test_hook_install_preserves_existing_hooks_and_is_idempotent(tmp_path, monkeypatch):

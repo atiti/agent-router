@@ -17,7 +17,7 @@ cleanup_build() {
 }
 trap cleanup_build EXIT HUP INT TERM
 AGENTROUTE_BUILD_PROFILE=${AGENTROUTE_BUILD_PROFILE:-dev-small}
-AGENTROUTE_CODEX_COMMIT=11446200bd1a3c1ebfa56057a7661f2b380d9879
+AGENTROUTE_CODEX_COMMIT=b3cea9042573c591c870b5b293eddf8f30c33c7c
 AGENTROUTE_CODEX_UPSTREAM=83086188ae0614bd882818ff1aa23f3194962012
 AGENTROUTE_CODEX_REPOSITORY=https://github.com/atiti/codex.git
 AGENTROUTE_CODE_MODE_HOST_VERSION=${AGENTROUTE_CODE_MODE_HOST_VERSION:-0.163.0}
@@ -119,6 +119,10 @@ if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
         printf 'No executable Code Mode host was found.\n' >&2
         exit 1
     fi
+    # AgentRoute's `ar` command can shadow the system archiver required by
+    # Rust native build scripts, so pass the system tool paths explicitly.
+    AR="${AR:-/usr/bin/ar}" \
+    RANLIB="${RANLIB:-/usr/bin/ranlib}" \
     CARGO_TARGET_DIR="$AGENTROUTE_CODEX_TARGET" \
     CARGO_INCREMENTAL=0 \
     CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2} \
@@ -137,12 +141,15 @@ if [ ! -x "$AGENTROUTE_BIN_DIR/codex-bin" ] \
     fi
     "$AGENTROUTE_STAGED_CODEX" --version >/dev/null
 
-    "$AGENTROUTE_HOME_DIR/venv/bin/python" -c '
+    AGENTROUTE_CODEX_STAGED_PATH="$AGENTROUTE_STAGED_CODEX" \
+    AGENTROUTE_CODEX_DEST_PATH="$AGENTROUTE_BIN_DIR/codex-bin" \
+        "$AGENTROUTE_HOME_DIR/venv/bin/python" -c '
 from pathlib import Path
+import os
 from agentroute.codex_patch import install_binary
 install_binary(
-    Path("'"$AGENTROUTE_STAGED_CODEX"'"),
-    Path("'"$AGENTROUTE_BIN_DIR/codex-bin"'"),
+    Path(os.environ["AGENTROUTE_CODEX_STAGED_PATH"]),
+    Path(os.environ["AGENTROUTE_CODEX_DEST_PATH"]),
 )
 '
     rm -f "$AGENTROUTE_STAGED_CODEX"
@@ -179,6 +186,8 @@ chmod 755 "$AGENTROUTE_BIN_DIR/codex"
 
 if [ "${AGENTROUTE_INSTALL_ACTIVATE:-1}" = 1 ]; then
     "$AGENTROUTE_BIN_DIR/agentroute" setup
+    sh "$AGENTROUTE_PROJECT_ROOT/scripts/install-progress-skill.sh" \
+        "$AGENTROUTE_PROJECT_ROOT/skills/goal-checkpoint" "${CODEX_HOME:-$HOME/.codex}/skills"
 
     AGENTROUTE_SHELL_RC=${ZDOTDIR:-"$HOME"}/.zshrc
     AGENTROUTE_PATH_LINE='export PATH="$HOME/.agentroute/bin:$PATH" # agentroute'

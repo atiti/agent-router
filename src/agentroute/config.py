@@ -14,6 +14,7 @@ from .models import Tier
 class ModelTarget(BaseModel):
     model: str
     reasoning_effort: str | None = None
+    context_window: int | None = Field(default=None, ge=1)
 
 
 class ExecutionBackendConfig(BaseModel):
@@ -35,6 +36,7 @@ class ExecutionBackendConfig(BaseModel):
     monthly_budget_usd: float | None = Field(default=None, gt=0)
     fallback_backend: str | None = None
     tiers: dict[str, ModelTarget]
+    models: dict[str, ModelTarget] = Field(default_factory=dict)
 
     def target(self, tier: Tier) -> ModelTarget:
         return self.tiers[str(tier)]
@@ -118,6 +120,9 @@ class ClassifierConfig(BaseModel):
 
 class RoutingConfig(BaseModel):
     mode: Literal["heuristic", "hybrid", "llm"] = "hybrid"
+    progress_review_backend: str | None = None
+    progress_review_tier: Literal["fast", "normal", "smart", "max"] = "fast"
+    reasoning_effort_policy: Literal["adaptive", "tier_default"] = "adaptive"
     switching: SwitchingConfig = Field(default_factory=SwitchingConfig)
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
     fast_quality_floor: bool = True
@@ -170,6 +175,7 @@ class SubscriptionProfileConfig(BaseModel):
     enabled: bool = True
     priority: int = 100
     tiers: dict[str, ModelTarget] = Field(default_factory=dict)
+    models: dict[str, ModelTarget] = Field(default_factory=dict)
 
     def target(self, tier: Tier, fallback: ModelTarget) -> ModelTarget:
         """Return a profile-compatible target, falling back to the GPT default."""
@@ -380,9 +386,52 @@ class SharedServerConfig(BaseModel):
     analytics_default_enabled: bool = False
 
 
+class ZellijNamespaceConfig(BaseModel):
+    """Local project identity rules for one Zellij workspace namespace."""
+
+    project_roots: list[str] = Field(default_factory=list)
+    git_remotes: list[str] = Field(default_factory=list)
+
+
+class ZellijConfig(BaseModel):
+    """Names and project rules used to sort and filter shared terminal sessions."""
+
+    default_namespace: str = "Private"
+    namespaces: dict[str, ZellijNamespaceConfig] = Field(default_factory=lambda: {
+        "Markster": ZellijNamespaceConfig(),
+        "Private": ZellijNamespaceConfig(),
+    })
+
+    @field_validator("default_namespace")
+    @classmethod
+    def valid_default_namespace(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}", value):
+            raise ValueError("namespace names must be 1-32 letters, digits, spaces, dots, _ or -")
+        return value
+
+    @field_validator("namespaces")
+    @classmethod
+    def valid_namespace_names(cls, value: dict[str, ZellijNamespaceConfig]):
+        seen = set()
+        normalized = {}
+        for name, namespace in value.items():
+            name = name.strip()
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}", name):
+                raise ValueError(
+                    "namespace names must be 1-32 letters, digits, spaces, dots, _ or -"
+                )
+            if name.casefold() in seen:
+                raise ValueError("namespace names must be unique without regard to case")
+            seen.add(name.casefold())
+            normalized[name] = namespace
+        return normalized
+
+
 class AppConfig(BaseModel):
     preset: str = "balanced"
     enabled: bool = False
+    launch_config: str | None = None
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     providers: dict[str, ProviderConfig]
@@ -398,6 +447,7 @@ class AppConfig(BaseModel):
     pricing: PricingConfig = Field(default_factory=PricingConfig)
     capabilities: CapabilityConfig = Field(default_factory=CapabilityConfig)
     shared_server: SharedServerConfig = Field(default_factory=SharedServerConfig)
+    zellij: ZellijConfig = Field(default_factory=ZellijConfig)
 
 
 def default_config() -> AppConfig:
