@@ -44,6 +44,7 @@ class ReasonCode(str, Enum):
     TASK_DEFINITION_INHERITANCE = "TASK_DEFINITION_INHERITANCE"
     MANUAL_OVERRIDE = "MANUAL_OVERRIDE"
     REASONING_EFFORT_OVERRIDE = "REASONING_EFFORT_OVERRIDE"
+    MODEL_OVERRIDE = "MODEL_OVERRIDE"
     CLASSIFIER_REASONING_EFFORT = "CLASSIFIER_REASONING_EFFORT"
     MODEL_REASONING_FLOOR = "MODEL_REASONING_FLOOR"
     FAST_QUALITY_FLOOR = "FAST_QUALITY_FLOOR"
@@ -86,6 +87,7 @@ class RouteContext(BaseModel):
     explicit_backend: str | None = None
     requested_backend: str | None = None
     requested_reasoning_effort: str | None = None
+    requested_model: str | None = None
     spawn_model_explicit: bool = False
     inherited_backend: str | None = None
     route_scope: str = "root"
@@ -122,6 +124,7 @@ class RouteDecision(BaseModel):
     model: str
     reasoning_effort: str | None = None
     requested_reasoning_effort: str | None = None
+    requested_model: str | None = None
     confidence: float = Field(ge=0, le=1)
     raw_score: float
     reason_codes: list[ReasonCode]

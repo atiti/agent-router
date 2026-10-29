@@ -50,6 +50,23 @@ def startup_route_args(config: AppConfig, user_args: Sequence[str]) -> list[str]
     return args
 
 
+def progress_review_route_args(config: AppConfig, user_args: Sequence[str]) -> list[str]:
+    review_args = []
+    name = config.routing.progress_review_backend
+    if name:
+        backend = config.backends.get(name)
+        if backend is None or not backend.enabled:
+            raise ValueError(f"Progress review backend {name!r} is missing or disabled")
+        if not _has_config_override(user_args, "progress_review_provider"):
+            review_args.extend(
+                ["-c", f"progress_review_provider={json.dumps(backend.codex_provider)}"]
+            )
+        if not _has_config_override(user_args, "progress_review_model"):
+            model = backend.tiers[config.routing.progress_review_tier].model
+            review_args.extend(["-c", f"progress_review_model={json.dumps(model)}"])
+    return review_args
+
+
 def codex_argv(
     binary: Path, user_args: Sequence[str], config: AppConfig | None = None
 ) -> list[str]:
@@ -58,6 +75,7 @@ def codex_argv(
         str(binary),
         *BASE_CODEX_ARGS,
         *startup_route_args(config, user_args),
+        *progress_review_route_args(config, user_args),
         *user_args,
     ]
 
