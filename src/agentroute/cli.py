@@ -54,6 +54,7 @@ from .classifier import (
     is_private_endpoint,
     read_api_key,
 )
+from .classifier_refresh import refresh_classifier_catalog
 from .claude_bridge import (
     DEFAULT_PORT as CLAUDE_BRIDGE_DEFAULT_PORT,
 )
@@ -123,6 +124,7 @@ from .router import Router
 from .server_cli import server_app
 from .storage_cli import storage_app
 from .work_cli import sessions_app, work_app
+from .zellij_cli import zellij_app
 
 app = typer.Typer(no_args_is_help=True, help="Local, auditable model routing for coding agents.")
 desktop_app = typer.Typer(no_args_is_help=True, help="Build and manage Codex Desktop locally.")
@@ -148,6 +150,7 @@ app.add_typer(server_app, name="server")
 app.add_typer(storage_app, name="storage")
 app.add_typer(work_app, name="work")
 app.add_typer(sessions_app, name="sessions")
+app.add_typer(zellij_app, name="zellij")
 console = Console()
 
 
@@ -1713,23 +1716,7 @@ def classifier_verify_command() -> None:
 def classifier_refresh_command() -> None:
     """Refresh a missing or stale remote catalog; otherwise return immediately."""
     config = load_config()
-    settings = config.routing.classifier
-    classifier_config = settings.jev_shadow if settings.engine == "jev" else settings
-    if not settings.enabled or is_loopback_endpoint(classifier_config.endpoint):
-        return
-    age = catalog_age_seconds(classifier_config)
-    if age is not None and age <= classifier_config.catalog_ttl_seconds:
-        return
-    classifier = (
-        JevShadowClassifier(classifier_config)
-        if settings.engine == "jev"
-        else OpenAICompatibleClassifier(settings)
-    )
-    models, digest, checked_at = classifier.verify_catalog()
-    classifier_config.catalog_models = models
-    classifier_config.catalog_hash = digest
-    classifier_config.catalog_checked_at = checked_at
-    save_config(config)
+    refresh_classifier_catalog(config)
 
 
 @app.command("classifier-disable")
