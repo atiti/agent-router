@@ -54,6 +54,7 @@ from .classifier import (
     is_private_endpoint,
     read_api_key,
 )
+from .classifier_refresh import refresh_classifier_catalog
 from .claude_bridge import (
     DEFAULT_PORT as CLAUDE_BRIDGE_DEFAULT_PORT,
 )
@@ -1715,23 +1716,7 @@ def classifier_verify_command() -> None:
 def classifier_refresh_command() -> None:
     """Refresh a missing or stale remote catalog; otherwise return immediately."""
     config = load_config()
-    settings = config.routing.classifier
-    classifier_config = settings.jev_shadow if settings.engine == "jev" else settings
-    if not settings.enabled or is_loopback_endpoint(classifier_config.endpoint):
-        return
-    age = catalog_age_seconds(classifier_config)
-    if age is not None and age <= classifier_config.catalog_ttl_seconds:
-        return
-    classifier = (
-        JevShadowClassifier(classifier_config)
-        if settings.engine == "jev"
-        else OpenAICompatibleClassifier(settings)
-    )
-    models, digest, checked_at = classifier.verify_catalog()
-    classifier_config.catalog_models = models
-    classifier_config.catalog_hash = digest
-    classifier_config.catalog_checked_at = checked_at
-    save_config(config)
+    refresh_classifier_catalog(config)
 
 
 @app.command("classifier-disable")
