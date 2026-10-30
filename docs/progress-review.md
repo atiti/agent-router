@@ -16,7 +16,14 @@ The source and published-release installers install `goal-checkpoint` into the a
 
 ## Live escalation within an active task
 
-Set `routing.progress_review_live_switching: true` in AgentRoute's YAML configuration, then start a fresh session with `codex --enable progress_review`. A shared server needs a safe stop/start to load these settings. Requires a Codex build containing the live-review bridge.
+Enable this in AgentRoute's YAML configuration, then start a fresh session with `codex --enable progress_review`:
+
+```yaml
+routing:
+  progress_review_live_switching: true
+```
+
+A shared server needs a safe stop/start to load these settings. Requires a Codex build containing the live-review bridge.
 
 The reviewer may recommend `model_tier` (`keep`, `fast`, `normal`, `smart`, `max`). AgentRoute generates an allowlist from enabled backends and its maximum-tier policy. Codex applies an authorized escalation to subsequent model steps of the **same active turn**; it does not wait for a new user prompt or cancel a running tool. Model/provider compatibility and managed provider requirements use the existing routed-settings path.
 
