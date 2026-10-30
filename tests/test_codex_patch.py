@@ -260,8 +260,8 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     installer = (Path(__file__).parents[1] / "scripts" / "install.sh").read_text()
     launcher = (Path(__file__).parents[1] / "src/agentroute/launcher.py").read_text()
 
-    assert '"code_mode"' in launcher
-    assert '"code_mode_host"' in launcher
+    assert '"features.code_mode=true"' in launcher
+    assert '"features.code_mode_host=true"' in launcher
     assert "codex-code-mode-host" in installer
     assert "AGENTROUTE_CODE_MODE_HOST_VERSION" in installer
     assert 'npm pack \\' in installer
