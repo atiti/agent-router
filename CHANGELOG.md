@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.80 — 2026-10-30
+
+- Preserve routing and Code Mode feature dependencies when additional feature flags follow a CLI subcommand.
+
 - Add opt-in reviewer-guided live escalation within a running Codex turn, using AgentRoute-authorized model/provider mappings.
 
 ## 0.5.79 — 2026-10-29

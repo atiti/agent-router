@@ -307,3 +307,22 @@ def test_live_review_routes_respect_opt_in_policy_and_explicit_model():
     args = codex_argv(Path("/tmp/codex-bin"), [], config)
     value = next(arg.split("=", 1)[1] for arg in args if arg.startswith("progress_review_routes="))
     assert json.loads(json.loads(value)) == {}
+
+
+@pytest.mark.parametrize("command", ["exec", "review", "features"])
+def test_subcommand_feature_flags_keep_routing_dependencies(command):
+    from agentroute.launcher import _config_assignments
+
+    args = codex_argv(
+        Path("/tmp/codex-bin"), [command, "--enable", "progress_review"], default_config()
+    )
+    # Native feature toggles after a subcommand must not replace AgentRoute's
+    # routing/Code Mode dependencies in the root global --enable collection.
+    for feature in ("step_model_switching", "code_mode", "code_mode_host"):
+        assert f"features.{feature}=true" in args
+        assert feature not in args
+        assert _config_assignments(args)[f"features.{feature}"] == "true"
+    disabled = codex_argv(
+        Path("/tmp/codex-bin"), [command, "--disable", "step_model_switching"], default_config()
+    )
+    assert _config_assignments(disabled)["features.step_model_switching"] == "false"

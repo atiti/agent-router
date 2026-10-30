@@ -8,13 +8,15 @@ from pathlib import Path
 
 from .config import AppConfig, agentroute_home, config_path, load_config
 
+# Repeated global --enable flags can be replaced by flags after a Codex
+# subcommand. Config overrides are inherited and keep the routing dependencies.
 BASE_CODEX_ARGS = [
-    "--enable",
-    "step_model_switching",
-    "--enable",
-    "code_mode",
-    "--enable",
-    "code_mode_host",
+    "-c",
+    "features.step_model_switching=true",
+    "-c",
+    "features.code_mode=true",
+    "-c",
+    "features.code_mode_host=true",
     "-c",
     "features.task_awareness=true",
     "-c",

@@ -70,7 +70,7 @@ def test_built_release_installs_progress_skill_without_replacing_existing(
         tools / "uv",
         'if [ "$1" = build ]; then\n'
         '  while [ "$1" != --out-dir ]; do shift; done\n'
-        '  touch "$2/agentroute-0.5.79-py3-none-any.whl"\n'
+        '  touch "$2/agentroute-0.5.80-py3-none-any.whl"\n'
         'fi\n',
     )
     prebuilt = tmp_path / "prebuilt"

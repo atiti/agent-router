@@ -141,9 +141,9 @@ def test_release_metadata_uses_current_version_and_runtime():
     version = re.search(r'^version = "([^"]+)"$', package, re.MULTILINE).group(1)
     assert f'version = "{version}"' in lock
     assert f'__version__ = "{version}"' in public_api
-    assert "provider-routing-v62" in installer
-    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v62"' in doctor
-    assert "715165458f1dfe849901930835abb4d05e1bbcfb" in installer
+    assert "provider-routing-v63" in installer
+    assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v63"' in doctor
+    assert "4b99db6e2f4dc4e1c8316ba30e15e89567eeda4c" in installer
     assert "0.165.0" in installer
     assert "./scripts/check_upstream.sh" in ci
 
@@ -260,8 +260,8 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     installer = (Path(__file__).parents[1] / "scripts" / "install.sh").read_text()
     launcher = (Path(__file__).parents[1] / "src/agentroute/launcher.py").read_text()
 
-    assert '"code_mode"' in launcher
-    assert '"code_mode_host"' in launcher
+    assert '"features.code_mode=true"' in launcher
+    assert '"features.code_mode_host=true"' in launcher
     assert "codex-code-mode-host" in installer
     assert "AGENTROUTE_CODE_MODE_HOST_VERSION" in installer
     assert 'npm pack \\' in installer
@@ -279,7 +279,7 @@ def test_installer_enables_code_mode_and_signs_macos_binary():
     assert 'agentroute-codex-build.XXXXXX' in installer
     assert 'trap cleanup_build EXIT HUP INT TERM' in installer
     assert "codex-provider-provenance.patch" not in installer
-    assert "provider-routing-v62" in installer
+    assert "provider-routing-v63" in installer
     assert "--locked --profile" in installer
     assert 'AR="${AR:-/usr/bin/ar}"' in installer
     assert 'RANLIB="${RANLIB:-/usr/bin/ranlib}"' in installer
