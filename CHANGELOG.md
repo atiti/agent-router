@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add opt-in reviewer-guided live escalation within a running Codex turn, using AgentRoute-authorized model/provider mappings.
+
 ## 0.5.79 — 2026-10-29
 
 - Upgrade the routed Codex runtime to exact upstream stable 0.165.0 with its matching official Code Mode host. Preserve shipped fork SQLite migration records and data, and safely recognize stock upstream migration records by exact checksums. Serialize concurrent upgrades and roll back the entire repair if a migration fails.
