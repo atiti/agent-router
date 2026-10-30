@@ -74,6 +74,33 @@ def progress_review_route_args(config: AppConfig, user_args: Sequence[str]) -> l
         if not _has_config_override(user_args, "progress_review_model"):
             model = backend.tiers[config.routing.progress_review_tier].model
             review_args.extend(["-c", f"progress_review_model={json.dumps(model)}"])
+    if config.routing.progress_review_live_switching and not _has_model_override(user_args):
+        # Keep policy in AgentRoute. Core only accepts this explicit allowlist.
+        # Budgeted backends require a live capacity check and are excluded here.
+        from .models import Tier
+
+        routes = {}
+        ceiling = Tier.parse(config.policy.max_tier)
+        for tier in Tier:
+            if tier > ceiling:
+                continue
+            backend_name = config.routing.backend_by_tier.get(str(tier), "gpt")
+            backend = config.backends.get(backend_name)
+            if (
+                backend is None
+                or not backend.enabled
+                or backend.daily_budget_usd
+                or backend.monthly_budget_usd
+            ):
+                continue
+            target = backend.target(tier)
+            routes[str(tier)] = {
+                "model": target.model,
+                "provider": backend.codex_provider,
+                "effort": target.reasoning_effort,
+            }
+        if not _has_config_override(user_args, "progress_review_routes"):
+            review_args.extend(["-c", "progress_review_routes=" + json.dumps(json.dumps(routes))])
     return review_args
 
 
@@ -281,9 +308,8 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
     explicit_remote = any(arg == "--remote" or arg.startswith("--remote=") for arg in user_args)
     if (
         not explicit_remote
-        and _launch_command(user_args) in {
-            "start", "resume", "fork", "exec", "review", "app-server"
-        }
+        and _launch_command(user_args)
+        in {"start", "resume", "fork", "exec", "review", "app-server"}
         and not any(arg in {"--help", "-h", "--version", "-V"} for arg in user_args)
         and not _has_config_override(user_args, "model_catalog_json")
         and not any(arg in {"-p", "--profile"} or arg.startswith("--profile=") for arg in user_args)

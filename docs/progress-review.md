@@ -13,3 +13,11 @@ The reviewer runs after ten minutes of active work, accumulating across turns; i
 When a completed review exposes usage and its item is present in the parent rollout, AgentRoute's execution receipt records reviewer tokens and the session's model and provider without retaining review text. Usage analytics estimate cost where configured model prices and cache-write usage are available; missing usage, unknown prices, and truncated or legacy rollout tails remain unmeasured. Internal reviews skip the normal AgentRoute subagent routing hooks.
 
 The source and published-release installers install `goal-checkpoint` into the active Codex home when activating. They preserve an existing skill of the same name; update a customized or older copy manually if needed. Start a new session to refresh the skill catalog.
+
+## Live escalation within an active task
+
+Set `routing.progress_review_live_switching: true` in AgentRoute's YAML configuration, then start a fresh session with `codex --enable progress_review`. A shared server needs a safe stop/start to load these settings. Requires a Codex build containing the live-review bridge.
+
+The reviewer may recommend `model_tier` (`keep`, `fast`, `normal`, `smart`, `max`). AgentRoute generates an allowlist from enabled backends and its maximum-tier policy. Codex applies an authorized escalation to subsequent model steps of the **same active turn**; it does not wait for a new user prompt or cancel a running tool. Model/provider compatibility and managed provider requirements use the existing routed-settings path.
+
+Switching defaults off. Explicit CLI model selection disables the generated allowlist. Budgeted backends are excluded until a live capacity check is available. Downgrades and unknown current models remain advisory. Stale user revisions are rejected at publication. The existing review cooldown limits switching frequency, and route results are recorded in the visible review transcript. This initial implementation controls the reviewed root turn, not already-running child agents. Disable with `routing.progress_review_live_switching: false` and start a fresh session.
