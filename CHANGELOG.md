@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.81 — 2026-10-30
+
+- Record review acknowledgements and surface missing receipts to subsequent reviewers; accept fenced verdict JSON and report safe validation errors.
+
 ## 0.5.80 — 2026-10-30
 
 - Preserve routing and Code Mode feature dependencies when additional feature flags follow a CLI subcommand.
