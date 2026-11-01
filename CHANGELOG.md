@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Avoid unsupported GPT verbosity, Responses Lite and WebSocket preferences in generated metadata for unknown custom backend models.
+
 ## 0.5.80 — 2026-10-30
 
 - Preserve routing and Code Mode feature dependencies when additional feature flags follow a CLI subcommand.
