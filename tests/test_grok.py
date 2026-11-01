@@ -147,6 +147,14 @@ def test_namespaces_are_flattened_and_openai_metadata_removed():
     assert body["tools"][0]["name"] == wire_name("functions", "read")
 
 
+def test_compaction_without_tools_removes_tool_controls():
+    body = translate_request(
+        {"model": "grok-4.7", "tools": [], "tool_choice": "auto", "parallel_tool_calls": True}
+    )
+    assert body["tools"] == []
+    assert "tool_choice" not in body and "parallel_tool_calls" not in body
+
+
 def test_http_streams_and_rejects_browser_origin(monkeypatch):
     import threading
     import urllib.error

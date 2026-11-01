@@ -320,6 +320,10 @@ def translate_request(body):
             seen[name] = tool
         unique.append(tool)
     body["tools"] = unique
+    if not unique:
+        # Codex's local compactor sends auto with an empty tool list.
+        body.pop("tool_choice", None)
+        body.pop("parallel_tool_calls", None)
     for item in body.get("input", []):
         if not isinstance(item, dict):
             continue
