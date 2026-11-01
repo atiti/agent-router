@@ -497,6 +497,15 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
             checks.append(DoctorCheck("classifier", "fail", type(error).__name__))
 
     checks.append(_bridge_check(config))
+    grok = config.backends.get("grok")
+    if grok and grok.enabled:
+        from urllib.parse import urlparse
+
+        endpoint = urlparse(grok.base_url or "")
+        health = probe_health(endpoint.port or 8092)
+        ready = health.status == "healthy" and (health.payload or {}).get("provider") == "grok"
+        checks.append(DoctorCheck("grok-bridge", "pass" if ready else "fail",
+                                  "healthy" if ready else "run agentroute grok install"))
 
     if platform.system() == "Darwin":
         destination = Path("/Applications/ChatGPT-Routed.app")

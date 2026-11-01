@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an opt-in Grok subscription backend using the signed-in official CLI, with independent user services, tool and encrypted-reasoning continuation, conservative context limits, standard capacity thresholds/fallbacks, quota reset display, token pricing, and setup documentation.
+
 ## 0.5.80 — 2026-10-30
 
 - Preserve routing and Code Mode feature dependencies when additional feature flags follow a CLI subcommand.

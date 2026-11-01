@@ -28,7 +28,8 @@ codex
 ```
 
 AgentRoute supports the interactive Codex CLI, `codex exec`, locally rebuilt Codex Desktop,
-multiple ChatGPT subscription profiles, Azure OpenAI, and tool-compatible DeepSeek endpoints. See
+multiple ChatGPT subscription profiles, Claude and Grok subscriptions, Azure OpenAI, and
+tool-compatible DeepSeek endpoints. See
 [Install](#install) for prerequisites and the review-before-running flow.
 
 The optional [progress review](docs/progress-review.md) checks the direction of long-running
@@ -549,12 +550,23 @@ every other backend.
 Full setup, credential, usage-limit, and troubleshooting detail lives in
 [Running Claude models through the bridge](docs/claude-bridge.md).
 
+## Grok subscription
+
+With the official Grok CLI installed and signed in (`grok login`), run
+`agentroute grok install`, then select `@grok` in Codex. The independent loopback
+service reuses the CLI login and delegates refresh to Grok. Automatic tier routes
+stay as configured. Defaults map FAST to `grok-4.7-build-fast`, NORMAL to `grok-4.6`,
+and SMART/MAX to `grok-4.7`, with a conservative 256,000-token context window.
+`agentroute capacity status` shows the account's shared allowance and local reset
+time; stats and analytics include configurable Grok token-rate estimates.
+See [Grok setup, monitoring, pricing and troubleshooting](docs/grok-bridge.md).
+
 ## Capacity management and subscription failover
 
 Capacity management is opt-in. It reads the ordinary ChatGPT subscription allowance already
 polled by Codex's app-server, and uses locally audited token receipts to enforce optional
-daily/monthly USD ceilings for API backends. It makes no extra provider request when you submit a
-prompt. Account identifiers are reduced to a local 16-character hash in the audit database and are
+daily/monthly USD ceilings for API backends. Grok subscription routing reads the CLI's
+billing endpoint when its 60-second snapshot expires; GPT uses the existing app-server snapshot. Account identifiers are reduced to a local 16-character hash in the audit database and are
 never shown in a banner, config file, or report.
 
 ```sh
@@ -574,7 +586,8 @@ agentroute capacity status
 agentroute analytics --days 30
 ```
 
-`capacity status` labels GPT subscription profiles and Claude subscription profiles separately.
+`capacity status` labels GPT subscription profiles and Claude subscription profiles separately,
+and includes the Grok allowance in the backend table.
 Each Claude profile has its own usage and identity row; `Default` marks the profile used for new
 Claude threads. Account IDs in the GPT profile table are masked hashes. `--no-probe` skips live
 quota reads and shows saved samples only. Reset times are displayed in local time.
@@ -851,7 +864,9 @@ checked on 2026-09-17 against the official OpenAI and DeepSeek model pages. Deep
 rate uses its conservative peak price; actual off-peak charges are lower. Azure deployment prices
 vary, so add their rates or aliases explicitly; unpriced models are named and excluded instead of
 silently presented as free. This is an API-equivalent estimate, not a Codex subscription invoice,
-and a different model may produce a different number of tokens.
+and a different model may produce a different number of tokens. Grok rates were checked on
+2026-11-01 against [xAI pricing](https://docs.x.ai/developers/pricing); see the
+[Grok guide](docs/grok-bridge.md#usage-and-cost-estimates) for rates and estimate limitations.
 
 For a local model mix and timeline, use:
 
