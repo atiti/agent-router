@@ -55,7 +55,13 @@ def token_cost(model: str, usage: dict[str, int | float], pricing: PricingConfig
     multiplier = (
         rate.long_context_multiplier
         if rate.long_context_threshold_tokens is not None
-        and input_tokens > rate.long_context_threshold_tokens
+        and (
+            input_tokens > rate.long_context_threshold_tokens
+            or (
+                rate.long_context_threshold_inclusive
+                and input_tokens == rate.long_context_threshold_tokens
+            )
+        )
         else 1
     )
     return (

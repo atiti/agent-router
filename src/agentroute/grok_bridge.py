@@ -46,16 +46,18 @@ class GrokCredential:
             if isinstance(scope, str)
             and scope.startswith("https://auth.x.ai::")
             and isinstance(credential, dict)
-            and credential.get("key")
+            and isinstance(credential.get("key"), str)
+            and credential["key"]
         ]
         if len(candidates) == 1:
             return candidates[0]
         raise ValueError("No Grok subscription login; run grok login")
 
-    def token(self):
+    def current(self):
+        """Read one login so authorization and quota attribution stay together."""
         with self.lock:
             credential = self._read()
-            expiry = datetime.fromisoformat(credential["expires_at"].replace("Z", "+00:00"))
+            expiry = self._expiry(credential)
             if (expiry - datetime.now(timezone.utc)).total_seconds() < 120:
                 # Delegate refresh/locking/rotation to the credential's owner.
                 refresh = subprocess.Popen(
@@ -73,10 +75,23 @@ class GrokCredential:
                 if code:
                     raise ValueError("Grok refresh failed; run grok models")
                 credential = self._read()
-                expiry = datetime.fromisoformat(credential["expires_at"].replace("Z", "+00:00"))
+                expiry = self._expiry(credential)
                 if expiry <= datetime.now(timezone.utc):
                     raise ValueError("Grok login expired; run grok login")
-            return credential["key"]
+            return credential
+
+    @staticmethod
+    def _expiry(credential):
+        value = credential.get("expires_at")
+        if not isinstance(value, str):
+            raise ValueError("Invalid Grok login expiry; run grok login")
+        expiry = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if expiry.tzinfo is None:
+            raise ValueError("Invalid Grok login expiry; run grok login")
+        return expiry
+
+    def token(self):
+        return self.current()["key"]
 
     def version(self):
         result = subprocess.run(
@@ -119,9 +134,9 @@ def ensure_backend(config, port=DEFAULT_PORT):
         )
 
 
-def request_headers(credential, version, model):
+def request_headers(credential, version, model, *, login=None):
     return {
-        "Authorization": "Bearer " + credential.token(),
+        "Authorization": "Bearer " + (login["key"] if login is not None else credential.token()),
         "Content-Type": "application/json",
         "X-XAI-Token-Auth": "xai-grok-cli",
         "x-grok-model-override": model,
@@ -200,12 +215,13 @@ class GrokHandler(BaseHTTPRequestHandler):
             body["store"] = False
             names = tool_names(body)
             body = translate_request(body)
-            headers = request_headers(
-                self.server.credential, self.server.cli_version, body["model"]
-            )
             from .grok_usage import account_key
 
-            account = account_key(self.server.credential)
+            login = self.server.credential.current()
+            headers = request_headers(
+                self.server.credential, self.server.cli_version, body["model"], login=login
+            )
+            account = account_key(self.server.credential, login=login)
             request = urllib.request.Request(
                 UPSTREAM + self.path.removeprefix("/v1"),
                 data=json.dumps(body).encode(),
