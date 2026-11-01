@@ -507,3 +507,8 @@ def test_grok_quota_fallback_and_explicit_lock(monkeypatch):
         RouteContext(session_id="grok-quota", latest_prompt="@grok hello")
     )
     assert locked.backend == "grok" and locked.capacity_blocked
+
+
+def test_default_output_is_bounded_and_explicit_limit_preserved():
+    assert translate_request({"model": "grok-4.6"})["max_output_tokens"] == 16384
+    assert translate_request({"model": "grok-4.6", "max_output_tokens": 1024})["max_output_tokens"] == 1024
