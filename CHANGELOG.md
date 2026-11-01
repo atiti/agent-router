@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.81 — 2026-11-01
+
 - Add an opt-in Grok subscription backend using the signed-in official CLI, with independent user services, tool and encrypted-reasoning continuation, conservative context limits, standard capacity thresholds/fallbacks, quota reset display, token pricing, and setup documentation.
 - Reject malformed Grok quota/cache measurements and login expiry data; bind request authorization and cooldown attribution to one login snapshot. Apply published long-context prices from 200,000 tokens and report the subscription-only FAST model as unpriced until verified rates are configured.
 
