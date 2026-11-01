@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Avoid unsupported GPT verbosity, Responses Lite and WebSocket preferences in generated metadata for unknown custom backend models.
+
 ## 0.5.81 — 2026-11-01
 
 - Add an opt-in Grok subscription backend using the signed-in official CLI, with independent user services, tool and encrypted-reasoning continuation, conservative context limits, standard capacity thresholds/fallbacks, quota reset display, token pricing, and setup documentation.
