@@ -98,6 +98,8 @@ requests cross a context threshold in aggregate. Server-side tool fees are not
 included. Ephemeral Codex runs do not persist the transcript needed for standard
 per-turn auditing.
 
+The bridge defaults `max_output_tokens` to 16,384 when the caller does not specify a limit. An explicit caller limit takes precedence. This bounds runaway generations; an incomplete response is still reported as an error by Codex and may require retrying in a fresh or shorter context.
+
 ## Service, authentication and troubleshooting
 
 The proxy listens only on `127.0.0.1:8092` (`--port` overrides it). It runs as a

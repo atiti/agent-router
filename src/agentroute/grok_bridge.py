@@ -300,6 +300,10 @@ def translate_request(body):
         }
     }
 
+    # Bound unrequested generations: Grok otherwise may stream 128k output tokens.
+    # Preserve explicit client limits, including lower limits.
+    body.setdefault("max_output_tokens", 16384)
+
     body["tools"] = flattened_tools(body.get("tools", []))
     for tool in body["tools"]:
         if tool.get("type") == "web_search":
