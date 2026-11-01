@@ -264,6 +264,24 @@ class PricingConfig(BaseModel):
     source_checked_at: str = "2026-10-08"
     models: dict[str, ModelPrice] = Field(
         default_factory=lambda: {
+            # https://docs.x.ai/developers/pricing (checked 2026-11-01).
+            # Token-rate equivalents; subscription allowance comes from billing telemetry.
+            "grok-4.7": ModelPrice(
+                input_per_million=2, cached_input_per_million=0.50, output_per_million=6,
+                long_context_threshold_tokens=200_000, long_context_multiplier=2,
+            ),
+            "grok-4.6": ModelPrice(
+                input_per_million=2, cached_input_per_million=0.50, output_per_million=6,
+                long_context_threshold_tokens=200_000, long_context_multiplier=2,
+            ),
+            "grok-4.5": ModelPrice(
+                input_per_million=2, cached_input_per_million=0.30, output_per_million=6,
+                long_context_threshold_tokens=200_000, long_context_multiplier=2,
+            ),
+            "grok-4.7-build-fast": ModelPrice(
+                input_per_million=4, cached_input_per_million=1, output_per_million=12,
+                long_context_threshold_tokens=200_000, long_context_multiplier=1.5,
+            ),
             "gpt-5.6-luna": ModelPrice(
                 input_per_million=0.20,
                 cached_input_per_million=0.02,

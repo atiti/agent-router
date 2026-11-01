@@ -104,6 +104,7 @@ from .desktop import (
 )
 from .doctor import run_doctor
 from .efficiency import efficiency_report
+from .grok_cli import app as grok_app
 from .hook import _prompt_help, codex_interrupt, codex_stop, codex_user_prompt_submit
 from .install import hook_command as installed_hook_command
 from .install import merge_codex_hook, trust_agentroute_hooks
@@ -143,6 +144,7 @@ app.add_typer(capacity_app, name="capacity")
 app.add_typer(account_app, name="account")
 app.add_typer(context_app, name="context")
 app.add_typer(memory_app, name="memory")
+app.add_typer(grok_app, name="grok")
 app.add_typer(bridge_app, name="bridge")
 bridge_app.add_typer(claude_profile_app, name="profile")
 bridge_app.add_typer(claude_cache_app, name="cache")
@@ -579,6 +581,7 @@ def capacity_status_command(
                 name,
                 daily_spend=daily.get(name, 0.0),
                 monthly_spend=monthly.get(name, 0.0),
+                probe=not no_probe,
             )
         )
         ready, problems = backend_readiness(config, name)
@@ -589,6 +592,13 @@ def capacity_status_command(
                 "readiness_detail": ", ".join(problems) or "ready",
                 "status": state.status,
                 "detail": state.detail,
+                "used_percent": state.used_percent,
+                "remaining_percent": (
+                    max(0.0, 100.0 - state.used_percent)
+                    if state.used_percent is not None else None
+                ),
+                "resets_at": state.resets_at,
+                "reset_local": reset_description(state.resets_at),
                 "daily_spend_usd": daily.get(name, 0.0),
                 "daily_budget_usd": backend.daily_budget_usd,
                 "monthly_spend_usd": monthly.get(name, 0.0),
@@ -660,7 +670,8 @@ def capacity_status_command(
         table.add_row(
             item["name"],
             "yes" if item["ready"] else item["readiness_detail"],
-            f"{item['status']}: {item['detail']}",
+            f"{item['status']}: {item['detail']}"
+            + (f"; reset {item['reset_local']}" if item["reset_local"] else ""),
             f"${item['daily_spend_usd']:.2f} / "
             f"{item['daily_budget_usd'] if item['daily_budget_usd'] else '∞'}",
             f"${item['monthly_spend_usd']:.2f} / "
