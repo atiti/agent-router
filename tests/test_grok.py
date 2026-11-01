@@ -60,6 +60,16 @@ def test_expired_refresh_fails_closed(tmp_path, monkeypatch):
         GrokCredential("grok", tmp_path).token()
 
 
+@pytest.mark.parametrize("expiry", [None, 123, "2026-01-01T00:00:00", "invalid"])
+def test_malformed_login_expiry_fails_closed(tmp_path, monkeypatch, expiry):
+    monkeypatch.delenv("GROK_AUTH_PATH", raising=False)
+    (tmp_path / "auth.json").write_text(
+        json.dumps({"https://auth.x.ai::client": {"key": "secret", "expires_at": expiry}})
+    )
+    with pytest.raises(ValueError):
+        GrokCredential("grok", tmp_path).token()
+
+
 def test_backend_install_preserves_routes_and_custom_tiers():
     config = default_config()
     before = dict(config.routing.backend_by_tier)
@@ -251,9 +261,94 @@ def test_billing_schema_and_invalid_measurements():
         == 25
     )
     assert parse_billing({"config": {}})["used_percent"] is None
+    assert parse_billing({"config": {"monthlyLimit": {"val": "100"}}})["used_percent"] is None
     for value in (float("nan"), float("inf"), -1):
         with pytest.raises(ValueError):
             parse_billing({"config": {"creditUsagePercent": value}})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"config": []},
+        {"config": {"monthlyLimit": "100"}},
+        {"config": {"monthlyLimit": {"val": -100}}},
+        {"config": {"monthlyLimit": {"val": 100}, "used": []}},
+        {"config": {"creditUsagePercent": True}},
+        {"config": {"creditUsagePercent": 1, "currentPeriod": []}},
+        {"config": {"creditUsagePercent": 1, "billingPeriodEnd": 123}},
+        {"config": {"creditUsagePercent": 1, "billingPeriodEnd": "2026-12-01T00:00:00"}},
+    ],
+)
+def test_malformed_billing_is_unavailable(tmp_path, monkeypatch, payload):
+    import agentroute.grok_bridge as bridge
+    from agentroute.grok_usage import fetch_usage, read_snapshot
+
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "route"))
+    monkeypatch.delenv("GROK_AUTH_PATH", raising=False)
+    login(tmp_path)
+    credential = GrokCredential("grok", tmp_path)
+    monkeypatch.setattr(
+        bridge, "open_upstream", lambda *a, **k: BytesIO(json.dumps(payload).encode())
+    )
+    assert fetch_usage(credential, "1.0.70")["error"] == "subscription telemetry unavailable"
+    assert read_snapshot(credential) == {}
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("observed_at", True),
+        ("observed_at", 10**400),
+        ("observed_at", 999999999999),
+        ("used_percent", "90"),
+        ("used_percent", float("nan")),
+        ("used_percent", -1),
+        ("resets_at", []),
+        ("blocked_until", None),
+        ("blocked_until", "tomorrow"),
+        ("blocked_until", float("inf")),
+    ],
+)
+def test_invalid_cached_measurements_are_ignored(tmp_path, monkeypatch, field, value):
+    from agentroute.grok_usage import capacity_snapshot, write_snapshot
+
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "route"))
+    monkeypatch.setenv("GROK_HOME", str(tmp_path))
+    monkeypatch.delenv("GROK_AUTH_PATH", raising=False)
+    login(tmp_path)
+    data = write_snapshot(GrokCredential("grok", tmp_path), {"used_percent": 50})
+    data[field] = value
+    (tmp_path / "route/grok-usage.json").write_text(json.dumps(data))
+    assert capacity_snapshot("http://127.0.0.1:8092/v1", offline=True) == {}
+
+
+def test_billing_request_keeps_token_identity_and_account_together(tmp_path, monkeypatch):
+    import agentroute.grok_bridge as bridge
+    from agentroute.grok_usage import account_key, fetch_usage, read_snapshot
+
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "route"))
+    monkeypatch.delenv("GROK_AUTH_PATH", raising=False)
+    login(tmp_path, token="first-account")
+    credential = GrokCredential("grok", tmp_path)
+    first = credential.current()
+    first["user_id"] = "first-user"
+
+    def switch_account():
+        login(tmp_path, token="second-account")
+        return first
+
+    def upstream(request, **kwargs):
+        assert request.headers["Authorization"] == "Bearer first-account"
+        assert request.headers["X-userid"] == "first-user"
+        return BytesIO(b'{"config":{"creditUsagePercent":90}}')
+
+    monkeypatch.setattr(credential, "current", switch_account)
+    monkeypatch.setattr(bridge, "open_upstream", upstream)
+    result = fetch_usage(credential, "1.0.70")
+    assert result["account"] == account_key(credential, login=first)
+    assert read_snapshot(credential) == {}
 
 
 def test_grok_documented_price_rates_and_long_context():
@@ -262,10 +357,35 @@ def test_grok_documented_price_rates_and_long_context():
     pricing = default_config().pricing
     usage = {"input_tokens": 100_000, "cached_input_tokens": 50_000, "output_tokens": 10_000}
     assert token_cost("grok-4.7", usage, pricing) == pytest.approx(0.185)
-    assert token_cost("grok-4.7-build-fast", usage, pricing) == pytest.approx(0.37)
-    assert token_cost("grok-4.7-build-fast", {"input_tokens": 200_001}, pricing) == pytest.approx(
-        200_001 * 6 / 1_000_000
+    assert "grok-4.7-build-fast" not in pricing.models
+    for model in ("grok-4.7", "grok-4.6", "grok-4.5"):
+        assert token_cost(model, {"input_tokens": 199_999}, pricing) == pytest.approx(0.399998)
+        assert token_cost(model, {"input_tokens": 200_000}, pricing) == pytest.approx(0.8)
+    # Existing providers keep their original exclusive threshold behavior.
+    rate = pricing.models["grok-4.7"]
+    rate.long_context_threshold_inclusive = False
+    assert token_cost("grok-4.7", {"input_tokens": 200_000}, pricing) == pytest.approx(0.4)
+
+
+def test_unreleased_grok_prices_migrate_and_custom_prices_survive():
+    from agentroute.config import ModelPrice, _with_default_backends
+
+    config = default_config()
+    config.pricing.models["grok-4.7"].long_context_threshold_inclusive = False
+    config.pricing.models["grok-4.6"].input_per_million = 3
+    previous_fast = ModelPrice(
+        input_per_million=4, cached_input_per_million=1, output_per_million=12,
+        long_context_threshold_tokens=200_000, long_context_multiplier=1.5,
     )
+    config.pricing.models["grok-4.7-build-fast"] = previous_fast
+    _with_default_backends(config)
+    assert config.pricing.models["grok-4.7"].long_context_threshold_inclusive
+    assert config.pricing.models["grok-4.6"].input_per_million == 3
+    assert "grok-4.7-build-fast" not in config.pricing.models
+    previous_fast.input_per_million = 5
+    config.pricing.models["grok-4.7-build-fast"] = previous_fast
+    _with_default_backends(config)
+    assert config.pricing.models["grok-4.7-build-fast"].input_per_million == 5
 
 
 def test_http_tool_stream_and_rate_limit_cooldown(tmp_path, monkeypatch):
@@ -284,12 +404,16 @@ def test_http_tool_stream_and_rate_limit_cooldown(tmp_path, monkeypatch):
     monkeypatch.setattr(credential, "version", lambda: "1.0.70")
     seen = []
     limited = False
+    switch_account = False
+    original_account = credential.current()
 
     def upstream(request, *, timeout):
         assert request.headers["Authorization"] == "Bearer secret"
         seen.append(json.loads(request.data))
         headers = Message()
         if limited:
+            if switch_account:
+                login(tmp_path, token="second-account")
             headers["Retry-After"] = "300"
             raise urllib.error.HTTPError(
                 request.full_url, 429, "limited", headers, BytesIO(b"sensitive upstream diagnostic")
@@ -320,6 +444,15 @@ def test_http_tool_stream_and_rate_limit_cooldown(tmp_path, monkeypatch):
         assert error.value.code == 429
         assert b"sensitive" not in error.value.read()
         assert read_snapshot(credential)["blocked_until"] > datetime.now(timezone.utc).timestamp()
+        switch_account = True
+        with pytest.raises(urllib.error.HTTPError):
+            urllib.request.urlopen(request())
+        # The rejected request used the first token, even though the file changed in flight.
+        from agentroute.grok_usage import account_key
+
+        saved = json.loads((tmp_path / "route/grok-usage.json").read_text())
+        assert saved["account"] == account_key(credential, login=original_account)
+        assert read_snapshot(credential) == {}
     finally:
         server.shutdown()
         server.server_close()

@@ -18,9 +18,11 @@ from .config import agentroute_home
 TTL = 60
 
 
-def account_key(credential):
-    data = credential._read()
+def account_key(credential, *, login=None):
+    data = credential._read() if login is None else login
     identity = data.get("user_id") or data["key"]
+    if not isinstance(identity, str):
+        raise ValueError("Invalid Grok account identity")
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
@@ -30,8 +32,14 @@ def read_snapshot(credential):
         if not isinstance(data, dict):
             return {}
         observed = data.get("observed_at", 0)
-        if not isinstance(observed, (int, float)) or not math.isfinite(observed):
+        if not valid_number(observed) or observed > time.time() + TTL:
             return {}
+        for field in ("used_percent", "resets_at", "blocked_until"):
+            value = data.get(field)
+            if field == "blocked_until" and field in data and value is None:
+                return {}
+            if value is not None and not valid_number(value):
+                return {}
         if data.get("account") == account_key(credential):
             return data
     except (OSError, ValueError, TypeError, KeyError):
@@ -54,20 +62,58 @@ def write_snapshot(credential, data, *, account=None):
     return data
 
 
+def valid_number(value):
+    try:
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value >= 0
+        )
+    except OverflowError:
+        return False
+
+
+def _object(value):
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("Invalid Grok billing object")
+    return value
+
+
+def _number(value):
+    if isinstance(value, bool):
+        raise ValueError("Invalid Grok billing measurement")
+    value = float(value)
+    if not valid_number(value):
+        raise ValueError("Invalid Grok billing measurement")
+    return value
+
+
 def parse_billing(payload):
-    config = payload.get("config") or {}
+    config = _object(_object(payload).get("config"))
     used = config.get("creditUsagePercent")
     if used is None:
-        limit = (config.get("monthlyLimit") or {}).get("val", 0)
+        limit = _number(_object(config.get("monthlyLimit")).get("val", 0))
         if limit > 0:
-            used = (config.get("used") or {}).get("val", 0) / limit * 100
+            consumed = _object(config.get("used")).get("val")
+            if consumed is not None:
+                used = _number(consumed) / limit * 100
     if used is not None:
-        used = float(used)
-        if not math.isfinite(used) or used < 0:
-            raise ValueError("Invalid usage percentage")
-    period = config.get("currentPeriod") or {}
+        used = _number(used)
+    period = _object(config.get("currentPeriod"))
     end = period.get("end") or config.get("billingPeriodEnd")
-    reset = int(datetime.fromisoformat(end.replace("Z", "+00:00")).timestamp()) if end else None
+    reset = None
+    if end is not None:
+        if not isinstance(end, str):
+            raise ValueError("Invalid Grok billing reset")
+        timestamp = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            raise ValueError("Invalid Grok billing reset timezone")
+        reset = int(timestamp.timestamp())
+        if not valid_number(reset):
+            raise ValueError("Invalid Grok billing reset")
     return {"used_percent": used, "resets_at": reset}
 
 
@@ -80,15 +126,16 @@ def fetch_usage(credential, version, *, force=False):
     if not force and time.time() - previous.get("observed_at", 0) < TTL:
         return previous
     try:
-        headers = request_headers(credential, version, "grok-4.7")
-        account = account_key(credential)
-        headers["x-userid"] = credential._read().get("user_id", "")
+        login = credential.current()
+        headers = request_headers(credential, version, "grok-4.7", login=login)
+        account = account_key(credential, login=login)
+        headers["x-userid"] = login.get("user_id", "")
         with open_upstream(
             urllib.request.Request(UPSTREAM + "/billing?format=credits", headers=headers), timeout=8
         ) as response:
             result = parse_billing(json.load(response))
         return write_snapshot(credential, result, account=account)
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, TypeError, OverflowError, subprocess.SubprocessError):
         # Never extend a stale successful observation after a failed read.
         return {"error": "subscription telemetry unavailable"}
 
@@ -108,7 +155,7 @@ def capacity_snapshot(base_url, *, offline=False):
                     f"{url.scheme}://{url.netloc}/usage", timeout=10
                 ) as response:
                     result = json.loads(response.read(65536))
-                if result.get("error"):
+                if not isinstance(result, dict) or result.get("error"):
                     return {}
                 data = read_snapshot(credential)
             except (OSError, ValueError):

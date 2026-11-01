@@ -55,7 +55,8 @@ agentroute capacity budget grok --daily 10
 Grok appears in the standard backend capacity table and JSON with used/remaining
 percentages and a reset timestamp in machine-local time. The bridge reads the
 same `billing?format=credits` endpoint as Grok CLI. New percentage/period fields
-are preferred; legacy monthly limit/used fields are supported. Billing reads
+are preferred; legacy monthly limit/used fields are supported. Malformed measurements
+and reset timestamps are rejected. Billing reads
 consume no inference tokens. Samples are bound to the signed-in account, saved
 with owner-only permissions, and cached for 60 seconds. Stale or failed reads
 show `unknown`, rather than a healthy zero. `--no-probe` makes no live requests.
@@ -74,16 +75,22 @@ receipts cannot predict its remaining balance.
 Responses usage counters pass through to Codex and its standard per-turn audit.
 `agentroute stats`, analytics, and daily/monthly ceilings use the existing token
 cost calculation. Reasoning output is included in output tokens and is counted
-once. Rates below were checked on **2026-11-01** against
+once. Published rates below were checked on **2026-11-01** against
 [xAI's pricing](https://docs.x.ai/developers/pricing), in USD per million tokens:
 
 | Model | Input | Cached input | Output | Long-context multiplier |
 | --- | ---: | ---: | ---: | ---: |
 | `grok-4.7`, `grok-4.6` | $2 | $0.50 | $6 | 2× |
 | `grok-4.5` | $2 | $0.30 | $6 | 2× |
-| `grok-4.7-build-fast` | $4 | $1 | $12 | 1.5× |
+| `grok-4.7-build-fast` | unpublished | unpublished | unpublished | unpublished |
 
-The long-context threshold is 200,000 prompt tokens. Prices are configurable under
+The public price list does not currently list `grok-4.7-build-fast`. Its tokens
+are audited, but standard cost reports flag it as unpriced and exclude it from
+cost totals until you configure verified rates under `pricing.models`.
+Map FAST to a model with a published price when relying on local cost ceilings:
+`agentroute backend-enable grok --fast-model grok-4.7`.
+The priced models use an inclusive long-context threshold of 200,000 prompt
+tokens (`long_context_threshold_inclusive: true`). Prices are configurable under
 `pricing.models`. These are token-rate equivalents; subscription charges and
 remaining allowance come from your account. Standard reports aggregate a turn's
 observed tokens, so estimates can differ from request-level charges when several
@@ -110,7 +117,9 @@ from installation. Reinstall after moving the CLI or changing these paths.
 The bridge reads the single first-party OAuth login from `~/.grok/auth.json`.
 Credentials never enter AgentRoute config, command arguments, catalogs, snapshots,
 or logs. Near expiry it invokes `grok models`, letting Grok own refresh, locking,
-and rotation, then rereads the file. Custom enterprise issuers and ambiguous
+and rotation, then rereads the file. Each upstream request uses one credential snapshot
+for authorization and account attribution, including its rate-limit cooldown.
+Custom enterprise issuers and ambiguous
 first-party logins are rejected. If authentication fails, run `grok login` and
 `grok models`, then retry. No API key is required.
 

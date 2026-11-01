@@ -241,6 +241,7 @@ class ModelPrice(BaseModel):
     cache_write_per_million: float | None = Field(default=None, ge=0)
     cache_write_1h_per_million: float | None = Field(default=None, ge=0)
     long_context_threshold_tokens: int | None = Field(default=None, gt=0)
+    long_context_threshold_inclusive: bool = False
     long_context_multiplier: float = Field(default=1, ge=1)
 
 
@@ -269,18 +270,17 @@ class PricingConfig(BaseModel):
             "grok-4.7": ModelPrice(
                 input_per_million=2, cached_input_per_million=0.50, output_per_million=6,
                 long_context_threshold_tokens=200_000, long_context_multiplier=2,
+                long_context_threshold_inclusive=True,
             ),
             "grok-4.6": ModelPrice(
                 input_per_million=2, cached_input_per_million=0.50, output_per_million=6,
                 long_context_threshold_tokens=200_000, long_context_multiplier=2,
+                long_context_threshold_inclusive=True,
             ),
             "grok-4.5": ModelPrice(
                 input_per_million=2, cached_input_per_million=0.30, output_per_million=6,
                 long_context_threshold_tokens=200_000, long_context_multiplier=2,
-            ),
-            "grok-4.7-build-fast": ModelPrice(
-                input_per_million=4, cached_input_per_million=1, output_per_million=12,
-                long_context_threshold_tokens=200_000, long_context_multiplier=1.5,
+                long_context_threshold_inclusive=True,
             ),
             "gpt-5.6-luna": ModelPrice(
                 input_per_million=0.20,
@@ -624,6 +624,19 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
             fast_target.reasoning_effort = "low"
     for model, price in defaults.pricing.models.items():
         config.pricing.models.setdefault(model, price)
+    # Upgrade exact defaults written by the unreleased Grok integration, retaining
+    # operator-supplied prices and threshold choices.
+    for model in ("grok-4.7", "grok-4.6", "grok-4.5"):
+        current = defaults.pricing.models[model]
+        previous = current.model_copy(update={"long_context_threshold_inclusive": False})
+        if config.pricing.models.get(model) == previous:
+            config.pricing.models[model] = current
+    previous_fast = ModelPrice(
+        input_per_million=4, cached_input_per_million=1, output_per_million=12,
+        long_context_threshold_tokens=200_000, long_context_multiplier=1.5,
+    )
+    if config.pricing.models.get("grok-4.7-build-fast") == previous_fast:
+        del config.pricing.models["grok-4.7-build-fast"]
     for backend in config.backends.values():
         for target in backend.tiers.values():
             canonical = target.model.removeprefix("dev-")

@@ -867,6 +867,8 @@ silently presented as free. This is an API-equivalent estimate, not a Codex subs
 and a different model may produce a different number of tokens. Grok rates were checked on
 2026-11-01 against [xAI pricing](https://docs.x.ai/developers/pricing); see the
 [Grok guide](docs/grok-bridge.md#usage-and-cost-estimates) for rates and estimate limitations.
+Grok's subscription FAST model has no verified published rate and is reported as unpriced
+unless you configure one; use a priced model for local cost ceilings.
 
 For a local model mix and timeline, use:
 
