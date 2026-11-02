@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import ssl
 import stat
 import time
 import urllib.parse
@@ -235,13 +236,21 @@ class OpenAICompatibleClassifier:
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
+    def _open(self, request: urllib.request.Request):
+        options = {}
+        if self.config.tls_ca_file and request.type == "https":
+            options["context"] = ssl.create_default_context(
+                cafile=str(Path(self.config.tls_ca_file).expanduser())
+            )
+        return urllib.request.urlopen(request, timeout=self.config.timeout_seconds, **options)
+
     def verify_catalog(self) -> tuple[list[str], str, str]:
         if self.source != "local_llm" and not self.config.allow_remote:
             raise RuntimeError("remote classifier prompt egress is not enabled")
         request = urllib.request.Request(
             catalog_endpoint(self.config.endpoint), headers=self._headers(), method="GET"
         )
-        with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
+        with self._open(request) as response:
             payload = json.loads(response.read())
         models = sorted(
             str(item["id"])
@@ -315,7 +324,7 @@ class OpenAICompatibleClassifier:
         )
         started = time.perf_counter()
         try:
-            with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
+            with self._open(request) as response:
                 response_payload = json.loads(response.read())
         except Exception as error:
             timed_out = isinstance(error, (TimeoutError, socket.timeout)) or "timed out" in str(
