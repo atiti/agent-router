@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.82 — 2026-11-02
+
 - Normalize overlapping Grok message, search, and function-call streams so a tool completion cannot clear Codex's still-streaming answer and leave the turn spinning.
 
 ## 0.5.81 — 2026-11-01
