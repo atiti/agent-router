@@ -32,6 +32,7 @@ MAX_BODY = 50 * 1024 * 1024
 MODELS = ("grok-4.7-build-fast", "grok-4.6", "grok-4.7", "grok-4.5")
 API_MODELS = tuple(model for model in MODELS if model != "grok-4.7-build-fast")
 BRIDGE_KEY_ENV = "AGENTROUTE_GROK_BRIDGE_KEY"
+BRIDGE_KEY_PREFIX = "ar-grok-"
 
 
 class GrokCredential:
@@ -378,7 +379,11 @@ class GrokHandler(BaseHTTPRequestHandler):
                 )
                 return
             supplied = self.headers.get("Authorization", "")
-            if not supplied.isascii() or not hmac.compare_digest(supplied, expected):
+            if (
+                not expected.startswith("Bearer " + BRIDGE_KEY_PREFIX)
+                or not supplied.isascii()
+                or not hmac.compare_digest(supplied, expected)
+            ):
                 self._json(401, {"error": "Local bridge authentication required"})
                 return
         elif self.headers.get("Authorization"):
@@ -386,7 +391,9 @@ class GrokHandler(BaseHTTPRequestHandler):
                 "Bearer " + self.server.api_client_key if self.server.api_client_key else ""
             )
             supplied = self.headers["Authorization"]
-            if api_client and supplied.isascii() and hmac.compare_digest(supplied, api_client):
+            if supplied.startswith("Bearer " + BRIDGE_KEY_PREFIX) or (
+                api_client and supplied.isascii() and hmac.compare_digest(supplied, api_client)
+            ):
                 # A loaded API client must not spend subscription allowance after a switch.
                 self._json(401, {"error": "Client credential mode does not match the Grok service"})
                 return

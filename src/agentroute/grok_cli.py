@@ -11,6 +11,7 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import tempfile
 import urllib.request
 from enum import Enum
 from pathlib import Path
@@ -21,6 +22,7 @@ from .bridge_service import _agentroute_executable, wait_for_health
 from .config import agentroute_home, codex_home, config_path, load_config, save_config
 from .grok_bridge import (
     BRIDGE_KEY_ENV,
+    BRIDGE_KEY_PREFIX,
     DEFAULT_PORT,
     GrokApiCredential,
     GrokCredential,
@@ -154,16 +156,17 @@ def credential_import(source_env: str):
 
 def ensure_client_credential(config):
     try:
-        read_managed_credential(BRIDGE_KEY_ENV)
-        return
+        existing = read_managed_credential(BRIDGE_KEY_ENV)
+        if existing.startswith(BRIDGE_KEY_PREFIX):
+            return
     except (FileNotFoundError, MissingCredential):
-        pass
+        existing = secrets.token_urlsafe(32)
     config = config.model_copy(deep=True)
     config.backends["grok"].api_key_env = BRIDGE_KEY_ENV
     source = "AGENTROUTE_GROK_BRIDGE_IMPORT"
     previous = os.environ.get(source)
     try:
-        os.environ[source] = secrets.token_urlsafe(32)
+        os.environ[source] = BRIDGE_KEY_PREFIX + existing
         import_backend_credential(config, "grok", source)
     finally:
         if previous is None:
@@ -178,7 +181,11 @@ def stop_replacement_service(path, definition):
     if platform.system() == "Darwin":
         stopped = run("launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}", check=False)
         if stopped.returncode:
-            raise RuntimeError("Grok supervisor rejected stop; its unit is retained for recovery")
+            status = run("launchctl", "print", f"gui/{os.getuid()}/{LABEL}", check=False)
+            if status.returncode != 113:
+                raise RuntimeError(
+                    "Grok supervisor rejected stop; its unit is retained for recovery"
+                )
         for _attempt in range(10):
             if run("launchctl", "print", f"gui/{os.getuid()}/{LABEL}", check=False).returncode:
                 break
@@ -195,9 +202,12 @@ def stop_replacement_service(path, definition):
         path.unlink()
 
 
-def rollback_install(path, definition, previous_unit, files):
+def rollback_install(path, definition, previous_unit, files, expected=None):
     stop_replacement_service(path, definition)
     for target, content in files.items():
+        current = target.read_bytes() if target.exists() else None
+        if current != (expected or {}).get(target, content):
+            continue  # Preserve edits made by another process; do not restore a stale preimage.
         if content is None:
             target.unlink(missing_ok=True)
         else:
@@ -211,6 +221,55 @@ def rollback_install(path, definition, previous_unit, files):
             run("systemctl", "--user", "restart", UNIT)
 
 
+def prepare_publication(config, originals):
+    """Validate and render through the existing writers before touching live files."""
+    native_config = codex_home() / "config.toml"
+    native_catalog = _launch_model_catalog_path(native_config)
+    native_config.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".grok-config-", dir=native_config.parent) as directory:
+        stage = Path(directory)
+        staged_config = stage / native_config.name
+        staged_config.write_bytes(originals.get(native_config) or b"")
+        staged_catalog = _launch_model_catalog_path(staged_config)
+        if originals.get(native_catalog) is not None:
+            staged_catalog.write_bytes(originals[native_catalog])
+        cache = native_config.parent / "models_cache.json"
+        if cache.exists():
+            (stage / cache.name).write_bytes(cache.read_bytes())
+        staged_route = stage / "agentroute.yaml"
+        save_config(config, staged_route)
+        sync_codex_providers(config, path=staged_config, backup=False)
+        codex_payload = staged_config.read_text().replace(
+            json.dumps(str(staged_catalog)), json.dumps(str(native_catalog))
+        )
+        payloads = {
+            config_path(): staged_route.read_bytes(), native_config: codex_payload.encode()
+        }
+        if staged_catalog.exists():
+            payloads[native_catalog] = staged_catalog.read_bytes()
+        return payloads
+
+
+def publish_files(payloads, originals, written):
+    for target, payload in payloads.items():
+        current = target.read_bytes() if target.exists() else None
+        if current != originals.get(target):
+            raise RuntimeError(
+                "Configuration changed during Grok install; retry from current state"
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as temporary:
+            staged = Path(temporary.name)
+            try:
+                temporary.write(payload)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+                os.replace(staged, target)
+                written[target] = payload
+            finally:
+                staged.unlink(missing_ok=True)
+
+
 @app.command()
 def install(
     port: int = DEFAULT_PORT, credential: CredentialMode = CredentialMode.subscription
@@ -218,6 +277,19 @@ def install(
     """Register @grok, install a user service, and check health."""
     if not 1 <= port <= 65535:
         raise typer.BadParameter("port must be between 1 and 65535")
+    path = unit_path()
+    if path.exists():
+        if platform.system() == "Darwin":
+            previous_args = plistlib.loads(path.read_bytes()).get("ProgramArguments", [])
+        else:
+            previous_args = shlex.split(next(
+                row.removeprefix("ExecStart=") for row in path.read_text().splitlines()
+                if row.startswith("ExecStart=")
+            ))
+        if credential == CredentialMode.api_key or "api-key" in previous_args:
+            raise typer.BadParameter(
+                "Grok service already installed; use status/restart, or uninstall to change modes"
+            )
     binary = "grok"
     if credential == CredentialMode.api_key:
         try:
@@ -235,13 +307,13 @@ def install(
     ensure_backend(config, port, credential.value)
     if credential == CredentialMode.api_key:
         ensure_client_credential(config)
-    path = unit_path()
     previous_unit = path.read_bytes() if path.exists() else None
     codex_config = codex_home() / "config.toml"
     publication_files = {
         target: target.read_bytes() if target.exists() else None
         for target in (config_path(), codex_config, _launch_model_catalog_path(codex_config))
     }
+    payloads = prepare_publication(config, publication_files)
     if credential == CredentialMode.subscription and path.exists():
         # Preserve the preceding API client's credential path when the new shell omits it.
         if platform.system() == "Darwin":
@@ -321,12 +393,12 @@ def install(
         # Optional capacity persistence cannot turn a proven ready service into a failed install.
         typer.echo("Grok is ready; capacity snapshot unavailable", err=True)
     # A failed service/account check must not publish an enabled client route.
+    published = {}
     try:
-        save_config(config)
-        sync_codex_providers(config)
+        publish_files(payloads, publication_files, published)
     except Exception:
         # Any publication failure must restore custody, including malformed cached metadata.
-        rollback_install(path, definition, previous_unit, publication_files)
+        rollback_install(path, definition, previous_unit, publication_files, published)
         raise
     typer.echo(f"Grok {credential.value} ready on port {port}. Use @grok in Codex.")
 

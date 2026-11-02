@@ -30,7 +30,7 @@ def api_key(tmp_path, monkeypatch):
     path = tmp_path / "credentials.env"
     path.write_text(
         "export OTHER_KEY=preserve\nexport XAI_API_KEY='api-secret'\n"
-        f"export {BRIDGE_KEY_ENV}=local-secret\n"
+        f"export {BRIDGE_KEY_ENV}=ar-grok-local-secret\n"
     )
     path.chmod(0o600)
     monkeypatch.setenv("AGENTROUTE_CREDENTIALS_FILE", str(path))
@@ -127,7 +127,7 @@ def test_api_key_import_is_separate_from_client_credential_store(api_key, tmp_pa
     assert api_key.read_bytes() == before
     assert stored_credential_names(upstream_path) == {"XAI_API_KEY"}
     assert GrokApiCredential().token() == "private-api-secret"
-    assert GrokApiCredential().client_key() == "local-secret"
+    assert GrokApiCredential().client_key() == "ar-grok-local-secret"
 
 
 def test_api_import_rejects_client_credential_file_collision(api_key, monkeypatch):
@@ -137,6 +137,28 @@ def test_api_import_rejects_client_credential_file_collision(api_key, monkeypatc
     result = CliRunner().invoke(app, ["credential-import", "SOURCE_KEY"])
     assert result.exit_code != 0
     assert api_key.read_bytes() == before
+
+
+def test_api_install_refuses_implicit_service_replacement(api_key, monkeypatch, tmp_path):
+    unit = tmp_path / "service.plist"
+    original = plistlib.dumps({"ProgramArguments": ["agentroute", "grok", "serve"]})
+    unit.write_bytes(original)
+    monkeypatch.setattr("agentroute.grok_cli.unit_path", lambda: unit)
+    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("agentroute.grok_cli.run", lambda *a, **k: pytest.fail("No service mutation"))
+    result = CliRunner().invoke(app, ["install", "--credential", "api-key"])
+    assert result.exit_code != 0
+    assert unit.read_bytes() == original
+
+
+def test_publish_atomic_write_preserves_changed_config(tmp_path):
+    from agentroute.grok_cli import publish_files
+
+    config = tmp_path / "config.toml"
+    config.write_bytes(b"concurrent edit")
+    with pytest.raises(RuntimeError, match="changed during"):
+        publish_files({config: b"new config"}, {config: b"old config"}, {})
+    assert config.read_bytes() == b"concurrent edit"
 
 
 def test_subscription_service_retains_api_client_key_path(api_key, monkeypatch):
@@ -158,7 +180,7 @@ def test_subscription_rejects_loaded_api_client_before_inference(api_key, monkey
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_port}/v1/responses",
             data=b'{"model":"grok-4.7"}',
-            headers={"Authorization": "Bearer local-secret"},
+            headers={"Authorization": "Bearer ar-grok-local-secret"},
         )
         with pytest.raises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request)
@@ -242,11 +264,9 @@ def test_failed_install_does_not_publish_backend(api_key, monkeypatch, tmp_path)
             "healthy", "wrong mode", {"provider": "grok", "credential_mode": "subscription"}
         ),
     )
+    monkeypatch.setattr("agentroute.grok_cli.prepare_publication", lambda *a: {})
     monkeypatch.setattr(
-        "agentroute.grok_cli.save_config", lambda *a: pytest.fail("No config write")
-    )
-    monkeypatch.setattr(
-        "agentroute.grok_cli.sync_codex_providers", lambda *a: pytest.fail("No provider write")
+        "agentroute.grok_cli.publish_files", lambda *a: pytest.fail("No publication")
     )
     result = CliRunner().invoke(app, ["install", "--credential", "api-key"])
     assert result.exit_code != 0
@@ -285,10 +305,10 @@ def test_failed_install_stops_replacement_service(api_key, monkeypatch, tmp_path
         expected = GrokApiCredential().health_proof(nonce, instance, 8092)
         return BytesIO(json.dumps({"credential_proof": expected}).encode())
     monkeypatch.setattr("agentroute.grok_bridge.open_upstream", proof)
-    monkeypatch.setattr("agentroute.grok_cli.save_config", lambda *a: None)
+    monkeypatch.setattr("agentroute.grok_cli.prepare_publication", lambda *a: {})
     def fail(*args):
         raise ValueError("malformed provider marker")
-    monkeypatch.setattr("agentroute.grok_cli.sync_codex_providers", fail)
+    monkeypatch.setattr("agentroute.grok_cli.publish_files", fail)
     result = CliRunner().invoke(app, ["install", "--credential", "api-key"])
     assert result.exit_code != 0
     assert (
@@ -314,7 +334,9 @@ def test_rollback_restores_previous_unit_and_config(monkeypatch, tmp_path):
             "returncode": 1 if args[:2] == ("launchctl", "print") else 0
         })()
     monkeypatch.setattr("agentroute.grok_cli.run", supervisor)
-    rollback_install(unit, b"new service", b"old service", {config: b"old config"})
+    rollback_install(
+        unit, b"new service", b"old service", {config: b"old config"}, {config: b"new config"}
+    )
     assert config.read_bytes() == b"old config"
     assert unit.read_bytes() == b"old service"
     assert calls[-1][:2] == ("launchctl", "bootstrap")
@@ -534,7 +556,7 @@ def test_api_http_auth_tools_continuation_errors_and_cooldown(api_key, monkeypat
         return urllib.request.Request(
             address + "/v1/responses",
             data=json.dumps(payload or body).encode(),
-            headers={"Authorization": "Bearer local-secret"},
+            headers={"Authorization": "Bearer ar-grok-local-secret"},
         )
 
     try:
@@ -551,7 +573,8 @@ def test_api_http_auth_tools_continuation_errors_and_cooldown(api_key, monkeypat
         assert proof["credential_proof"] != GrokApiCredential().health_proof(
             nonce, "", server.server_port + 1
         )
-        assert "api-secret" not in json.dumps(proof) and "local-secret" not in json.dumps(proof)
+        assert "api-secret" not in json.dumps(proof)
+        assert "ar-grok-local-secret" not in json.dumps(proof)
         with pytest.raises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(address + "/healthz?nonce=invalid")
         assert error.value.code == 400
