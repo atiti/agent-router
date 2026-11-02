@@ -561,6 +561,12 @@ and SMART/MAX to `grok-4.7`, with a conservative 256,000-token context window.
 time; stats and analytics include configurable Grok token-rate estimates.
 See [Grok setup, monitoring, pricing and troubleshooting](docs/grok-bridge.md).
 
+Public xAI API keys can use the same tool bridge with explicit credential import
+and `agentroute grok serve --credential api-key`. API mode keeps upstream and local
+client credentials separate; token-cost estimates and retry cooldowns are available,
+while API credit-balance telemetry is unavailable. Follow the [API setup guide](docs/grok-bridge.md#public-xai-api-key)
+for backend registration and persistent operation.
+
 ## Capacity management and subscription failover
 
 Capacity management is opt-in. It reads the ordinary ChatGPT subscription allowance already
