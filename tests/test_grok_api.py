@@ -145,7 +145,9 @@ def test_api_install_refuses_implicit_service_replacement(api_key, monkeypatch, 
     unit.write_bytes(original)
     monkeypatch.setattr("agentroute.grok_cli.unit_path", lambda: unit)
     monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
-    monkeypatch.setattr("agentroute.grok_cli.run", lambda *a, **k: pytest.fail("No service mutation"))
+    monkeypatch.setattr(
+        "agentroute.grok_cli.run", lambda *a, **k: pytest.fail("No service mutation")
+    )
     result = CliRunner().invoke(app, ["install", "--credential", "api-key"])
     assert result.exit_code != 0
     assert unit.read_bytes() == original
