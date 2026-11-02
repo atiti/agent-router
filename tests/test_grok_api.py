@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from email.message import Message
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -33,21 +34,26 @@ def api_key(tmp_path, monkeypatch):
     )
     path.chmod(0o600)
     monkeypatch.setenv("AGENTROUTE_CREDENTIALS_FILE", str(path))
-    monkeypatch.setenv("AGENTROUTE_GROK_API_CREDENTIALS_FILE", str(path))
+    upstream = tmp_path / "upstream.env"
+    upstream.write_text("export XAI_API_KEY=api-secret\n")
+    upstream.chmod(0o600)
+    monkeypatch.setenv("AGENTROUTE_GROK_API_CREDENTIALS_FILE", str(upstream))
     return path
 
 
 def test_api_credential_reads_rotation_without_cli_or_shell(api_key, monkeypatch):
+    upstream = Path(os.environ["AGENTROUTE_GROK_API_CREDENTIALS_FILE"])
     monkeypatch.setattr("subprocess.Popen", lambda *a, **k: pytest.fail("No CLI or shell"))
     source = GrokApiCredential()
     assert source.token() == "api-secret"
-    api_key.write_text("export XAI_API_KEY='rotated-$(do-not-execute)'\n")
+    upstream.write_text("export XAI_API_KEY='rotated-$(do-not-execute)'\n")
     assert source.token() == "rotated-$(do-not-execute)"
     assert source.version() is None
 
 
 @pytest.mark.parametrize("bad_file", ["permissions", "duplicate", "missing", "newline", "symlink"])
 def test_api_credential_rejects_unsafe_store(api_key, bad_file):
+    api_key = Path(os.environ["AGENTROUTE_GROK_API_CREDENTIALS_FILE"])
     if bad_file == "permissions":
         api_key.chmod(0o644)
     elif bad_file == "duplicate":
@@ -124,7 +130,16 @@ def test_api_key_import_is_separate_from_client_credential_store(api_key, tmp_pa
     assert GrokApiCredential().client_key() == "local-secret"
 
 
-def test_subscription_rejects_loaded_api_client_before_inference(monkeypatch):
+def test_api_import_rejects_client_credential_file_collision(api_key, monkeypatch):
+    monkeypatch.setenv("AGENTROUTE_GROK_API_CREDENTIALS_FILE", str(api_key))
+    monkeypatch.setenv("SOURCE_KEY", "private-api-secret")
+    before = api_key.read_bytes()
+    result = CliRunner().invoke(app, ["credential-import", "SOURCE_KEY"])
+    assert result.exit_code != 0
+    assert api_key.read_bytes() == before
+
+
+def test_subscription_rejects_loaded_api_client_before_inference(api_key, monkeypatch):
     monkeypatch.setattr(
         "agentroute.grok_bridge.open_upstream", lambda *a, **k: pytest.fail("No upstream request")
     )
@@ -136,7 +151,7 @@ def test_subscription_rejects_loaded_api_client_before_inference(monkeypatch):
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_port}/v1/responses",
             data=b'{"model":"grok-4.7"}',
-            headers={"Authorization": "Bearer old-api-client"},
+            headers={"Authorization": "Bearer local-secret"},
         )
         with pytest.raises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request)
@@ -266,7 +281,8 @@ def test_late_old_key_cooldown_cannot_replace_current_key_sample(api_key):
 
     credential = GrokApiCredential()
     old_account = account_key(credential)
-    api_key.write_text(f"export XAI_API_KEY=new-api-secret\nexport {BRIDGE_KEY_ENV}=local-secret\n")
+    upstream = Path(os.environ["AGENTROUTE_GROK_API_CREDENTIALS_FILE"])
+    upstream.write_text("export XAI_API_KEY=new-api-secret\n")
     current = write_snapshot(credential, {"blocked_until": 9999999999})
     write_snapshot(credential, {"blocked_until": 1}, account=old_account)
     assert read_snapshot(credential) == current
@@ -339,7 +355,8 @@ def test_cooldown_writers_are_serialized_across_key_rotation(api_key, monkeypatc
     )
     old.start()
     assert checked.wait(5)
-    api_key.write_text(f"export XAI_API_KEY=new-api-secret\nexport {BRIDGE_KEY_ENV}=local-secret\n")
+    upstream = Path(os.environ["AGENTROUTE_GROK_API_CREDENTIALS_FILE"])
+    upstream.write_text("export XAI_API_KEY=new-api-secret\n")
 
     def current_write():
         write_snapshot(credential, {"blocked_until": 9999999999})
@@ -498,7 +515,8 @@ def test_api_http_auth_tools_continuation_errors_and_cooldown(api_key, monkeypat
             urllib.request.urlopen(request({"model": "grok-4.7-build-fast"}))
         assert error.value.code == 400
         assert len(seen) == 3
-        api_key.write_text(f"export {BRIDGE_KEY_ENV}=local-secret\n")
+        upstream_path = Path(os.environ["AGENTROUTE_GROK_API_CREDENTIALS_FILE"])
+        upstream_path.write_text("export OTHER_KEY=preserve\n")
         with pytest.raises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request())
         assert error.value.code == 400

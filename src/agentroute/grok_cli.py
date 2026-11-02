@@ -30,7 +30,7 @@ from .grok_bridge import (
     ensure_backend,
     read_managed_credential,
 )
-from .providers import import_backend_credential, sync_codex_providers
+from .providers import credentials_path, import_backend_credential, sync_codex_providers
 
 app = typer.Typer(no_args_is_help=True, help="Route through Grok CLI or the public xAI API.")
 LABEL = "com.agentroute.grok-bridge"
@@ -68,7 +68,11 @@ def service_definition(binary, port, credential_mode="subscription", instance=""
         environment_names = ("GROK_HOME", "GROK_AUTH_PATH", "AGENTROUTE_HOME")
     environment = {
         key: os.path.abspath(os.path.expanduser(os.environ[key]))
-        for key in environment_names if os.environ.get(key)
+        for key in environment_names
+        if key in os.environ and (
+            os.environ[key]
+            or key not in {"AGENTROUTE_CREDENTIALS_FILE", "AGENTROUTE_GROK_API_CREDENTIALS_FILE"}
+        )
     }
     if platform.system() == "Darwin":
         return plistlib.dumps(
@@ -130,6 +134,8 @@ def credential_import(source_env: str):
     config = load_config()
     ensure_backend(config, credential_mode="api-key")
     config.backends["grok"].api_key_env = "XAI_API_KEY"
+    if api_credentials_path().resolve() == credentials_path().resolve():
+        raise typer.BadParameter("The upstream API key file must differ from the client key file")
     path, name = import_backend_credential(config, "grok", source_env, api_credentials_path())
     typer.echo(f"Stored {name} in {path}; the API bridge reads rotations automatically.")
 
@@ -216,25 +222,19 @@ def install(
         actual = payload.get("credential_proof", "") if isinstance(payload, dict) else ""
         if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
             raise RuntimeError("Grok service credential proof failed; check the configured port")
-        from .grok_usage import read_snapshot, write_snapshot
+    from .grok_usage import read_snapshot, write_snapshot
 
-        source = GrokApiCredential()
+    source = GrokApiCredential() if credential == CredentialMode.api_key else GrokCredential(binary)
+    try:
         previous = read_snapshot(source)
         write_snapshot(
             source,
             {"blocked_until": previous["blocked_until"]} if "blocked_until" in previous else {},
             account=previous.get("account"),
         )
-    else:
-        from .grok_usage import read_snapshot, write_snapshot
-
-        source = GrokCredential(binary)
-        previous = read_snapshot(source)
-        write_snapshot(
-            source,
-            {"blocked_until": previous["blocked_until"]} if "blocked_until" in previous else {},
-            account=previous.get("account"),
-        )
+    except (OSError, ValueError):
+        # Optional capacity persistence cannot turn a proven ready service into a failed install.
+        typer.echo("Grok is ready; capacity snapshot unavailable", err=True)
     # A failed service/account check must not publish an enabled client route.
     save_config(config)
     sync_codex_providers(config)

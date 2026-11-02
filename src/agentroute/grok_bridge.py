@@ -164,6 +164,10 @@ class GrokApiCredential:
     models = API_MODELS
 
     def _read(self):
+        from .providers import credentials_path
+
+        if api_credentials_path().resolve() == credentials_path().resolve():
+            raise ValueError("Upstream and client credential files must be separate")
         return {"key": read_managed_credential("XAI_API_KEY", api_credentials_path())}
 
     def current(self):
@@ -374,9 +378,15 @@ class GrokHandler(BaseHTTPRequestHandler):
                 self._json(401, {"error": "Local bridge authentication required"})
                 return
         elif self.headers.get("Authorization"):
-            # An already-loaded API client must not spend subscription allowance after a switch.
-            self._json(401, {"error": "Client credential mode does not match the Grok service"})
-            return
+            try:
+                api_client = "Bearer " + read_managed_credential(BRIDGE_KEY_ENV)
+            except (OSError, ValueError):
+                api_client = ""
+            supplied = self.headers["Authorization"]
+            if api_client and supplied.isascii() and hmac.compare_digest(supplied, api_client):
+                # A loaded API client must not spend subscription allowance after a switch.
+                self._json(401, {"error": "Client credential mode does not match the Grok service"})
+                return
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if not 0 < size <= MAX_BODY:
