@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -37,8 +38,9 @@ def test_release_archive_rejects_parent_traversal(tmp_path: Path):
 
 
 @pytest.mark.parametrize("existing_skill", ["absent", "customized", "symlink"])
-def test_built_release_installs_progress_skill_without_replacing_existing(
-    tmp_path: Path, existing_skill: str
+@pytest.mark.parametrize("fail_setup", [False, True])
+def test_release_catalog_install_and_rollback_preserve_user_skills(
+    tmp_path: Path, existing_skill: str, fail_setup: bool, monkeypatch
 ):
     """Exercise real archive assembly and installation without compiling or installing packages."""
     root = Path(__file__).parents[1]
@@ -77,11 +79,23 @@ def test_built_release_installs_progress_skill_without_replacing_existing(
     (prebuilt / "bin").mkdir(parents=True)
     for name in ("codex-bin", "codex-code-mode-host"):
         executable(prebuilt / "bin" / name, "exit 0\n")
-    (prebuilt / "build-id").write_text("fixture-build\n")
+    build_id = "a" * 40 + "-provider-routing-v64"
+    (prebuilt / "build-id").write_text(build_id + "\n")
+    bundled = {"build_id": build_id, "catalog": {"models": [{"slug": "native-fixture"}]}}
+    (prebuilt / "models").mkdir()
+    (prebuilt / "models/native-catalog.json").write_text(json.dumps(bundled))
     installed = tmp_path / "installed"
     (installed / "venv/bin").mkdir(parents=True)
     (installed / "venv/bin/python").symlink_to(sys.executable)
-    executable(installed / "venv/bin/agentroute", "exit 0\n")
+    executable(
+        installed / "venv/bin/agentroute",
+        f'if [ "$1" = setup ]; then test "$AGENTROUTE_RUNTIME_BUILD_ID" = "{build_id}"; fi\n'
+        f"exit {int(fail_setup)}\n",
+    )
+    previous_catalog = '{"previous": "preserve"}\n'
+    if fail_setup:
+        (installed / "models").mkdir()
+        (installed / "models/native-catalog.json").write_text(previous_catalog)
     user_home = tmp_path / "user"
     user_home.mkdir()
     codex_home = tmp_path / "custom-codex-home"
@@ -101,6 +115,7 @@ def test_built_release_installs_progress_skill_without_replacing_existing(
         "CODEX_HOME": str(codex_home),
         "AGENTROUTE_HOME": str(installed),
         "AGENTROUTE_RELEASE_PREBUILT_HOME": str(prebuilt),
+        "AGENTROUTE_RUNTIME_BUILD_ID": "b" * 40 + "-provider-routing-v63",
     }
     output = tmp_path / "dist"
     subprocess.run(
@@ -109,10 +124,20 @@ def test_built_release_installs_progress_skill_without_replacing_existing(
     )
     payload = tmp_path / "payload"
     release._safe_extract(output / "agentroute-linux-x64.tar.gz", payload)
-    subprocess.run(
+    result = subprocess.run(
         ["sh", str(payload / "install.sh")],
-        env=env, check=True, capture_output=True, text=True,
+        env=env, capture_output=True, text=True,
     )
+    assert result.returncode == int(fail_setup), result.stderr
+    if fail_setup:
+        assert (installed / "models/native-catalog.json").read_text() == previous_catalog
+        assert not (installed / "build-id").exists()
+        return
+    assert json.loads((installed / "models/native-catalog.json").read_text()) == bundled
+    monkeypatch.setenv("AGENTROUTE_HOME", str(installed))
+    from agentroute.providers import _installed_codex_catalog
+
+    assert _installed_codex_catalog() == bundled["catalog"]
     if existing_skill == "symlink":
         assert skill.is_symlink()
         assert skill.readlink() == tmp_path / "missing-user-skill"

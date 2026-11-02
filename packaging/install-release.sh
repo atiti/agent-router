@@ -19,15 +19,17 @@ atomic_install_file() {
 
 rollback_or_cleanup() {
     if [ "$INSTALL_COMMITTED" != 1 ]; then
-        for name in codex-bin codex-code-mode-host codex build-id; do
+        for name in codex-bin codex-code-mode-host codex build-id native-catalog.json; do
             if [ -f "$ROLLBACK_DIR/$name" ]; then
                 case "$name" in
                     build-id) atomic_install_file "$ROLLBACK_DIR/$name" "$AGENTROUTE_HOME_DIR/build-id" ;;
+                    native-catalog.json) atomic_install_file "$ROLLBACK_DIR/$name" "$AGENTROUTE_HOME_DIR/models/native-catalog.json" ;;
                     *) atomic_install_file "$ROLLBACK_DIR/$name" "$AGENTROUTE_BIN_DIR/$name" ;;
                 esac
             elif [ -f "$ROLLBACK_DIR/$name.missing" ]; then
                 case "$name" in
                     build-id) rm -f "$AGENTROUTE_HOME_DIR/build-id" ;;
+                    native-catalog.json) rm -f "$AGENTROUTE_HOME_DIR/models/native-catalog.json" ;;
                     *) rm -f "$AGENTROUTE_BIN_DIR/$name" ;;
                 esac
             fi
@@ -44,17 +46,18 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 for required in codex-bin codex-code-mode-host codex-launcher code-mode-smoke.py \
-    install-progress-skill.sh goal-checkpoint/SKILL.md; do
+    install-progress-skill.sh goal-checkpoint/SKILL.md native-catalog.json; do
     if [ ! -f "$PAYLOAD_ROOT/$required" ]; then
         printf 'Release payload is incomplete: missing %s\n' "$required" >&2
         exit 1
     fi
 done
 
-mkdir -p "$AGENTROUTE_BIN_DIR"
-for name in codex-bin codex-code-mode-host codex build-id; do
+mkdir -p "$AGENTROUTE_BIN_DIR" "$AGENTROUTE_HOME_DIR/models"
+for name in codex-bin codex-code-mode-host codex build-id native-catalog.json; do
     case "$name" in
         build-id) CURRENT="$AGENTROUTE_HOME_DIR/build-id" ;;
+        native-catalog.json) CURRENT="$AGENTROUTE_HOME_DIR/models/native-catalog.json" ;;
         *) CURRENT="$AGENTROUTE_BIN_DIR/$name" ;;
     esac
     if [ -f "$CURRENT" ]; then
@@ -88,6 +91,7 @@ atomic_install_file "$PAYLOAD_ROOT/codex-bin" "$AGENTROUTE_BIN_DIR/codex-bin"
 atomic_install_file "$PAYLOAD_ROOT/codex-code-mode-host" "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
 atomic_install_file "$PAYLOAD_ROOT/codex-launcher" "$AGENTROUTE_BIN_DIR/codex"
 atomic_install_file "$PAYLOAD_ROOT/build-id" "$AGENTROUTE_HOME_DIR/build-id"
+atomic_install_file "$PAYLOAD_ROOT/native-catalog.json" "$AGENTROUTE_HOME_DIR/models/native-catalog.json"
 ln -sf "$AGENTROUTE_HOME_DIR/venv/bin/agentroute" "$AGENTROUTE_BIN_DIR/agentroute"
 chmod 755 "$AGENTROUTE_BIN_DIR/codex" "$AGENTROUTE_BIN_DIR/codex-bin" \
     "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
@@ -100,7 +104,8 @@ fi
 "$AGENTROUTE_HOME_DIR/venv/bin/python" "$PAYLOAD_ROOT/code-mode-smoke.py" \
     "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
 
-"$AGENTROUTE_BIN_DIR/agentroute" setup
+AGENTROUTE_RUNTIME_BUILD_ID=$(sed -n '1p' "$AGENTROUTE_HOME_DIR/build-id") \
+    "$AGENTROUTE_BIN_DIR/agentroute" setup
 sh "$PAYLOAD_ROOT/install-progress-skill.sh" "$PAYLOAD_ROOT/goal-checkpoint" \
     "${CODEX_HOME:-$HOME/.codex}/skills"
 case "${SHELL:-}" in

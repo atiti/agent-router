@@ -4,6 +4,7 @@
 
 ## 0.5.82 — 2026-11-02
 
+- Bundle the revision-bound native model catalog in binary releases so fresh installations can apply Grok and other routed models without a source checkout; restore catalog and runtime together if installation fails.
 - Include policy-gated GitHub evidence for independent reviewers and retry an incomplete Grok local compaction once.
 
 - Add an independent @grok-api backend for public xAI keys alongside @grok subscription routing, with separate endpoints, credentials, usage snapshots and cooldowns; share token accounting and standard API budget enforcement.
