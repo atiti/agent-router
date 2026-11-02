@@ -232,7 +232,9 @@ def test_failed_install_does_not_publish_backend(api_key, monkeypatch, tmp_path)
     monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
     monkeypatch.setattr("agentroute.grok_cli._agentroute_executable", lambda: "/bin/agentroute")
     monkeypatch.setattr(
-        "agentroute.grok_cli.run", lambda *a, **k: type("Run", (), {"returncode": 0})()
+        "agentroute.grok_cli.run", lambda *a, **k: type(
+            "Run", (), {"returncode": 1 if a[:2] == ("launchctl", "print") else 0}
+        )()
     )
     monkeypatch.setattr(
         "agentroute.grok_cli.wait_for_health",
@@ -261,9 +263,12 @@ def test_failed_install_stops_replacement_service(api_key, monkeypatch, tmp_path
     monkeypatch.setattr("agentroute.grok_cli.unit_path", lambda: path)
     monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
     monkeypatch.setattr("agentroute.grok_cli._agentroute_executable", lambda: "/bin/agentroute")
-    monkeypatch.setattr("agentroute.grok_cli.run", lambda *a, **k: (
-        calls.append(a) or type("Run", (), {"returncode": 0})()
-    ))
+    def supervisor(*args, **kwargs):
+        calls.append(args)
+        return type("Run", (), {
+            "returncode": 1 if args[:2] == ("launchctl", "print") else 0
+        })()
+    monkeypatch.setattr("agentroute.grok_cli.run", supervisor)
     monkeypatch.setattr(
         "agentroute.grok_cli.wait_for_health", lambda *a, **k: BridgeHealth(
             "healthy", "ready", {"provider": "grok", "credential_mode": "api-key"}
@@ -290,7 +295,29 @@ def test_failed_install_stops_replacement_service(api_key, monkeypatch, tmp_path
         "challenge timed out" if failure == "challenge" else "malformed provider marker"
     ) in str(result.exception)
     assert not path.exists()
-    assert calls[-1][:2] == ("launchctl", "bootout")
+    assert ("launchctl", "bootout") in [call[:2] for call in calls]
+    assert calls[-1][:2] == ("launchctl", "print")
+
+
+def test_rollback_restores_previous_unit_and_config(monkeypatch, tmp_path):
+    from agentroute.grok_cli import rollback_install
+
+    unit = tmp_path / "service.plist"
+    unit.write_bytes(b"new service")
+    config = tmp_path / "config.yaml"
+    config.write_bytes(b"new config")
+    calls = []
+    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
+    def supervisor(*args, **kwargs):
+        calls.append(args)
+        return type("Run", (), {
+            "returncode": 1 if args[:2] == ("launchctl", "print") else 0
+        })()
+    monkeypatch.setattr("agentroute.grok_cli.run", supervisor)
+    rollback_install(unit, b"new service", b"old service", {config: b"old config"})
+    assert config.read_bytes() == b"old config"
+    assert unit.read_bytes() == b"old service"
+    assert calls[-1][:2] == ("launchctl", "bootstrap")
 
 
 def test_mode_switch_does_not_reuse_other_mode_cooldown(api_key, tmp_path, monkeypatch):

@@ -18,7 +18,7 @@ from pathlib import Path
 import typer
 
 from .bridge_service import _agentroute_executable, wait_for_health
-from .config import agentroute_home, load_config, save_config
+from .config import agentroute_home, codex_home, config_path, load_config, save_config
 from .grok_bridge import (
     BRIDGE_KEY_ENV,
     DEFAULT_PORT,
@@ -30,7 +30,12 @@ from .grok_bridge import (
     ensure_backend,
     read_managed_credential,
 )
-from .providers import credentials_path, import_backend_credential, sync_codex_providers
+from .providers import (
+    _launch_model_catalog_path,
+    credentials_path,
+    import_backend_credential,
+    sync_codex_providers,
+)
 
 app = typer.Typer(no_args_is_help=True, help="Route through Grok CLI or the public xAI API.")
 LABEL = "com.agentroute.grok-bridge"
@@ -163,12 +168,38 @@ def ensure_client_credential(config):
 
 
 def stop_replacement_service(path, definition):
+    import time
+
     if platform.system() == "Darwin":
         run("launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}", check=False)
+        for _attempt in range(10):
+            if run("launchctl", "print", f"gui/{os.getuid()}/{LABEL}", check=False).returncode:
+                break
+            time.sleep(0.2)
+        else:
+            raise RuntimeError("Grok service did not stop; its unit is retained for recovery")
     else:
         run("systemctl", "--user", "stop", UNIT, check=False)
+        if run("systemctl", "--user", "is-active", "--quiet", UNIT, check=False).returncode == 0:
+            raise RuntimeError("Grok service did not stop; its unit is retained for recovery")
     if path.exists() and path.read_bytes() == definition:
         path.unlink()
+
+
+def rollback_install(path, definition, previous_unit, files):
+    stop_replacement_service(path, definition)
+    for target, content in files.items():
+        if content is None:
+            target.unlink(missing_ok=True)
+        else:
+            target.write_bytes(content)
+    if previous_unit is not None:
+        path.write_bytes(previous_unit)
+        if platform.system() == "Darwin":
+            run("launchctl", "bootstrap", f"gui/{os.getuid()}", str(path))
+        else:
+            run("systemctl", "--user", "daemon-reload")
+            run("systemctl", "--user", "restart", UNIT)
 
 
 @app.command()
@@ -196,19 +227,31 @@ def install(
     if credential == CredentialMode.api_key:
         ensure_client_credential(config)
     path = unit_path()
+    previous_unit = path.read_bytes() if path.exists() else None
+    codex_config = codex_home() / "config.toml"
+    publication_files = {
+        target: target.read_bytes() if target.exists() else None
+        for target in (config_path(), codex_config, _launch_model_catalog_path(codex_config))
+    }
     if credential == CredentialMode.subscription and path.exists():
         # Preserve the preceding API client's credential path when the new shell omits it.
         if platform.system() == "Darwin":
             old_environment = plistlib.loads(path.read_bytes()).get("EnvironmentVariables", {})
             previous_path = old_environment.get("AGENTROUTE_CREDENTIALS_FILE")
+            if not previous_path and old_environment.get("AGENTROUTE_HOME"):
+                previous_path = str(
+                    Path(old_environment["AGENTROUTE_HOME"]) / "backend-credentials.env"
+                )
         else:
             previous_path = None
             for line in path.read_text().splitlines():
                 if line.startswith("Environment="):
                     assignment = shlex.split(line.removeprefix("Environment="))[0]
                     name, _, value = assignment.partition("=")
-                    if name == "AGENTROUTE_CREDENTIALS_FILE":
+                    if name in {"AGENTROUTE_CREDENTIALS_FILE", "AGENTROUTE_HOME"}:
                         previous_path = value.replace("%%", "%")
+                        if name == "AGENTROUTE_HOME":
+                            previous_path = str(Path(previous_path) / "backend-credentials.env")
         if previous_path and not os.environ.get("AGENTROUTE_CREDENTIALS_FILE"):
             os.environ["AGENTROUTE_CREDENTIALS_FILE"] = previous_path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -253,7 +296,7 @@ def install(
                     "Grok service credential proof failed; check the configured port"
                 )
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
-        stop_replacement_service(path, definition)
+        rollback_install(path, definition, previous_unit, {})
         raise
     from .grok_usage import read_snapshot, write_snapshot
 
@@ -274,7 +317,7 @@ def install(
         sync_codex_providers(config)
     except (OSError, ValueError):
         # Existing clients must not reach a replacement account after failed publication.
-        stop_replacement_service(path, definition)
+        rollback_install(path, definition, previous_unit, publication_files)
         raise
     typer.echo(f"Grok {credential.value} ready on port {port}. Use @grok in Codex.")
 
