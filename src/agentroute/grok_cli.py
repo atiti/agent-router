@@ -145,6 +145,9 @@ def serve(
 @app.command("credential-import")
 def credential_import(source_env: str):
     """Store an API key from an environment variable, without printing it."""
+    value = os.environ.get(source_env)
+    if not value or any(not 33 <= ord(char) <= 126 for char in value):
+        raise typer.BadParameter("API credential must be nonempty ASCII without whitespace")
     config = load_config()
     ensure_backend(config, credential_mode="api-key")
     config.backends["grok"].api_key_env = "XAI_API_KEY"
@@ -205,6 +208,8 @@ def stop_replacement_service(path, definition):
 def rollback_install(path, definition, previous_unit, files, expected=None):
     for target, content in files.items():
         current = target.read_bytes() if target.exists() else None
+        if current == content:
+            continue
         if current != (expected or {}).get(target, content):
             continue  # Preserve edits made by another process; do not restore a stale preimage.
         if content is None:

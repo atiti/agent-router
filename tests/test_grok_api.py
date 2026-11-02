@@ -671,3 +671,12 @@ def test_rollback_restores_client_config_even_if_service_stop_fails(monkeypatch,
                          {config: b'old route'}, {config: b'enabled new route'})
     assert config.read_bytes() == b'old route'
     assert unit.read_bytes() == b'new service'
+
+
+def test_invalid_api_key_import_preserves_working_key(api_key, monkeypatch):
+    path = Path(os.environ['AGENTROUTE_GROK_API_CREDENTIALS_FILE'])
+    before = path.read_bytes()
+    monkeypatch.setenv('SOURCE_KEY', 'bad-key\n')
+    result = CliRunner().invoke(app, ['credential-import', 'SOURCE_KEY'])
+    assert result.exit_code != 0
+    assert path.read_bytes() == before
