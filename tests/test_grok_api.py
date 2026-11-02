@@ -654,3 +654,20 @@ def test_publish_refuses_symlinked_configuration(tmp_path):
     with pytest.raises(ValueError, match='symlinked'):
         publish_files({link: b'new'}, {link: b'preserve'}, {})
     assert link.is_symlink() and actual.read_bytes() == b'preserve'
+
+
+def test_rollback_restores_client_config_even_if_service_stop_fails(monkeypatch, tmp_path):
+    from agentroute.grok_cli import rollback_install
+
+    config = tmp_path / 'config.yaml'
+    config.write_bytes(b'enabled new route')
+    unit = tmp_path / 'service.plist'
+    unit.write_bytes(b'new service')
+    def fail(*args):
+        raise RuntimeError('stop rejected')
+    monkeypatch.setattr('agentroute.grok_cli.stop_replacement_service', fail)
+    with pytest.raises(RuntimeError, match='stop rejected'):
+        rollback_install(unit, b'new service', None,
+                         {config: b'old route'}, {config: b'enabled new route'})
+    assert config.read_bytes() == b'old route'
+    assert unit.read_bytes() == b'new service'

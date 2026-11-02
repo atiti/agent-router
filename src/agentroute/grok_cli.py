@@ -203,7 +203,6 @@ def stop_replacement_service(path, definition):
 
 
 def rollback_install(path, definition, previous_unit, files, expected=None):
-    stop_replacement_service(path, definition)
     for target, content in files.items():
         current = target.read_bytes() if target.exists() else None
         if current != (expected or {}).get(target, content):
@@ -212,6 +211,8 @@ def rollback_install(path, definition, previous_unit, files, expected=None):
             target.unlink(missing_ok=True)
         else:
             target.write_bytes(content)
+    # Restore client configuration even if stopping the failed service is rejected.
+    stop_replacement_service(path, definition)
     if previous_unit is not None:
         path.write_bytes(previous_unit)
         if platform.system() == "Darwin":
@@ -243,11 +244,11 @@ def prepare_publication(config, originals):
             json.dumps(str(staged_catalog), ensure_ascii=False),
             json.dumps(str(native_catalog), ensure_ascii=False),
         )
-        payloads = {
-            config_path(): staged_route.read_bytes(), native_config: codex_payload.encode()
-        }
+        payloads = {native_config: codex_payload.encode()}
         if staged_catalog.exists():
             payloads[native_catalog] = staged_catalog.read_bytes()
+        # Enable routing only after provider data.
+        payloads[config_path()] = staged_route.read_bytes()
         return payloads
 
 
