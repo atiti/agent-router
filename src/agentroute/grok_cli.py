@@ -81,6 +81,11 @@ def service_definition(binary, port, credential_mode="subscription", instance=""
             or key not in {"AGENTROUTE_CREDENTIALS_FILE", "AGENTROUTE_GROK_API_CREDENTIALS_FILE"}
         )
     }
+    if credential_mode == "api-key":
+        # Persist the derived default too, so later subscription setup can retain this boundary.
+        environment["AGENTROUTE_CREDENTIALS_FILE"] = os.path.abspath(
+            os.path.expanduser(str(credentials_path()))
+        )
     if platform.system() == "Darwin":
         return plistlib.dumps(
             {
@@ -171,7 +176,9 @@ def stop_replacement_service(path, definition):
     import time
 
     if platform.system() == "Darwin":
-        run("launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}", check=False)
+        stopped = run("launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}", check=False)
+        if stopped.returncode:
+            raise RuntimeError("Grok supervisor rejected stop; its unit is retained for recovery")
         for _attempt in range(10):
             if run("launchctl", "print", f"gui/{os.getuid()}/{LABEL}", check=False).returncode:
                 break
@@ -179,7 +186,9 @@ def stop_replacement_service(path, definition):
         else:
             raise RuntimeError("Grok service did not stop; its unit is retained for recovery")
     else:
-        run("systemctl", "--user", "stop", UNIT, check=False)
+        stopped = run("systemctl", "--user", "stop", UNIT, check=False)
+        if stopped.returncode:
+            raise RuntimeError("Grok supervisor rejected stop; its unit is retained for recovery")
         if run("systemctl", "--user", "is-active", "--quiet", UNIT, check=False).returncode == 0:
             raise RuntimeError("Grok service did not stop; its unit is retained for recovery")
     if path.exists() and path.read_bytes() == definition:
@@ -295,7 +304,7 @@ def install(
                 raise RuntimeError(
                     "Grok service credential proof failed; check the configured port"
                 )
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+    except Exception:
         rollback_install(path, definition, previous_unit, {})
         raise
     from .grok_usage import read_snapshot, write_snapshot
@@ -315,8 +324,8 @@ def install(
     try:
         save_config(config)
         sync_codex_providers(config)
-    except (OSError, ValueError):
-        # Existing clients must not reach a replacement account after failed publication.
+    except Exception:
+        # Any publication failure must restore custody, including malformed cached metadata.
         rollback_install(path, definition, previous_unit, publication_files)
         raise
     typer.echo(f"Grok {credential.value} ready on port {port}. Use @grok in Codex.")

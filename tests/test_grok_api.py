@@ -403,7 +403,9 @@ def test_service_ignores_empty_path_and_preserves_symlink_parent(monkeypatch, tm
     monkeypatch.setattr("agentroute.grok_cli._agentroute_executable", lambda: "/bin/agentroute")
     payload = plistlib.loads(service_definition("grok", 8092, "api-key"))
     environment = payload["EnvironmentVariables"]
-    assert "AGENTROUTE_CREDENTIALS_FILE" not in environment
+    from agentroute.providers import credentials_path
+
+    assert environment["AGENTROUTE_CREDENTIALS_FILE"] == str(credentials_path())
     assert environment["AGENTROUTE_GROK_API_CREDENTIALS_FILE"] == str(linked / "key.env")
 
 
@@ -601,3 +603,17 @@ def test_api_http_auth_tools_continuation_errors_and_cooldown(api_key, monkeypat
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_failed_supervisor_stop_retains_unit(monkeypatch, tmp_path):
+    from agentroute.grok_cli import stop_replacement_service
+
+    unit = tmp_path / 'service.plist'
+    unit.write_bytes(b'new unit')
+    monkeypatch.setattr('agentroute.grok_cli.platform.system', lambda: 'Darwin')
+    monkeypatch.setattr(
+        'agentroute.grok_cli.run', lambda *a, **k: type('Run', (), {'returncode': 1})()
+    )
+    with pytest.raises(RuntimeError, match='rejected stop'):
+        stop_replacement_service(unit, b'new unit')
+    assert unit.read_bytes() == b'new unit'
