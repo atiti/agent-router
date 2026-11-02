@@ -387,7 +387,7 @@ def install(
                 raise RuntimeError(
                     "Grok service credential proof failed; check the configured port"
                 )
-    except Exception:
+    except BaseException:
         rollback_install(path, definition, previous_unit, {})
         raise
     from .grok_usage import read_snapshot, write_snapshot
@@ -407,7 +407,7 @@ def install(
     published = {}
     try:
         publish_files(payloads, publication_files, published)
-    except Exception:
+    except BaseException:
         # Any publication failure must restore custody, including malformed cached metadata.
         rollback_install(path, definition, previous_unit, publication_files, published)
         raise

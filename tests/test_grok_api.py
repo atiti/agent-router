@@ -275,7 +275,7 @@ def test_failed_install_does_not_publish_backend(api_key, monkeypatch, tmp_path)
     assert "did not become healthy" in str(result.exception)
 
 
-@pytest.mark.parametrize("failure", ["challenge", "publication"])
+@pytest.mark.parametrize("failure", ["challenge", "publication", "interrupt"])
 def test_failed_install_stops_replacement_service(api_key, monkeypatch, tmp_path, failure):
     from agentroute.bridge_service import BridgeHealth
 
@@ -299,6 +299,8 @@ def test_failed_install_stops_replacement_service(api_key, monkeypatch, tmp_path
     def proof(request, **kwargs):
         from urllib.parse import parse_qs, urlsplit
 
+        if failure == "interrupt":
+            raise KeyboardInterrupt()
         if failure == "challenge":
             raise OSError("challenge timed out")
         nonce = parse_qs(urlsplit(request.full_url).query)["nonce"][0]
@@ -313,9 +315,10 @@ def test_failed_install_stops_replacement_service(api_key, monkeypatch, tmp_path
     monkeypatch.setattr("agentroute.grok_cli.publish_files", fail)
     result = CliRunner().invoke(app, ["install", "--credential", "api-key"])
     assert result.exit_code != 0
-    assert (
-        "challenge timed out" if failure == "challenge" else "malformed provider marker"
-    ) in str(result.exception)
+    if failure != "interrupt":
+        assert (
+            "challenge timed out" if failure == "challenge" else "malformed provider marker"
+        ) in str(result.exception)
     assert not path.exists()
     assert ("launchctl", "bootout") in [call[:2] for call in calls]
     assert calls[-1][:2] == ("launchctl", "print")
