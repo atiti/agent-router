@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add an independent @grok-api backend for public xAI keys alongside @grok subscription routing, with separate endpoints, credentials, usage snapshots and cooldowns; share token accounting and standard API budget enforcement.
+- Include policy-gated GitHub evidence for independent reviewers and retry an incomplete Grok local compaction once.
 - Keep the bundled macOS browser authentication helper on the existing ChatGPT account when ordinary sessions use a different routed provider.
 - Avoid unsupported GPT verbosity, Responses Lite and WebSocket preferences in generated metadata for unknown custom backend models.
 - Normalize overlapping Grok message, search, and function-call streams so a tool completion cannot clear Codex's still-streaming answer and leave the turn spinning.

@@ -16,6 +16,16 @@ When a completed review exposes usage and its item is present in the parent roll
 
 The source and published-release installers install `goal-checkpoint` into the active Codex home when activating. They preserve an existing skill of the same name; update a customized or older copy manually if needed. Start a new session to refresh the skill catalog.
 
+## GitHub evidence for reviewers
+
+To let isolated progress and goal-completion reviewers check pull request state and CI with a supported Codex build, start a fresh session with `--enable review_github_evidence`. The bridge runs a fixed `gh pr view` query on the host and requires a signed-in `gh` and an existing command allow rule for `gh pr view`. For example, add the following to the active Codex home's `rules/default.rules` only if you authorize that command to run outside the sandbox:
+
+```python
+prefix_rule(pattern=["gh", "pr", "view"], decision="allow")
+```
+
+The feature is disabled by default. It is unavailable where managed command or network requirements, external sandbox enforcement, an active network proxy, or denied-read restrictions prevent host execution. The reviewer reports missing evidence rather than assuming a PR or CI status. This bridge checks GitHub pull requests on github.com; it does not provide arbitrary shell or GitHub write access.
+
 ## Live escalation within an active task
 
 Enable this in AgentRoute's YAML configuration, then start a fresh session with `codex --enable progress_review`:
