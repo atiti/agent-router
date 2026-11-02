@@ -149,6 +149,16 @@ def test_api_billing_never_contacts_subscription_proxy(api_key, monkeypatch):
     assert fetch_usage(GrokApiCredential(), None) == {"error": "API billing telemetry unavailable"}
 
 
+@pytest.mark.parametrize("first,second", [("subscription", "api-key"), ("api-key", "subscription")])
+def test_backend_registration_rejects_shared_port(first, second):
+    config = default_config()
+    ensure_backend(config, 9092, credential_mode=first)
+    before = config.model_dump()
+    with pytest.raises(ValueError, match="use a separate port"):
+        ensure_backend(config, 9092, credential_mode=second)
+    assert config.model_dump() == before
+
+
 def test_subscription_and_api_backends_coexist():
     config = default_config()
     ensure_backend(config)
