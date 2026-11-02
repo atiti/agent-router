@@ -169,7 +169,7 @@ def install(port: int = DEFAULT_PORT):
                 row for row in path.read_text().splitlines() if row.startswith("ExecStart=")
             )
             arguments = shlex.split(command.removeprefix("ExecStart="))
-        if "api-key" in arguments:
+        if "api-key" in arguments or "--credential=api-key" in arguments:
             raise typer.BadParameter("Stop the API service before installing subscription mode")
     binary = shutil.which("grok")
     if not binary:
@@ -199,18 +199,25 @@ def install(port: int = DEFAULT_PORT):
         run("systemctl", "--user", "enable", UNIT)
         run("systemctl", "--user", "restart", UNIT)
     health = wait_for_health(port)
-    if health.status != "healthy" or (health.payload or {}).get("provider") != "grok":
+    if (
+        health.status != "healthy"
+        or (health.payload or {}).get("provider") != "grok"
+        or (health.payload or {}).get("credential_mode", "subscription") != "subscription"
+    ):
         raise RuntimeError(f"Grok service did not become healthy: {health.detail}")
     typer.echo(f"Grok subscription ready on port {port}. Use @grok in Codex.")
 
 
 @app.command()
-def status():
+def status(port: int = DEFAULT_PORT):
     """Report service configuration and health without using subscription allowance."""
     path = unit_path()
     if not path.exists():
-        typer.echo("Grok service not installed; run agentroute grok install")
-        raise typer.Exit(1)
+        health = wait_for_health(port, timeout=2)
+        typer.echo(json.dumps({"service": None, "status": health.status, "health": health.payload}))
+        if health.status != "healthy" or (health.payload or {}).get("provider") != "grok":
+            raise typer.Exit(1)
+        return
     if platform.system() == "Darwin":
         args = plistlib.loads(path.read_bytes())["ProgramArguments"]
     else:

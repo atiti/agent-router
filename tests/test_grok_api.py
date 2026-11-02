@@ -420,3 +420,15 @@ def test_invalid_api_key_import_preserves_working_key(api_key, monkeypatch):
     result = CliRunner().invoke(app, ['credential-import', 'SOURCE_KEY'])
     assert result.exit_code != 0
     assert path.read_bytes() == before
+
+
+def test_status_reports_foreground_api_bridge(monkeypatch, tmp_path):
+    from agentroute.bridge_service import BridgeHealth
+
+    monkeypatch.setattr('agentroute.grok_cli.unit_path', lambda: tmp_path / 'absent')
+    monkeypatch.setattr('agentroute.grok_cli.wait_for_health', lambda *a, **k: BridgeHealth(
+        'healthy', 'api', {'provider': 'grok', 'credential_mode': 'api-key'}
+    ))
+    result = CliRunner().invoke(app, ['status'])
+    assert result.exit_code == 0
+    assert json.loads(result.output)['health']['credential_mode'] == 'api-key'
