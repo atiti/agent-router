@@ -338,6 +338,35 @@ def test_unknown_custom_model_uses_conservative_wire_metadata(tmp_path, monkeypa
     assert models["gpt-6-luna"] == baseline
 
 
+@pytest.mark.parametrize("backend_name", ["local", "claude"])
+def test_review_only_model_has_catalog_and_provider_context(tmp_path, monkeypatch, backend_name):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", "test-provider-routing-v63")
+    monkeypatch.setattr("agentroute.providers._installed_codex_catalog", lambda source: {
+        "models": [{"slug": "gpt-6-luna", "context_window": 272_000,
+                    "max_context_window": 872_000}],
+    })
+    config = default_config()
+    config.backends[backend_name] = ExecutionBackendConfig(
+        enabled=True, codex_provider="test-provider", display_name="Test provider",
+        base_url="http://127.0.0.1:8080/v1", review_model="new-reviewer",
+        tiers={"fast": ModelTarget(model="gpt-6-luna")},
+    )
+    config.capabilities.models["new-reviewer"] = ModelCapabilities(
+        context_window=16_384, reasoning=False, tool_calling="apply_patch_only",
+    )
+
+    path, _ = sync_codex_providers(config)
+    settings = tomllib.loads(path.read_text())
+    catalog = json.loads(Path(settings["model_catalog_json"]).read_text())
+    reviewer = next(model for model in catalog["models"] if model["slug"] == "new-reviewer")
+
+    assert reviewer["context_window"] == (200_000 if backend_name == "claude" else 16_384)
+    assert settings["model_providers"]["test-provider"]["capabilities"]["context_windows"][
+        "new-reviewer"
+    ] == 16_384
+
+
 @pytest.mark.parametrize("age_hours", [1, 48])
 def test_new_account_model_can_back_routed_alias_without_bundled_descriptor(
     tmp_path, monkeypatch, age_hours
