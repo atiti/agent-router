@@ -414,8 +414,7 @@ def _write_model_catalog(
                 continue
             if capabilities.context_window is None:
                 continue
-            # A compact descriptor intentionally inherits the Codex fallback
-            # behavior for provider protocol details while replacing the limits
+            # Retain the installed harness authority while replacing the limits
             # and tool exposure that affect prompt size and compaction.
             model = copy.deepcopy(next(iter(by_slug.values()), {}))
             model.update(
@@ -437,6 +436,15 @@ def _write_model_catalog(
                     "multi_agent_reasoning_effort": None,
                 }
             )
+            if backend_name not in {"gpt", "azure", "deepseek", "claude", "fable"}:
+                # Unknown custom models cannot be assumed to support GPT's wire options.
+                # Match native fallback defaults without changing safety metadata.
+                model.update({
+                    "support_verbosity": False,
+                    "default_verbosity": None,
+                    "use_responses_lite": False,
+                    "prefer_websockets": False,
+                })
             if capabilities.reasoning is False:
                 model["default_reasoning_level"] = None
                 model["supported_reasoning_levels"] = []

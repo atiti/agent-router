@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -267,8 +268,38 @@ def validate_desktop_startup(user_args: Sequence[str], config: AppConfig) -> Non
         )
 
 
+def browser_auth_helper_launch(binary: Path, user_args: Sequence[str]) -> bool:
+    """Identify the bundled browser's standalone authentication subprocess."""
+    if sys.platform != "darwin" or list(user_args) != [
+        "app-server", "--listen", "stdio://"
+    ]:
+        return False
+    if binary.name != "codex-bin" or not (binary.parent / "agentroute-build-id").is_file():
+        return False
+    expected_parent = binary.parent / "cua_node" / "bin" / "node_repl"
+    if not expected_parent.is_file():
+        return False
+    try:
+        parent = subprocess.run(
+            ["/bin/ps", "-p", str(os.getppid()), "-o", "comm="],
+            capture_output=True, text=True, check=True, timeout=2,
+        ).stdout.strip()
+        return bool(parent) and Path(parent).resolve() == expected_parent.resolve()
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | None = None) -> None:
     binary = binary or agentroute_home() / "bin" / "codex-bin"
+    if profile is None and browser_auth_helper_launch(binary, user_args):
+        # Authentication uses the existing ChatGPT identity even when ordinary
+        # chats default to another provider. Do not route this utility into a
+        # shared conversation server or run model/catalog preparation for it.
+        environment = os.environ.copy()
+        environment.pop("AGENTROUTE_LOCAL_SERVER_SOCKET", None)
+        argv = [str(binary), "-c", 'model_provider="openai"', *user_args]
+        os.execve(argv[0], argv, environment)
+        return
     config = load_config()
     launch_config_path: Path | None = None
     if config.launch_config and not os.environ.get("AGENTROUTE_CONFIG"):
