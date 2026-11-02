@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import math
@@ -31,6 +32,9 @@ def read_snapshot(credential):
         data = json.loads((agentroute_home() / "grok-usage.json").read_text())
         if not isinstance(data, dict):
             return {}
+        mode = getattr(credential, "mode", "subscription")
+        if data.get("credential_mode", "subscription") != mode:
+            return {}
         observed = data.get("observed_at", 0)
         if not valid_number(observed) or observed > time.time() + TTL:
             return {}
@@ -47,18 +51,44 @@ def read_snapshot(credential):
     return {}
 
 
+def api_snapshot(payload):
+    """Validate the active API bridge's account-bound receipt without rereading its key."""
+    if not isinstance(payload, dict) or payload.get("credential_mode") != "api-key":
+        return {}
+    data = {
+        key: payload[key] for key in ("account", "observed_at", "blocked_until") if key in payload
+    }
+    account = data.get("account")
+    observed = data.get("observed_at")
+    if not isinstance(account, str) or len(account) != 64 or not valid_number(observed):
+        return {}
+    if observed > time.time() + TTL:
+        return {}
+    if "blocked_until" in data and not valid_number(data["blocked_until"]):
+        return {}
+    return dict(data, credential_mode="api-key")
+
+
 def write_snapshot(credential, data, *, account=None):
     data = dict(data, account=account or account_key(credential), observed_at=time.time())
+    if getattr(credential, "mode", "subscription") == "api-key":
+        data["credential_mode"] = "api-key"
     home = agentroute_home()
     home.mkdir(parents=True, exist_ok=True)
-    fd, path = tempfile.mkstemp(prefix=".grok-usage-", dir=home)
-    try:
-        with os.fdopen(fd, "w") as file:
-            json.dump(data, file)
-        os.replace(path, home / "grok-usage.json")
-    finally:
-        if os.path.exists(path):
-            os.unlink(path)
+    lock_fd = os.open(home / ".grok-usage.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(lock_fd, "a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if data["account"] != account_key(credential):
+            # Check inside the writer lock: a late old-login result cannot replace a new sample.
+            return data
+        fd, path = tempfile.mkstemp(prefix=".grok-usage-", dir=home)
+        try:
+            with os.fdopen(fd, "w") as file:
+                json.dump(data, file)
+            os.replace(path, home / "grok-usage.json")
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
     return data
 
 
@@ -143,10 +173,39 @@ def fetch_usage(credential, version, *, force=False):
 
 
 def capacity_snapshot(base_url, *, offline=False):
-    from .grok_bridge import GrokCredential
+    from .grok_bridge import GrokApiCredential, GrokCredential
 
-    credential = GrokCredential("grok")
+    try:
+        saved = json.loads((agentroute_home() / "grok-usage.json").read_text())
+        api_key = isinstance(saved, dict) and saved.get("credential_mode") == "api-key"
+    except (OSError, ValueError):
+        api_key = False
+    credential = GrokApiCredential() if api_key else GrokCredential("grok")
+    if not offline:
+        url = urlparse(base_url or "")
+        if url.scheme == "http" and url.hostname in {"127.0.0.1", "localhost"}:
+            try:
+                with urllib.request.urlopen(
+                    f"{url.scheme}://{url.netloc}/healthz", timeout=2
+                ) as response:
+                    health = json.loads(response.read(65536))
+                if not isinstance(health, dict) or health.get("provider") != "grok":
+                    return {}
+                credential = (
+                    GrokApiCredential()
+                    if health.get("credential_mode") == "api-key"
+                    else GrokCredential("grok")
+                )
+            except (OSError, ValueError):
+                return {}
     data = read_snapshot(credential)
+    if not offline and getattr(credential, "mode", "subscription") == "api-key":
+        try:
+            endpoint = f"{url.scheme}://{url.netloc}/usage"
+            with urllib.request.urlopen(endpoint, timeout=5) as response:
+                data = api_snapshot(json.loads(response.read(65536)))
+        except (OSError, ValueError):
+            return {}
     if data.get("blocked_until", 0) > time.time():
         return data
     if not offline and time.time() - data.get("observed_at", 0) >= TTL:
@@ -159,6 +218,10 @@ def capacity_snapshot(base_url, *, offline=False):
                     result = json.loads(response.read(65536))
                 if not isinstance(result, dict) or result.get("error"):
                     return {}
+                if result.get("credential_mode") == "api-key":
+                    credential = GrokApiCredential()
+                else:
+                    credential = GrokCredential("grok")
                 data = read_snapshot(credential)
             except (OSError, ValueError):
                 return {}
