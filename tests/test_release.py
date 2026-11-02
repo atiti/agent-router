@@ -87,7 +87,11 @@ def test_release_catalog_install_and_rollback_preserve_user_skills(
     installed = tmp_path / "installed"
     (installed / "venv/bin").mkdir(parents=True)
     (installed / "venv/bin/python").symlink_to(sys.executable)
-    executable(installed / "venv/bin/agentroute", f"exit {int(fail_setup)}\n")
+    executable(
+        installed / "venv/bin/agentroute",
+        f'if [ "$1" = setup ]; then test "$AGENTROUTE_RUNTIME_BUILD_ID" = "{build_id}"; fi\n'
+        f"exit {int(fail_setup)}\n",
+    )
     previous_catalog = '{"previous": "preserve"}\n'
     if fail_setup:
         (installed / "models").mkdir()
@@ -111,6 +115,7 @@ def test_release_catalog_install_and_rollback_preserve_user_skills(
         "CODEX_HOME": str(codex_home),
         "AGENTROUTE_HOME": str(installed),
         "AGENTROUTE_RELEASE_PREBUILT_HOME": str(prebuilt),
+        "AGENTROUTE_RUNTIME_BUILD_ID": "b" * 40 + "-provider-routing-v63",
     }
     output = tmp_path / "dist"
     subprocess.run(

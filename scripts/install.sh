@@ -211,7 +211,7 @@ cp "$AGENTROUTE_PROJECT_ROOT/packaging/codex-launcher" "$AGENTROUTE_BIN_DIR/code
 chmod 755 "$AGENTROUTE_BIN_DIR/codex"
 
 if [ "${AGENTROUTE_INSTALL_ACTIVATE:-1}" = 1 ]; then
-    "$AGENTROUTE_BIN_DIR/agentroute" setup
+    AGENTROUTE_RUNTIME_BUILD_ID="$AGENTROUTE_BUILD_ID" "$AGENTROUTE_BIN_DIR/agentroute" setup
     sh "$AGENTROUTE_PROJECT_ROOT/scripts/install-progress-skill.sh" \
         "$AGENTROUTE_PROJECT_ROOT/skills/goal-checkpoint" "${CODEX_HOME:-$HOME/.codex}/skills"
 

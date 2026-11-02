@@ -104,7 +104,8 @@ fi
 "$AGENTROUTE_HOME_DIR/venv/bin/python" "$PAYLOAD_ROOT/code-mode-smoke.py" \
     "$AGENTROUTE_BIN_DIR/codex-code-mode-host"
 
-"$AGENTROUTE_BIN_DIR/agentroute" setup
+AGENTROUTE_RUNTIME_BUILD_ID=$(sed -n '1p' "$AGENTROUTE_HOME_DIR/build-id") \
+    "$AGENTROUTE_BIN_DIR/agentroute" setup
 sh "$PAYLOAD_ROOT/install-progress-skill.sh" "$PAYLOAD_ROOT/goal-checkpoint" \
     "${CODEX_HOME:-$HOME/.codex}/skills"
 case "${SHELL:-}" in
