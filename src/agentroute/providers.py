@@ -176,6 +176,19 @@ def _installed_codex_catalog(source: Path | None = None) -> dict | None:
     if match is None:
         return None
     commit = match.group(1)
+    try:
+        bundled = json.loads((agentroute_home() / "models/native-catalog.json").read_text())
+        catalog = bundled.get("catalog") if isinstance(bundled, dict) else None
+        if (
+            isinstance(bundled, dict)
+            and bundled.get("build_id") == build_id
+            and isinstance(catalog, dict)
+            and isinstance(catalog.get("models"), list)
+            and catalog["models"]
+        ):
+            return catalog
+    except (OSError, ValueError):
+        pass
     candidates = [source] if source else []
     if configured_source := os.environ.get("AGENTROUTE_CODEX_SOURCE"):
         candidates.append(Path(configured_source))

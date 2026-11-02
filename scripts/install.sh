@@ -166,6 +166,32 @@ install_binary(
     fi
 fi
 
+AGENTROUTE_CATALOG_SOURCE="$AGENTROUTE_CODEX_SOURCE" \
+AGENTROUTE_CATALOG_BUILD_ID="$AGENTROUTE_BUILD_ID" \
+AGENTROUTE_CATALOG_HOME="$AGENTROUTE_HOME_DIR" \
+    "$AGENTROUTE_HOME_DIR/venv/bin/python" - <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+build_id = os.environ["AGENTROUTE_CATALOG_BUILD_ID"]
+commit = build_id.split("-", 1)[0]
+catalog = json.loads(subprocess.check_output([
+    "git", "-C", os.environ["AGENTROUTE_CATALOG_SOURCE"], "show",
+    f"{commit}:codex-rs/models-manager/models.json",
+], text=True))
+if not isinstance(catalog, dict) or not isinstance(catalog.get("models"), list) or not catalog["models"]:
+    raise RuntimeError("Native runtime model catalog is missing or invalid")
+path = Path(os.environ["AGENTROUTE_CATALOG_HOME"]) / "models/native-catalog.json"
+path.parent.mkdir(parents=True, exist_ok=True)
+with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as handle:
+    staged = Path(handle.name)
+    json.dump({"build_id": build_id, "catalog": catalog}, handle)
+staged.replace(path)
+PY
+
 if [ "$(uname -s)" = Darwin ]; then
     # Re-sign even when the compiled build ID is unchanged so installer-only
     # entitlement fixes repair an existing helper without rebuilding Codex.

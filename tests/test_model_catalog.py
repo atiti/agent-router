@@ -97,10 +97,25 @@ def test_installed_catalog_uses_invoking_runtime_build_id(tmp_path, monkeypatch)
     home = tmp_path / "agentroute"
     home.mkdir()
     (home / "build-id").write_text(f"{cli_commit}-provider-routing-v58\n")
+    (home / "models").mkdir()
+    (home / "models/native-catalog.json").write_text(json.dumps({
+        "build_id": f"{cli_commit}-provider-routing-v58",
+        "catalog": {"models": [{"slug": "wrong-running-revision"}]},
+    }))
     monkeypatch.setenv("AGENTROUTE_HOME", str(home))
     monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", f"{runtime_commit}-provider-routing-v58")
 
     assert _installed_codex_catalog(source) == original
+
+
+@pytest.mark.parametrize("payload", ["invalid JSON", "[]", '{"catalog": {"models": []}}'])
+def test_invalid_bundled_catalog_does_not_supply_runtime_metadata(tmp_path, monkeypatch, payload):
+    home = tmp_path / "agentroute"
+    (home / "models").mkdir(parents=True)
+    (home / "build-id").write_text("a" * 40 + "-provider-routing-v64\n")
+    (home / "models/native-catalog.json").write_text(payload)
+    monkeypatch.setenv("AGENTROUTE_HOME", str(home))
+    assert _installed_codex_catalog() is None
 
 
 def test_launch_catalog_sidecars_are_scoped_to_invoking_runtime(tmp_path, monkeypatch):
