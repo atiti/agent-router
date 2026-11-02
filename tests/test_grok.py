@@ -507,3 +507,53 @@ def test_grok_quota_fallback_and_explicit_lock(monkeypatch):
         RouteContext(session_id="grok-quota", latest_prompt="@grok hello")
     )
     assert locked.backend == "grok" and locked.capacity_blocked
+
+
+def test_default_output_is_bounded_and_explicit_limit_preserved():
+    assert translate_request({"model": "grok-4.6"})["max_output_tokens"] == 16384
+    explicit = translate_request({"model": "grok-4.6", "max_output_tokens": 1024})
+    assert explicit["max_output_tokens"] == 1024
+
+
+def test_interleaved_search_and_tool_calls_preserve_active_message():
+    events = [
+        {"type": "response.output_item.added", "output_index": 0,
+         "item": {"id": "m", "type": "message", "role": "assistant", "content": []}},
+        {"type": "response.output_text.delta", "output_index": 0,
+         "item_id": "m", "delta": "Before "},
+        {"type": "response.output_item.added", "output_index": 1,
+         "item": {"id": "s", "type": "web_search_call"}},
+        {"type": "response.output_item.done", "output_index": 1,
+         "item": {"id": "s", "type": "web_search_call"}},
+        {"type": "response.output_item.added", "output_index": 2,
+         "item": {"id": "f", "type": "function_call", "name": "read"}},
+        {"type": "response.output_item.done", "output_index": 2,
+         "item": {"id": "f", "type": "function_call", "name": "read"}},
+        {"type": "response.output_text.delta", "output_index": 0,
+         "item_id": "m", "delta": "after"},
+        {"type": "response.output_item.done", "output_index": 0,
+         "item": {"id": "m", "type": "message", "role": "assistant", "content": []}},
+        {"type": "response.completed", "response": {"output": []}},
+    ]
+    source = iter(b"data: " + json.dumps(e).encode() + b"\n\n" for e in events)
+    stream = translate_stream(source)
+    # The first item's deltas remain streaming, before the source is exhausted.
+    assert next(stream) == b"event: response.output_item.added\n"
+    result = b"".join(stream)
+    parsed = [json.loads(row[6:]) for row in result.splitlines() if row.startswith(b"data: ")]
+    active = None
+    text = ""
+    for event in parsed:
+        if event["type"] == "response.output_item.added":
+            assert active is None
+            active = event["item"]["id"]
+        elif event["type"] == "response.output_item.done":
+            assert active == event["item"]["id"]
+            active = None
+        elif event["type"] == "response.output_text.delta":
+            assert active == event["item_id"]
+            text += event["delta"]
+    assert text == "Before after"
+    assert parsed[-1]["type"] == "response.completed"
+    frames = [frame for frame in result.split(b"\n\n") if frame.strip()]
+    assert all(frame.count(b"data: ") == 1 for frame in frames)
