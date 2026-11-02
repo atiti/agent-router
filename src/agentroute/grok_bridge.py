@@ -28,6 +28,7 @@ from .config import ExecutionBackendConfig, ModelCapabilities, ModelTarget, agen
 UPSTREAM = "https://cli-chat-proxy.grok.com/v1"
 API_UPSTREAM = "https://api.x.ai/v1"
 DEFAULT_PORT = 8092
+API_PORT = 8093
 MAX_BODY = 50 * 1024 * 1024
 MODELS = ("grok-4.7-build-fast", "grok-4.6", "grok-4.7", "grok-4.5")
 API_MODELS = tuple(model for model in MODELS if model != "grok-4.7-build-fast")
@@ -192,20 +193,29 @@ class GrokApiCredential:
         ).hexdigest()
 
 
-def ensure_backend(config, port=DEFAULT_PORT, credential_mode="subscription"):
+def ensure_backend(config, port=None, credential_mode="subscription"):
     if credential_mode not in {"subscription", "api-key"}:
         raise ValueError("Unknown Grok credential mode")
     api_key = credential_mode == "api-key"
-    if "grok" not in config.backends:
-        config.backends["grok"] = ExecutionBackendConfig(
+    name = "grok-api" if api_key else "grok"
+    if port is None:
+        port = API_PORT if api_key else DEFAULT_PORT
+    if not 1 <= port <= 65535:
+        raise ValueError("port must be between 1 and 65535")
+    if name not in config.backends:
+        config.backends[name] = ExecutionBackendConfig(
             enabled=True,
-            codex_provider="agentroute-grok",
+            codex_provider="agentroute-grok-api" if api_key else "agentroute-grok",
             display_name="Grok API" if api_key else "Grok subscription (Grok CLI)",
             base_url=f"http://127.0.0.1:{port}/v1",
             tool_compatibility="functions_and_apply_patch_preserve_reasoning",
             review_model="grok-4.7" if api_key else MODELS[0],
             tiers={
-                tier: ModelTarget(model="grok-4.7" if api_key else model, reasoning_effort=effort)
+                tier: ModelTarget(
+                    model="grok-4.7" if api_key else model,
+                    reasoning_effort=effort,
+                    context_window=500000 if api_key else 256000,
+                )
                 for tier, model, effort in (
                     ("fast", MODELS[0], "low"),
                     ("normal", "grok-4.6", "medium"),
@@ -215,31 +225,9 @@ def ensure_backend(config, port=DEFAULT_PORT, credential_mode="subscription"):
             },
         )
     else:
-        config.backends["grok"].enabled = True
-        config.backends["grok"].base_url = f"http://127.0.0.1:{port}/v1"
-    backend = config.backends["grok"]
-    shipped_subscription = all(
-        backend.tiers.get(tier) is not None
-        and backend.tiers[tier].model == model
-        and backend.tiers[tier].reasoning_effort == effort
-        for tier, model, effort in (
-            ("fast", MODELS[0], "low"),
-            ("normal", "grok-4.6", "medium"),
-            ("smart", "grok-4.7", "high"),
-            ("max", "grok-4.7", "xhigh"),
-        )
-    )
-    if backend.display_name in {"Grok API", "Grok subscription (Grok CLI)"}:
-        backend.display_name = "Grok API" if api_key else "Grok subscription (Grok CLI)"
-    if api_key:
-        # Migrate only the subscription-only shipped model, retaining custom public models.
-        for target in (*backend.tiers.values(), *backend.models.values()):
-            if target.model == "grok-4.7-build-fast":
-                target.model = "grok-4.7"
-        if shipped_subscription:
-            backend.tiers["normal"].model = "grok-4.7"
-        if backend.review_model == "grok-4.7-build-fast":
-            backend.review_model = "grok-4.7"
+        config.backends[name].enabled = True
+        config.backends[name].base_url = f"http://127.0.0.1:{port}/v1"
+    backend = config.backends[name]
     # Clients authenticate locally with a separate key; xAI credentials stay upstream.
     backend.api_key_env = BRIDGE_KEY_ENV if api_key else None
     backend.api_key_header = "authorization"
