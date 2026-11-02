@@ -74,14 +74,14 @@ def test_api_backend_preserves_routes_and_existing_context():
     routes = config.routing.model_dump()
     ensure_backend(config, credential_mode="api-key")
     assert config.routing.model_dump() == routes
-    assert {target.model for target in config.backends["grok"].tiers.values()} == {"grok-4.7"}
+    assert {target.model for target in config.backends["grok-api"].tiers.values()} == {"grok-4.7"}
     assert config.capabilities.models["grok-4.7"].context_window == 500000
-    config.backends["grok"].api_key_env = "XAI_API_KEY"
-    config.backends["grok"].tiers["fast"].model = "grok-4.5"
+    config.backends["grok-api"].api_key_env = "XAI_API_KEY"
+    config.backends["grok-api"].tiers["fast"].model = "grok-4.5"
     config.capabilities.models["grok-4.7"].context_window = 100000
     ensure_backend(config, 9092, "api-key")
-    assert config.backends["grok"].api_key_env == BRIDGE_KEY_ENV
-    assert config.backends["grok"].tiers["fast"].model == "grok-4.5"
+    assert config.backends["grok-api"].api_key_env == BRIDGE_KEY_ENV
+    assert config.backends["grok-api"].tiers["fast"].model == "grok-4.5"
     assert config.capabilities.models["grok-4.7"].context_window == 100000
 
 
@@ -149,24 +149,16 @@ def test_api_billing_never_contacts_subscription_proxy(api_key, monkeypatch):
     assert fetch_usage(GrokApiCredential(), None) == {"error": "API billing telemetry unavailable"}
 
 
-def test_switch_to_api_migrates_only_subscription_only_model():
+def test_subscription_and_api_backends_coexist():
     config = default_config()
     ensure_backend(config)
-    config.backends["grok"].tiers["smart"].model = "grok-4.5"
+    before = config.backends["grok"].model_dump()
     ensure_backend(config, credential_mode="api-key")
-    assert config.backends["grok"].tiers["fast"].model == "grok-4.7"
-    assert config.backends["grok"].review_model == "grok-4.7"
-    assert config.backends["grok"].tiers["smart"].model == "grok-4.5"
+    assert config.backends["grok"].model_dump() == before
+    assert config.backends["grok-api"].codex_provider == "agentroute-grok-api"
+    assert config.backends["grok-api"].base_url == "http://127.0.0.1:8093/v1"
+    assert config.backends["grok"].base_url == "http://127.0.0.1:8092/v1"
 
-
-def test_shipped_subscription_tiers_migrate_to_api_defaults():
-    config = default_config()
-    ensure_backend(config)
-    ensure_backend(config, credential_mode="api-key")
-    assert {target.model for target in config.backends["grok"].tiers.values()} == {"grok-4.7"}
-    assert config.backends["grok"].display_name == "Grok API"
-    ensure_backend(config)
-    assert config.backends["grok"].display_name == "Grok subscription (Grok CLI)"
 
 
 def test_patch_tool_choice_is_translated_and_original_untouched():
@@ -396,7 +388,7 @@ def test_api_http_auth_tools_continuation_errors_and_cooldown(api_key, monkeypat
             assert b"private" not in error.value.read()
             assert len(seen) == before + 1  # Never replay an upstream request.
         assert read_snapshot(GrokApiCredential())["credential_mode"] == "api-key"
-        assert capacity_snapshot(address + "/v1", offline=True)["blocked_until"] > 0
+        assert capacity_snapshot(address + "/v1", offline=True, mode="api-key")["blocked_until"] > 0
         with pytest.raises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request({"model": "grok-4.7-build-fast"}))
         assert error.value.code == 400

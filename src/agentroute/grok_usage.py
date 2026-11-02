@@ -27,9 +27,18 @@ def account_key(credential, *, login=None):
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
+def snapshot_path(credential):
+    name = (
+        "grok-api-usage.json"
+        if getattr(credential, "mode", "subscription") == "api-key"
+        else "grok-usage.json"
+    )
+    return agentroute_home() / name
+
+
 def read_snapshot(credential):
     try:
-        data = json.loads((agentroute_home() / "grok-usage.json").read_text())
+        data = json.loads(snapshot_path(credential).read_text())
         if not isinstance(data, dict):
             return {}
         mode = getattr(credential, "mode", "subscription")
@@ -92,7 +101,7 @@ def write_snapshot(credential, data, *, account=None):
         try:
             with os.fdopen(fd, "w") as file:
                 json.dump(data, file)
-            os.replace(path, home / "grok-usage.json")
+            os.replace(path, snapshot_path(credential))
         finally:
             if os.path.exists(path):
                 os.unlink(path)
@@ -179,15 +188,10 @@ def fetch_usage(credential, version, *, force=False):
         return {"error": "subscription telemetry unavailable"}
 
 
-def capacity_snapshot(base_url, *, offline=False):
+def capacity_snapshot(base_url, *, offline=False, mode="subscription"):
     from .grok_bridge import GrokApiCredential, GrokCredential
 
-    try:
-        saved = json.loads((agentroute_home() / "grok-usage.json").read_text())
-        api_key = isinstance(saved, dict) and saved.get("credential_mode") == "api-key"
-    except (OSError, ValueError):
-        api_key = False
-    credential = GrokApiCredential() if api_key else GrokCredential("grok")
+    credential = GrokApiCredential() if mode == "api-key" else GrokCredential("grok")
     if not offline:
         url = urlparse(base_url or "")
         if url.scheme == "http" and url.hostname in {"127.0.0.1", "localhost"}:
@@ -198,11 +202,8 @@ def capacity_snapshot(base_url, *, offline=False):
                     health = json.loads(response.read(65536))
                 if not isinstance(health, dict) or health.get("provider") != "grok":
                     return {}
-                credential = (
-                    GrokApiCredential()
-                    if health.get("credential_mode") == "api-key"
-                    else GrokCredential("grok")
-                )
+                if health.get("credential_mode", "subscription") != mode:
+                    return {}
             except (OSError, ValueError):
                 return {}
     data = read_snapshot(credential)

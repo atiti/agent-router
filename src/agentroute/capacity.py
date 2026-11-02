@@ -31,10 +31,7 @@ def _number(value: Any) -> float | None:
 
 
 def _subscription_usage_detail(used_percent: float) -> str:
-    return (
-        f"subscription {used_percent:g}% used / "
-        f"{max(0.0, 100.0 - used_percent):g}% remaining"
-    )
+    return f"subscription {used_percent:g}% used / {max(0.0, 100.0 - used_percent):g}% remaining"
 
 
 def subscription_state(
@@ -57,9 +54,7 @@ def subscription_state(
     # after a routed turn. Its windows and merged spend metadata are not GPT
     # telemetry. The independent account-validated usage flag above remains valid.
     limit_id = data.get("limit_id") or data.get("limitId")
-    if limit_id and not (
-        limit_id == "codex" or str(limit_id).startswith(("codex_", "codex-"))
-    ):
+    if limit_id and not (limit_id == "codex" or str(limit_id).startswith(("codex_", "codex-"))):
         data = {}
     reached = data.get("rateLimitReachedType") or data.get("rate_limit_reached_type")
     spend_reached = data.get("spendControlReached")
@@ -80,8 +75,11 @@ def subscription_state(
     recovery_threshold = max(
         0.0, config.capacity.switch_percent - config.capacity.recovery_margin_percent
     )
-    if ordinary_allowed is False or reached or spend_reached is True or (
-        used_percent is not None and used_percent >= config.capacity.switch_percent
+    if (
+        ordinary_allowed is False
+        or reached
+        or spend_reached is True
+        or (used_percent is not None and used_percent >= config.capacity.switch_percent)
     ):
         reason = (
             str(reached)
@@ -112,8 +110,13 @@ def subscription_state(
         )
     if used_percent is not None and used_percent >= config.capacity.warn_percent:
         return CapacityState(
-            "gpt", "warning", _subscription_usage_detail(used_percent),
-            "subscription", used_percent, resets_at, account_id
+            "gpt",
+            "warning",
+            _subscription_usage_detail(used_percent),
+            "subscription",
+            used_percent,
+            resets_at,
+            account_id,
         )
     if used_percent is None:
         return CapacityState(
@@ -123,8 +126,13 @@ def subscription_state(
             account_id=account_id,
         )
     return CapacityState(
-        "gpt", "healthy", _subscription_usage_detail(used_percent),
-        "subscription", used_percent, resets_at, account_id
+        "gpt",
+        "healthy",
+        _subscription_usage_detail(used_percent),
+        "subscription",
+        used_percent,
+        resets_at,
+        account_id,
     )
 
 
@@ -140,47 +148,65 @@ def backend_state(
     probe: bool = True,
 ) -> CapacityState:
     if backend_name == "gpt":
-        return subscription_state(
-            config, rate_limits, account_id, recovery_hold=recovery_hold
-        )
+        return subscription_state(config, rate_limits, account_id, recovery_hold=recovery_hold)
     if not config.capacity.enabled:
         return CapacityState(backend_name, "disabled", "capacity management disabled")
     backend = config.backends[backend_name]
     if backend.daily_budget_usd is not None and daily_spend >= backend.daily_budget_usd:
         return CapacityState(
-            backend_name, "budget_reached",
+            backend_name,
+            "budget_reached",
             f"daily budget ${backend.daily_budget_usd:g} reached (${daily_spend:.2f} used)",
             "daily_budget",
         )
     if backend.monthly_budget_usd is not None and monthly_spend >= backend.monthly_budget_usd:
         return CapacityState(
-            backend_name, "budget_reached",
+            backend_name,
+            "budget_reached",
             f"monthly budget ${backend.monthly_budget_usd:g} reached (${monthly_spend:.2f} used)",
             "monthly_budget",
         )
     grok_state = None
-    if backend_name == "grok":
+    if backend_name in {"grok", "grok-api"}:
         from .grok_usage import capacity_snapshot
-        snapshot = capacity_snapshot(backend.base_url, offline=not probe)
+
+        snapshot = capacity_snapshot(
+            backend.base_url,
+            offline=not probe,
+            mode="api-key" if backend_name == "grok-api" else "subscription",
+        )
         if snapshot.get("blocked_until", 0) > datetime.now(timezone.utc).timestamp():
-            return CapacityState("grok", "unavailable", "Grok rate limited; retry after cooldown",
-                                 "subscription", resets_at=int(snapshot["blocked_until"]))
+            return CapacityState(
+                backend_name,
+                "unavailable",
+                "Grok rate limited; retry after cooldown",
+                "api" if backend_name == "grok-api" else "subscription",
+                resets_at=int(snapshot["blocked_until"]),
+            )
+        if backend_name == "grok-api":
+            snapshot = {}
         # Reuse the standard thresholds and recovery hysteresis, with provider-owned data.
         used = snapshot.get("used_percent")
         state = subscription_state(
             config,
             {"primary": {"usedPercent": used, "resetsAt": snapshot.get("resets_at")}},
-            snapshot.get("account"), recovery_hold=recovery_hold,
+            snapshot.get("account"),
+            recovery_hold=recovery_hold,
         )
-        grok_state = CapacityState("grok", state.status, state.detail, state.trigger,
-                                   state.used_percent, state.resets_at, state.account_id)
+        grok_state = CapacityState(
+            "grok",
+            state.status,
+            state.detail,
+            state.trigger,
+            state.used_percent,
+            state.resets_at,
+            state.account_id,
+        )
         if not grok_state.available or grok_state.status == "warning":
             return grok_state
     ratios = [
-        daily_spend / backend.daily_budget_usd
-        if backend.daily_budget_usd else 0,
-        monthly_spend / backend.monthly_budget_usd
-        if backend.monthly_budget_usd else 0,
+        daily_spend / backend.daily_budget_usd if backend.daily_budget_usd else 0,
+        monthly_spend / backend.monthly_budget_usd if backend.monthly_budget_usd else 0,
     ]
     recovery_threshold = max(
         0.0, config.capacity.switch_percent - config.capacity.recovery_margin_percent
@@ -194,14 +220,15 @@ def backend_state(
         )
     if max(ratios) * 100 >= config.capacity.warn_percent:
         return CapacityState(
-            backend_name, "warning",
-            f"API budget {max(ratios) * 100:.0f}% used", "api_budget"
+            backend_name, "warning", f"API budget {max(ratios) * 100:.0f}% used", "api_budget"
         )
     if grok_state is not None:
         return grok_state
     return CapacityState(
-        backend_name, "healthy",
-        f"today ${daily_spend:.2f}; month ${monthly_spend:.2f}", "api_budget"
+        backend_name,
+        "healthy",
+        f"today ${daily_spend:.2f}; month ${monthly_spend:.2f}",
+        "api_budget",
     )
 
 
@@ -261,7 +288,7 @@ def fallback_cycle(config: AppConfig, backend_name: str) -> list[str]:
         if not candidate:
             return []
         if candidate in seen:
-            return [*seen[seen.index(candidate):], candidate]
+            return [*seen[seen.index(candidate) :], candidate]
         seen.append(candidate)
         current = candidate
     return seen

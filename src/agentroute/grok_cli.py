@@ -18,6 +18,7 @@ import typer
 from .bridge_service import _agentroute_executable, wait_for_health
 from .config import agentroute_home, load_config, save_config
 from .grok_bridge import (
+    API_PORT,
     BRIDGE_KEY_ENV,
     BRIDGE_KEY_PREFIX,
     DEFAULT_PORT,
@@ -104,7 +105,7 @@ class CredentialMode(str, Enum):
 
 @app.command()
 def serve(
-    port: int = DEFAULT_PORT,
+    port: int | None = None,
     grok_binary: str = "grok",
     credential: CredentialMode = CredentialMode.subscription,
     instance: str = "",
@@ -113,7 +114,11 @@ def serve(
     source = (
         GrokApiCredential() if credential == CredentialMode.api_key else GrokCredential(grok_binary)
     )
-    GrokServer(port, source, instance).serve_forever()
+    GrokServer(
+        port or (API_PORT if credential == CredentialMode.api_key else DEFAULT_PORT),
+        source,
+        instance,
+    ).serve_forever()
 
 
 @app.command("credential-import")
@@ -124,12 +129,15 @@ def credential_import(source_env: str):
         raise typer.BadParameter("API credential must be nonempty ASCII without whitespace")
     config = load_config()
     ensure_backend(config, credential_mode="api-key")
-    config.backends["grok"].api_key_env = "XAI_API_KEY"
+    config.backends["grok-api"].api_key_env = "XAI_API_KEY"
     if api_credentials_path().resolve() == credentials_path().resolve():
         raise typer.BadParameter("The upstream API key file must differ from the client key file")
     ensure_client_credential(config)
-    path, name = import_backend_credential(config, "grok", source_env, api_credentials_path())
-    typer.echo(f"Stored {name} in {path}; the API bridge reads rotations automatically.")
+    path, name = import_backend_credential(config, "grok-api", source_env, api_credentials_path())
+    ensure_backend(config, credential_mode="api-key")
+    save_config(config)
+    sync_codex_providers(config)
+    typer.echo(f"Stored {name} in {path}; use @grok-api with the API bridge.")
 
 
 def ensure_client_credential(config):
@@ -140,19 +148,17 @@ def ensure_client_credential(config):
     except (FileNotFoundError, MissingCredential):
         existing = secrets.token_urlsafe(32)
     config = config.model_copy(deep=True)
-    config.backends["grok"].api_key_env = BRIDGE_KEY_ENV
+    config.backends["grok-api"].api_key_env = BRIDGE_KEY_ENV
     source = "AGENTROUTE_GROK_BRIDGE_IMPORT"
     previous = os.environ.get(source)
     try:
         os.environ[source] = BRIDGE_KEY_PREFIX + existing
-        import_backend_credential(config, "grok", source)
+        import_backend_credential(config, "grok-api", source)
     finally:
         if previous is None:
             os.environ.pop(source, None)
         else:
             os.environ[source] = previous
-
-
 
 
 @app.command()
