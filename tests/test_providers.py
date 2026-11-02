@@ -68,6 +68,43 @@ def test_provider_context_window_requires_capable_runtime(
     ) == expected
 
 
+def test_provider_applies_context_for_review_only_model_without_widening_worker(
+    monkeypatch,
+):
+    import tomllib
+
+    from agentroute.config import ModelCapabilities
+    from agentroute.providers import _provider_block
+
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", "test-provider-routing-v63")
+    config = default_config()
+    config.backends["local"] = ExecutionBackendConfig(
+        enabled=True,
+        codex_provider="local",
+        display_name="Local test backend",
+        base_url="http://127.0.0.1:8080/v1",
+        review_model="review-only",
+        tiers={"normal": ModelTarget(model="worker", context_window=32_768)},
+    )
+    config.capabilities.models["worker"] = ModelCapabilities(context_window=65_536)
+    config.capabilities.models["review-only"] = ModelCapabilities(context_window=16_384)
+
+    rendered = tomllib.loads(_provider_block(config, preserve_reasoning_compatibility=True))
+    provider = rendered["model_providers"]["local"]
+
+    assert provider["approval_review_model"] == "review-only"
+    assert provider["capabilities"]["context_windows"] == {
+        "worker": 32_768,
+        "review-only": 16_384,
+    }
+
+    config.backends["local"].review_model = "worker"
+    rendered = tomllib.loads(_provider_block(config, preserve_reasoning_compatibility=True))
+    assert rendered["model_providers"]["local"]["capabilities"]["context_windows"] == {
+        "worker": 32_768,
+    }
+
+
 def test_sync_custom_provider_preserves_optional_auth_and_safe_tools(tmp_path):
     path = tmp_path / "config.toml"
     config = default_config()
