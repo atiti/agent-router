@@ -127,8 +127,8 @@ def credential_import(source_env: str):
     config.backends["grok"].api_key_env = "XAI_API_KEY"
     if api_credentials_path().resolve() == credentials_path().resolve():
         raise typer.BadParameter("The upstream API key file must differ from the client key file")
-    path, name = import_backend_credential(config, "grok", source_env, api_credentials_path())
     ensure_client_credential(config)
+    path, name = import_backend_credential(config, "grok", source_env, api_credentials_path())
     typer.echo(f"Stored {name} in {path}; the API bridge reads rotations automatically.")
 
 
@@ -160,6 +160,9 @@ def install(port: int = DEFAULT_PORT):
     """Register @grok, install a user service, and check health."""
     if not 1 <= port <= 65535:
         raise typer.BadParameter("port must be between 1 and 65535")
+    active = wait_for_health(port, timeout=1)
+    if (active.payload or {}).get("credential_mode") == "api-key":
+        raise typer.BadParameter("Stop the API bridge before installing subscription mode")
     path = unit_path()
     if path.exists():
         if platform.system() == "Darwin":
@@ -209,11 +212,11 @@ def install(port: int = DEFAULT_PORT):
 
 
 @app.command()
-def status(port: int = DEFAULT_PORT):
+def status(port: int | None = None):
     """Report service configuration and health without using subscription allowance."""
     path = unit_path()
-    if not path.exists():
-        health = wait_for_health(port, timeout=2)
+    if not path.exists() or port is not None:
+        health = wait_for_health(port or DEFAULT_PORT, timeout=2)
         typer.echo(json.dumps({"service": None, "status": health.status, "health": health.payload}))
         if health.status != "healthy" or (health.payload or {}).get("provider") != "grok":
             raise typer.Exit(1)

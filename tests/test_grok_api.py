@@ -432,3 +432,28 @@ def test_status_reports_foreground_api_bridge(monkeypatch, tmp_path):
     result = CliRunner().invoke(app, ['status'])
     assert result.exit_code == 0
     assert json.loads(result.output)['health']['credential_mode'] == 'api-key'
+
+
+def test_failed_client_key_preflight_preserves_upstream_key(api_key, monkeypatch):
+    upstream = Path(os.environ['AGENTROUTE_GROK_API_CREDENTIALS_FILE'])
+    before = upstream.read_bytes()
+    api_key.chmod(0o644)
+    monkeypatch.setenv('SOURCE_KEY', 'different-api-key')
+    result = CliRunner().invoke(app, ['credential-import', 'SOURCE_KEY'])
+    assert result.exit_code != 0
+    assert upstream.read_bytes() == before
+
+
+def test_explicit_status_port_checks_requested_foreground(monkeypatch, tmp_path):
+    from agentroute.bridge_service import BridgeHealth
+
+    unit = tmp_path / 'service.plist'
+    unit.write_bytes(b'not parsed for explicit port')
+    monkeypatch.setattr('agentroute.grok_cli.unit_path', lambda: unit)
+    seen = []
+    def health(port, **kwargs):
+        seen.append(port)
+        return BridgeHealth('healthy', 'api', {'provider': 'grok', 'credential_mode': 'api-key'})
+    monkeypatch.setattr('agentroute.grok_cli.wait_for_health', health)
+    result = CliRunner().invoke(app, ['status', '--port', '9092'])
+    assert result.exit_code == 0 and seen == [9092]
