@@ -65,7 +65,9 @@ def service_definition(binary, port, credential_mode="subscription", instance=""
         )
     else:
         args.extend(["--grok-binary", binary])
-        environment_names = ("GROK_HOME", "GROK_AUTH_PATH", "AGENTROUTE_HOME")
+        environment_names = (
+            "GROK_HOME", "GROK_AUTH_PATH", "AGENTROUTE_HOME", "AGENTROUTE_CREDENTIALS_FILE"
+        )
     environment = {
         key: os.path.abspath(os.path.expanduser(os.environ[key]))
         for key in environment_names
@@ -187,7 +189,8 @@ def install(
     path = unit_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     instance = secrets.token_hex(32) if credential == CredentialMode.api_key else ""
-    path.write_bytes(service_definition(binary, port, credential.value, instance))
+    definition = service_definition(binary, port, credential.value, instance)
+    path.write_bytes(definition)
     if platform.system() == "Darwin":
         run("launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}", check=False)
         # Reuse the retry behavior from the existing Claude service lifecycle.
@@ -236,8 +239,18 @@ def install(
         # Optional capacity persistence cannot turn a proven ready service into a failed install.
         typer.echo("Grok is ready; capacity snapshot unavailable", err=True)
     # A failed service/account check must not publish an enabled client route.
-    save_config(config)
-    sync_codex_providers(config)
+    try:
+        save_config(config)
+        sync_codex_providers(config)
+    except (OSError, ValueError):
+        # Existing clients must not reach a replacement account after failed publication.
+        if platform.system() == "Darwin":
+            run("launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}", check=False)
+        else:
+            run("systemctl", "--user", "stop", UNIT, check=False)
+        if path.exists() and path.read_bytes() == definition:
+            path.unlink()
+        raise
     typer.echo(f"Grok {credential.value} ready on port {port}. Use @grok in Codex.")
 
 

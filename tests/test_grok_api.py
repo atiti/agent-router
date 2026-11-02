@@ -139,6 +139,13 @@ def test_api_import_rejects_client_credential_file_collision(api_key, monkeypatc
     assert api_key.read_bytes() == before
 
 
+def test_subscription_service_retains_api_client_key_path(api_key, monkeypatch):
+    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("agentroute.grok_cli._agentroute_executable", lambda: "/bin/agentroute")
+    payload = plistlib.loads(service_definition("grok", 8092))
+    assert payload["EnvironmentVariables"]["AGENTROUTE_CREDENTIALS_FILE"] == str(api_key)
+
+
 def test_subscription_rejects_loaded_api_client_before_inference(api_key, monkeypatch):
     monkeypatch.setattr(
         "agentroute.grok_bridge.open_upstream", lambda *a, **k: pytest.fail("No upstream request")
@@ -242,6 +249,43 @@ def test_failed_install_does_not_publish_backend(api_key, monkeypatch, tmp_path)
     result = CliRunner().invoke(app, ["install", "--credential", "api-key"])
     assert result.exit_code != 0
     assert "did not become healthy" in str(result.exception)
+
+
+def test_failed_provider_publication_stops_replacement_service(api_key, monkeypatch, tmp_path):
+    from agentroute.bridge_service import BridgeHealth
+
+    path = tmp_path / "service.plist"
+    calls = []
+    monkeypatch.setattr("agentroute.grok_cli.load_config", default_config)
+    monkeypatch.setattr("agentroute.grok_cli.unit_path", lambda: path)
+    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("agentroute.grok_cli._agentroute_executable", lambda: "/bin/agentroute")
+    monkeypatch.setattr("agentroute.grok_cli.run", lambda *a, **k: (
+        calls.append(a) or type("Run", (), {"returncode": 0})()
+    ))
+    monkeypatch.setattr(
+        "agentroute.grok_cli.wait_for_health", lambda *a, **k: BridgeHealth(
+            "healthy", "ready", {"provider": "grok", "credential_mode": "api-key"}
+        ),
+    )
+    def proof(request, **kwargs):
+        from urllib.parse import parse_qs, urlsplit
+
+        nonce = parse_qs(urlsplit(request.full_url).query)["nonce"][0]
+        args = plistlib.loads(path.read_bytes())["ProgramArguments"]
+        instance = args[args.index("--instance") + 1]
+        expected = GrokApiCredential().health_proof(nonce, instance, 8092)
+        return BytesIO(json.dumps({"credential_proof": expected}).encode())
+    monkeypatch.setattr("agentroute.grok_bridge.open_upstream", proof)
+    monkeypatch.setattr("agentroute.grok_cli.save_config", lambda *a: None)
+    def fail(*args):
+        raise ValueError("malformed provider marker")
+    monkeypatch.setattr("agentroute.grok_cli.sync_codex_providers", fail)
+    result = CliRunner().invoke(app, ["install", "--credential", "api-key"])
+    assert result.exit_code != 0
+    assert "malformed provider marker" in str(result.exception)
+    assert not path.exists()
+    assert calls[-1][:2] == ("launchctl", "bootout")
 
 
 def test_mode_switch_does_not_reuse_other_mode_cooldown(api_key, tmp_path, monkeypatch):
