@@ -67,7 +67,8 @@ def service_definition(binary, port, credential_mode="subscription", instance=""
         args.extend(["--grok-binary", binary])
         environment_names = ("GROK_HOME", "GROK_AUTH_PATH", "AGENTROUTE_HOME")
     environment = {
-        key: os.environ[key] for key in environment_names if key in os.environ
+        key: str(Path(os.environ[key]).expanduser().resolve())
+        for key in environment_names if key in os.environ
     }
     if platform.system() == "Darwin":
         return plistlib.dumps(

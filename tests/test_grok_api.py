@@ -272,6 +272,34 @@ def test_late_old_key_cooldown_cannot_replace_current_key_sample(api_key):
     assert read_snapshot(credential) == current
 
 
+def test_install_empty_sample_does_not_overwrite_concurrent_cooldown(api_key):
+    from agentroute.grok_usage import write_snapshot
+
+    source = GrokApiCredential()
+    write_snapshot(source, {"blocked_until": 9999999999})
+    write_snapshot(source, {})  # Installer read its empty sample before the 429 above.
+    assert read_snapshot(source)["blocked_until"] == 9999999999
+
+
+def test_api_capacity_does_not_probe_non_loopback_origin(api_key, monkeypatch):
+    from agentroute.grok_usage import write_snapshot
+
+    write_snapshot(GrokApiCredential(), {})
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: pytest.fail("No remote probe"))
+    capacity_snapshot("https://api.x.ai/v1")
+
+
+def test_service_normalizes_relative_credential_path(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENTROUTE_GROK_API_CREDENTIALS_FILE", "private/upstream.env")
+    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("agentroute.grok_cli._agentroute_executable", lambda: "/bin/agentroute")
+    payload = plistlib.loads(service_definition("grok", 8092, "api-key"))
+    assert payload["EnvironmentVariables"]["AGENTROUTE_GROK_API_CREDENTIALS_FILE"] == str(
+        tmp_path / "private/upstream.env"
+    )
+
+
 def test_cooldown_writers_are_serialized_across_key_rotation(api_key, monkeypatch):
     from agentroute.grok_usage import account_key, write_snapshot
 

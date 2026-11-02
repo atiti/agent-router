@@ -81,6 +81,13 @@ def write_snapshot(credential, data, *, account=None):
         if data["account"] != account_key(credential):
             # Check inside the writer lock: a late old-login result cannot replace a new sample.
             return data
+        # Reinstall may have read before an in-flight request returned 429. Keep
+        # the current account's longest cooldown inside the same writer lock.
+        current = read_snapshot(credential)
+        if valid_number(current.get("blocked_until")):
+            proposed = data.get("blocked_until", 0)
+            if valid_number(proposed):
+                data["blocked_until"] = max(current["blocked_until"], proposed)
         fd, path = tempfile.mkstemp(prefix=".grok-usage-", dir=home)
         try:
             with os.fdopen(fd, "w") as file:
@@ -199,7 +206,12 @@ def capacity_snapshot(base_url, *, offline=False):
             except (OSError, ValueError):
                 return {}
     data = read_snapshot(credential)
-    if not offline and getattr(credential, "mode", "subscription") == "api-key":
+    if (
+        not offline
+        and getattr(credential, "mode", "subscription") == "api-key"
+        and url.scheme == "http"
+        and url.hostname in {"127.0.0.1", "localhost"}
+    ):
         try:
             endpoint = f"{url.scheme}://{url.netloc}/usage"
             with urllib.request.urlopen(endpoint, timeout=5) as response:
