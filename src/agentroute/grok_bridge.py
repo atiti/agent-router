@@ -300,6 +300,10 @@ def translate_request(body):
         }
     }
 
+    # Bound unrequested generations: Grok otherwise may stream 128k output tokens.
+    # Preserve explicit client limits, including lower limits.
+    body.setdefault("max_output_tokens", 16384)
+
     body["tools"] = flattened_tools(body.get("tools", []))
     for tool in body["tools"]:
         if tool.get("type") == "web_search":
@@ -412,10 +416,49 @@ def patch_item(item, names=None):
     return item
 
 
+def sequential_stream(upstream):
+    """Keep each output item contiguous for Codex's single active-item decoder.
+
+    Grok can finish a tool call while a message is still streaming. Forwarding
+    that done event clears Codex's active message; its next text delta can panic
+    the sampling task and leave the turn open with only reviewers running.
+    Stream the first item immediately, buffering overlapping items until it ends.
+    """
+    pending = {}
+    finished = set()
+    for raw in upstream:
+        if not raw.startswith(b"data: "):
+            if not raw.startswith(b"event:"):
+                yield raw
+            continue
+        try:
+            event = json.loads(raw[6:])
+        except ValueError:
+            yield raw
+            continue
+        kind = event.get("type", "")
+        item = event.get("item") or {}
+        key = event.get("output_index", event.get("item_id", item.get("id")))
+        if key is None:
+            yield raw
+            continue
+        pending.setdefault(key, []).append(raw)
+        if kind == "response.output_item.done":
+            finished.add(key)
+        while pending:
+            first = next(iter(pending))
+            yield from pending[first]
+            pending[first].clear()
+            if first not in finished:
+                break
+            del pending[first]
+            finished.remove(first)
+
+
 def translate_stream(upstream, names=None):
     """Leave all Responses events intact except patch function encoding."""
     patches = set()
-    for raw in upstream:
+    for raw in sequential_stream(upstream):
         if not raw.startswith(b"data: "):
             # Reconstruct event names from the payload after translating.
             if not raw.startswith(b"event:"):
@@ -441,4 +484,5 @@ def translate_stream(upstream, names=None):
         for output in event.get("response", {}).get("output", []):
             patch_item(output, names)
         yield b"event: " + event.get("type", "message").encode() + b"\n"
-        yield b"data: " + json.dumps(event).encode() + b"\n"
+        # Buffered items no longer share the upstream blank-line timing.
+        yield b"data: " + json.dumps(event).encode() + b"\n\n"

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Normalize overlapping Grok message, search, and function-call streams so a tool completion cannot clear Codex's still-streaming answer and leave the turn spinning.
+
 ## 0.5.81 — 2026-11-01
 
 - Add an opt-in Grok subscription backend using the signed-in official CLI, with independent user services, tool and encrypted-reasoning continuation, conservative context limits, standard capacity thresholds/fallbacks, quota reset display, token pricing, and setup documentation.

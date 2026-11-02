@@ -98,6 +98,8 @@ requests cross a context threshold in aggregate. Server-side tool fees are not
 included. Ephemeral Codex runs do not persist the transcript needed for standard
 per-turn auditing.
 
+The bridge defaults `max_output_tokens` to 16,384 when the caller does not specify a limit. An explicit caller limit takes precedence. This bounds runaway generations; an incomplete response is still reported as an error by Codex and may require retrying in a fresh or shorter context.
+
 ## Service, authentication and troubleshooting
 
 The proxy listens only on `127.0.0.1:8092` (`--port` overrides it). It runs as a
@@ -129,6 +131,11 @@ identities across the wire; the patch tool becomes an ordinary upstream function
 and is restored to Codex's custom tool downstream. Encrypted reasoning is retained;
 the incompatible Codex `content: null` field is removed on replay. Codex retains
 tool execution, sandbox, and approval authority.
+
+Grok can overlap a message with search and function-call events. The bridge keeps
+each output item's events contiguous for Codex while streaming the first item
+immediately. Overlapping items are delivered when the preceding item finishes;
+this prevents tool completion events from clearing an answer that is still arriving.
 
 Browser-origin requests and non-loopback host headers are rejected. Authenticated
 upstream requests do not follow redirects. Upstream HTTP codes are preserved
