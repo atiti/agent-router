@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Apply configured context limits to review-only models and validate backend/account targets against their own catalog scope, retaining failures for missing overrides and conflicting model limits.
-
 ## 0.5.82 — 2026-11-02
+
+- Apply configured context limits to review-only models and validate backend/account targets against their own catalog scope, retaining failures for missing overrides and conflicting model limits.
 
 - Bundle the revision-bound native model catalog in binary releases so fresh installations can apply Grok and other routed models without a source checkout; restore catalog and runtime together if installation fails.
 - Include policy-gated GitHub evidence for independent reviewers and retry an incomplete Grok local compaction once.
