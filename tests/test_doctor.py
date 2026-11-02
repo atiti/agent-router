@@ -234,6 +234,203 @@ def test_doctor_fails_when_configured_model_is_missing_from_effective_catalog(
     assert "configured 32,768 tokens, missing from effective Codex catalog" in check.detail
 
 
+@pytest.mark.parametrize("applied,expected", [(16_384, "warn"), (32_768, "fail")])
+def test_doctor_compares_target_override_with_independently_applied_window(
+    tmp_path, monkeypatch, applied, expected
+):
+    from agentroute.config import codex_home
+
+    config, model = _qwen_context_config()
+    config.backends["qwen"].tiers["normal"].context_window = 16_384
+    _context_catalog(tmp_path, monkeypatch, [
+        {"slug": model, "context_window": 32_768, "max_context_window": 32_768},
+    ])
+    path = codex_home() / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '[model_providers.agentroute-qwen]\n'
+        f'capabilities = {{ context_windows = {{ "{model}" = {applied} }} }}\n'
+    )
+
+    check = _context_windows_check(config)
+
+    assert check.status == expected
+    assert "configured 16,384" in check.detail
+    assert ("does not match configured" in check.detail) == (applied != 16_384)
+
+
+def test_doctor_keeps_shared_account_maximum_out_of_external_provider_limits(
+    tmp_path, monkeypatch
+):
+    from agentroute.config import codex_home
+
+    config = default_config()
+    model = "gpt-6.1-sol"
+    for name, backend in config.backends.items():
+        backend.enabled = name in {"gpt", "azure"}
+    config.backends["gpt"].tiers = {"normal": ModelTarget(model=model)}
+    config.backends["gpt"].models = {
+        model: ModelTarget(model=model, context_window=872_000),
+    }
+    config.backends["gpt"].review_model = None
+    config.capacity.active_profile = None
+    config.backends["azure"].tiers = {
+        "normal": ModelTarget(model=model, context_window=922_000),
+    }
+    config.backends["azure"].review_model = model
+    config.capabilities.models[model].context_window = 922_000
+    _context_catalog(tmp_path, monkeypatch, [
+        {"slug": model, "context_window": 272_000, "max_context_window": 872_000},
+    ])
+    monkeypatch.setattr("agentroute.doctor._installed_codex_catalog", lambda: {
+        "models": [{"slug": model, "context_window": 272_000, "max_context_window": 872_000}],
+    })
+    path = codex_home() / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '[model_providers.agentroute-azure]\n'
+        f'capabilities = {{ context_windows = {{ "{model}" = 922000 }} }}\n'
+    )
+
+    check = _context_windows_check(config)
+
+    assert check.status == "warn"
+    assert "exceeds" not in check.detail
+    assert "gpt/gpt-6.1-sol: current 272,000, maximum 872,000, configured 872,000" in check.detail
+    assert "azure/gpt-6.1-sol: current 922,000, maximum unknown" in check.detail
+    assert "provider limit unverified" in check.detail
+
+
+def test_doctor_checks_direct_only_models_and_active_account_overrides(tmp_path, monkeypatch):
+    config = default_config()
+    model = "gpt-6.1-sol"
+    for name, backend in config.backends.items():
+        backend.enabled = name == "gpt"
+    config.backends["gpt"].tiers = {"normal": ModelTarget(model=model)}
+    config.backends["gpt"].models = {
+        model: ModelTarget(model=model, context_window=872_000),
+    }
+    config.backends["gpt"].review_model = None
+    config.capacity.active_profile = "default"
+    config.capacity.profiles["default"].models = {
+        model: ModelTarget(model=model, context_window=500_000),
+        "direct-only": ModelTarget(model="direct-only", context_window=64_000),
+    }
+    _context_catalog(tmp_path, monkeypatch, [
+        {"slug": model, "context_window": 272_000, "max_context_window": 872_000},
+        {"slug": "direct-only", "context_window": 32_000, "max_context_window": 32_000},
+    ])
+
+    check = _context_windows_check(config)
+
+    assert check.status == "fail"
+    assert "configured 64,000 exceeds Codex maximum 32,000" in check.detail
+    assert "gpt/gpt-6.1-sol: current 272,000, maximum 872,000, configured 500,000" in check.detail
+
+
+def test_doctor_keeps_subscription_and_api_windows_independent(tmp_path, monkeypatch):
+    from agentroute.config import codex_home
+    from agentroute.grok_bridge import ensure_backend
+    from agentroute.providers import _provider_block
+
+    config = default_config()
+    for backend in config.backends.values():
+        backend.enabled = False
+    ensure_backend(config, credential_mode="api-key")
+    ensure_backend(config, credential_mode="subscription")
+    for name, window in (("grok", 256_000), ("grok-api", 500_000)):
+        config.backends[name].review_model = "grok-4.7"
+        config.backends[name].tiers = {
+            "normal": ModelTarget(model="grok-4.7", context_window=window),
+        }
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", "test-provider-routing-v63")
+    _context_catalog(tmp_path, monkeypatch, [
+        {"slug": "grok-4.7", "context_window": 500_000, "max_context_window": 500_000},
+    ])
+    path = codex_home() / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_provider_block(config, preserve_reasoning_compatibility=True))
+
+    check = _context_windows_check(config)
+
+    assert check.status == "warn"
+    assert "grok/grok-4.7: current 256,000, maximum 500,000, configured 256,000" in check.detail
+    assert "grok-api/grok-4.7: current 500,000, maximum 500,000, configured 500,000" in check.detail
+    assert "does not match" not in check.detail
+
+
+def test_doctor_reports_missing_review_only_limit_then_accepts_applied_limit(
+    tmp_path, monkeypatch
+):
+    from agentroute.config import codex_home
+    from agentroute.providers import _provider_block
+
+    config, model = _qwen_context_config()
+    config.backends["qwen"].review_model = "reviewer"
+    config.capabilities.models["reviewer"] = ModelCapabilities(context_window=16_384)
+    _context_catalog(tmp_path, monkeypatch, [
+        {"slug": model, "context_window": 32_768, "max_context_window": 32_768},
+        {"slug": "reviewer", "context_window": 32_768, "max_context_window": 32_768},
+    ])
+
+    assert _context_windows_check(config).status == "fail"
+    assert "reviewer: effective Codex context 32,768 does not match configured 16,384" in (
+        _context_windows_check(config).detail
+    )
+
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", "test-provider-routing-v63")
+    path = codex_home() / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_provider_block(config, preserve_reasoning_compatibility=True))
+
+    assert _context_windows_check(config).status == "warn"
+
+
+def test_doctor_rejects_conflicting_tier_contexts_for_one_model(tmp_path, monkeypatch):
+    config, model = _qwen_context_config()
+    config.backends["qwen"].tiers = {
+        "fast": ModelTarget(model=model, context_window=16_384),
+        "normal": ModelTarget(model=model, context_window=32_768),
+    }
+    _context_catalog(tmp_path, monkeypatch, [
+        {"slug": model, "context_window": 32_768, "max_context_window": 32_768},
+    ])
+
+    check = _context_windows_check(config)
+
+    assert check.status == "fail"
+    assert "conflicting configured context windows 16,384, 32,768" in check.detail
+
+
+@pytest.mark.parametrize("custom_catalog", [False, True])
+def test_doctor_distinguishes_custom_catalog_maximum_from_admitted_account_maximum(
+    tmp_path, monkeypatch, custom_catalog
+):
+    from agentroute.config import codex_home
+
+    config, model = _qwen_context_config()
+    payload = {
+        "models": [{"slug": model, "context_window": 16_384, "max_context_window": 16_384}],
+        "agentroute_account_models": [model],
+    }
+    catalog_path = tmp_path / "custom.json"
+    catalog_path.write_text(json.dumps(payload))
+    monkeypatch.setattr("agentroute.doctor.refresh_launch_catalog", lambda _config: catalog_path)
+    monkeypatch.setattr("agentroute.doctor._installed_codex_catalog", lambda: {"models": []})
+    config_file = codex_home() / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(
+        (f'model_catalog_json = "{catalog_path}"\n' if custom_catalog else "")
+        + '[model_providers.agentroute-qwen]\n'
+        + f'capabilities = {{ context_windows = {{ "{model}" = 32768 }} }}\n'
+    )
+
+    check = _context_windows_check(config)
+
+    assert check.status == ("fail" if custom_catalog else "warn")
+    assert ("exceeds" in check.detail) == custom_catalog
+
+
 def test_doctor_refreshes_catalog_when_config_points_at_another_runtime_sidecar(
     tmp_path, monkeypatch
 ):
