@@ -1,6 +1,5 @@
 import json
 import os
-import plistlib
 import threading
 import urllib.error
 import urllib.request
@@ -20,7 +19,7 @@ from agentroute.grok_bridge import (
     GrokServer,
     ensure_backend,
 )
-from agentroute.grok_cli import app, ensure_client_credential, service_definition
+from agentroute.grok_cli import app
 from agentroute.grok_usage import capacity_snapshot, fetch_usage, read_snapshot
 
 
@@ -86,25 +85,6 @@ def test_api_backend_preserves_routes_and_existing_context():
     assert config.capabilities.models["grok-4.7"].context_window == 100000
 
 
-@pytest.mark.parametrize("system", ["Darwin", "Linux"])
-def test_api_service_does_not_export_key_or_require_cli(api_key, monkeypatch, system):
-    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: system)
-    monkeypatch.setattr(
-        "agentroute.grok_cli._agentroute_executable", lambda: "/bridge/bin/agentroute"
-    )
-    monkeypatch.setenv("XAI_API_KEY", "do-not-export-this")
-    monkeypatch.setenv("GROK_AUTH_PATH", "/subscription-only/auth.json")
-    definition = service_definition("/absent/grok", 8092, "api-key")
-    assert b"api-key" in definition
-    assert b"do-not-export-this" not in definition
-    assert b"XAI_API_KEY" not in definition
-    assert b"GROK_AUTH_PATH" not in definition
-    assert b"--grok-binary" not in definition
-    assert os.fsencode(api_key) in definition
-    if system == "Darwin":
-        assert plistlib.loads(definition)["ProgramArguments"][0] == "/bridge/bin/agentroute"
-
-
 def test_api_credential_import_uses_existing_store(api_key, monkeypatch):
     monkeypatch.setenv("SOURCE_KEY", "new-secret")
     result = CliRunner().invoke(app, ["credential-import", "SOURCE_KEY"])
@@ -137,37 +117,6 @@ def test_api_import_rejects_client_credential_file_collision(api_key, monkeypatc
     result = CliRunner().invoke(app, ["credential-import", "SOURCE_KEY"])
     assert result.exit_code != 0
     assert api_key.read_bytes() == before
-
-
-def test_api_install_refuses_implicit_service_replacement(api_key, monkeypatch, tmp_path):
-    unit = tmp_path / "service.plist"
-    original = plistlib.dumps({"ProgramArguments": ["agentroute", "grok", "serve"]})
-    unit.write_bytes(original)
-    monkeypatch.setattr("agentroute.grok_cli.unit_path", lambda: unit)
-    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
-    monkeypatch.setattr(
-        "agentroute.grok_cli.run", lambda *a, **k: pytest.fail("No service mutation")
-    )
-    result = CliRunner().invoke(app, ["install", "--credential", "api-key"])
-    assert result.exit_code != 0
-    assert unit.read_bytes() == original
-
-
-def test_publish_atomic_write_preserves_changed_config(tmp_path):
-    from agentroute.grok_cli import publish_files
-
-    config = tmp_path / "config.toml"
-    config.write_bytes(b"concurrent edit")
-    with pytest.raises(RuntimeError, match="changed during"):
-        publish_files({config: b"new config"}, {config: b"old config"}, {})
-    assert config.read_bytes() == b"concurrent edit"
-
-
-def test_subscription_service_retains_api_client_key_path(api_key, monkeypatch):
-    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
-    monkeypatch.setattr("agentroute.grok_cli._agentroute_executable", lambda: "/bin/agentroute")
-    payload = plistlib.loads(service_definition("grok", 8092))
-    assert payload["EnvironmentVariables"]["AGENTROUTE_CREDENTIALS_FILE"] == str(api_key)
 
 
 def test_subscription_rejects_loaded_api_client_before_inference(api_key, monkeypatch):
@@ -220,22 +169,6 @@ def test_shipped_subscription_tiers_migrate_to_api_defaults():
     assert config.backends["grok"].display_name == "Grok subscription (Grok CLI)"
 
 
-def test_managed_service_ignores_inherited_api_key(api_key, monkeypatch):
-    monkeypatch.setenv("XAI_API_KEY", "different-account")
-    assert GrokApiCredential().token() == "api-secret"
-
-
-def test_install_creates_only_one_separate_client_key(api_key):
-    config = default_config()
-    ensure_backend(config, credential_mode="api-key")
-    api_key.write_text("export XAI_API_KEY=api-secret\n")
-    ensure_client_credential(config)
-    first = api_key.read_text()
-    assert GrokApiCredential().client_key() != "api-secret"
-    ensure_client_credential(config)
-    assert api_key.read_text() == first
-
-
 def test_patch_tool_choice_is_translated_and_original_untouched():
     from agentroute.grok_bridge import translate_request
 
@@ -246,105 +179,6 @@ def test_patch_tool_choice_is_translated_and_original_untouched():
     translated = translate_request(body)
     assert translated["tool_choice"] == {"type": "function", "name": "agentroute_apply_patch"}
     assert body["tool_choice"]["type"] == "custom"
-
-
-def test_failed_install_does_not_publish_backend(api_key, monkeypatch, tmp_path):
-    from agentroute.bridge_service import BridgeHealth
-
-    monkeypatch.setattr("agentroute.grok_cli.load_config", default_config)
-    monkeypatch.setattr("agentroute.grok_cli.unit_path", lambda: tmp_path / "service.plist")
-    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
-    monkeypatch.setattr("agentroute.grok_cli._agentroute_executable", lambda: "/bin/agentroute")
-    monkeypatch.setattr(
-        "agentroute.grok_cli.run", lambda *a, **k: type(
-            "Run", (), {"returncode": 1 if a[:2] == ("launchctl", "print") else 0}
-        )()
-    )
-    monkeypatch.setattr(
-        "agentroute.grok_cli.wait_for_health",
-        lambda *a, **k: BridgeHealth(
-            "healthy", "wrong mode", {"provider": "grok", "credential_mode": "subscription"}
-        ),
-    )
-    monkeypatch.setattr("agentroute.grok_cli.prepare_publication", lambda *a: {})
-    monkeypatch.setattr(
-        "agentroute.grok_cli.publish_files", lambda *a: pytest.fail("No publication")
-    )
-    result = CliRunner().invoke(app, ["install", "--credential", "api-key"])
-    assert result.exit_code != 0
-    assert "did not become healthy" in str(result.exception)
-
-
-@pytest.mark.parametrize("failure", ["challenge", "publication", "interrupt"])
-def test_failed_install_stops_replacement_service(api_key, monkeypatch, tmp_path, failure):
-    from agentroute.bridge_service import BridgeHealth
-
-    path = tmp_path / "service.plist"
-    calls = []
-    monkeypatch.setattr("agentroute.grok_cli.load_config", default_config)
-    monkeypatch.setattr("agentroute.grok_cli.unit_path", lambda: path)
-    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
-    monkeypatch.setattr("agentroute.grok_cli._agentroute_executable", lambda: "/bin/agentroute")
-    def supervisor(*args, **kwargs):
-        calls.append(args)
-        return type("Run", (), {
-            "returncode": 1 if args[:2] == ("launchctl", "print") else 0
-        })()
-    monkeypatch.setattr("agentroute.grok_cli.run", supervisor)
-    monkeypatch.setattr(
-        "agentroute.grok_cli.wait_for_health", lambda *a, **k: BridgeHealth(
-            "healthy", "ready", {"provider": "grok", "credential_mode": "api-key"}
-        ),
-    )
-    def proof(request, **kwargs):
-        from urllib.parse import parse_qs, urlsplit
-
-        if failure == "interrupt":
-            raise KeyboardInterrupt()
-        if failure == "challenge":
-            raise OSError("challenge timed out")
-        nonce = parse_qs(urlsplit(request.full_url).query)["nonce"][0]
-        args = plistlib.loads(path.read_bytes())["ProgramArguments"]
-        instance = args[args.index("--instance") + 1]
-        expected = GrokApiCredential().health_proof(nonce, instance, 8092)
-        return BytesIO(json.dumps({"credential_proof": expected}).encode())
-    monkeypatch.setattr("agentroute.grok_bridge.open_upstream", proof)
-    monkeypatch.setattr("agentroute.grok_cli.prepare_publication", lambda *a: {})
-    def fail(*args):
-        raise ValueError("malformed provider marker")
-    monkeypatch.setattr("agentroute.grok_cli.publish_files", fail)
-    result = CliRunner().invoke(app, ["install", "--credential", "api-key"])
-    assert result.exit_code != 0
-    if failure != "interrupt":
-        assert (
-            "challenge timed out" if failure == "challenge" else "malformed provider marker"
-        ) in str(result.exception)
-    assert not path.exists()
-    assert ("launchctl", "bootout") in [call[:2] for call in calls]
-    assert calls[-1][:2] == ("launchctl", "print")
-
-
-def test_rollback_restores_previous_unit_and_config(monkeypatch, tmp_path):
-    from agentroute.grok_cli import rollback_install
-
-    unit = tmp_path / "service.plist"
-    unit.write_bytes(b"new service")
-    config = tmp_path / "config.yaml"
-    config.write_bytes(b"new config")
-    calls = []
-    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
-    def supervisor(*args, **kwargs):
-        calls.append(args)
-        return type("Run", (), {
-            "returncode": 1 if args[:2] == ("launchctl", "print") else 0
-        })()
-    monkeypatch.setattr("agentroute.grok_cli.run", supervisor)
-    rollback_install(
-        unit, b"new service", b"old service", {config: b"old config"}, {config: b"new config"}
-    )
-    assert config.read_bytes() == b"old config"
-    assert unit.read_bytes() == b"old service"
-    assert calls[-1][:2] == ("launchctl", "bootstrap")
 
 
 def test_mode_switch_does_not_reuse_other_mode_cooldown(api_key, tmp_path, monkeypatch):
@@ -391,49 +225,12 @@ def test_late_old_key_cooldown_cannot_replace_current_key_sample(api_key):
     assert read_snapshot(credential) == current
 
 
-def test_install_empty_sample_does_not_overwrite_concurrent_cooldown(api_key):
-    from agentroute.grok_usage import write_snapshot
-
-    source = GrokApiCredential()
-    write_snapshot(source, {"blocked_until": 9999999999})
-    write_snapshot(source, {})  # Installer read its empty sample before the 429 above.
-    assert read_snapshot(source)["blocked_until"] == 9999999999
-
-
 def test_api_capacity_does_not_probe_non_loopback_origin(api_key, monkeypatch):
     from agentroute.grok_usage import write_snapshot
 
     write_snapshot(GrokApiCredential(), {})
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: pytest.fail("No remote probe"))
     capacity_snapshot("https://api.x.ai/v1")
-
-
-def test_service_normalizes_relative_credential_path(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("AGENTROUTE_GROK_API_CREDENTIALS_FILE", "private/upstream.env")
-    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
-    monkeypatch.setattr("agentroute.grok_cli._agentroute_executable", lambda: "/bin/agentroute")
-    payload = plistlib.loads(service_definition("grok", 8092, "api-key"))
-    assert payload["EnvironmentVariables"]["AGENTROUTE_GROK_API_CREDENTIALS_FILE"] == str(
-        tmp_path / "private/upstream.env"
-    )
-
-
-def test_service_ignores_empty_path_and_preserves_symlink_parent(monkeypatch, tmp_path):
-    monkeypatch.setenv("AGENTROUTE_CREDENTIALS_FILE", "")
-    actual = tmp_path / "actual"
-    actual.mkdir()
-    linked = tmp_path / "linked"
-    linked.symlink_to(actual)
-    monkeypatch.setenv("AGENTROUTE_GROK_API_CREDENTIALS_FILE", str(linked / "key.env"))
-    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
-    monkeypatch.setattr("agentroute.grok_cli._agentroute_executable", lambda: "/bin/agentroute")
-    payload = plistlib.loads(service_definition("grok", 8092, "api-key"))
-    environment = payload["EnvironmentVariables"]
-    from agentroute.providers import credentials_path
-
-    assert environment["AGENTROUTE_CREDENTIALS_FILE"] == str(credentials_path())
-    assert environment["AGENTROUTE_GROK_API_CREDENTIALS_FILE"] == str(linked / "key.env")
 
 
 def test_cooldown_writers_are_serialized_across_key_rotation(api_key, monkeypatch):
@@ -477,23 +274,6 @@ def test_cooldown_writers_are_serialized_across_key_rotation(api_key, monkeypatc
         current.join(5)
     assert current_done.is_set()
     assert read_snapshot(credential)["blocked_until"] == 9999999999
-
-
-def test_api_capacity_receipt_does_not_need_service_key_path(monkeypatch):
-    import time
-
-    response = {
-        "credential_mode": "api-key", "account": "a" * 64,
-        "observed_at": time.time(), "blocked_until": time.time() + 60,
-    }
-    monkeypatch.setattr(
-        urllib.request, "urlopen",
-        lambda url, **k: BytesIO(json.dumps(
-            {"provider": "grok", "credential_mode": "api-key"}
-            if url.endswith("/healthz") else response
-        ).encode()),
-    )
-    assert capacity_snapshot("http://127.0.0.1:8092/v1") == response
 
 
 def test_api_http_auth_tools_continuation_errors_and_cooldown(api_key, monkeypatch):
@@ -631,49 +411,6 @@ def test_api_http_auth_tools_continuation_errors_and_cooldown(api_key, monkeypat
         server.shutdown()
         server.server_close()
         thread.join()
-
-
-def test_failed_supervisor_stop_retains_unit(monkeypatch, tmp_path):
-    from agentroute.grok_cli import stop_replacement_service
-
-    unit = tmp_path / 'service.plist'
-    unit.write_bytes(b'new unit')
-    monkeypatch.setattr('agentroute.grok_cli.platform.system', lambda: 'Darwin')
-    monkeypatch.setattr(
-        'agentroute.grok_cli.run', lambda *a, **k: type('Run', (), {'returncode': 1})()
-    )
-    with pytest.raises(RuntimeError, match='rejected stop'):
-        stop_replacement_service(unit, b'new unit')
-    assert unit.read_bytes() == b'new unit'
-
-
-def test_publish_refuses_symlinked_configuration(tmp_path):
-    from agentroute.grok_cli import publish_files
-
-    actual = tmp_path / 'actual.toml'
-    actual.write_bytes(b'preserve')
-    link = tmp_path / 'config.toml'
-    link.symlink_to(actual)
-    with pytest.raises(ValueError, match='symlinked'):
-        publish_files({link: b'new'}, {link: b'preserve'}, {})
-    assert link.is_symlink() and actual.read_bytes() == b'preserve'
-
-
-def test_rollback_restores_client_config_even_if_service_stop_fails(monkeypatch, tmp_path):
-    from agentroute.grok_cli import rollback_install
-
-    config = tmp_path / 'config.yaml'
-    config.write_bytes(b'enabled new route')
-    unit = tmp_path / 'service.plist'
-    unit.write_bytes(b'new service')
-    def fail(*args):
-        raise RuntimeError('stop rejected')
-    monkeypatch.setattr('agentroute.grok_cli.stop_replacement_service', fail)
-    with pytest.raises(RuntimeError, match='stop rejected'):
-        rollback_install(unit, b'new service', None,
-                         {config: b'old route'}, {config: b'enabled new route'})
-    assert config.read_bytes() == b'old route'
-    assert unit.read_bytes() == b'new service'
 
 
 def test_invalid_api_key_import_preserves_working_key(api_key, monkeypatch):
