@@ -122,19 +122,23 @@ def serve(
 
 
 @app.command("credential-import")
-def credential_import(source_env: str):
+def credential_import(source_env: str, port: int | None = None):
     """Store an API key from an environment variable, without printing it."""
     value = os.environ.get(source_env)
     if not value or any(not 33 <= ord(char) <= 126 for char in value):
         raise typer.BadParameter("API credential must be nonempty ASCII without whitespace")
     config = load_config()
-    ensure_backend(config, credential_mode="api-key")
+    if port is None and "grok-api" in config.backends:
+        from urllib.parse import urlsplit
+
+        port = urlsplit(config.backends["grok-api"].base_url).port
+    ensure_backend(config, port, credential_mode="api-key")
     config.backends["grok-api"].api_key_env = "XAI_API_KEY"
     if api_credentials_path().resolve() == credentials_path().resolve():
         raise typer.BadParameter("The upstream API key file must differ from the client key file")
     ensure_client_credential(config)
     path, name = import_backend_credential(config, "grok-api", source_env, api_credentials_path())
-    ensure_backend(config, credential_mode="api-key")
+    ensure_backend(config, port, credential_mode="api-key")
     save_config(config)
     sync_codex_providers(config)
     typer.echo(f"Stored {name} in {path}; use @grok-api with the API bridge.")

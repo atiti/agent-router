@@ -160,7 +160,6 @@ def test_subscription_and_api_backends_coexist():
     assert config.backends["grok"].base_url == "http://127.0.0.1:8092/v1"
 
 
-
 def test_patch_tool_choice_is_translated_and_original_untouched():
     from agentroute.grok_bridge import translate_request
 
@@ -182,12 +181,14 @@ def test_mode_switch_does_not_reuse_other_mode_cooldown(api_key, tmp_path, monke
     monkeypatch.setenv("GROK_HOME", str(tmp_path))
     monkeypatch.delenv("GROK_AUTH_PATH", raising=False)
     (tmp_path / "auth.json").write_text(
-        json.dumps({
-            "https://auth.x.ai::id": {
-                "key": "subscription-secret",
-                "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        json.dumps(
+            {
+                "https://auth.x.ai::id": {
+                    "key": "subscription-secret",
+                    "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+                }
             }
-        })
+        )
     )
     write_snapshot(GrokCredential("grok"), {"blocked_until": time.time() + 120})
     monkeypatch.setattr(
@@ -406,10 +407,10 @@ def test_api_http_auth_tools_continuation_errors_and_cooldown(api_key, monkeypat
 
 
 def test_invalid_api_key_import_preserves_working_key(api_key, monkeypatch):
-    path = Path(os.environ['AGENTROUTE_GROK_API_CREDENTIALS_FILE'])
+    path = Path(os.environ["AGENTROUTE_GROK_API_CREDENTIALS_FILE"])
     before = path.read_bytes()
-    monkeypatch.setenv('SOURCE_KEY', 'bad-key\n')
-    result = CliRunner().invoke(app, ['credential-import', 'SOURCE_KEY'])
+    monkeypatch.setenv("SOURCE_KEY", "bad-key\n")
+    result = CliRunner().invoke(app, ["credential-import", "SOURCE_KEY"])
     assert result.exit_code != 0
     assert path.read_bytes() == before
 
@@ -417,21 +418,24 @@ def test_invalid_api_key_import_preserves_working_key(api_key, monkeypatch):
 def test_status_reports_foreground_api_bridge(monkeypatch, tmp_path):
     from agentroute.bridge_service import BridgeHealth
 
-    monkeypatch.setattr('agentroute.grok_cli.unit_path', lambda: tmp_path / 'absent')
-    monkeypatch.setattr('agentroute.grok_cli.wait_for_health', lambda *a, **k: BridgeHealth(
-        'healthy', 'api', {'provider': 'grok', 'credential_mode': 'api-key'}
-    ))
-    result = CliRunner().invoke(app, ['status'])
+    monkeypatch.setattr("agentroute.grok_cli.unit_path", lambda: tmp_path / "absent")
+    monkeypatch.setattr(
+        "agentroute.grok_cli.wait_for_health",
+        lambda *a, **k: BridgeHealth(
+            "healthy", "api", {"provider": "grok", "credential_mode": "api-key"}
+        ),
+    )
+    result = CliRunner().invoke(app, ["status"])
     assert result.exit_code == 0
-    assert json.loads(result.output)['health']['credential_mode'] == 'api-key'
+    assert json.loads(result.output)["health"]["credential_mode"] == "api-key"
 
 
 def test_failed_client_key_preflight_preserves_upstream_key(api_key, monkeypatch):
-    upstream = Path(os.environ['AGENTROUTE_GROK_API_CREDENTIALS_FILE'])
+    upstream = Path(os.environ["AGENTROUTE_GROK_API_CREDENTIALS_FILE"])
     before = upstream.read_bytes()
     api_key.chmod(0o644)
-    monkeypatch.setenv('SOURCE_KEY', 'different-api-key')
-    result = CliRunner().invoke(app, ['credential-import', 'SOURCE_KEY'])
+    monkeypatch.setenv("SOURCE_KEY", "different-api-key")
+    result = CliRunner().invoke(app, ["credential-import", "SOURCE_KEY"])
     assert result.exit_code != 0
     assert upstream.read_bytes() == before
 
@@ -439,23 +443,28 @@ def test_failed_client_key_preflight_preserves_upstream_key(api_key, monkeypatch
 def test_explicit_status_port_checks_requested_foreground(monkeypatch, tmp_path):
     from agentroute.bridge_service import BridgeHealth
 
-    unit = tmp_path / 'service.plist'
-    unit.write_bytes(b'not parsed for explicit port')
-    monkeypatch.setattr('agentroute.grok_cli.unit_path', lambda: unit)
+    unit = tmp_path / "service.plist"
+    unit.write_bytes(b"not parsed for explicit port")
+    monkeypatch.setattr("agentroute.grok_cli.unit_path", lambda: unit)
     seen = []
+
     def health(port, **kwargs):
         seen.append(port)
-        return BridgeHealth('healthy', 'api', {'provider': 'grok', 'credential_mode': 'api-key'})
-    monkeypatch.setattr('agentroute.grok_cli.wait_for_health', health)
-    result = CliRunner().invoke(app, ['status', '--port', '9092'])
+        return BridgeHealth("healthy", "api", {"provider": "grok", "credential_mode": "api-key"})
+
+    monkeypatch.setattr("agentroute.grok_cli.wait_for_health", health)
+    result = CliRunner().invoke(app, ["status", "--port", "9092"])
     assert result.exit_code == 0 and seen == [9092]
 
 
 @pytest.mark.parametrize("system", ["Darwin", "Linux"])
-@pytest.mark.parametrize("arguments", [
-    ["/custom/wrapper", "grok", "serve", "--port", "9092", "--grok-binary", "grok"],
-    ["/managed/agentroute", "grok", "serve", "--credential", "$MODE"],
-])
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["/custom/wrapper", "grok", "serve", "--port", "9092", "--grok-binary", "grok"],
+        ["/managed/agentroute", "grok", "serve", "--credential", "$MODE"],
+    ],
+)
 def test_subscription_install_preserves_custom_service(tmp_path, monkeypatch, system, arguments):
     import plistlib
     import shlex
@@ -487,3 +496,58 @@ def test_subscription_install_preserves_custom_service(tmp_path, monkeypatch, sy
     assert result.exit_code != 0
     assert "custom command" in result.output
     assert unit.read_bytes() == content
+
+
+def test_usage_snapshots_coexist(api_key, monkeypatch):
+    import time
+
+    from agentroute.grok_usage import write_snapshot
+
+    subscription = GrokCredential("grok")
+    monkeypatch.setattr(subscription, "_read", lambda: {"key": "subscription", "user_id": "user"})
+    api = GrokApiCredential()
+    write_snapshot(subscription, {"used_percent": 31})
+    write_snapshot(api, {"blocked_until": time.time() + 120})
+    assert read_snapshot(subscription)["used_percent"] == 31
+    assert read_snapshot(api)["blocked_until"] > time.time()
+
+
+def test_api_capacity_uses_own_budget_and_cooldown(monkeypatch):
+    import time
+
+    from agentroute.capacity import backend_state
+
+    config = default_config()
+    config.capacity.enabled = True
+    ensure_backend(config)
+    ensure_backend(config, credential_mode="api-key")
+    config.backends["grok-api"].daily_budget_usd = 10
+    monkeypatch.setattr("agentroute.grok_usage.capacity_snapshot", lambda *a, **k: {})
+    assert backend_state(config, "grok-api", daily_spend=9).status == "warning"
+    assert backend_state(config, "grok-api", daily_spend=10).status == "budget_reached"
+    held = backend_state(config, "grok-api", daily_spend=8, recovery_hold=True)
+    assert held.trigger == "api_budget_recovery"
+    monkeypatch.setattr(
+        "agentroute.grok_usage.capacity_snapshot",
+        lambda *a, **k: {"blocked_until": time.time() + 120},
+    )
+    assert backend_state(config, "grok-api").backend == "grok-api"
+
+
+def test_import_registers_api_without_changing_subscription(api_key, monkeypatch):
+    from agentroute.config import load_config, save_config
+
+    config = default_config()
+    ensure_backend(config)
+    before = config.backends["grok"].model_dump()
+    save_config(config)
+    monkeypatch.setenv("SOURCE_KEY", "new-secret")
+    result = CliRunner().invoke(app, ["credential-import", "SOURCE_KEY", "--port", "9093"])
+    assert result.exit_code == 0, result.output
+    updated = load_config()
+    assert updated.backends["grok"].model_dump() == before
+    assert updated.backends["grok-api"].api_key_env == BRIDGE_KEY_ENV
+    assert updated.backends["grok-api"].base_url == "http://127.0.0.1:9093/v1"
+    result = CliRunner().invoke(app, ["credential-import", "SOURCE_KEY"])
+    assert result.exit_code == 0, result.output
+    assert load_config().backends["grok-api"].base_url == "http://127.0.0.1:9093/v1"

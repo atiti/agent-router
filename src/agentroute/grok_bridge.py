@@ -198,7 +198,10 @@ def ensure_backend(config, port=None, credential_mode="subscription"):
         raise ValueError("Unknown Grok credential mode")
     api_key = credential_mode == "api-key"
     name = "grok-api" if api_key else "grok"
-    port = port or (API_PORT if api_key else DEFAULT_PORT)
+    if port is None:
+        port = API_PORT if api_key else DEFAULT_PORT
+    if not 1 <= port <= 65535:
+        raise ValueError("port must be between 1 and 65535")
     if name not in config.backends:
         config.backends[name] = ExecutionBackendConfig(
             enabled=True,
@@ -208,7 +211,11 @@ def ensure_backend(config, port=None, credential_mode="subscription"):
             tool_compatibility="functions_and_apply_patch_preserve_reasoning",
             review_model="grok-4.7" if api_key else MODELS[0],
             tiers={
-                tier: ModelTarget(model="grok-4.7" if api_key else model, reasoning_effort=effort)
+                tier: ModelTarget(
+                    model="grok-4.7" if api_key else model,
+                    reasoning_effort=effort,
+                    context_window=500000 if api_key else 256000,
+                )
                 for tier, model, effort in (
                     ("fast", MODELS[0], "low"),
                     ("normal", "grok-4.6", "medium"),

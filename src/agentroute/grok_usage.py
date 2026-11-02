@@ -231,6 +231,8 @@ def capacity_snapshot(base_url, *, offline=False, mode="subscription"):
                     result = json.loads(response.read(65536))
                 if not isinstance(result, dict) or result.get("error"):
                     return {}
+                if result.get("credential_mode", "subscription") != mode:
+                    return {}
                 if result.get("credential_mode") == "api-key":
                     return api_snapshot(result)
                 else:

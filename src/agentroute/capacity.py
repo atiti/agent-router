@@ -183,27 +183,26 @@ def backend_state(
                 "api" if backend_name == "grok-api" else "subscription",
                 resets_at=int(snapshot["blocked_until"]),
             )
-        if backend_name == "grok-api":
-            snapshot = {}
-        # Reuse the standard thresholds and recovery hysteresis, with provider-owned data.
-        used = snapshot.get("used_percent")
-        state = subscription_state(
-            config,
-            {"primary": {"usedPercent": used, "resetsAt": snapshot.get("resets_at")}},
-            snapshot.get("account"),
-            recovery_hold=recovery_hold,
-        )
-        grok_state = CapacityState(
-            "grok",
-            state.status,
-            state.detail,
-            state.trigger,
-            state.used_percent,
-            state.resets_at,
-            state.account_id,
-        )
-        if not grok_state.available or grok_state.status == "warning":
-            return grok_state
+        if backend_name == "grok":
+            # Reuse the standard thresholds and recovery hysteresis, with provider-owned data.
+            used = snapshot.get("used_percent")
+            state = subscription_state(
+                config,
+                {"primary": {"usedPercent": used, "resetsAt": snapshot.get("resets_at")}},
+                snapshot.get("account"),
+                recovery_hold=recovery_hold,
+            )
+            grok_state = CapacityState(
+                "grok",
+                state.status,
+                state.detail,
+                state.trigger,
+                state.used_percent,
+                state.resets_at,
+                state.account_id,
+            )
+            if not grok_state.available or grok_state.status == "warning":
+                return grok_state
     ratios = [
         daily_spend / backend.daily_budget_usd if backend.daily_budget_usd else 0,
         monthly_spend / backend.monthly_budget_usd if backend.monthly_budget_usd else 0,
