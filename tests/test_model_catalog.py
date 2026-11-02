@@ -288,6 +288,41 @@ def test_routed_provider_models_use_configured_context_limits_and_tool_modes(
     assert qwen["supports_search_tool"] is False
 
 
+@pytest.mark.parametrize("slug", ["qwen-local", "qwen3-4b-instruct-2507", "other-model"])
+def test_unknown_custom_model_uses_conservative_wire_metadata(tmp_path, monkeypatch, slug):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    baseline = {
+        "slug": "gpt-6-luna", "context_window": 272_000, "max_context_window": 872_000,
+        "support_verbosity": True, "default_verbosity": "low", "use_responses_lite": True,
+        "prefer_websockets": True, "supports_reasoning_summary_parameter": True,
+        "guardian": {"required": True}, "node_repl_auto_review_required": True,
+    }
+    monkeypatch.setattr("agentroute.providers._installed_codex_catalog", lambda source: {
+        "models": [baseline.copy()],
+    })
+    config = default_config()
+    config.backends["ollama"] = ExecutionBackendConfig(
+        enabled=True, codex_provider="agentroute-ollama", display_name="Local",
+        base_url="http://127.0.0.1:11434/v1", tool_compatibility="functions_and_apply_patch",
+        tiers={"fast": ModelTarget(model=slug, context_window=65_536)},
+        models={"known": ModelTarget(model="gpt-6-luna")},
+    )
+    config.capabilities.models[slug] = ModelCapabilities(reasoning=False, context_window=65_536)
+    path = refresh_launch_catalog(config)
+    models = {model["slug"]: model for model in json.loads(path.read_text())["models"]}
+    custom = models[slug]
+    assert custom["support_verbosity"] is False
+    assert custom["default_verbosity"] is None
+    assert custom["use_responses_lite"] is False
+    assert custom["prefer_websockets"] is False
+    assert custom["supports_reasoning_summary_parameter"] is True
+    assert custom["default_reasoning_level"] is None
+    assert custom["supported_reasoning_levels"] == []
+    assert custom["guardian"] == baseline["guardian"]
+    assert custom["node_repl_auto_review_required"] is True
+    assert models["gpt-6-luna"] == baseline
+
+
 @pytest.mark.parametrize("age_hours", [1, 48])
 def test_new_account_model_can_back_routed_alias_without_bundled_descriptor(
     tmp_path, monkeypatch, age_hours
