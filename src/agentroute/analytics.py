@@ -12,7 +12,7 @@ from typing import Any
 
 from .classifier import normalize_task_type
 from .config import PricingConfig
-from .pricing import CostReport, cost_report, token_cost
+from .pricing import CostReport, canonical_model, cost_report, token_cost
 
 
 def _period(created_at: str, bucket: str) -> str:
@@ -62,7 +62,8 @@ class ModelUsage:
     output_tokens: int
     reasoning_output_tokens: int
     total_tokens: int
-    answer_cost: float
+    answer_cost: float | None
+    cost_status: str
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ class ClassifierUsage:
     fallback_calls: int
     timeout_calls: int
     error_calls: int
+    errors_without_latency: int
     success_rate: float
     fallback_rate: float
     timeout_rate: float
@@ -316,6 +318,10 @@ def _usage_summary(
 ) -> dict[str, int | float | None]:
     report = cost_report(rows, pricing, baseline)
     duration = _duration_summary(rows)
+    unpriced = any(
+        canonical_model(str(row["answer_model"] or row["model"]), pricing) not in pricing.models
+        for row in rows
+    )
     return {
         "turns": len(rows),
         "completed_turns": duration.completed_turns,
@@ -335,7 +341,10 @@ def _usage_summary(
             else 0
             for row in rows
         ),
-        "answer_cost": report.actual_cost,
+        "answer_cost": None if unpriced or not report.measured_turns else report.actual_cost,
+        "cost_status": "unpriced" if unpriced else "unmeasured" if not report.measured_turns else (
+            "partial" if report.unmeasured_turns else "priced"
+        ),
     }
 
 
@@ -361,7 +370,9 @@ def usage_analytics(
         by_period_rows[(_period(str(row["created_at"]), bucket), backend, model)].append(row)
         application_states[str(row["route_application_state"] or "unknown")] += 1
         usage = _classifier_usage(row)
-        if usage or row["classifier_latency_ms"] is not None:
+        if usage or row["classifier_latency_ms"] is not None or row["classifier_status"] in {
+            "error", "timeout", "succeeded", "fallback",
+        }:
             classifier_rows[_classifier_model(row)].append(row)
 
     def model_usage(backend: str, model: str, grouped_rows: list[Any]) -> ModelUsage:
@@ -429,6 +440,10 @@ def usage_analytics(
                 fallback_calls=fallback_calls,
                 timeout_calls=timeout_calls,
                 error_calls=statuses.count("error"),
+                errors_without_latency=sum(
+                    row["classifier_latency_ms"] is None and row["classifier_status"] == "error"
+                    for row in grouped_rows
+                ),
                 success_rate=successful_calls / calls,
                 fallback_rate=fallback_calls / calls,
                 timeout_rate=timeout_calls / calls,

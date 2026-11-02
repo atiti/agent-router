@@ -182,6 +182,32 @@ def test_report_names_unpriced_backend_models(tmp_path):
     report = cost_report(store.history(limit=10), config.pricing, "gpt-6-astra")
 
     assert report.unpriced_models == ("my-azure-deployment",)
+    assert report.actual_cost == 0
+    assert report.baseline_cost == 0
+    assert report.priced_turns == 0
+    assert report.gross_savings is None
+    assert report.net_savings is None
+    assert report.savings_percent is None
+
+
+def test_savings_uses_classifier_overhead_from_same_priced_turns(tmp_path):
+    config = default_config()
+    store = AuditStore(tmp_path / "audit.db")
+    for turn, model in [("priced", "gpt-5.6-luna"), ("unknown", "unpriced")]:
+        decision = Router(config).route(
+            RouteContext(session_id="s", turn_id=turn, latest_prompt="x")
+        )
+        decision.model = model
+        decision.classifier_usage = {"prompt_tokens": 100, "completion_tokens": 10}
+        decision.selection_receipt["classifier"]["model"] = "gpt-5.6-luna"
+        store.record(decision, Tier.NORMAL)
+        store.record_usage("s", turn, model, {"input_tokens": 100, "output_tokens": 10})
+    report = cost_report(store.history(limit=10), config.pricing, "gpt-6-astra")
+    assert report.priced_turns == 1
+    assert report.classifier_cost == pytest.approx(2 * report.comparison_classifier_cost)
+    assert report.net_savings == pytest.approx(
+        report.baseline_cost - report.actual_cost - report.comparison_classifier_cost
+    )
 
 
 def test_report_counts_classifier_cost_before_answer_usage_arrives(tmp_path):

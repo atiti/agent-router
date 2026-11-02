@@ -11,9 +11,11 @@ from .config import PricingConfig
 class CostReport:
     measured_turns: int
     unmeasured_turns: int
+    priced_turns: int
     actual_cost: float
     baseline_cost: float
     classifier_cost: float
+    comparison_classifier_cost: float
     input_tokens: int
     cached_input_tokens: int
     cache_write_input_tokens: int
@@ -22,16 +24,18 @@ class CostReport:
     unpriced_models: tuple[str, ...]
 
     @property
-    def gross_savings(self) -> float:
-        return self.baseline_cost - self.actual_cost
+    def gross_savings(self) -> float | None:
+        return self.baseline_cost - self.actual_cost if self.priced_turns else None
 
     @property
-    def net_savings(self) -> float:
-        return self.gross_savings - self.classifier_cost
+    def net_savings(self) -> float | None:
+        gross = self.gross_savings
+        return gross - self.comparison_classifier_cost if gross is not None else None
 
     @property
-    def savings_percent(self) -> float:
-        return self.net_savings / self.baseline_cost * 100 if self.baseline_cost else 0.0
+    def savings_percent(self) -> float | None:
+        net = self.net_savings
+        return net / self.baseline_cost * 100 if net is not None and self.baseline_cost else None
 
 
 def canonical_model(model: str, pricing: PricingConfig) -> str:
@@ -73,8 +77,8 @@ def token_cost(model: str, usage: dict[str, int | float], pricing: PricingConfig
 
 
 def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) -> CostReport:
-    measured = 0
-    actual = baseline_cost = classifier_cost = 0.0
+    measured = priced = 0
+    actual = baseline_cost = classifier_cost = comparison_classifier_cost = 0.0
     unpriced_models: set[str] = set()
     totals = {
         "input_tokens": 0,
@@ -93,7 +97,7 @@ def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) 
             and canonical_model(str(classifier_model), pricing) not in pricing.models
         ):
             unpriced_models.add(str(classifier_model))
-        classifier_cost += token_cost(
+        row_classifier_cost = token_cost(
             str(classifier_model),
             {
                 "input_tokens": classifier_usage.get("prompt_tokens", 0),
@@ -106,6 +110,7 @@ def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) 
             },
             pricing,
         )
+        classifier_cost += row_classifier_cost
         if row["usage_recorded_at"] is None:
             continue
         measured += 1
@@ -120,14 +125,19 @@ def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) 
         answer_model = str(row["answer_model"] or row["model"])
         if canonical_model(answer_model, pricing) not in pricing.models:
             unpriced_models.add(answer_model)
+            continue
+        priced += 1
+        comparison_classifier_cost += row_classifier_cost
         actual += token_cost(answer_model, usage, pricing)
         baseline_cost += token_cost(baseline, usage, pricing)
     return CostReport(
         measured,
         len(rows) - measured,
+        priced,
         actual,
         baseline_cost,
         classifier_cost,
+        comparison_classifier_cost,
         **totals,
         unpriced_models=tuple(sorted(unpriced_models)),
     )

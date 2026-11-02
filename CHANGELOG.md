@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Read current native tool/compaction receipts, preserve unobserved coverage, and distinguish unpriced costs and classifier errors without latency in analytics; compare savings on the same priced-turn population.
+
 ## 0.5.82 — 2026-11-02
 
 - Apply configured context limits to review-only models and validate backend/account targets against their own catalog scope, retaining failures for missing overrides and conflicting model limits.

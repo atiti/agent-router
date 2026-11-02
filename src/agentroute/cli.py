@@ -1142,10 +1142,14 @@ def stats_command(
             + ", ".join(report.unpriced_models)
             + ". Add rates or aliases under pricing.models/pricing.aliases.[/yellow]"
         )
-    console.print(
-        f"Net estimated savings: {currency} {report.net_savings:.4f} "
-        f"({report.savings_percent:.1f}%)"
-    )
+    if report.net_savings is not None:
+        percent = f"{report.savings_percent:.1f}%" if report.savings_percent is not None else "—"
+        console.print(
+            f"Net estimated savings on {report.priced_turns} priced turns: "
+            f"{currency} {report.net_savings:.4f} ({percent})"
+        )
+    else:
+        console.print("Net estimated savings: unavailable; no comparable priced turns")
     console.print(
         "Estimate uses observed routed-turn token counts at configured API rates; "
         "it is not a Codex subscription invoice or a prediction of another model's token count."
@@ -1216,12 +1220,16 @@ def analytics_command(
         f"without token receipt: {report.overall.unmeasured_turns}"
     )
     efficiency = efficiency_report(rows, config.pricing)
+    observed_failures = efficiency["observed_tool_failures"]
+    failure_count = str(observed_failures) if observed_failures is not None else "unknown"
     console.print(
         f"Execution receipts: {efficiency['measured_turns']} "
         f"({efficiency['partial_turns']} partial); "
         f"responses: {efficiency['response_count']}; "
-        f"observed tool failures: {efficiency['observed_tool_failures']}; "
-        f"tool work: {_format_duration(efficiency['tool_work_ms'])} (may overlap)"
+        f"observed tool failures: {failure_count}; "
+        f"measured tool work: {_format_duration(efficiency['tool_work_ms'])} (may overlap); "
+        f"no observed tool events: {efficiency['tool_unobserved_turns']} turns; "
+        f"legacy tool coverage unverified: {efficiency['legacy_tool_unverified_turns']} turns"
     )
     review_cost = efficiency["progress_review_estimated_cost"]
     if (
@@ -1297,12 +1305,22 @@ def analytics_command(
             + ", ".join(f"{band}={count}" for band, count in calibration.confidence_bands.items())
         )
     console.print(
-        f"Routed answer cost: {currency} {report.overall.actual_cost:.4f}; "
+        f"Priced answer subtotal ({report.overall.priced_turns}/"
+        f"{report.overall.measured_turns} token receipts): "
+        f"{currency} {report.overall.actual_cost:.4f}; "
         f"fixed {baseline}: {currency} {report.overall.baseline_cost:.4f}; "
-        f"classifier overhead: {currency} {report.overall.classifier_cost:.4f}; "
-        f"net savings: {currency} {report.overall.net_savings:.4f} "
-        f"({report.overall.savings_percent:.1f}%)"
+        f"classifier overhead (all attempts): {currency} {report.overall.classifier_cost:.4f}"
     )
+    savings = report.overall.net_savings
+    percent = report.overall.savings_percent
+    if savings is not None:
+        percentage = f"{percent:.1f}%" if percent is not None else "—"
+        console.print(
+            f"Comparable net savings: {currency} {savings:.4f} ({percentage}); "
+            "same priced turns, including their classifier overhead"
+        )
+    else:
+        console.print("Comparable net savings: unavailable; no comparable priced turns")
 
     models = Table(
         "Backend",
@@ -1311,7 +1329,7 @@ def analytics_command(
         "Completed",
         "Token receipts",
         "Tokens",
-        "Answer cost",
+        "Estimated cost",
     )
     for item in report.by_model:
         models.add_row(
@@ -1321,7 +1339,9 @@ def analytics_command(
             str(item.completed_turns),
             str(item.measured_turns),
             f"{item.total_tokens:,}",
-            f"{currency} {item.answer_cost:.4f}",
+            f"{currency} {item.answer_cost:.4f}"
+            + (" (partial)" if item.cost_status == "partial" else "")
+            if item.answer_cost is not None else item.cost_status,
         )
     console.print(models)
 
@@ -1347,7 +1367,7 @@ def analytics_command(
         "Turns",
         "Avg time",
         "Tokens",
-        "Answer cost",
+        "Estimated cost",
     )
     for item in report.over_time:
         timeline.add_row(
@@ -1357,18 +1377,21 @@ def analytics_command(
             str(item.turns),
             _format_duration(item.average_duration_ms),
             f"{item.total_tokens:,}",
-            f"{currency} {item.answer_cost:.4f}",
+            f"{currency} {item.answer_cost:.4f}"
+            + (" (partial)" if item.cost_status == "partial" else "")
+            if item.answer_cost is not None else item.cost_status,
         )
     console.print(timeline)
 
     if report.classifiers:
         classifiers = Table(
             "Classifier model",
-            "Calls",
+            "Attempts",
             "OK",
             "Fallback",
             "Timeout",
             "Error",
+            "No latency",
             "Tokens",
             "Avg",
             "P50",
@@ -1384,6 +1407,7 @@ def analytics_command(
                 f"{item.fallback_calls} ({item.fallback_rate:.1%})",
                 f"{item.timeout_calls} ({item.timeout_rate:.1%})",
                 str(item.error_calls),
+                str(item.errors_without_latency),
                 f"{item.total_tokens:,}",
                 _format_duration(item.average_latency_ms),
                 _format_duration(item.p50_latency_ms),
