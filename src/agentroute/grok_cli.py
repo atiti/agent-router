@@ -67,8 +67,8 @@ def service_definition(binary, port, credential_mode="subscription", instance=""
         args.extend(["--grok-binary", binary])
         environment_names = ("GROK_HOME", "GROK_AUTH_PATH", "AGENTROUTE_HOME")
     environment = {
-        key: str(Path(os.environ[key]).expanduser().resolve())
-        for key in environment_names if key in os.environ
+        key: os.path.abspath(os.path.expanduser(os.environ[key]))
+        for key in environment_names if os.environ.get(key)
     }
     if platform.system() == "Darwin":
         return plistlib.dumps(
@@ -223,6 +223,7 @@ def install(
         write_snapshot(
             source,
             {"blocked_until": previous["blocked_until"]} if "blocked_until" in previous else {},
+            account=previous.get("account"),
         )
     else:
         from .grok_usage import read_snapshot, write_snapshot
@@ -232,6 +233,7 @@ def install(
         write_snapshot(
             source,
             {"blocked_until": previous["blocked_until"]} if "blocked_until" in previous else {},
+            account=previous.get("account"),
         )
     # A failed service/account check must not publish an enabled client route.
     save_config(config)

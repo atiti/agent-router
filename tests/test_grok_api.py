@@ -300,6 +300,21 @@ def test_service_normalizes_relative_credential_path(monkeypatch, tmp_path):
     )
 
 
+def test_service_ignores_empty_path_and_preserves_symlink_parent(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTROUTE_CREDENTIALS_FILE", "")
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(actual)
+    monkeypatch.setenv("AGENTROUTE_GROK_API_CREDENTIALS_FILE", str(linked / "key.env"))
+    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("agentroute.grok_cli._agentroute_executable", lambda: "/bin/agentroute")
+    payload = plistlib.loads(service_definition("grok", 8092, "api-key"))
+    environment = payload["EnvironmentVariables"]
+    assert "AGENTROUTE_CREDENTIALS_FILE" not in environment
+    assert environment["AGENTROUTE_GROK_API_CREDENTIALS_FILE"] == str(linked / "key.env")
+
+
 def test_cooldown_writers_are_serialized_across_key_rotation(api_key, monkeypatch):
     from agentroute.grok_usage import account_key, write_snapshot
 
