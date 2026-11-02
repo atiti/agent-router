@@ -118,6 +118,8 @@ def parse_billing(payload):
 
 
 def fetch_usage(credential, version, *, force=False):
+    if getattr(credential, "mode", "subscription") == "api-key":
+        return {"error": "API billing telemetry unavailable"}
     from .grok_bridge import UPSTREAM, open_upstream, request_headers
 
     previous = read_snapshot(credential)

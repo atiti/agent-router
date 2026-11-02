@@ -1,4 +1,4 @@
-"""Loopback Responses proxy for the subscription authenticated by the Grok CLI.
+"""Loopback Responses proxy for Grok CLI subscriptions or the public xAI API.
 
 The CLI alone owns OAuth refresh and credential writes. No tokens enter AgentRoute
 configuration, command arguments, logs, or provider catalogs.
@@ -7,9 +7,12 @@ configuration, command arguments, logs, or provider catalogs.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
+import shlex
+import stat
 import subprocess
 import threading
 import urllib.error
@@ -17,17 +20,25 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
-from .config import ExecutionBackendConfig, ModelCapabilities, ModelTarget
+from .config import ExecutionBackendConfig, ModelCapabilities, ModelTarget, agentroute_home
 
 UPSTREAM = "https://cli-chat-proxy.grok.com/v1"
+API_UPSTREAM = "https://api.x.ai/v1"
 DEFAULT_PORT = 8092
 MAX_BODY = 50 * 1024 * 1024
 MODELS = ("grok-4.7-build-fast", "grok-4.6", "grok-4.7", "grok-4.5")
+API_MODELS = tuple(model for model in MODELS if model != "grok-4.7-build-fast")
+BRIDGE_KEY_ENV = "AGENTROUTE_GROK_BRIDGE_KEY"
 
 
 class GrokCredential:
+    mode = "subscription"
+    upstream = UPSTREAM
+    models = MODELS
+
     def __init__(self, binary: str, home: Path | None = None):
         self.binary = binary
         self.home = home or Path(os.environ.get("GROK_HOME", str(Path.home() / ".grok")))
@@ -103,17 +114,93 @@ class GrokCredential:
         return match[1]
 
 
-def ensure_backend(config, port=DEFAULT_PORT):
+class MissingCredential(ValueError):
+    pass
+
+
+def api_credentials_path():
+    override = os.environ.get("AGENTROUTE_GROK_API_CREDENTIALS_FILE")
+    if override:
+        return Path(override).expanduser()
+    return agentroute_home() / "grok-api-credentials.env"
+
+
+def read_managed_credential(name, path=None):
+    """Read one owner-only credential without evaluating shell-file contents."""
+    from .providers import credentials_path
+
+    descriptor = os.open(path or credentials_path(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, encoding="utf-8") as handle:
+        metadata = os.fstat(handle.fileno())
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+            or metadata.st_size > 65536
+        ):
+            raise ValueError("Credential file must be an owner-only regular file")
+        candidates = []
+        for line in handle.read(65536).splitlines():
+            if line.startswith(f"export {name}="):
+                parts = shlex.split(line)
+                if len(parts) != 2 or parts[0] != "export":
+                    raise ValueError("Invalid managed credential")
+                candidates.append(parts[1].removeprefix(name + "="))
+        if not candidates:
+            raise MissingCredential("Managed credential is missing")
+        if len(candidates) != 1:
+            raise ValueError("Duplicate managed credential")
+        key = candidates[0]
+    if not key or any(not 33 <= ord(char) <= 126 for char in key):
+        raise ValueError("Invalid managed credential")
+    return key
+
+
+class GrokApiCredential:
+    """Keep public API and local-client credentials at their separate boundaries."""
+
+    mode = "api-key"
+    upstream = API_UPSTREAM
+    models = API_MODELS
+
+    def _read(self):
+        return {"key": read_managed_credential("XAI_API_KEY", api_credentials_path())}
+
+    def current(self):
+        return self._read()
+
+    def token(self):
+        return self.current()["key"]
+
+    def version(self):
+        return None  # API keys do not require a Grok CLI installation or OAuth refresh.
+
+    def client_key(self):
+        return read_managed_credential(BRIDGE_KEY_ENV)
+
+    def health_proof(self, nonce, instance="", port=0):
+        # Prove the responding bridge owns both intended credentials without exposing either.
+        return hmac.new(
+            self.client_key().encode(),
+            f"{nonce}\0{instance}\0{port}\0".encode() + self.token().encode(),
+            hashlib.sha256,
+        ).hexdigest()
+
+
+def ensure_backend(config, port=DEFAULT_PORT, credential_mode="subscription"):
+    if credential_mode not in {"subscription", "api-key"}:
+        raise ValueError("Unknown Grok credential mode")
+    api_key = credential_mode == "api-key"
     if "grok" not in config.backends:
         config.backends["grok"] = ExecutionBackendConfig(
             enabled=True,
             codex_provider="agentroute-grok",
-            display_name="Grok subscription (Grok CLI)",
+            display_name="Grok API" if api_key else "Grok subscription (Grok CLI)",
             base_url=f"http://127.0.0.1:{port}/v1",
             tool_compatibility="functions_and_apply_patch_preserve_reasoning",
-            review_model=MODELS[0],
+            review_model="grok-4.7" if api_key else MODELS[0],
             tiers={
-                tier: ModelTarget(model=model, reasoning_effort=effort)
+                tier: ModelTarget(model="grok-4.7" if api_key else model, reasoning_effort=effort)
                 for tier, model, effort in (
                     ("fast", MODELS[0], "low"),
                     ("normal", "grok-4.6", "medium"),
@@ -125,19 +212,53 @@ def ensure_backend(config, port=DEFAULT_PORT):
     else:
         config.backends["grok"].enabled = True
         config.backends["grok"].base_url = f"http://127.0.0.1:{port}/v1"
-    for model in MODELS:
+    backend = config.backends["grok"]
+    shipped_subscription = all(
+        backend.tiers.get(tier) is not None
+        and backend.tiers[tier].model == model
+        and backend.tiers[tier].reasoning_effort == effort
+        for tier, model, effort in (
+            ("fast", MODELS[0], "low"),
+            ("normal", "grok-4.6", "medium"),
+            ("smart", "grok-4.7", "high"),
+            ("max", "grok-4.7", "xhigh"),
+        )
+    )
+    if backend.display_name in {"Grok API", "Grok subscription (Grok CLI)"}:
+        backend.display_name = "Grok API" if api_key else "Grok subscription (Grok CLI)"
+    if api_key:
+        # Migrate only the subscription-only shipped model, retaining custom public models.
+        for target in (*backend.tiers.values(), *backend.models.values()):
+            if target.model == "grok-4.7-build-fast":
+                target.model = "grok-4.7"
+        if shipped_subscription:
+            backend.tiers["normal"].model = "grok-4.7"
+        if backend.review_model == "grok-4.7-build-fast":
+            backend.review_model = "grok-4.7"
+    # Clients authenticate locally with a separate key; xAI credentials stay upstream.
+    backend.api_key_env = BRIDGE_KEY_ENV if api_key else None
+    backend.api_key_header = "authorization"
+    for model in API_MODELS if api_key else MODELS:
         config.capabilities.models.setdefault(
             model,
             ModelCapabilities(
-                tool_calling="apply_patch_only", reasoning=True, vision=True, context_window=256000
+                tool_calling="apply_patch_only",
+                reasoning=True,
+                vision=True,
+                context_window=500000 if api_key and model == "grok-4.7" else 256000,
             ),
         )
 
 
 def request_headers(credential, version, model, *, login=None):
-    return {
+    headers = {
         "Authorization": "Bearer " + (login["key"] if login is not None else credential.token()),
         "Content-Type": "application/json",
+    }
+    if getattr(credential, "mode", "subscription") == "api-key":
+        return headers
+    return {
+        **headers,
         "X-XAI-Token-Auth": "xai-grok-cli",
         "x-grok-model-override": model,
         "x-grok-client-version": version,
@@ -158,8 +279,9 @@ def open_upstream(request, *, timeout):
 class GrokServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port, credential):
+    def __init__(self, port, credential, instance=""):
         self.credential = credential
+        self.instance = instance
         self.cli_version = credential.version()
         super().__init__(("127.0.0.1", port), GrokHandler)
 
@@ -183,14 +305,49 @@ class GrokHandler(BaseHTTPRequestHandler):
         }:
             self._json(403, {"error": "Browser origins are not accepted"})
             return
-        if self.path == "/healthz":
-            self._json(200, {"provider": "grok", "version": __version__})
+        url = urlsplit(self.path)
+        if url.path == "/healthz":
+            proof = {}
+            if url.query and getattr(self.server.credential, "mode", "subscription") == "api-key":
+                nonce = parse_qs(url.query).get("nonce", [""])[0]
+                if not re.fullmatch(r"[0-9a-f]{64}", nonce):
+                    self._json(400, {"error": "Invalid health challenge"})
+                    return
+                try:
+                    proof["credential_proof"] = self.server.credential.health_proof(
+                        nonce, self.server.instance, self.server.server_port
+                    )
+                except (OSError, ValueError):
+                    self._json(503, {"error": "Grok credentials unavailable"})
+                    return
+            self._json(
+                200,
+                {
+                    "provider": "grok",
+                    "version": __version__,
+                    "credential_mode": getattr(self.server.credential, "mode", "subscription"),
+                    "instance": self.server.instance,
+                    **proof,
+                },
+            )
         elif self.path == "/usage":
-            from .grok_usage import fetch_usage
+            from .grok_usage import fetch_usage, read_snapshot
 
-            self._json(200, fetch_usage(self.server.credential, self.server.cli_version))
+            if getattr(self.server.credential, "mode", "subscription") == "api-key":
+                # Public API billing is not Grok CLI subscription allowance.
+                self._json(
+                    200,
+                    dict(
+                        read_snapshot(self.server.credential),
+                        credential_mode="api-key",
+                        billing="unavailable",
+                    ),
+                )
+            else:
+                self._json(200, fetch_usage(self.server.credential, self.server.cli_version))
         elif self.path == "/v1/models":
-            self._json(200, {"object": "list", "data": [{"id": m} for m in MODELS]})
+            models = getattr(self.server.credential, "models", MODELS)
+            self._json(200, {"object": "list", "data": [{"id": m} for m in models]})
         else:
             self._json(404, {"error": "Unknown route"})
 
@@ -204,12 +361,29 @@ class GrokHandler(BaseHTTPRequestHandler):
         }:
             self._json(403, {"error": "Browser origins are not accepted"})
             return
+        if getattr(self.server.credential, "mode", "subscription") == "api-key":
+            try:
+                expected = "Bearer " + self.server.credential.client_key()
+            except (OSError, ValueError):
+                self._json(
+                    503, {"error": "Local bridge credential unavailable; reinstall the bridge"}
+                )
+                return
+            supplied = self.headers.get("Authorization", "")
+            if not supplied.isascii() or not hmac.compare_digest(supplied, expected):
+                self._json(401, {"error": "Local bridge authentication required"})
+                return
+        elif self.headers.get("Authorization"):
+            # An already-loaded API client must not spend subscription allowance after a switch.
+            self._json(401, {"error": "Client credential mode does not match the Grok service"})
+            return
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if not 0 < size <= MAX_BODY:
                 raise ValueError("Invalid request size")
             body = json.loads(self.rfile.read(size))
-            if not isinstance(body, dict) or body.get("model") not in MODELS:
+            models = getattr(self.server.credential, "models", MODELS)
+            if not isinstance(body, dict) or body.get("model") not in models:
                 raise ValueError("Unknown Grok model")
             body["stream"] = True
             body["store"] = False
@@ -223,13 +397,14 @@ class GrokHandler(BaseHTTPRequestHandler):
             )
             account = account_key(self.server.credential, login=login)
             request = urllib.request.Request(
-                UPSTREAM + self.path.removeprefix("/v1"),
+                getattr(self.server.credential, "upstream", UPSTREAM)
+                + self.path.removeprefix("/v1"),
                 data=json.dumps(body).encode(),
                 headers=headers,
             )
             upstream = open_upstream(request, timeout=300)
         except (ValueError, KeyError, TypeError):
-            self._json(400, {"error": "Invalid request or Grok login; run grok login"})
+            self._json(400, {"error": "Invalid request or Grok credential"})
             return
         except urllib.error.HTTPError as error:
             if error.code == 429:
@@ -254,7 +429,7 @@ class GrokHandler(BaseHTTPRequestHandler):
             error.close()
             return
         except (OSError, subprocess.SubprocessError):
-            self._json(502, {"error": "Grok unavailable; check grok login and grok models"})
+            self._json(502, {"error": "Grok unavailable; check the configured credential mode"})
             return
         with upstream:
             self.send_response(200)
@@ -305,6 +480,11 @@ def translate_request(body):
     body.setdefault("max_output_tokens", 16384)
 
     body["tools"] = flattened_tools(body.get("tools", []))
+    choice = body.get("tool_choice")
+    if isinstance(choice, dict) and choice.get("type") == "custom":
+        if choice.get("name") != "apply_patch":
+            raise ValueError("Unsupported custom tool choice")
+        body["tool_choice"] = {"type": "function", "name": PATCH_FUNCTION}
     for tool in body["tools"]:
         if tool.get("type") == "web_search":
             # Codex's OpenAI-only toggle is rejected by Grok's search tool.
