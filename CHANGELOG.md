@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Include policy-gated GitHub evidence for independent reviewers and retry an incomplete Grok local compaction once.
+
 - Keep the bundled macOS browser authentication helper on the existing ChatGPT account when ordinary sessions use a different routed provider.
 - Avoid unsupported GPT verbosity, Responses Lite and WebSocket preferences in generated metadata for unknown custom backend models.
 - Normalize overlapping Grok message, search, and function-call streams so a tool completion cannot clear Codex's still-streaming answer and leave the turn spinning.
