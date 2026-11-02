@@ -156,15 +156,20 @@ def _provider_context_windows(config: AppConfig, backend_name: str) -> dict[str,
         return {}
     return {
         target.model: window
-        for target in (
-            *config.backends[backend_name].tiers.values(),
-            *config.backends[backend_name].models.values(),
-        )
+        for target in _backend_model_targets(config.backends[backend_name])
         if (
             window := target.context_window
             or model_capabilities(config, backend_name, target.model).context_window
         )
     }
+
+
+def _backend_model_targets(backend: ExecutionBackendConfig) -> list[ModelTarget]:
+    targets = [*backend.tiers.values(), *backend.models.values()]
+    reviewer = backend.review_model
+    if reviewer and all(target.model != reviewer for target in targets):
+        targets.append(ModelTarget(model=reviewer))
+    return targets
 
 
 def _installed_codex_catalog(source: Path | None = None) -> dict | None:
@@ -329,7 +334,7 @@ def _write_model_catalog(
     has_routed_limits = any(
         target.context_window is not None or capabilities.context_window is not None
         for name, backend in routed_backends
-        for target in (*backend.tiers.values(), *backend.models.values())
+        for target in _backend_model_targets(backend)
         if (capabilities := model_capabilities(config, name, target.model))
     )
     if not aliases and not claude_models and not has_routed_limits:
@@ -399,7 +404,7 @@ def _write_model_catalog(
         if isinstance(model, dict) and isinstance(model.get("slug"), str)
     }
     for backend_name, backend in routed_backends:
-        for target in (*backend.tiers.values(), *backend.models.values()):
+        for target in _backend_model_targets(backend):
             slug = target.model
             capabilities = model_capabilities(config, backend_name, slug)
             if target.context_window:

@@ -4,6 +4,22 @@ AgentRoute remains a routing layer. Codex owns session history, compaction, tool
 and memory files; these features read existing evidence rather than implementing
 a competing harness or silently importing other conversations.
 
+## Context diagnostics
+
+`agentroute doctor` checks tier, direct-model and reviewer limits, including the
+active ChatGPT account's target overrides. It compares those targets with the
+written provider configuration and effective launch catalog. Conflicting explicit
+limits for the same model and missing or mismatched applied windows remain failures.
+Review-only models receive the same generated provider limits as worker models.
+
+The shared ChatGPT catalog maximum is not an independent limit for an Azure or
+other routed API deployment. Those maxima remain unknown until established by
+their own source; an explicit custom catalog retains its maximum checks. A warning
+that the provider limit is unverified is not a successful maximum-capacity test.
+Ordinary inference, native context selection and compaction behavior are separate
+checks. Capacity management and model pricing warnings also remain separate from
+authentication and context correctness.
+
 ## Execution analytics
 
 `agentroute analytics` (or `--json`) includes execution receipts gathered by the
