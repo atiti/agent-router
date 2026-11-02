@@ -642,3 +642,15 @@ def test_failed_supervisor_stop_retains_unit(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match='rejected stop'):
         stop_replacement_service(unit, b'new unit')
     assert unit.read_bytes() == b'new unit'
+
+
+def test_publish_refuses_symlinked_configuration(tmp_path):
+    from agentroute.grok_cli import publish_files
+
+    actual = tmp_path / 'actual.toml'
+    actual.write_bytes(b'preserve')
+    link = tmp_path / 'config.toml'
+    link.symlink_to(actual)
+    with pytest.raises(ValueError, match='symlinked'):
+        publish_files({link: b'new'}, {link: b'preserve'}, {})
+    assert link.is_symlink() and actual.read_bytes() == b'preserve'

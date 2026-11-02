@@ -240,7 +240,8 @@ def prepare_publication(config, originals):
         save_config(config, staged_route)
         sync_codex_providers(config, path=staged_config, backup=False)
         codex_payload = staged_config.read_text().replace(
-            json.dumps(str(staged_catalog)), json.dumps(str(native_catalog))
+            json.dumps(str(staged_catalog), ensure_ascii=False),
+            json.dumps(str(native_catalog), ensure_ascii=False),
         )
         payloads = {
             config_path(): staged_route.read_bytes(), native_config: codex_payload.encode()
@@ -252,6 +253,8 @@ def prepare_publication(config, originals):
 
 def publish_files(payloads, originals, written):
     for target, payload in payloads.items():
+        if target.is_symlink():
+            raise ValueError("Refusing to replace a symlinked Grok configuration target")
         current = target.read_bytes() if target.exists() else None
         if current != originals.get(target):
             raise RuntimeError(
@@ -313,6 +316,8 @@ def install(
         target: target.read_bytes() if target.exists() else None
         for target in (config_path(), codex_config, _launch_model_catalog_path(codex_config))
     }
+    if any(target.is_symlink() for target in publication_files):
+        raise typer.BadParameter("Grok installation requires regular configuration files")
     payloads = prepare_publication(config, publication_files)
     if credential == CredentialMode.subscription and path.exists():
         # Preserve the preceding API client's credential path when the new shell omits it.
