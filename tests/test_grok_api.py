@@ -251,7 +251,8 @@ def test_failed_install_does_not_publish_backend(api_key, monkeypatch, tmp_path)
     assert "did not become healthy" in str(result.exception)
 
 
-def test_failed_provider_publication_stops_replacement_service(api_key, monkeypatch, tmp_path):
+@pytest.mark.parametrize("failure", ["challenge", "publication"])
+def test_failed_install_stops_replacement_service(api_key, monkeypatch, tmp_path, failure):
     from agentroute.bridge_service import BridgeHealth
 
     path = tmp_path / "service.plist"
@@ -271,6 +272,8 @@ def test_failed_provider_publication_stops_replacement_service(api_key, monkeypa
     def proof(request, **kwargs):
         from urllib.parse import parse_qs, urlsplit
 
+        if failure == "challenge":
+            raise OSError("challenge timed out")
         nonce = parse_qs(urlsplit(request.full_url).query)["nonce"][0]
         args = plistlib.loads(path.read_bytes())["ProgramArguments"]
         instance = args[args.index("--instance") + 1]
@@ -283,7 +286,9 @@ def test_failed_provider_publication_stops_replacement_service(api_key, monkeypa
     monkeypatch.setattr("agentroute.grok_cli.sync_codex_providers", fail)
     result = CliRunner().invoke(app, ["install", "--credential", "api-key"])
     assert result.exit_code != 0
-    assert "malformed provider marker" in str(result.exception)
+    assert (
+        "challenge timed out" if failure == "challenge" else "malformed provider marker"
+    ) in str(result.exception)
     assert not path.exists()
     assert calls[-1][:2] == ("launchctl", "bootout")
 

@@ -231,7 +231,7 @@ def capacity_snapshot(base_url, *, offline=False):
                 if not isinstance(result, dict) or result.get("error"):
                     return {}
                 if result.get("credential_mode") == "api-key":
-                    credential = GrokApiCredential()
+                    return api_snapshot(result)
                 else:
                     credential = GrokCredential("grok")
                 data = read_snapshot(credential)

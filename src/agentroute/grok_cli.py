@@ -162,6 +162,15 @@ def ensure_client_credential(config):
             os.environ[source] = previous
 
 
+def stop_replacement_service(path, definition):
+    if platform.system() == "Darwin":
+        run("launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}", check=False)
+    else:
+        run("systemctl", "--user", "stop", UNIT, check=False)
+    if path.exists() and path.read_bytes() == definition:
+        path.unlink()
+
+
 @app.command()
 def install(
     port: int = DEFAULT_PORT, credential: CredentialMode = CredentialMode.subscription
@@ -187,44 +196,65 @@ def install(
     if credential == CredentialMode.api_key:
         ensure_client_credential(config)
     path = unit_path()
+    if credential == CredentialMode.subscription and path.exists():
+        # Preserve the preceding API client's credential path when the new shell omits it.
+        if platform.system() == "Darwin":
+            old_environment = plistlib.loads(path.read_bytes()).get("EnvironmentVariables", {})
+            previous_path = old_environment.get("AGENTROUTE_CREDENTIALS_FILE")
+        else:
+            previous_path = None
+            for line in path.read_text().splitlines():
+                if line.startswith("Environment="):
+                    assignment = shlex.split(line.removeprefix("Environment="))[0]
+                    name, _, value = assignment.partition("=")
+                    if name == "AGENTROUTE_CREDENTIALS_FILE":
+                        previous_path = value.replace("%%", "%")
+        if previous_path and not os.environ.get("AGENTROUTE_CREDENTIALS_FILE"):
+            os.environ["AGENTROUTE_CREDENTIALS_FILE"] = previous_path
     path.parent.mkdir(parents=True, exist_ok=True)
     instance = secrets.token_hex(32) if credential == CredentialMode.api_key else ""
     definition = service_definition(binary, port, credential.value, instance)
     path.write_bytes(definition)
-    if platform.system() == "Darwin":
-        run("launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}", check=False)
-        # Reuse the retry behavior from the existing Claude service lifecycle.
-        import time
+    try:
+        if platform.system() == "Darwin":
+            run("launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}", check=False)
+            # Reuse the retry behavior from the existing Claude service lifecycle.
+            import time
 
-        for _attempt in range(6):
-            result = run("launchctl", "bootstrap", f"gui/{os.getuid()}", str(path), check=False)
-            if result.returncode == 0:
-                break
-            time.sleep(0.4)
+            for _attempt in range(6):
+                result = run("launchctl", "bootstrap", f"gui/{os.getuid()}", str(path), check=False)
+                if result.returncode == 0:
+                    break
+                time.sleep(0.4)
+            else:
+                raise RuntimeError("Cannot start Grok LaunchAgent; check launchctl")
         else:
-            raise RuntimeError("Cannot start Grok LaunchAgent; check launchctl")
-    else:
-        run("systemctl", "--user", "daemon-reload")
-        run("systemctl", "--user", "enable", UNIT)
-        run("systemctl", "--user", "restart", UNIT)
-    health = wait_for_health(port)
-    if (
-        health.status != "healthy"
-        or (health.payload or {}).get("provider") != "grok"
-        or (health.payload or {}).get("credential_mode", "subscription") != credential.value
-    ):
-        raise RuntimeError(f"Grok service did not become healthy: {health.detail}")
-    if credential == CredentialMode.api_key:
-        nonce = secrets.token_hex(32)
-        expected = GrokApiCredential().health_proof(nonce, instance, port)
-        request = urllib.request.Request(f"http://127.0.0.1:{port}/healthz?nonce={nonce}")
-        from .grok_bridge import open_upstream
+            run("systemctl", "--user", "daemon-reload")
+            run("systemctl", "--user", "enable", UNIT)
+            run("systemctl", "--user", "restart", UNIT)
+        health = wait_for_health(port)
+        if (
+            health.status != "healthy"
+            or (health.payload or {}).get("provider") != "grok"
+            or (health.payload or {}).get("credential_mode", "subscription") != credential.value
+        ):
+            raise RuntimeError(f"Grok service did not become healthy: {health.detail}")
+        if credential == CredentialMode.api_key:
+            nonce = secrets.token_hex(32)
+            expected = GrokApiCredential().health_proof(nonce, instance, port)
+            request = urllib.request.Request(f"http://127.0.0.1:{port}/healthz?nonce={nonce}")
+            from .grok_bridge import open_upstream
 
-        with open_upstream(request, timeout=5) as response:
-            payload = json.loads(response.read(65536))
-        actual = payload.get("credential_proof", "") if isinstance(payload, dict) else ""
-        if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
-            raise RuntimeError("Grok service credential proof failed; check the configured port")
+            with open_upstream(request, timeout=5) as response:
+                payload = json.loads(response.read(65536))
+            actual = payload.get("credential_proof", "") if isinstance(payload, dict) else ""
+            if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
+                raise RuntimeError(
+                    "Grok service credential proof failed; check the configured port"
+                )
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+        stop_replacement_service(path, definition)
+        raise
     from .grok_usage import read_snapshot, write_snapshot
 
     source = GrokApiCredential() if credential == CredentialMode.api_key else GrokCredential(binary)
@@ -244,12 +274,7 @@ def install(
         sync_codex_providers(config)
     except (OSError, ValueError):
         # Existing clients must not reach a replacement account after failed publication.
-        if platform.system() == "Darwin":
-            run("launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}", check=False)
-        else:
-            run("systemctl", "--user", "stop", UNIT, check=False)
-        if path.exists() and path.read_bytes() == definition:
-            path.unlink()
+        stop_replacement_service(path, definition)
         raise
     typer.echo(f"Grok {credential.value} ready on port {port}. Use @grok in Codex.")
 

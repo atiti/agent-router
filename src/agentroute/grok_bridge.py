@@ -286,6 +286,10 @@ class GrokServer(ThreadingHTTPServer):
     def __init__(self, port, credential, instance=""):
         self.credential = credential
         self.instance = instance
+        try:
+            self.api_client_key = read_managed_credential(BRIDGE_KEY_ENV)
+        except (OSError, ValueError):
+            self.api_client_key = None
         self.cli_version = credential.version()
         super().__init__(("127.0.0.1", port), GrokHandler)
 
@@ -378,10 +382,9 @@ class GrokHandler(BaseHTTPRequestHandler):
                 self._json(401, {"error": "Local bridge authentication required"})
                 return
         elif self.headers.get("Authorization"):
-            try:
-                api_client = "Bearer " + read_managed_credential(BRIDGE_KEY_ENV)
-            except (OSError, ValueError):
-                api_client = ""
+            api_client = (
+                "Bearer " + self.server.api_client_key if self.server.api_client_key else ""
+            )
             supplied = self.headers["Authorization"]
             if api_client and supplied.isascii() and hmac.compare_digest(supplied, api_client):
                 # A loaded API client must not spend subscription allowance after a switch.
