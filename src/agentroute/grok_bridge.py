@@ -202,6 +202,10 @@ def ensure_backend(config, port=None, credential_mode="subscription"):
         port = API_PORT if api_key else DEFAULT_PORT
     if not 1 <= port <= 65535:
         raise ValueError("port must be between 1 and 65535")
+    other_name = "grok" if api_key else "grok-api"
+    other = config.backends.get(other_name)
+    if other is not None and urlsplit(other.base_url).port == port:
+        raise ValueError(f"Port {port} is already configured for {other_name}; use a separate port")
     if name not in config.backends:
         config.backends[name] = ExecutionBackendConfig(
             enabled=True,
