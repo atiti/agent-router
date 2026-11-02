@@ -155,6 +155,13 @@ per-turn auditing.
 
 The bridge defaults `max_output_tokens` to 16,384 when the caller does not specify a limit. An explicit caller limit takes precedence. This bounds runaway generations; an incomplete response is still reported as an error by Codex and may require retrying in a fresh or shorter context.
 
+For local summary compaction on `@grok`, the bundled Codex runtime retries an
+output-limit failure once with the original history and a concise checkpoint
+instruction. It discards the incomplete summary, accounts for the failed
+attempt's token usage, and continues only after a complete summary. A second
+failure ends compaction with an error. This recovery is specific to subscription
+compaction; the bridge does not replay active inference or tool requests.
+
 ## Service, authentication and troubleshooting
 
 The proxy listens only on `127.0.0.1:8092` (`--port` overrides it). It runs as a
