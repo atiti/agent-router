@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Allow the existing Grok tool bridge to use a public xAI API key, with separate authentication, secure credential import, independent service setup and account-bound rate-limit cooldowns; API billing is not reported as subscription allowance.
 - Normalize overlapping Grok message, search, and function-call streams so a tool completion cannot clear Codex's still-streaming answer and leave the turn spinning.
 
 ## 0.5.81 — 2026-11-01

@@ -1,4 +1,6 @@
-# Grok subscription backend
+# Grok backend
+
+## Subscription login
 
 Install the [official Grok CLI](https://github.com/xai-org/grok-build), run
 `grok login`, and confirm `grok models` works. Then:
@@ -38,7 +40,49 @@ limits. Operator overrides under `capabilities.models.<id>.context_window` or a
 backend model target's `context_window` use the standard generated Codex catalog.
 Codex uses local summary compaction for this provider.
 
-## Capacity monitoring
+## Public xAI API key
+
+An xAI API key can use the same loopback bridge and Codex tool translation:
+
+```sh
+# Supply the key through a private environment variable, then import it:
+agentroute grok credential-import XAI_API_KEY
+agentroute grok install --credential api-key
+agentroute grok status
+```
+
+The explicit import reuses AgentRoute's secure credential writer in a separate owner-only file, `~/.agentroute/grok-api-credentials.env`. The background service reads it for each request, so importing a rotated key requires no reinstall. Neither the installer nor foreground `grok serve` implicitly uses an inherited `XAI_API_KEY`; import the selected environment variable first, then unset that import variable before launching Codex. This prevents a different inherited key from overriding the intended account and keeps the upstream key outside the ordinary launch credential file. Secrets never enter service definitions, command arguments, provider catalogs or diagnostics. Installation checks a fresh challenge bound to both intended credentials, the new service instance and its listening port before publishing the provider configuration.
+
+Installation also creates a separate random local-client credential named `AGENTROUTE_GROK_BRIDGE_KEY` in the ordinary owner-only `backend-credentials.env` file. The generated Codex provider references its name, and the usual AgentRoute launch wrapper loads it. API-mode inference rejects requests without this local credential. The bridge never forwards it to xAI, and an xAI API key cannot authenticate the local endpoint. A subscription service rejects API-client bearer requests so an already-loaded API session cannot silently spend subscription allowance after a mode switch. Restart the session after changing credential modes.
+
+API-key mode sends credentials only to `https://api.x.ai/v1`; it does not use
+Grok CLI authentication or its subscription proxy. The CLI is not required.
+The existing patch, function namespace and encrypted-reasoning translations
+apply to both modes. This avoids the public API's rejection of Codex's `custom`
+patch-tool schema. Requests remain streaming with `store=false` and redirects
+are refused. Provider retention terms still apply to API traffic.
+
+A new API backend uses `grok-4.7` at every tier, with low, medium, high and xhigh
+reasoning respectively and a 500,000-token catalog context. The unchanged shipped subscription tiers migrate to these API defaults. Custom public-model tiers and context overrides are preserved; an existing subscription-only FAST or review model is changed to `grok-4.7`. Public `grok-4.6` and `grok-4.5` are also
+supported; subscription-only `grok-4.7-build-fast` is rejected in API mode.
+Confirm actual model access and limits in the account's `/v1/models` catalog.
+
+The API key's funding and limits belong to the account that issued it. Installing
+the bridge does not establish that an X/Grok subscription or startup admission
+funds API requests. `status` identifies the active credential mode; `/usage`
+reports API billing as unavailable and never sends the key to subscription
+billing. Responses token usage still passes through to Codex. Standard local
+token-cost estimates and configured budget ceilings remain estimates; they are
+not an API credit balance. HTTP 429 records an account-bound retry cooldown
+without replaying the active request.
+
+Run `agentroute grok install` to return to a signed-in subscription, or
+`agentroute grok uninstall` to stop the service and disable the backend.
+Automatic tier routes are preserved in either mode.
+
+The function-compatible provider exposes tools directly. A large installed connector catalog can therefore occupy most of the model context and cause repeated compaction. For local file work, use supported per-session controls such as `codex --disable apps -c 'mcp_servers.NAME.enabled=false'` for unnecessary configured MCP servers, then select `@grok`. These controls do not change other sessions. Enabling Codex-only tool-search protocols is not inferred from ordinary API function support.
+
+## Subscription capacity monitoring
 
 ```sh
 agentroute capacity enable
@@ -52,7 +96,7 @@ agentroute capacity fallback grok gpt
 agentroute capacity budget grok --daily 10
 ```
 
-Grok appears in the standard backend capacity table and JSON with used/remaining
+The subscription mode appears in the standard backend capacity table and JSON with used/remaining
 percentages and a reset timestamp in machine-local time. The bridge reads the
 same `billing?format=credits` endpoint as Grok CLI. New percentage/period fields
 are preferred; legacy monthly limit/used fields are supported. Malformed measurements
