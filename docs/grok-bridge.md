@@ -132,6 +132,11 @@ and is restored to Codex's custom tool downstream. Encrypted reasoning is retain
 the incompatible Codex `content: null` field is removed on replay. Codex retains
 tool execution, sandbox, and approval authority.
 
+Grok can overlap a message with search and function-call events. The bridge keeps
+each output item's events contiguous for Codex while streaming the first item
+immediately. Overlapping items are delivered when the preceding item finishes;
+this prevents tool completion events from clearing an answer that is still arriving.
+
 Browser-origin requests and non-loopback host headers are rejected. Authenticated
 upstream requests do not follow redirects. Upstream HTTP codes are preserved
 without exposing upstream diagnostics or prompt content. `agentroute doctor`
