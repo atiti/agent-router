@@ -457,3 +457,41 @@ def test_explicit_status_port_checks_requested_foreground(monkeypatch, tmp_path)
     monkeypatch.setattr('agentroute.grok_cli.wait_for_health', health)
     result = CliRunner().invoke(app, ['status', '--port', '9092'])
     assert result.exit_code == 0 and seen == [9092]
+
+
+@pytest.mark.parametrize("system", ["Darwin", "Linux"])
+@pytest.mark.parametrize("arguments", [
+    ["/custom/wrapper", "grok", "serve", "--port", "9092", "--grok-binary", "grok"],
+    ["/managed/agentroute", "grok", "serve", "--credential", "$MODE"],
+])
+def test_subscription_install_preserves_custom_service(tmp_path, monkeypatch, system, arguments):
+    import plistlib
+    import shlex
+
+    from agentroute.bridge_service import BridgeHealth
+
+    unit = tmp_path / "service"
+    content = (
+        plistlib.dumps({"ProgramArguments": arguments})
+        if system == "Darwin"
+        else ("[Service]\nExecStart=" + shlex.join(arguments) + "\n").encode()
+    )
+    unit.write_bytes(content)
+    monkeypatch.setattr("agentroute.grok_cli.platform.system", lambda: system)
+    monkeypatch.setattr("agentroute.grok_cli.unit_path", lambda: unit)
+    monkeypatch.setattr(
+        "agentroute.grok_cli._agentroute_executable", lambda: Path("/managed/agentroute")
+    )
+    monkeypatch.setattr(
+        "agentroute.grok_cli.wait_for_health", lambda *a, **k: BridgeHealth("unreachable", "test")
+    )
+    monkeypatch.setattr(
+        "agentroute.grok_cli.save_config", lambda *a, **k: pytest.fail("must preserve config")
+    )
+    monkeypatch.setattr(
+        "agentroute.grok_cli.run", lambda *a, **k: pytest.fail("must preserve service")
+    )
+    result = CliRunner().invoke(app, ["install"])
+    assert result.exit_code != 0
+    assert "custom command" in result.output
+    assert unit.read_bytes() == content
