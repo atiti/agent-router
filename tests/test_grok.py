@@ -474,7 +474,15 @@ def test_stale_failed_probe_does_not_relabel_old_success(tmp_path, monkeypatch):
     path = tmp_path / "route/grok-usage.json"
     snapshot["observed_at"] = time.time() - 70
     path.write_text(json.dumps(snapshot))
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: BytesIO(b'{"error":"failed"}'))
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda url, **k: BytesIO(
+            b'{"provider":"grok","credential_mode":"subscription"}'
+            if url.endswith("/healthz")
+            else b'{"error":"failed"}'
+        ),
+    )
     assert capacity_snapshot("http://127.0.0.1:8092/v1") == {}
     assert capacity_snapshot("http://127.0.0.1:8092/v1", offline=True)["used_percent"] == 25
     snapshot["observed_at"] = time.time() - 200

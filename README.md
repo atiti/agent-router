@@ -561,6 +561,13 @@ and SMART/MAX to `grok-4.7`, with a conservative 256,000-token context window.
 time; stats and analytics include configurable Grok token-rate estimates.
 See [Grok setup, monitoring, pricing and troubleshooting](docs/grok-bridge.md).
 
+The separate `@grok-api` backend can use public xAI API keys with explicit credential import
+and `agentroute grok serve --credential api-key` on port 8093. `@grok` retains the
+flat-rate CLI subscription on port 8092. API mode keeps upstream and local
+client credentials separate; token-cost estimates and retry cooldowns are available,
+while API credit-balance telemetry is unavailable. Follow the [API setup guide](docs/grok-bridge.md#public-xai-api-key)
+for backend registration and persistent operation.
+
 ## Capacity management and subscription failover
 
 Capacity management is opt-in. It reads the ordinary ChatGPT subscription allowance already

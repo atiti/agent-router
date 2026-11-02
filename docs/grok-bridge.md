@@ -1,4 +1,6 @@
-# Grok subscription backend
+# Grok backend
+
+## Subscription login
 
 Install the [official Grok CLI](https://github.com/xai-org/grok-build), run
 `grok login`, and confirm `grok models` works. Then:
@@ -38,7 +40,60 @@ limits. Operator overrides under `capabilities.models.<id>.context_window` or a
 backend model target's `context_window` use the standard generated Codex catalog.
 Codex uses local summary compaction for this provider.
 
-## Capacity monitoring
+## Public xAI API key
+
+The API route is a separate opt-in backend. `@grok` uses the signed-in flat-rate
+CLI subscription through `https://cli-chat-proxy.grok.com/v1` on local port 8092.
+`@grok-api` uses a public xAI key through `https://api.x.ai/v1` on local port 8093.
+Both can run simultaneously.
+
+```sh
+# Import from a private environment variable, then remove it from the shell:
+agentroute grok credential-import XAI_API_KEY
+unset XAI_API_KEY
+agentroute grok serve --credential api-key
+# In another terminal:
+agentroute grok status --port 8093
+# In Codex, select @grok-api.
+```
+
+Import registers only `grok-api` / `agentroute-grok-api`, preserving the subscription
+backend, tiers, routing and service. Use `credential-import SOURCE_ENV --port PORT`
+and `serve --credential api-key --port PORT` for a custom port. Rotation preserves
+an existing API backend's port. API persistence uses an explicitly configured
+supervisor; the subscription installer owns only its existing subscription service.
+
+The upstream key is stored in the owner-only `grok-api-credentials.env`; a separate
+random local bearer is stored in `backend-credentials.env`. The ordinary launcher
+loads only the local bearer. Requests use standard API headers, `store=false`, and
+refuse redirects. Both modes share patch, function namespace and encrypted-reasoning
+translation, but use separate credentials and usage snapshots. The API snapshot is
+`grok-api-usage.json`; the subscription retains `grok-usage.json`.
+
+API defaults use `grok-4.7` at all tiers with low, medium, high and xhigh reasoning,
+and a backend-specific 500,000-token context. Subscription targets retain their
+256,000-token default. Custom target context overrides are preserved. Public
+`grok-4.6` and `grok-4.5` are supported; `grok-4.7-build-fast` is subscription-only.
+Verify account access and context limits before overriding them.
+
+Both routes share standard token accounting and configurable cost estimates.
+Subscription allowance and reset telemetry comes from the CLI billing endpoint.
+API mode reports credit balance as unavailable, passes through response token usage,
+and records independent rate-limit cooldowns. Local daily/monthly budget ceilings
+and recovery thresholds apply to `grok-api` through the standard capacity machinery:
+
+```sh
+agentroute capacity budget grok-api --daily 10 --monthly 100
+```
+
+The API key's funding belongs to its issuing account; subscription allowance is
+never inferred from API token receipts. No key is sent to the other upstream.
+
+Large connector catalogs can occupy most of the context. Use supported per-session
+controls such as `codex --disable apps -c 'mcp_servers.NAME.enabled=false'` for
+unnecessary tools. API function support does not imply support for Codex tool search.
+
+## Subscription capacity monitoring
 
 ```sh
 agentroute capacity enable
@@ -52,7 +107,7 @@ agentroute capacity fallback grok gpt
 agentroute capacity budget grok --daily 10
 ```
 
-Grok appears in the standard backend capacity table and JSON with used/remaining
+The subscription mode appears in the standard backend capacity table and JSON with used/remaining
 percentages and a reset timestamp in machine-local time. The bridge reads the
 same `billing?format=credits` endpoint as Grok CLI. New percentage/period fields
 are preferred; legacy monthly limit/used fields are supported. Malformed measurements
