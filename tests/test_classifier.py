@@ -127,13 +127,14 @@ def test_classifier_ca_override_applies_to_catalog_and_classification(monkeypatc
     assert all(x[1] == str(ca_file) for x in calls if x[0] == "context")
 
 
-def test_invalid_classifier_ca_fails_closed_without_network(monkeypatch, tmp_path):
+@pytest.mark.parametrize("ca_file", ["", "missing.pem"])
+def test_invalid_classifier_ca_fails_closed_without_network(monkeypatch, tmp_path, ca_file):
     monkeypatch.setenv("AGENTROUTE_CLASSIFIER_API_KEY", "test-key")
     monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("must not send"))
     classifier = OpenAICompatibleClassifier(ClassifierConfig(
-        allow_remote=True, tls_ca_file=str(tmp_path / "missing.pem"),
+        allow_remote=True, tls_ca_file=str(tmp_path / ca_file) if ca_file else "",
     ))
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(OSError):
         classifier.verify_catalog()
 
 

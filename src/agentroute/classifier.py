@@ -238,7 +238,7 @@ class OpenAICompatibleClassifier:
 
     def _open(self, request: urllib.request.Request):
         options = {}
-        if self.config.tls_ca_file and request.type == "https":
+        if self.config.tls_ca_file is not None and request.type == "https":
             options["context"] = ssl.create_default_context(
                 cafile=str(Path(self.config.tls_ca_file).expanduser())
             )
