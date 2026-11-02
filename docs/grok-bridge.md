@@ -76,9 +76,9 @@ token-cost estimates and configured budget ceilings remain estimates; they are
 not an API credit balance. HTTP 429 records an account-bound retry cooldown
 without replaying the active request.
 
-Run `agentroute grok install` to return to a signed-in subscription, or
-`agentroute grok uninstall` to stop the service and disable the backend.
-Automatic tier routes are preserved in either mode.
+API installation refuses to replace an existing Grok service implicitly. Use `status` to inspect it and the normal user-service restart to restart unchanged credentials. To change credential modes, stop and disable the existing backend with `agentroute grok uninstall`, then install the selected mode and start a fresh Codex session. API key rotation needs only `credential-import` and does not reinstall the service. Automatic tier routes are preserved.
+
+The installer renders and validates configuration in temporary files before starting the service. Only after health and the credential proof succeed does it publish the prepared files atomically, checking their original contents to preserve concurrent changes. A failed first installation leaves no active API route. Credentials and saved sessions remain outside that transaction.
 
 The function-compatible provider exposes tools directly. A large installed connector catalog can therefore occupy most of the model context and cause repeated compaction. For local file work, use supported per-session controls such as `codex --disable apps -c 'mcp_servers.NAME.enabled=false'` for unnecessary configured MCP servers, then select `@grok`. These controls do not change other sessions. Enabling Codex-only tool-search protocols is not inferred from ordinary API function support.
 
