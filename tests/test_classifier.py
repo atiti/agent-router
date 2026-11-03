@@ -1,5 +1,11 @@
 import json
+import shutil
+import ssl
+import subprocess
+import threading
+import urllib.error
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -82,6 +88,133 @@ def test_remote_classifier_requires_explicit_prompt_egress():
 
 def test_classifier_reasoning_effort_remains_low_by_default():
     assert default_config().routing.classifier.reasoning_effort == "low"
+
+
+def test_classifier_ca_override_applies_to_catalog_and_classification(monkeypatch, tmp_path):
+    calls = []
+    context = ssl.create_default_context()
+    ca_file = tmp_path / "classifier-ca.pem"
+    monkeypatch.setenv("SSL_CERT_FILE", "/unrelated/private-ca.pem")
+    monkeypatch.setenv("AGENTROUTE_CLASSIFIER_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "agentroute.classifier.ssl.create_default_context",
+        lambda *, cafile: calls.append(("context", cafile)) or context,
+    )
+
+    def open_request(request, timeout, **kwargs):
+        assert kwargs["context"] is context
+        assert context.check_hostname is True
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        calls.append((request.get_method(), timeout))
+        if request.get_method() == "GET":
+            return FakeResponse({"data": [{"id": "classifier"}]})
+        return FakeResponse({"choices": [{"message": {"content": json.dumps({
+            "tier": "NORMAL", "confidence": 0.9, "reason": "Bounded test.",
+        })}}]})
+
+    monkeypatch.setattr("urllib.request.urlopen", open_request)
+    config = ClassifierConfig(
+        endpoint="https://classifier.example.test/v1/chat/completions",
+        model="classifier", allow_remote=True, tls_ca_file=str(ca_file),
+    )
+    classifier = OpenAICompatibleClassifier(config)
+    models, _, checked_at = classifier.verify_catalog()
+    config.catalog_models = models
+    config.catalog_checked_at = checked_at
+    result = classifier.classify(RouteContext(session_id="s", latest_prompt="test"))
+    assert result.tier == Tier.NORMAL
+    assert [x[0] for x in calls] == ["context", "GET", "context", "POST"]
+    assert all(x[1] == str(ca_file) for x in calls if x[0] == "context")
+
+
+@pytest.mark.parametrize("ca_file", ["", "missing.pem"])
+def test_invalid_classifier_ca_fails_closed_without_network(monkeypatch, tmp_path, ca_file):
+    monkeypatch.setenv("AGENTROUTE_CLASSIFIER_API_KEY", "test-key")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("must not send"))
+    classifier = OpenAICompatibleClassifier(ClassifierConfig(
+        allow_remote=True, tls_ca_file=str(tmp_path / ca_file) if ca_file else "",
+    ))
+    with pytest.raises(OSError):
+        classifier.verify_catalog()
+
+
+def test_classifier_ca_override_does_not_change_local_http(monkeypatch):
+    monkeypatch.setattr(
+        "agentroute.classifier.ssl.create_default_context",
+        lambda **kwargs: pytest.fail("HTTP does not use TLS"),
+    )
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse({
+        "data": [{"id": "local-model"}],
+    }))
+    classifier = OpenAICompatibleClassifier(ClassifierConfig(
+        endpoint="http://127.0.0.1:8080/v1/chat/completions",
+        model="local-model", tls_ca_file="/unused/local-ca.pem",
+    ))
+    assert classifier.verify_catalog()[0] == ["local-model"]
+
+
+def test_scoped_classifier_ca_performs_verified_tls_get_and_post(tmp_path, monkeypatch):
+    openssl = shutil.which("openssl")
+    if openssl is None:
+        pytest.skip("openssl is required for the local TLS fixture")
+    cert = tmp_path / "server.pem"
+    key = tmp_path / "server.key"
+    subprocess.run([
+        openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+        "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost",
+        "-keyout", str(key), "-out", str(cert),
+    ], check=True, capture_output=True)
+    methods = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            methods.append("GET")
+            self.respond({"data": [{"id": "local-classifier"}]})
+
+        def do_POST(self):
+            methods.append("POST")
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.respond({"choices": [{"message": {"content": json.dumps({
+                "tier": "NORMAL", "confidence": 0.9, "reason": "TLS fixture.",
+            })}}]})
+
+        def respond(self, payload):
+            body = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(cert, key)
+    server.socket = tls.wrap_socket(server.socket, server_side=True)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "unrelated.pem"))
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1")
+    monkeypatch.setenv("no_proxy", "localhost,127.0.0.1")
+    endpoint = f"https://localhost:{server.server_port}/v1/chat/completions"
+    config = ClassifierConfig(endpoint=endpoint, model="local-classifier", tls_ca_file=str(cert))
+    classifier = OpenAICompatibleClassifier(config)
+    try:
+        assert classifier.verify_catalog()[0] == ["local-classifier"]
+        result = classifier.classify(RouteContext(session_id="s", latest_prompt="test"))
+        assert result.tier is Tier.NORMAL
+        assert methods == ["GET", "POST"]
+
+        config.endpoint = endpoint.replace("localhost", "127.0.0.1")
+        with pytest.raises(urllib.error.URLError) as error:
+            classifier.verify_catalog()
+        assert isinstance(error.value.reason, ssl.SSLCertVerificationError)
+        assert methods == ["GET", "POST"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
 
 
 def test_local_classifier_needs_no_api_key_and_parses_json(monkeypatch):

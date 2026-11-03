@@ -724,6 +724,13 @@ agentroute classifier-enable \
 
 Use `agentroute classifier-disable` to return to deterministic-only routing.
 
+For an HTTPS classifier that needs a trust bundle independent of the launching
+process, set `routing.classifier.tls_ca_file` to a readable PEM CA bundle in your
+AgentRoute configuration. It applies only to that OpenAI-compatible classifier's
+catalog and inference requests. Leaving it unset preserves the usual environment
+and system trust selection. Explicit invalid bundles fail closed; certificate and
+hostname verification remain enabled. Local HTTP and other services are unchanged.
+
 ### Hosted TypeSafe JEV as primary classifier
 
 Use [TypeSafe's official System One API](https://docs.typesafe.ai/api) with a private key file

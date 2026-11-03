@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow an optional classifier-scoped TLS CA bundle for catalog and inference requests, preserving default trust behavior and certificate verification.
+
 ## 0.5.82 — 2026-11-02
 
 - Apply configured context limits to review-only models and validate backend/account targets against their own catalog scope, retaining failures for missing overrides and conflicting model limits.
