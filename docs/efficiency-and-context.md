@@ -29,6 +29,19 @@ and matched to the exact turn. Old or missing receipts are unmeasured, not proof
 of zero work. Tool durations may overlap; they are not subtracted from turn time
 to invent a model-latency estimate. Tool payloads are not copied into the audit.
 
+Version-2 receipts also read current typed command, MCP, dynamic-tool, patch,
+collaboration and compaction completion items. Duplicate legacy/current records
+for one call count once. Parser version alone does not prove that tool events
+were recorded: absent tool events and timings remain unobserved, and historical
+version-1 receipts retain their coverage warning.
+
+Unpriced model rows display `unpriced`, not a zero cost. Cost comparisons include
+the same priced answer turns and their classifier overhead; total classifier
+overhead is also shown separately. With no comparable priced turns, savings is
+unavailable. Classifier errors without latency are counted without assuming that
+they happened before an HTTP request. All costs remain token-price estimates,
+not invoices or measured savings against an actual alternative workload.
+
 ## Cache-aware routing (default: off)
 
 ```sh

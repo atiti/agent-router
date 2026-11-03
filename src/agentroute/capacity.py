@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .config import AppConfig
-from .pricing import token_cost
+from .pricing import token_cost_upper_bound, turn_cost
 
 
 @dataclass(frozen=True)
@@ -251,7 +251,11 @@ def backend_spend(rows: list[Any], config: AppConfig) -> tuple[dict[str, float],
             "cache_write_input_tokens": int(row["answer_cache_write_input_tokens"] or 0),
             "output_tokens": int(row["answer_output_tokens"] or 0),
         }
-        cost = token_cost(model, usage, config.pricing)
+        cost = turn_cost(row, model, config.pricing)
+        if cost is None:
+            # Budget guards use the conservative aggregate upper bound when
+            # individual requests are unavailable, never a zero-cost unknown.
+            cost = token_cost_upper_bound(model, usage, config.pricing)
         if created.year == now.year and created.month == now.month:
             monthly[backend] = monthly.get(backend, 0.0) + cost
             if created.date() == now.date():

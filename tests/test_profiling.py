@@ -334,6 +334,20 @@ def test_haiku55_profile_cost_uses_long_context_multiplier():
     assert report["total_usd"] == pytest.approx((100_001 * 0.10 + 1000 * 0.50) * 5 / 1_000_000)
 
 
+@pytest.mark.parametrize(
+    ("model", "input_tokens", "expected"),
+    [
+        ("gpt-6.1-terra", 272_000, 0.322),
+        ("gpt-6.1-terra", 272_001, 0.619002),
+        ("grok-4.7", 200_000, 0.92),
+    ],
+)
+def test_profile_uses_the_same_request_price_thresholds(model, input_tokens, expected):
+    usage = {"input_tokens": input_tokens, "output_tokens": 10_000}
+    result = price_usage({"model": model, "usage": usage}, default_config().pricing)
+    assert result["total_usd"] == pytest.approx(expected)
+
+
 def test_unknown_prices_and_ttl_are_explicit_and_zero_write_price_is_respected():
     pricing = default_config().pricing
     assert not price_usage({"model": "unknown", "usage": {}}, pricing)["priced"]
