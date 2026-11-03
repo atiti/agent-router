@@ -50,12 +50,30 @@ def test_models_reports_configured_efforts_and_tier_context_overrides(monkeypatc
 
     assert result.exit_code == 0, result.output
     lines = [" ".join(line.replace("│", " ").split()) for line in result.output.splitlines()]
-    assert "Configured effort" in result.output
+    assert "Effort" in result.output
     assert any("FAST model-a" in line and "yes medium" in line and "500" in line for line in lines)
     assert any("NORMAL model-a" in line and "yes xhigh" in line and "900" in line for line in lines)
     assert any("SMART model-b" in line and "no unset" in line and "300" in line for line in lines)
     assert any("MAX model-c" in line and "unknown unset" in line for line in lines)
     assert "Effort can change per request" in result.output
+
+
+def test_models_shows_complete_values_at_normal_terminal_width(monkeypatch):
+    config = default_config()
+    config.backends = {
+        "local": ExecutionBackendConfig(
+            enabled=True,
+            codex_provider="local",
+            display_name="Local",
+            tiers={"normal": ModelTarget(model="qwen3-4b-instruct-2507", context_window=65_536)},
+        ),
+    }
+    monkeypatch.setattr("agentroute.cli.load_config", lambda: config)
+    with patch("agentroute.cli.console", Console(width=120)):
+        result = runner.invoke(app, ["models"])
+    assert result.exit_code == 0
+    assert "qwen3-4b-instruct-2507" in result.output
+    assert "65,536" in result.output
 
 
 def test_help_lists_prompt_tags(tmp_path, monkeypatch):

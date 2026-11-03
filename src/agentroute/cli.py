@@ -867,16 +867,10 @@ def test_command(
 def models_command() -> None:
     """Show configured answer models and their declared agent capabilities."""
     config = load_config()
-    table = Table()
-    table.add_column("Backend")
-    table.add_column("Tier")
-    table.add_column("Model", overflow="fold")
-    table.add_column("Tools", overflow="fold")
-    table.add_column("Reasoning support")
-    table.add_column("Configured effort")
-    table.add_column("Vision")
-    table.add_column("Configured context")
-    table.add_column("Price / 1M")
+    table = Table(
+        "Backend", "Tier", "Model", "Tools", "Reasoning", "Effort", "Vision", "Context",
+        "Price / 1M",
+    )
     for backend_name, backend in sorted(config.backends.items()):
         for tier, target in backend.tiers.items():
             capabilities = model_capabilities(config, backend_name, target.model)
@@ -910,6 +904,7 @@ def models_command() -> None:
             )
     console.print(table)
     console.print(
+        "Reasoning: model support; effort and context: configured tier defaults. "
         "Effort can change per request; runtime/account context limits may differ."
     )
 
