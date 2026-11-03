@@ -95,6 +95,13 @@ def test_unknown_request_cache_split_has_a_conservative_budget_bound():
     assert bound >= actual
 
 
+def test_budget_bound_retains_cache_consumption_when_total_input_is_missing():
+    usage = {"cache_write_input_tokens": 300_000, "output_tokens": 10}
+    assert token_cost_upper_bound("gpt-6.1-terra", usage, default_config().pricing) == (
+        pytest.approx(0.750075)
+    )
+
+
 def test_cost_report_compares_only_turns_with_complete_request_prices(tmp_path):
     config = default_config()
     store = AuditStore(tmp_path / "audit.db")

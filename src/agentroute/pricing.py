@@ -151,7 +151,12 @@ def token_cost_upper_bound(model: str, usage: dict[str, int], pricing: PricingCo
     rate = pricing.models.get(canonical_model(model, pricing))
     if rate is None:
         return 0.0
-    inputs = max(0, usage.get("input_tokens", 0))
+    # Known cache subsets still prove input consumption when the total is absent.
+    inputs = max(
+        0, usage.get("input_tokens", 0),
+        max(0, usage.get("cached_input_tokens", 0))
+        + max(0, usage.get("cache_write_input_tokens", 0)),
+    )
     outputs = max(0, usage.get("output_tokens", 0))
     input_multiplier, output_multiplier = long_context_multipliers(rate, inputs)
     maximum_input_rate = max(
