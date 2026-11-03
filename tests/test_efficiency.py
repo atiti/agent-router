@@ -58,6 +58,33 @@ def test_missing_or_malformed_receipt_is_not_zero_work(tmp_path):
     assert execution_receipt(str(path), None) == {}
 
 
+def test_request_receipts_keep_observed_cache_writes_and_omit_unknown_counters(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    response = {
+        "type": "token_usage_record",
+        "payload": {
+            "turn_id": "t", "response_id": "r-1", "private": "do not retain",
+            "usage": {
+                "input_tokens": 300_000, "cached_input_tokens": 200_000,
+                "cache_write_input_tokens": 90_000, "output_tokens": 10,
+                "private": "do not retain",
+            },
+        },
+    }
+    missing = {
+        "type": "token_usage_record",
+        "payload": {"turn_id": "t", "response_id": "r-2", "usage": {"input_tokens": 10}},
+    }
+    records = [event("task_started"), response, response, missing]
+    path.write_text("\n".join(map(json.dumps, records)))
+    receipt = execution_receipt(str(path), "t")
+    assert receipt["request_usage_version"] == 1
+    assert len(receipt["request_usage"]) == 2
+    assert receipt["request_usage"][0]["usage"]["cache_write_input_tokens"] == 90_000
+    assert receipt["request_usage"][1]["usage"] == {"input_tokens": 10}
+    assert "private" not in json.dumps(receipt)
+
+
 def test_native_items_count_tools_compaction_and_failures_without_payloads(tmp_path):
     path = tmp_path / "rollout.jsonl"
     command = event("item_completed", item={

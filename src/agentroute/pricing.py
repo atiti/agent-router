@@ -22,6 +22,7 @@ class CostReport:
     output_tokens: int
     reasoning_output_tokens: int
     unpriced_models: tuple[str, ...]
+    incomplete_pricing_turns: int = 0
 
     @property
     def gross_savings(self) -> float | None:
@@ -81,8 +82,62 @@ def token_cost(model: str, usage: dict[str, int | float], pricing: PricingConfig
     ) / 1_000_000
 
 
+def turn_cost(row: sqlite3.Row, model: str, pricing: PricingConfig) -> float | None:
+    """Price known requests or a provably flat aggregate; unknown tiers stay unknown."""
+    rate = pricing.models.get(canonical_model(model, pricing))
+    if rate is None:
+        return None
+    keys = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")
+    usage = {key: int(row[f"answer_{key}"] or 0) for key in keys}
+    try:
+        receipt = json.loads(row["execution_receipt"] or "{}")
+    except (KeyError, IndexError, TypeError, ValueError):
+        receipt = {}
+    if not isinstance(receipt, dict):
+        receipt = {}
+    if receipt.get("request_usage_version") == 1:
+        requests = receipt.get("request_usage")
+        if (
+            receipt.get("coverage") != "turn_start_seen"
+            or not isinstance(requests, list) or not requests
+            or len(requests) != receipt.get("response_count")
+        ):
+            return None
+        observed = {key: 0 for key in keys}
+        response_ids: set[str] = set()
+        costs = []
+        for request in requests:
+            if not isinstance(request, dict):
+                return None
+            response_id, counts = request.get("response_id"), request.get("usage")
+            if (
+                not isinstance(response_id, str) or not response_id
+                or response_id in response_ids or not isinstance(counts, dict)
+                or any(
+                    not isinstance(counts.get(key), int) or isinstance(counts[key], bool)
+                    or counts[key] < 0 for key in keys
+                )
+                or counts["cached_input_tokens"] + counts["cache_write_input_tokens"]
+                > counts["input_tokens"]
+            ):
+                return None
+            response_ids.add(response_id)
+            for key in keys:
+                observed[key] += counts[key]
+            costs.append(token_cost(model, counts, pricing))
+        return sum(costs) if observed == usage else None
+    threshold = rate.long_context_threshold_tokens
+    if (
+        threshold is not None
+        and long_context_multipliers(rate, usage["input_tokens"]) != (1.0, 1.0)
+    ):
+        # A cumulative total crossing a threshold does not prove any request did.
+        return None
+    return token_cost(model, usage, pricing)
+
+
 def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) -> CostReport:
-    measured = priced = 0
+    measured = priced = incomplete = 0
     actual = baseline_cost = classifier_cost = comparison_classifier_cost = 0.0
     unpriced_models: set[str] = set()
     totals = {
@@ -119,22 +174,21 @@ def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) 
         if row["usage_recorded_at"] is None:
             continue
         measured += 1
-        usage = {
-            "input_tokens": row["answer_input_tokens"] or 0,
-            "cached_input_tokens": row["answer_cached_input_tokens"] or 0,
-            "cache_write_input_tokens": row["answer_cache_write_input_tokens"] or 0,
-            "output_tokens": row["answer_output_tokens"] or 0,
-        }
         for name in totals:
             totals[name] += int(row[f"answer_{name}"] or 0)
         answer_model = str(row["answer_model"] or row["model"])
         if canonical_model(answer_model, pricing) not in pricing.models:
             unpriced_models.add(answer_model)
             continue
+        row_cost = turn_cost(row, answer_model, pricing)
+        row_baseline = turn_cost(row, baseline, pricing)
+        if row_cost is None or row_baseline is None:
+            incomplete += 1
+            continue
         priced += 1
         comparison_classifier_cost += row_classifier_cost
-        actual += token_cost(answer_model, usage, pricing)
-        baseline_cost += token_cost(baseline, usage, pricing)
+        actual += row_cost
+        baseline_cost += row_baseline
     return CostReport(
         measured,
         len(rows) - measured,
@@ -145,4 +199,5 @@ def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) 
         comparison_classifier_cost,
         **totals,
         unpriced_models=tuple(sorted(unpriced_models)),
+        incomplete_pricing_turns=incomplete,
     )

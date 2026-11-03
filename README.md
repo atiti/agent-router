@@ -886,6 +886,15 @@ output rate. `long_context_output_multiplier` supports this distinction; omittin
 preserves the existing shared input/output multiplier. These are Standard API equivalents;
 subscription credits, other service tiers, regional prices and 12-hour cache writes differ.
 
+New Stop-hook receipts retain deduplicated request token counters, including observed cache
+writes, without prompt or tool content. `stats` and `analytics` price each request and reconcile
+the sum against the turn total. The configured rate uses the turn's attributed model; this is
+an estimate, not independent billing proof for every inference. Incomplete or mismatched request
+receipts are excluded from both sides of savings comparisons and named in the output. Older
+aggregate-only receipts can be priced when rates are flat or their total input remains below
+the long-context threshold; a larger aggregate cannot establish the request price tier. Local
+budget guards conservatively use the aggregate upper bound when request detail is unavailable.
+
 For a local model mix and timeline, use:
 
 ```sh

@@ -1133,7 +1133,15 @@ def stats_command(
         f"cache write {report.cache_write_input_tokens:,}; output {report.output_tokens:,}; "
         f"reasoning output {report.reasoning_output_tokens:,}"
     )
-    console.print(f"Routed answer cost: {currency} {report.actual_cost:.4f}")
+    console.print(
+        f"Priced answer subtotal ({report.priced_turns}/{report.measured_turns} token receipts): "
+        f"{currency} {report.actual_cost:.4f}"
+    )
+    if report.incomplete_pricing_turns:
+        console.print(
+            f"[yellow]Incomplete request usage: {report.incomplete_pricing_turns} turns "
+            "excluded from both cost and savings estimates.[/yellow]"
+        )
     console.print(f"Fixed {baseline} baseline: {currency} {report.baseline_cost:.4f}")
     console.print(f"Classifier overhead: {currency} {report.classifier_cost:.4f}")
     if report.unpriced_models:
@@ -1312,6 +1320,11 @@ def analytics_command(
         f"classifier overhead (all attempts): {currency} {report.overall.classifier_cost:.4f}"
     )
     savings = report.overall.net_savings
+    if report.overall.incomplete_pricing_turns:
+        console.print(
+            f"[yellow]Incomplete request usage: {report.overall.incomplete_pricing_turns} turns "
+            "excluded from both cost and savings estimates.[/yellow]"
+        )
     percent = report.overall.savings_percent
     if savings is not None:
         percentage = f"{percent:.1f}%" if percent is not None else "—"

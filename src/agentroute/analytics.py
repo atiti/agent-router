@@ -341,9 +341,11 @@ def _usage_summary(
             else 0
             for row in rows
         ),
-        "answer_cost": None if unpriced or not report.measured_turns else report.actual_cost,
-        "cost_status": "unpriced" if unpriced else "unmeasured" if not report.measured_turns else (
-            "partial" if report.unmeasured_turns else "priced"
+        "answer_cost": report.actual_cost if report.priced_turns else None,
+        "cost_status": (
+            "unpriced" if unpriced else "unmeasured" if not report.measured_turns else
+            "incomplete" if not report.priced_turns else
+            "partial" if report.unmeasured_turns or report.incomplete_pricing_turns else "priced"
         ),
     }
 

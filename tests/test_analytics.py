@@ -28,6 +28,21 @@ def _record_turn(store, config, *, session, turn, backend, answer_model, created
     store.record_usage(session, turn, answer_model, usage)
 
 
+def test_missing_request_tiers_show_incomplete_cost_instead_of_zero(tmp_path):
+    config = default_config()
+    store = AuditStore(tmp_path / "audit.db")
+    _record_turn(
+        store, config, session="s", turn="t", backend="azure", answer_model="gpt-6.1-terra",
+        created_at=datetime.now(timezone.utc),
+        usage={"input_tokens": 400_000, "output_tokens": 10},
+    )
+    report = usage_analytics(store.history(limit=10), config.pricing, "gpt-6-astra")
+    assert report.by_model[0].answer_cost is None
+    assert report.by_model[0].cost_status == "incomplete"
+    assert report.overall.net_savings is None
+    assert report.overall.incomplete_pricing_turns == 1
+
+
 def test_usage_analytics_groups_models_and_days(tmp_path):
     config = default_config()
     store = AuditStore(tmp_path / "audit.db")

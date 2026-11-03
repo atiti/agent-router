@@ -162,12 +162,32 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
     last = next(reversed(responses.values()), {})
     last_usage = last.get("usage")
     last_usage = last_usage if isinstance(last_usage, dict) else {}
+    # Preserve individual request counters; cumulative turn totals cannot identify
+    # which requests crossed a model's long-context price threshold.
+    request_usage = [
+        {
+            "response_id": response_id,
+            "usage": {
+                key: value
+                for key in (
+                    "input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+                    "output_tokens",
+                )
+                if isinstance(response.get("usage"), dict)
+                and (value := response["usage"].get(key)) is not None
+                and isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            },
+        }
+        for response_id, response in responses.items()
+    ]
     return {
         "version": 2,
         "source": "codex_rollout",
         "coverage": "turn_start_seen" if started else "partial",
         "tail_truncated": bool(offset),
         "response_count": len(responses),
+        "request_usage_version": 1,
+        "request_usage": request_usage,
         "observed_tool_completions": len(tools),
         "tool_events_observed": bool(tools),
         "observed_tool_failures": int(failures),
