@@ -871,6 +871,7 @@ def models_command() -> None:
         "Backend", "Tier", "Model", "Tools", "Reasoning", "Effort", "Vision", "Context",
         "Price / 1M",
     )
+    table.columns[2].overflow = "fold"
     for backend_name, backend in sorted(config.backends.items()):
         for tier, target in backend.tiers.items():
             capabilities = model_capabilities(config, backend_name, target.model)

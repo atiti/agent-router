@@ -60,19 +60,27 @@ def test_models_reports_configured_efforts_and_tier_context_overrides(monkeypatc
 
 def test_models_shows_complete_values_at_normal_terminal_width(monkeypatch):
     config = default_config()
+    config.capabilities.models["claude-sonnet-5-5"] = ModelCapabilities(reasoning=True)
     config.backends = {
         "local": ExecutionBackendConfig(
             enabled=True,
             codex_provider="local",
             display_name="Local",
-            tiers={"normal": ModelTarget(model="qwen3-4b-instruct-2507", context_window=65_536)},
+            tool_compatibility="functions_and_apply_patch",
+            tiers={
+                "normal": ModelTarget(model="qwen3-4b-instruct-2507", context_window=65_536),
+                "smart": ModelTarget(model="claude-sonnet-5-5", reasoning_effort="medium"),
+            },
         ),
     }
     monkeypatch.setattr("agentroute.cli.load_config", lambda: config)
     with patch("agentroute.cli.console", Console(width=120)):
         result = runner.invoke(app, ["models"])
     assert result.exit_code == 0
-    assert "qwen3-4b-instruct-2507" in result.output
+    lines = result.output.splitlines()
+    assert "qwen3-4b-instru" in result.output
+    assert "-2507" in result.output
+    assert "…" not in "\n".join(line for line in lines if "│" in line)
     assert "65,536" in result.output
 
 
