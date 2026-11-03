@@ -877,6 +877,15 @@ and a different model may produce a different number of tokens. Grok rates were 
 Grok's subscription FAST model has no verified published rate and is reported as unpriced
 unless you configure one; use a priced model for local cost ceilings.
 
+GPT-6.1 Terra Standard API rates were checked on 2026-11-03 against the
+[model documentation](https://developers.openai.com/api/docs/models/gpt-6.1-terra) and
+[pricing table](https://developers.openai.com/api/docs/pricing): per million tokens, input is
+$1, cached input $0.05, default 30-minute cache writes $1.25, and output $5. A request
+with more than 272,000 input tokens uses twice the input/cache rates and 1.5 times the
+output rate. `long_context_output_multiplier` supports this distinction; omitting it
+preserves the existing shared input/output multiplier. These are Standard API equivalents;
+subscription credits, other service tiers, regional prices and 12-hour cache writes differ.
+
 For a local model mix and timeline, use:
 
 ```sh

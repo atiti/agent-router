@@ -4,7 +4,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 
-from .config import PricingConfig
+from .config import ModelPrice, PricingConfig
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,20 @@ def canonical_model(model: str, pricing: PricingConfig) -> str:
     return max(suffix_matches, key=len) if suffix_matches else aliased
 
 
+def long_context_multipliers(rate: ModelPrice, input_tokens: float) -> tuple[float, float]:
+    threshold = rate.long_context_threshold_tokens
+    if threshold is None or input_tokens < threshold or (
+        input_tokens == threshold and not rate.long_context_threshold_inclusive
+    ):
+        return 1.0, 1.0
+    output = rate.long_context_output_multiplier
+    return rate.long_context_multiplier, (
+        rate.long_context_multiplier if output is None else output
+    )
+
+
 def token_cost(model: str, usage: dict[str, int | float], pricing: PricingConfig) -> float:
+    """Price one request; long-context thresholds never apply to a sum of requests."""
     rate = pricing.models.get(canonical_model(model, pricing))
     if rate is None:
         return 0.0
@@ -55,25 +68,17 @@ def token_cost(model: str, usage: dict[str, int | float], pricing: PricingConfig
     cache_write = max(0.0, float(usage.get("cache_write_input_tokens", 0)))
     uncached = max(0.0, input_tokens - cached - cache_write)
     output = max(0.0, float(usage.get("output_tokens", 0)))
-    write_rate = rate.cache_write_per_million or rate.input_per_million
-    multiplier = (
-        rate.long_context_multiplier
-        if rate.long_context_threshold_tokens is not None
-        and (
-            input_tokens > rate.long_context_threshold_tokens
-            or (
-                rate.long_context_threshold_inclusive
-                and input_tokens == rate.long_context_threshold_tokens
-            )
-        )
-        else 1
+    write_rate = (
+        rate.input_per_million
+        if rate.cache_write_per_million is None else rate.cache_write_per_million
     )
+    input_multiplier, output_multiplier = long_context_multipliers(rate, input_tokens)
     return (
-        uncached * rate.input_per_million
+        (uncached * rate.input_per_million
         + cached * rate.cached_input_per_million
-        + cache_write * write_rate
-        + output * rate.output_per_million
-    ) * multiplier / 1_000_000
+        + cache_write * write_rate) * input_multiplier
+        + output * rate.output_per_million * output_multiplier
+    ) / 1_000_000
 
 
 def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) -> CostReport:

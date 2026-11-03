@@ -17,6 +17,37 @@ def test_token_cost_separates_cached_and_uncached_input():
     assert cost == pytest.approx(0.176)
 
 
+@pytest.mark.parametrize(
+    ("input_tokens", "expected"),
+    [(271_999, 0.229499), (272_000, 0.2295), (272_001, 0.434002)],
+)
+def test_terra_prices_each_request_at_the_exact_long_context_boundary(input_tokens, expected):
+    # 100k cached, 10k written, 10k output; above 272k, input doubles but output is 1.5x.
+    usage = {
+        "input_tokens": input_tokens,
+        "cached_input_tokens": 100_000,
+        "cache_write_input_tokens": 10_000,
+        "output_tokens": 10_000,
+    }
+    assert token_cost("gpt-6.1-terra", usage, default_config().pricing) == pytest.approx(expected)
+
+
+def test_terra_default_price_does_not_override_a_saved_custom_rate():
+    config = default_config()
+    config.pricing.models["gpt-6.1-terra"].input_per_million = 1.10
+    assert _with_default_backends(config).pricing.models["gpt-6.1-terra"].input_per_million == 1.10
+
+
+@pytest.mark.parametrize("inclusive", [False, True])
+def test_long_context_legacy_output_multiplier_and_boundary(inclusive):
+    pricing = default_config().pricing
+    rate = pricing.models["grok-4.7"]
+    rate.long_context_threshold_inclusive = inclusive
+    usage = {"input_tokens": 200_000, "output_tokens": 10_000}
+    expected = 0.92 if inclusive else 0.46
+    assert token_cost("grok-4.7", usage, pricing) == pytest.approx(expected)
+
+
 def test_provider_prefixed_model_uses_public_model_price():
     pricing = default_config().pricing
     cost = token_cost(
