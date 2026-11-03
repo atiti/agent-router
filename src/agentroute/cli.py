@@ -867,15 +867,23 @@ def test_command(
 def models_command() -> None:
     """Show configured answer models and their declared agent capabilities."""
     config = load_config()
-    table = Table(
-        "Backend", "Tier", "Model", "Tools", "Reasoning", "Vision", "Context", "Price / 1M"
-    )
+    table = Table()
+    table.add_column("Backend")
+    table.add_column("Tier")
+    table.add_column("Model", overflow="fold")
+    table.add_column("Tools", overflow="fold")
+    table.add_column("Reasoning support")
+    table.add_column("Configured effort")
+    table.add_column("Vision")
+    table.add_column("Configured context")
+    table.add_column("Price / 1M")
     for backend_name, backend in sorted(config.backends.items()):
         for tier, target in backend.tiers.items():
             capabilities = model_capabilities(config, backend_name, target.model)
             pricing_model = capabilities.pricing_model or target.model
             resolved_price_model = config.pricing.aliases.get(pricing_model, pricing_model)
             price = config.pricing.models.get(resolved_price_model)
+            configured_context = target.context_window or capabilities.context_window
             table.add_row(
                 backend_name,
                 tier.upper(),
@@ -886,12 +894,13 @@ def models_command() -> None:
                 else "no"
                 if capabilities.reasoning is False
                 else "unknown",
+                target.reasoning_effort or "unset",
                 "yes"
                 if capabilities.vision
                 else "no"
                 if capabilities.vision is False
                 else "unknown",
-                f"{capabilities.context_window:,}" if capabilities.context_window else "unknown",
+                f"{configured_context:,}" if configured_context else "unknown",
                 (
                     f"{config.pricing.currency} {price.input_per_million:g} in / "
                     f"{price.output_per_million:g} out"
@@ -900,6 +909,9 @@ def models_command() -> None:
                 ),
             )
     console.print(table)
+    console.print(
+        "Effort can change per request; runtime/account context limits may differ."
+    )
 
 
 @app.command("doctor")
