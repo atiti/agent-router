@@ -5,7 +5,7 @@ import pytest
 from agentroute.audit import AuditStore
 from agentroute.config import ModelCapabilities, ModelTarget, _with_default_backends, default_config
 from agentroute.models import RouteContext, Tier
-from agentroute.pricing import cost_report, token_cost, turn_cost
+from agentroute.pricing import cost_report, token_cost, token_cost_upper_bound, turn_cost
 from agentroute.router import Router
 
 
@@ -75,6 +75,24 @@ def test_legacy_totals_above_threshold_cannot_prove_request_price_tier():
     assert turn_cost(row, "gpt-6-astra", pricing) == pytest.approx(4.0)
     row["answer_input_tokens"] = 272_000
     assert turn_cost(row, "gpt-6.1-terra", pricing) == pytest.approx(0.272)
+
+
+def test_legacy_unknown_cache_split_remains_unpriced():
+    row = request_cost_row([request_usage(200_000)])
+    row["execution_receipt"] = "{}"
+    row["answer_cached_input_tokens"] = None
+    row["answer_cache_write_input_tokens"] = None
+    assert turn_cost(row, "gpt-6.1-terra", default_config().pricing) is None
+
+
+def test_unknown_request_cache_split_has_a_conservative_budget_bound():
+    pricing = default_config().pricing
+    partial = request_usage(300_000, 200_000, 0, 10)
+    bound = token_cost_upper_bound("gpt-6.1-terra", partial, pricing)
+    actual = token_cost("gpt-6.1-terra", request_usage(300_000, 200_000, 90_000, 10), pricing)
+    assert actual == pytest.approx(0.265075)
+    assert bound == pytest.approx(0.750075)
+    assert bound >= actual
 
 
 def test_cost_report_compares_only_turns_with_complete_request_prices(tmp_path):

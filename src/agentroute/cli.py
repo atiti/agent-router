@@ -1142,7 +1142,10 @@ def stats_command(
             f"[yellow]Incomplete request usage: {report.incomplete_pricing_turns} turns "
             "excluded from both cost and savings estimates.[/yellow]"
         )
-    console.print(f"Fixed {baseline} baseline: {currency} {report.baseline_cost:.4f}")
+    console.print(
+        f"Fixed {baseline} baseline ({report.comparable_turns} comparable turns): "
+        f"{currency} {report.baseline_cost:.4f}"
+    )
     console.print(f"Classifier overhead: {currency} {report.classifier_cost:.4f}")
     if report.unpriced_models:
         console.print(
@@ -1153,7 +1156,7 @@ def stats_command(
     if report.net_savings is not None:
         percent = f"{report.savings_percent:.1f}%" if report.savings_percent is not None else "—"
         console.print(
-            f"Net estimated savings on {report.priced_turns} priced turns: "
+            f"Net estimated savings on {report.comparable_turns} comparable turns: "
             f"{currency} {report.net_savings:.4f} ({percent})"
         )
     else:
@@ -1316,7 +1319,8 @@ def analytics_command(
         f"Priced answer subtotal ({report.overall.priced_turns}/"
         f"{report.overall.measured_turns} token receipts): "
         f"{currency} {report.overall.actual_cost:.4f}; "
-        f"fixed {baseline}: {currency} {report.overall.baseline_cost:.4f}; "
+        f"fixed {baseline} ({report.overall.comparable_turns} comparable turns): "
+        f"{currency} {report.overall.baseline_cost:.4f}; "
         f"classifier overhead (all attempts): {currency} {report.overall.classifier_cost:.4f}"
     )
     savings = report.overall.net_savings
@@ -1330,7 +1334,8 @@ def analytics_command(
         percentage = f"{percent:.1f}%" if percent is not None else "—"
         console.print(
             f"Comparable net savings: {currency} {savings:.4f} ({percentage}); "
-            "same priced turns, including their classifier overhead"
+            f"same {report.overall.comparable_turns} comparable turns, "
+            "including their classifier overhead"
         )
     else:
         console.print("Comparable net savings: unavailable; no comparable priced turns")

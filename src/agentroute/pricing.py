@@ -23,10 +23,14 @@ class CostReport:
     reasoning_output_tokens: int
     unpriced_models: tuple[str, ...]
     incomplete_pricing_turns: int = 0
+    comparable_turns: int = 0
+    comparison_actual_cost: float = 0.0
 
     @property
     def gross_savings(self) -> float | None:
-        return self.baseline_cost - self.actual_cost if self.priced_turns else None
+        return (
+            self.baseline_cost - self.comparison_actual_cost if self.comparable_turns else None
+        )
 
     @property
     def net_savings(self) -> float | None:
@@ -88,7 +92,13 @@ def turn_cost(row: sqlite3.Row, model: str, pricing: PricingConfig) -> float | N
     if rate is None:
         return None
     keys = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")
-    usage = {key: int(row[f"answer_{key}"] or 0) for key in keys}
+    if any(row[f"answer_{key}"] is None for key in keys):
+        return None
+    usage = {key: int(row[f"answer_{key}"]) for key in keys}
+    if any(value < 0 for value in usage.values()) or (
+        usage["cached_input_tokens"] + usage["cache_write_input_tokens"] > usage["input_tokens"]
+    ):
+        return None
     try:
         receipt = json.loads(row["execution_receipt"] or "{}")
     except (KeyError, IndexError, TypeError, ValueError):
@@ -136,9 +146,27 @@ def turn_cost(row: sqlite3.Row, model: str, pricing: PricingConfig) -> float | N
     return token_cost(model, usage, pricing)
 
 
+def token_cost_upper_bound(model: str, usage: dict[str, int], pricing: PricingConfig) -> float:
+    """Conservative bound for the observed tokens when their cache/tier split is unknown."""
+    rate = pricing.models.get(canonical_model(model, pricing))
+    if rate is None:
+        return 0.0
+    inputs = max(0, usage.get("input_tokens", 0))
+    outputs = max(0, usage.get("output_tokens", 0))
+    input_multiplier, output_multiplier = long_context_multipliers(rate, inputs)
+    maximum_input_rate = max(
+        rate.input_per_million, rate.cached_input_per_million,
+        rate.cache_write_per_million or 0, rate.cache_write_1h_per_million or 0,
+    )
+    return (
+        inputs * maximum_input_rate * input_multiplier
+        + outputs * rate.output_per_million * output_multiplier
+    ) / 1_000_000
+
+
 def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) -> CostReport:
-    measured = priced = incomplete = 0
-    actual = baseline_cost = classifier_cost = comparison_classifier_cost = 0.0
+    measured = priced = incomplete = comparable = 0
+    actual = comparison_actual = baseline_cost = classifier_cost = comparison_classifier_cost = 0.0
     unpriced_models: set[str] = set()
     totals = {
         "input_tokens": 0,
@@ -182,12 +210,16 @@ def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) 
             continue
         row_cost = turn_cost(row, answer_model, pricing)
         row_baseline = turn_cost(row, baseline, pricing)
-        if row_cost is None or row_baseline is None:
+        if row_cost is None:
             incomplete += 1
             continue
         priced += 1
-        comparison_classifier_cost += row_classifier_cost
         actual += row_cost
+        if row_baseline is None:
+            continue
+        comparable += 1
+        comparison_actual += row_cost
+        comparison_classifier_cost += row_classifier_cost
         baseline_cost += row_baseline
     return CostReport(
         measured,
@@ -200,4 +232,6 @@ def cost_report(rows: list[sqlite3.Row], pricing: PricingConfig, baseline: str) 
         **totals,
         unpriced_models=tuple(sorted(unpriced_models)),
         incomplete_pricing_turns=incomplete,
+        comparable_turns=comparable,
+        comparison_actual_cost=comparison_actual,
     )
