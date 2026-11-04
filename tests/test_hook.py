@@ -2343,6 +2343,39 @@ def test_goal_new_objective_does_not_inherit_interrupted_route(tmp_path):
     assert store.latest()["classification_source"] != "interrupted_turn_affinity"
 
 
+def test_routing_skips_spend_history_when_capacity_is_disabled(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.routing.classifier.enabled = False
+    config.capacity.enabled = False
+    store = AuditStore(tmp_path / "audit.sqlite")
+
+    with patch.object(store, "rows_since", side_effect=AssertionError("unneeded audit scan")):
+        output = invoke(config, store, "@normal check status")
+
+    assert output["continue"] is True
+    assert store.latest()["capacity_status"] == "disabled"
+
+
+def test_routing_still_enforces_configured_api_budget(tmp_path, monkeypatch):
+    config = default_config()
+    config.enabled = True
+    config.routing.classifier.enabled = False
+    config.capacity.enabled = True
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    config.backends["azure"].daily_budget_usd = 1
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    store = AuditStore(tmp_path / "audit.sqlite")
+
+    with patch("agentroute.hook.backend_spend", return_value=({"azure": 1.5}, {})) as spend:
+        output = invoke(config, store, "@azure @normal check status")
+
+    assert output["continue"] is False
+    assert "daily budget" in output["stopReason"]
+    spend.assert_called_once()
+
+
 def test_goal_continuation_still_checks_capacity(tmp_path):
     config = default_config()
     config.enabled = True
