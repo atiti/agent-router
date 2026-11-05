@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an `account-models` doctor check that compares each ChatGPT account's GPT tier targets with that account's own fresh model catalog. Codex rejects a model the signed-in account does not list, which previously surfaced as a compaction error after a model switch. The check points to `agentroute capacity profile-model` for a per-account override.
+
 ## 0.5.82 — 2026-11-02
 
 - Apply configured context limits to review-only models and validate backend/account targets against their own catalog scope, retaining failures for missing overrides and conflicting model limits.

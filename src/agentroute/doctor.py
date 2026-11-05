@@ -31,7 +31,7 @@ from .config import (
 from .install import hook_command
 from .model_selection import DirectModelError, source_models
 from .models import Tier
-from .profiles import account_credential_home
+from .profiles import account_credential_home, profile_catalog_slugs
 from .providers import (
     END_MARKER,
     START_MARKER,
@@ -335,6 +335,50 @@ def _context_windows_check(
     return DoctorCheck("context-windows", status, f"{source}; " + "; ".join(summary))
 
 
+def _account_models_check(config: AppConfig) -> DoctorCheck:
+    """Flag GPT tier targets that a ChatGPT account's own catalog does not list.
+
+    Codex rejects an unlisted model for that account, and the failure then surfaces as a
+    compaction error after the next model switch. Catalogs can lag a server-side access
+    change, so a mismatch warns instead of failing.
+    """
+    gpt = config.backends.get("gpt")
+    if gpt is None or not gpt.enabled:
+        return DoctorCheck("account-models", "pass", "gpt backend disabled")
+    problems: list[str] = []
+    unverified: list[str] = []
+    verified = 0
+    for name, profile in sorted(config.capacity.profiles.items()):
+        if not profile.enabled:
+            continue
+        slugs = profile_catalog_slugs(name, profile)
+        if slugs is None:
+            unverified.append(name)
+            continue
+        verified += 1
+        missing = [
+            f"{tier}={profile.target(Tier.parse(tier), target).model}"
+            for tier, target in gpt.tiers.items()
+            if profile.target(Tier.parse(tier), target).model not in slugs
+        ]
+        if missing:
+            problems.append(
+                f"{name}: " + ", ".join(missing) + " not offered to this account "
+                f"(offers {', '.join(sorted(slugs))})"
+            )
+    if problems:
+        return DoctorCheck(
+            "account-models",
+            "warn",
+            "; ".join(problems)
+            + "; set an override with `agentroute capacity profile-model ACCOUNT TIER MODEL`",
+        )
+    detail = f"{verified} account catalog(s) list every GPT tier target"
+    if unverified:
+        detail += "; unverified (missing or stale catalog): " + ", ".join(unverified)
+    return DoctorCheck("account-models", "pass", detail)
+
+
 def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
     """Run local, non-networked checks without exposing credentials."""
     checks: list[DoctorCheck] = []
@@ -395,6 +439,7 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
                     f"canonical home {codex_home()}",
                 )
             )
+        checks.append(_account_models_check(config))
     checks.append(
         DoctorCheck(
             "routing",
