@@ -28,6 +28,7 @@ from .profiles import (
     TurnProfileSelection,
     account_credential_home,
     profile_has_daybreak_blue,
+    profile_model_support,
     reviewer_fallback_profiles,
     select_turn_profile,
 )
@@ -210,7 +211,7 @@ def _apply_profile_selection(
                 code=ReasonCode.PROFILE_FAILOVER,
                 weight=0,
                 detail=(
-                    f"ChatGPT account {selection.current_name or 'current'} exhausted; "
+                    f"ChatGPT account selection ({selection.source}); "
                     f"using {selection.selected.name}"
                 ),
             )
@@ -324,10 +325,14 @@ def codex_user_prompt_submit(
         route_scope, agent_id = _subagent_identity(payload)
         prompt = str(payload.get("prompt", ""))
         prefix = re.match(r"^\s*(?:@[^\s]+\s*)+", prompt)
-        explicit_intent = bool(prefix and re.search(
-            r"@(terra|sol|luna|astra|haiku|sonnet|opus)(?=\s|$)|@model:",
-            prefix.group(), re.I,
-        ))
+        explicit_intent = bool(
+            prefix
+            and re.search(
+                r"@(terra|sol|luna|astra|haiku|sonnet|opus)(?=\s|$)|@model:",
+                prefix.group(),
+                re.I,
+            )
+        )
         config = config or load_config()
         provider = config.providers["codex"]
         current_model, current_claude_profile = split_profile_model(str(payload.get("model", "")))
@@ -348,7 +353,10 @@ def codex_user_prompt_submit(
         if claude_profile is not None:
             prompt_without_profile = re.sub(
                 r"@claude:[a-z][a-z0-9-]{0,31}(?=\s|$)",
-                "@claude", prompt, count=1, flags=re.I,
+                "@claude",
+                prompt,
+                count=1,
+                flags=re.I,
             )
         previous_route = store.latest_route(session_id, route_scope, agent_id)
         previous_tier = store.previous_tier(session_id, route_scope, agent_id)
@@ -569,15 +577,21 @@ def codex_user_prompt_submit(
         route_config = config
         explicit_profile_selection = None
         direct_backend = (
-            backend_override or requested_backend or sticky_backend or inherited_backend
+            backend_override
+            or requested_backend
+            or sticky_backend
+            or inherited_backend
             or (interrupted_backend if interrupted_route is not None else None)
             or ("claude" if requested_model in {"haiku", "sonnet", "opus"} else None)
             or config.routing.backend_by_tier.get("normal", "gpt")
         )
         if requested_model and direct_backend == "gpt":
             explicit_profile_selection = select_turn_profile(
-                config, current_subscription, current_account_id=current_account_id,
+                config,
+                current_subscription,
+                current_account_id=current_account_id,
                 sticky_profile=sticky_profile,
+                requested_model=requested_model,
             )
             if (
                 explicit_profile_selection is not None
@@ -587,11 +601,14 @@ def codex_user_prompt_submit(
                 route_config.capacity.active_profile = explicit_profile_selection.selected.name
         decision = Router(route_config).route(context)
         profile_selection = (
-            explicit_profile_selection or select_turn_profile(
+            explicit_profile_selection
+            or select_turn_profile(
                 config,
                 current_subscription,
                 current_account_id=current_account_id,
                 sticky_profile=sticky_profile,
+                tier=decision.tier,
+                requested_model=requested_model,
             )
             if decision.capacity_requested_backend == "gpt"
             and backend_override in {None, "gpt"}
@@ -604,6 +621,16 @@ def codex_user_prompt_submit(
             and (decision.capacity_requested_backend == "gpt" or decision.backend == "gpt")
         ):
             _apply_profile_selection(decision, profile_selection, config)
+        if (
+            profile_selection is not None
+            and profile_selection.selected is None
+            and decision.backend == "gpt"
+        ):
+            decision.capacity_blocked = True
+            decision.capacity_detail = (
+                "No ChatGPT account has verified model support and available capacity. "
+                "Refresh account model catalogs or configure an account tier override."
+            )
         if (
             config.routing.security_daybreak_enabled
             and decision.backend == "gpt"
@@ -675,6 +702,15 @@ def codex_user_prompt_submit(
                 profile = config.capacity.profiles.get(selected_name or "")
                 preserve_interrupted_model = bool(
                     selected_name and profile and profile_has_daybreak_blue(selected_name, profile)
+                )
+            if preserve_interrupted_model and decision.backend == "gpt" and profile_selection:
+                selected = profile_selection.selected
+                preserve_interrupted_model = bool(
+                    selected
+                    and profile_model_support(
+                        config, selected.name, decision.tier, interrupted_model
+                    )
+                    is not False
                 )
             if preserve_interrupted_model:
                 decision.model = interrupted_model
@@ -908,22 +944,19 @@ def codex_user_prompt_submit(
                     "too-low|too-high|changed-task|correct"
                 )
             if profile_selection is not None and profile_selection.selected is not None:
-                unavailable = (
-                    profile_selection.current is not None
-                    and profile_selection.current.capacity.status == "unavailable"
-                ) or (
-                    profile_selection.current is None
-                    and current_subscription.status == "unavailable"
+                support = profile_model_support(
+                    config, profile_selection.selected.name, decision.tier, decision.model
                 )
-                failover_reason = "unavailable" if unavailable else "exhausted"
-                profile_message = (
-                    f"◆ ACCOUNT FAILOVER · {profile_selection.current_name or 'current'} "
-                    f"→ {profile_selection.selected.name} · current subscription "
-                    f"{failover_reason} "
-                    "· continuing this thread on the next turn"
+                access = "model listed" if support is True else "model access unverified"
+                label = "ACCOUNT FAILOVER" if profile_selection.switched else "ACCOUNT ROUTE"
+                accounts = (
+                    f"{profile_selection.current_name or 'current'} → "
                     if profile_selection.switched
-                    else f"◆ ACCOUNT ROUTE · {profile_selection.selected.name} · "
-                    f"{profile_selection.source.replace('_', ' ')}"
+                    else ""
+                ) + profile_selection.selected.name
+                profile_message = (
+                    f"◆ {label} · {accounts} · "
+                    f"{profile_selection.source.replace('_', ' ')} · {access}"
                 )
                 specific["routeMessage"] = f"{profile_message}\n{model_route_message}"
             else:
@@ -941,21 +974,28 @@ def codex_user_prompt_submit(
         try:
             requested = locals().get("requested_model")
             rejected = RouteDecision(
-                tier=Tier.NORMAL, model=requested or str(payload.get("model", "")),
-                requested_model=requested, confidence=1, raw_score=0,
+                tier=Tier.NORMAL,
+                model=requested or str(payload.get("model", "")),
+                requested_model=requested,
+                confidence=1,
+                raw_score=0,
                 reason_codes=[ReasonCode.MODEL_OVERRIDE],
-                contributions=[ScoreContribution(
-                    code=ReasonCode.MODEL_OVERRIDE, weight=0, detail=str(error)
-                )],
-                provider="codex", session_id=str(payload["session_id"]),
+                contributions=[
+                    ScoreContribution(code=ReasonCode.MODEL_OVERRIDE, weight=0, detail=str(error))
+                ],
+                provider="codex",
+                session_id=str(payload["session_id"]),
                 backend=locals().get("backend_override") or "gpt",
                 route_scope=locals().get("route_scope") or "root",
                 agent_id=locals().get("agent_id"),
                 turn_id=str(payload.get("turn_id") or ""),
                 prompt_hash=hashlib.sha256(str(payload.get("prompt", "")).encode()).hexdigest(),
-                manual_override=True, capacity_blocked=True, capacity_detail=str(error),
-                selection_receipt={"explicit_model": {"requested": requested,
-                                                      "rejection": str(error)}},
+                manual_override=True,
+                capacity_blocked=True,
+                capacity_detail=str(error),
+                selection_receipt={
+                    "explicit_model": {"requested": requested, "rejection": str(error)}
+                },
             )
             (store or AuditStore()).record(rejected, Tier.NORMAL, application_state="not_requested")
         except Exception:
@@ -970,11 +1010,14 @@ def codex_user_prompt_submit(
                 "systemMessage": (
                     f"Direct model selection failed: {type(error).__name__}: {error}. "
                     "No substitute model was run."
-                    if explicit_intent else
-                    f"AgentRoute failed open: {type(error).__name__}: {error}"
+                    if explicit_intent
+                    else f"AgentRoute failed open: {type(error).__name__}: {error}"
                 ),
-                **({"stopReason": "Direct model selection could not be verified."}
-                   if explicit_intent else {}),
+                **(
+                    {"stopReason": "Direct model selection could not be verified."}
+                    if explicit_intent
+                    else {}
+                ),
             },
             sink,
             separators=(",", ":"),

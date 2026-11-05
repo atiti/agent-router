@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +14,8 @@ from .capacity import CapacityState, subscription_state
 from .config import AppConfig, SubscriptionProfileConfig, agentroute_home
 from .config import codex_home as canonical_codex_home
 from .install import _CodexAppServer
+from .model_selection import DirectModelError, resolve_model
+from .models import Tier
 
 
 @dataclass(frozen=True)
@@ -123,6 +127,66 @@ def profile_catalog_slugs(
     except (OSError, KeyError, TypeError, ValueError, AttributeError, json.JSONDecodeError):
         return None
     return slugs or None
+
+
+def refresh_profile_catalog(config: AppConfig, name: str) -> None:
+    """Refresh through stock account discovery, isolated from generated alias catalogs.
+
+    The credential symlink preserves Codex token-refresh handling. Never infer access
+    from model/list itself: generated catalogs can advertise other providers' aliases.
+    A per-account cooldown bounds retries when the provider is unavailable.
+    """
+    profile = config.capacity.profiles[name]
+    home = account_credential_home(name, profile)
+    auth = home / "auth.json"
+    marker = home / ".agentroute-model-refresh"
+    if not auth.is_file():
+        return
+    try:
+        if marker.exists() and time.time() - marker.stat().st_mtime < 300:
+            return
+        marker.touch(mode=0o600)
+        with tempfile.TemporaryDirectory(prefix="agentroute-account-models-") as temporary:
+            isolated = Path(temporary)
+            (isolated / "auth.json").symlink_to(auth.resolve())
+            with _CodexAppServer(routed_codex_binary(), codex_home=isolated) as client:
+                client.request("model/list", {"limit": 100})
+            catalog = isolated / "models_cache.json"
+            # Validate the actual native cache before atomically replacing the old cache.
+            isolated_profile = profile.model_copy(update={"credential_home": str(isolated)})
+            if profile_catalog_slugs(name, isolated_profile) is not None:
+                with tempfile.NamedTemporaryFile(dir=home, delete=False) as output:
+                    staged = Path(output.name)
+                    try:
+                        output.write(catalog.read_bytes())
+                        output.flush()
+                        os.replace(staged, home / "models_cache.json")
+                    finally:
+                        staged.unlink(missing_ok=True)
+    except (OSError, RuntimeError):
+        return
+
+
+def profile_model_support(
+    config: AppConfig,
+    name: str,
+    tier: Tier | None,
+    requested_model: str | None = None,
+) -> bool | None:
+    """Tri-state account entitlement; unknown never qualifies a new automatic destination."""
+    if tier is None and requested_model is None:
+        return None
+    profile = config.capacity.profiles[name]
+    try:
+        target = (
+            resolve_model(config, "gpt", requested_model, name)
+            if requested_model
+            else profile.target(tier, config.backends["gpt"].target(tier))
+        )
+    except DirectModelError:
+        return False
+    slugs = profile_catalog_slugs(name, profile)
+    return target.model in slugs if slugs is not None else None
 
 
 def profile_account_hash(name: str, profile: SubscriptionProfileConfig) -> str | None:
@@ -334,16 +398,25 @@ def select_turn_profile(
     current_account_id: str | None = None,
     sticky_profile: str | None = None,
     codex_binary: Path | None = None,
+    tier: Tier | None = None,
+    requested_model: str | None = None,
 ) -> TurnProfileSelection | None:
     """Select an authenticated profile without switching on unknown telemetry.
 
-    A previously selected profile remains sticky while its telemetry is healthy,
-    warning, or unknown. A new failover only occurs when the current profile is
-    authoritatively exhausted or unavailable and another profile has known capacity.
+    New automatic destinations require fresh model support and known capacity.
+    Affinity is retained on unknown telemetry, while verified recovery below the
+    quota margin returns a session to its configured preferred account.
     """
     profiles = config.capacity.profiles
     if not profiles:
         return None
+
+    def compatible(name: str, *, destination: bool = False) -> bool:
+        support = profile_model_support(config, name, tier, requested_model)
+        if support is None and destination:
+            refresh_profile_catalog(config, name)
+            support = profile_model_support(config, name, tier, requested_model)
+        return support is True if destination else support is not False
 
     current_hash = account_hash(current_account_id)
     home_match = profile_name_for_home(config)
@@ -352,9 +425,7 @@ def select_turn_profile(
     # two old homes may intentionally hold the same login with different model
     # compatibility mappings. Canonical single-home sessions use account ID.
     matched_name = (
-        home_match
-        if home_match not in {None, "default"}
-        else account_match or home_match
+        home_match if home_match not in {None, "default"} else account_match or home_match
     )
     configured = config.capacity.active_profile
     configured_profile = profiles.get(configured) if configured else None
@@ -365,7 +436,12 @@ def select_turn_profile(
             config,
             codex_binary=codex_binary,
         )
-        if selected.enabled and selected.authenticated:
+        if (
+            selected.enabled
+            and selected.authenticated
+            and selected.capacity.available
+            and compatible(configured, destination=True)
+        ):
             current = (
                 _current_profile_status(
                     matched_name,
@@ -396,12 +472,40 @@ def select_turn_profile(
         return TurnProfileSelection(
             matched_name,
             current,
-            current,
+            current if compatible(matched_name) else None,
             False,
             "account_match",
             False,
         )
     current_name = sticky_profile or matched_name
+    # Reclaim the configured account only below the recovery threshold. Unknown quota or
+    # model access never triggers a switch; hysteresis prevents ping-pong near exhaustion.
+    if (
+        current_name
+        and configured
+        and configured != current_name
+        and configured_profile is not None
+        and compatible(configured, destination=True)
+    ):
+        preferred = probe_profile(configured, configured_profile, config, codex_binary=codex_binary)
+        recovery_limit = max(
+            0, config.capacity.switch_percent - config.capacity.recovery_margin_percent
+        )
+        if (
+            preferred.enabled
+            and preferred.authenticated
+            and preferred.capacity.status == "healthy"
+            and preferred.capacity.used_percent is not None
+            and preferred.capacity.used_percent <= recovery_limit
+        ):
+            return TurnProfileSelection(
+                current_name,
+                None,
+                preferred,
+                True,
+                "preferred_account_recovered",
+                preferred.account_hash != current_hash,
+            )
 
     if sticky_profile is not None:
         profile = profiles.get(sticky_profile)
@@ -420,6 +524,7 @@ def select_turn_profile(
             and current.enabled
             and current.authenticated
             and current.capacity.status not in {"exhausted", "unavailable"}
+            and compatible(current_name)
         ):
             return TurnProfileSelection(
                 current_name,
@@ -430,7 +535,9 @@ def select_turn_profile(
                 current.account_hash != current_hash,
             )
         needs_failover = True
-    elif current_capacity.status not in {"exhausted", "unavailable"}:
+    elif current_capacity.status not in {"exhausted", "unavailable"} and (
+        matched_name is None or compatible(matched_name)
+    ):
         if matched_name is None:
             return None
         current = _current_profile_status(
@@ -474,6 +581,7 @@ def select_turn_profile(
         and refreshed_current.enabled
         and refreshed_current.authenticated
         and refreshed_current.capacity.status in {"healthy", "warning"}
+        and compatible(current_name)
     ):
         return TurnProfileSelection(
             current_name,
@@ -489,6 +597,7 @@ def select_turn_profile(
             item
             for item in statuses
             if item.name != current_name
+            and compatible(item.name, destination=True)
             and (
                 current_profile_hash is None
                 or item.account_hash is None

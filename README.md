@@ -658,9 +658,22 @@ The transcript and thread remain in the canonical home. Provider-bound encrypted
 compaction state, encrypted function arguments, and response item IDs are discarded at an account
 or provider boundary because another identity cannot decrypt them. Ordinary conversation and
 portable tool history remain. AgentRoute never interrupts or replays an in-flight request, and
-unknown quota telemetry never triggers an account switch. The chosen account stays sticky for later
-turns until it is authoritatively exhausted or unavailable; subsequent banners show
-`ACCOUNT ROUTE · <name> · session affinity`.
+unknown quota telemetry never triggers an account switch. Automatic failover requires the destination account's own fresh model catalog to list
+its effective target for the requested tier (including per-account overrides). Missing or stale
+catalogs do not qualify an account as a new failover destination. Before considering a destination with an unknown catalog, AgentRoute attempts native catalog discovery
+in an isolated temporary Codex home, with a five-minute retry cooldown per account. It trusts the
+native cache rather than generated aliases. Existing accounts with unknown
+model access continue with a `model access unverified` notice; known unsupported targets trigger
+selection of a compatible account or block the turn if none is available. Explicit model requests
+retain their requested model and are checked against the destination account as well.
+
+A session returns to `capacity.active_profile` when that account has verified model support and
+known healthy quota below `switch_percent - recovery_margin_percent`. Recovery occurs at a turn
+boundary and uses the same credential/state isolation as failover. With the default thresholds,
+usage must be at most 75% before recovery. Unknown quota never triggers recovery. The account banner
+shows `preferred account recovered`, `failover`, or `session affinity`, plus whether model access
+was verified. Configure compatibility mappings with
+`agentroute capacity profile-model ACCOUNT TIER MODEL`.
 
 To migrate an old isolated home, copy only its file-backed credentials; its original directory is
 left untouched as a rollback option:
