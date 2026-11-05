@@ -13,6 +13,7 @@ from agentroute.config import (
 )
 from agentroute.doctor import (
     EXPECTED_RUNTIME_REVISION,
+    _account_models_check,
     _context_windows_check,
     _desktop_check,
     _effective_model_catalog,
@@ -553,3 +554,54 @@ def test_doctor_reports_hosted_jev_instead_of_fallback_catalog(tmp_path, monkeyp
     assert check.status == "pass"
     assert "jev-latest" in check.detail
     assert "typesafe.ai" in check.detail
+
+
+def _account_catalog(home, slugs, *, fetched_at=None):
+    from datetime import datetime, timezone
+
+    home.mkdir(parents=True, exist_ok=True)
+    stamp = (fetched_at or datetime.now(timezone.utc)).isoformat().replace("+00:00", "Z")
+    (home / "models_cache.json").write_text(
+        json.dumps({"fetched_at": stamp, "models": [{"slug": slug} for slug in slugs]}),
+        encoding="utf-8",
+    )
+
+
+def test_doctor_flags_gpt_tier_targets_missing_from_an_account_catalog(tmp_path):
+    config = default_config()
+    config.capacity.enabled = True
+    profile = config.capacity.profiles["default"]
+    profile.credential_home = str(tmp_path / "markster")
+    config.backends["gpt"].tiers["normal"] = ModelTarget(model="gpt-6.1-terra")
+    _account_catalog(tmp_path / "markster", ["gpt-6-luna", "gpt-5.6-terra"])
+
+    check = _account_models_check(config)
+
+    assert check.status == "warn"
+    assert "normal=gpt-6.1-terra" in check.detail
+    assert "offers gpt-5.6-terra, gpt-6-luna" in check.detail
+    assert "profile-model" in check.detail
+
+    profile.tiers = {
+        tier: ModelTarget(model="gpt-6-luna", reasoning_effort="xhigh")
+        for tier in config.backends["gpt"].tiers
+    }
+
+    assert _account_models_check(config).status == "pass"
+
+
+def test_doctor_treats_a_stale_account_catalog_as_unverified(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    config = default_config()
+    config.capacity.enabled = True
+    profile = config.capacity.profiles["default"]
+    profile.credential_home = str(tmp_path / "old")
+    _account_catalog(
+        tmp_path / "old", ["gpt-6-luna"], fetched_at=datetime.now(timezone.utc) - timedelta(days=3)
+    )
+
+    check = _account_models_check(config)
+
+    assert check.status == "pass"
+    assert "unverified" in check.detail

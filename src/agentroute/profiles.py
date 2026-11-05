@@ -97,6 +97,34 @@ def profile_has_daybreak_blue(name: str, profile: SubscriptionProfileConfig) -> 
         return False
 
 
+def profile_catalog_slugs(
+    name: str,
+    profile: SubscriptionProfileConfig,
+    *,
+    max_age: timedelta = timedelta(days=1),
+) -> set[str] | None:
+    """Return the model slugs a ChatGPT account's own catalog lists.
+
+    ChatGPT accounts differ in model access, and Codex rejects a model the signed-in
+    account does not list. ``None`` means the catalog is missing, unreadable, or older than
+    ``max_age``; callers must treat that as unverified rather than as an empty list.
+    """
+    catalog = account_credential_home(name, profile) / "models_cache.json"
+    try:
+        payload = json.loads(catalog.read_text(encoding="utf-8"))
+        fetched_at = datetime.fromisoformat(payload["fetched_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) - fetched_at > max_age:
+            return None
+        slugs = {
+            model["slug"]
+            for model in payload.get("models", [])
+            if isinstance(model, dict) and isinstance(model.get("slug"), str)
+        }
+    except (OSError, KeyError, TypeError, ValueError, AttributeError, json.JSONDecodeError):
+        return None
+    return slugs or None
+
+
 def profile_account_hash(name: str, profile: SubscriptionProfileConfig) -> str | None:
     """Read a profile's local account identity without exposing the raw identifier."""
     auth_path = account_credential_home(name, profile) / "auth.json"
