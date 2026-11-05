@@ -1,5 +1,6 @@
 import io
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -15,6 +16,7 @@ from agentroute.config import (
     default_config,
 )
 from agentroute.hook import codex_interrupt, codex_stop, codex_user_prompt_submit
+from agentroute.models import Tier
 from agentroute.profiles import (
     ProfileStatus,
     TurnProfileSelection,
@@ -521,9 +523,7 @@ def test_exhausted_subscription_fails_over_to_another_profile_in_place(tmp_path)
     config.capacity.enabled = True
     config.capacity.active_profile = "personal"
     config.capacity.profiles = {
-        "personal": SubscriptionProfileConfig(
-            codex_home=str(tmp_path / "personal"), priority=10
-        ),
+        "personal": SubscriptionProfileConfig(codex_home=str(tmp_path / "personal"), priority=10),
         "work": SubscriptionProfileConfig(
             codex_home=str(tmp_path / "work"),
             priority=20,
@@ -556,6 +556,23 @@ def test_exhausted_subscription_fails_over_to_another_profile_in_place(tmp_path)
             ),
         ),
     )
+    from datetime import datetime, timezone
+
+    for profile in config.capacity.profiles.values():
+        home = Path(profile.codex_home)
+        home.mkdir(parents=True, exist_ok=True)
+        slugs = {
+            profile.target(Tier.parse(t), target).model
+            for t, target in config.backends["gpt"].tiers.items()
+        }
+        (home / "models_cache.json").write_text(
+            json.dumps(
+                {
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "models": [{"slug": slug} for slug in slugs],
+                }
+            )
+        )
     store = AuditStore(tmp_path / "audit.db")
 
     with patch("agentroute.profiles.probe_profiles", return_value=statuses):
@@ -591,9 +608,7 @@ def test_selected_subscription_profile_stays_sticky_for_followup_turns(tmp_path)
     config.capacity.enabled = True
     config.capacity.active_profile = "personal"
     config.capacity.profiles = {
-        "personal": SubscriptionProfileConfig(
-            codex_home=str(tmp_path / "personal"), priority=10
-        ),
+        "personal": SubscriptionProfileConfig(codex_home=str(tmp_path / "personal"), priority=10),
         "work": SubscriptionProfileConfig(codex_home=str(tmp_path / "work"), priority=20),
     }
     exhausted = ProfileStatus(
@@ -620,6 +635,23 @@ def test_selected_subscription_profile_stays_sticky_for_followup_turns(tmp_path)
             20,
         ),
     )
+    from datetime import datetime, timezone
+
+    for profile in config.capacity.profiles.values():
+        home = Path(profile.codex_home)
+        home.mkdir(parents=True, exist_ok=True)
+        slugs = {
+            profile.target(Tier.parse(t), target).model
+            for t, target in config.backends["gpt"].tiers.items()
+        }
+        (home / "models_cache.json").write_text(
+            json.dumps(
+                {
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "models": [{"slug": slug} for slug in slugs],
+                }
+            )
+        )
     store = AuditStore(tmp_path / "audit.db")
 
     with patch("agentroute.profiles.probe_profiles", return_value=(exhausted, work)):
@@ -630,7 +662,10 @@ def test_selected_subscription_profile_stays_sticky_for_followup_turns(tmp_path)
             account_id="personal-account",
             ordinary_usage_allowed=False,
         )
-    with patch("agentroute.profiles.probe_profile", return_value=work):
+    with patch(
+        "agentroute.profiles.probe_profile",
+        side_effect=lambda name, *a, **kw: work if name == "work" else exhausted,
+    ):
         followup = invoke(
             config,
             store,
@@ -652,12 +687,8 @@ def test_profile_failover_skips_another_home_for_the_same_account(tmp_path):
     config.capacity.enabled = True
     config.capacity.active_profile = "personal"
     config.capacity.profiles = {
-        "personal": SubscriptionProfileConfig(
-            codex_home=str(tmp_path / "personal"), priority=10
-        ),
-        "duplicate": SubscriptionProfileConfig(
-            codex_home=str(tmp_path / "duplicate"), priority=20
-        ),
+        "personal": SubscriptionProfileConfig(codex_home=str(tmp_path / "personal"), priority=10),
+        "duplicate": SubscriptionProfileConfig(codex_home=str(tmp_path / "duplicate"), priority=20),
         "work": SubscriptionProfileConfig(codex_home=str(tmp_path / "work"), priority=30),
     }
     statuses = (
@@ -690,6 +721,23 @@ def test_profile_failover_skips_another_home_for_the_same_account(tmp_path):
         ),
     )
 
+    from datetime import datetime, timezone
+
+    for profile in config.capacity.profiles.values():
+        home = Path(profile.codex_home)
+        home.mkdir(parents=True, exist_ok=True)
+        slugs = {
+            profile.target(Tier.parse(t), target).model
+            for t, target in config.backends["gpt"].tiers.items()
+        }
+        (home / "models_cache.json").write_text(
+            json.dumps(
+                {
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "models": [{"slug": slug} for slug in slugs],
+                }
+            )
+        )
     with patch("agentroute.profiles.probe_profiles", return_value=statuses):
         output = invoke(
             config,
@@ -710,9 +758,7 @@ def test_profile_failover_reports_unavailable_current_profile(tmp_path):
     config.capacity.enabled = True
     config.capacity.active_profile = "personal"
     config.capacity.profiles = {
-        "personal": SubscriptionProfileConfig(
-            codex_home=str(tmp_path / "personal"), priority=10
-        ),
+        "personal": SubscriptionProfileConfig(codex_home=str(tmp_path / "personal"), priority=10),
         "work": SubscriptionProfileConfig(codex_home=str(tmp_path / "work"), priority=20),
     }
     statuses = (
@@ -736,6 +782,23 @@ def test_profile_failover_reports_unavailable_current_profile(tmp_path):
         ),
     )
 
+    from datetime import datetime, timezone
+
+    for profile in config.capacity.profiles.values():
+        home = Path(profile.codex_home)
+        home.mkdir(parents=True, exist_ok=True)
+        slugs = {
+            profile.target(Tier.parse(t), target).model
+            for t, target in config.backends["gpt"].tiers.items()
+        }
+        (home / "models_cache.json").write_text(
+            json.dumps(
+                {
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "models": [{"slug": slug} for slug in slugs],
+                }
+            )
+        )
     with patch("agentroute.profiles.probe_profiles", return_value=statuses):
         output = invoke(
             config,
@@ -744,7 +807,7 @@ def test_profile_failover_reports_unavailable_current_profile(tmp_path):
             ordinary_usage_allowed=False,
         )
 
-    assert "current subscription unavailable" in output["hookSpecificOutput"]["routeMessage"]
+    assert "failover" in output["hookSpecificOutput"]["routeMessage"]
 
 
 def test_unknown_subscription_telemetry_does_not_trigger_profile_switch(tmp_path):
@@ -922,10 +985,10 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path, 
     assert first["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
     assert first["hookSpecificOutput"]["reasoningEffort"] == "high"
     assert first["hookSpecificOutput"]["routeMessage"] == (
-        "◆ ACCOUNT ROUTE · default · account match\n"
+        "◆ ACCOUNT ROUTE · default · account match · model access unverified\n"
         "◆ MODEL ROUTE · SMART → gpt-6.1-sol · high reasoning "
         "· backend gpt/openai · scope root · source MANUAL "
-            f"· rule confidence 100% · rule score -0.5 · AgentRoute v{__version__}"
+        f"· rule confidence 100% · rule score -0.5 · AgentRoute v{__version__}"
     )
     assert second["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
     assert len(store.history("same-thread")) == 2
