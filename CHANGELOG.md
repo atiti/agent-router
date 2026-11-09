@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Upgrade the routed Codex fork and matching Code Mode host to upstream 0.167.0.
+
 - Require fresh per-account model support for automatic ChatGPT account failover, block known incompatible account targets, and prevent interrupted turns from restoring a rejected model. Recover to the preferred account below the quota recovery margin and show selection/access reasons in the account banner.
 
 - Add an `account-models` doctor check that compares each ChatGPT account's GPT tier targets with that account's own fresh model catalog. Codex rejects a model the signed-in account does not list, which previously surfaced as a compaction error after a model switch. The check points to `agentroute capacity profile-model` for a per-account override.
