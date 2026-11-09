@@ -116,8 +116,9 @@ def test_launch_intent_precedes_effect_and_workers_keep_identity(team, monkeypat
         record = h.load("demo")["members"]["new-worker"]
         assert record["launch"] == "prepared"
         assert "--no-daemon" in args
-        assert args[args.index("env") + 1:args.index("env") + 7] == (
-            "-u", "HERDR_ENV", "-u", "HERDR_PANE_ID", "-u", "HERDR_SOCKET_PATH")
+        assert args[args.index("env") + 1:args.index("env") + 9] == (
+            "-u", "HERDR_ENV", "-u", "HERDR_PANE_ID", "-u", "HERDR_SOCKET_PATH",
+            "-u", "NO_COLOR")
         assert "--outlive-parent" in args
         assert "AGENTROUTE_HERDR_MEMBER=new-worker" in args
         assert "resume brief" in args[-1]

@@ -210,6 +210,7 @@ def launch_args(data: dict, member: str, record: dict) -> list[str]:
         args += ["--no-parent"]
     # The worker engine must inherit HC_TERMINAL_ID. Shared app-server engines don't.
     args += ["env", "-u", "HERDR_ENV", "-u", "HERDR_PANE_ID", "-u", "HERDR_SOCKET_PATH",
+             "-u", "NO_COLOR",
              f"PYTHONPATH={Path(__file__).resolve().parent.parent}",
              f"AGENTROUTE_HERDR_TEAM={data['id']}", f"AGENTROUTE_HERDR_MEMBER={member}",
              sys.executable, "-m", "agentroute.cli", "launch-codex", "--", "--no-daemon",
