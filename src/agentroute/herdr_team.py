@@ -287,7 +287,8 @@ def send(team: str, member: str, message_id: str = typer.Option(...),
     """Persist message intent before sending; unknown delivery requires human reconciliation."""
     slug(message_id)
     with locked(team) as data:
-        target = data["members"][member]
+        target = data["members"].get(member)
+        anchored = member == "supervisor" and target is None and data.get("anchor_terminal")
         previous = data["messages"].get(message_id)
         message = {"member": member, "text": text, "from": os.environ.get(
             "AGENTROUTE_HERDR_MEMBER", "coordinator")}
@@ -298,14 +299,19 @@ def send(team: str, member: str, message_id: str = typer.Option(...),
                 raise typer.BadParameter("Delivery unresolved; inspect messages and target first.")
             typer.echo(json.dumps(previous))
             return
-        terminal = own_terminal(data, target)
-        if not terminal or terminal["state"] != "live":
+        pane = next((p for p in tui.panes(data["tui_session"])
+                     if p["terminal_id"] == data["anchor_terminal"]), None) if anchored else None
+        terminal = own_terminal(data, target) if target else None
+        if not (pane and pane.get("agent") == "codex") and (
+                not terminal or terminal["state"] != "live"):
             raise typer.BadParameter("Target is not live; no message sent")
         message["state"] = "prepared"
         data["messages"][message_id] = message
         save(team, data)
         try:
-            message["receipt"] = core(data, "send", terminal["address"], text, timeout=30)
+            message["receipt"] = (
+                tui.command(data["tui_session"], "agent", "prompt", pane["pane_id"], text)
+                if anchored else core(data, "send", terminal["address"], text, timeout=30))
             message["state"] = "submitted"  # not an acknowledgment or completion
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
             message["state"] = "unknown"

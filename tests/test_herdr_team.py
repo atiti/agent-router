@@ -243,3 +243,17 @@ def test_dispatch_success_verifies_operation_and_tiles(team, monkeypatch, tmp_pa
     assert operations[0]['key'] == operations[1]['key']
     view.assert_called_once_with('demo', 'ready')
     layout.assert_called_once_with('demo')
+
+
+def test_worker_can_report_to_anchored_supervisor_with_durable_receipt(team, monkeypatch):
+    data = h.load('demo')
+    data['anchor_terminal'] = 'supervisor-terminal'
+    h.save('demo', data)
+    monkeypatch.setattr(h.tui, 'panes', lambda _: [
+        {'terminal_id': 'supervisor-terminal', 'pane_id': 'w2:p1', 'agent': 'codex'}])
+    command = Mock(return_value={'submitted': True})
+    monkeypatch.setattr(h.tui, 'command', command)
+    h.send('demo', 'supervisor', 'report1', 'worker report')
+    h.send('demo', 'supervisor', 'report1', 'worker report')
+    command.assert_called_once_with('agentroute', 'agent', 'prompt', 'w2:p1', 'worker report')
+    assert h.load('demo')['messages']['report1']['state'] == 'submitted'
