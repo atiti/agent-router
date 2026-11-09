@@ -259,3 +259,15 @@ def test_worker_can_report_to_anchored_supervisor_with_durable_receipt(team, mon
     h.send('demo', 'supervisor', 'report1', 'worker report')
     command.assert_called_once_with('agentroute', 'agent', 'prompt', 'w2:p1', 'worker report')
     assert h.load('demo')['messages']['report1']['state'] == 'submitted'
+
+
+def test_only_supervisor_prompt_is_told_how_to_dispatch(team, tmp_path):
+    team["members"]["supervisor"] = {"attempt": "attempt-sup", "spec": {"role": "supervisor",
+                                     "cwd": str(tmp_path), "task": "coordinate"},
+                                     "agent": "codex", "launch": "started"}
+    h.save("demo", team)
+    supervisor = h.member_prompt(team, "supervisor", "supervisor", "coordinate")
+    worker = h.member_prompt(team, "worker", "worker", "task")
+    assert "team dispatch demo --dir" in supervisor
+    assert "Operator and subagent items are never dispatched" in supervisor
+    assert "team dispatch" not in worker
