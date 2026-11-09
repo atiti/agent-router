@@ -143,7 +143,7 @@ def test_release_metadata_uses_current_version_and_runtime():
     assert f'__version__ = "{version}"' in public_api
     assert "provider-routing-v65" in installer
     assert 'EXPECTED_RUNTIME_REVISION = "provider-routing-v65"' in doctor
-    assert "6517cd36100800f01d3d6dec2be94cb765ac1198" in installer
+    assert "51b632252f97db91f5cd51b27aa658d8906c9ceb" in installer
     assert "0.167.0" in installer
     assert "./scripts/check_upstream.sh" in ci
 
