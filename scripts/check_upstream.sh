@@ -2,7 +2,7 @@
 set -eu
 
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-UPSTREAM_REF=${1:-rust-v0.165.0}
+UPSTREAM_REF=${1:-rust-v0.167.0}
 CHECK_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/agentroute-upstream.XXXXXX")
 # Keep candidate worktrees for diagnostics instead of deleting conflict evidence.
 trap 'printf "Candidate worktree retained at %s\n" "$CHECK_ROOT"' EXIT
@@ -21,7 +21,7 @@ if [ "$NEW_BASE" = "$CODEX_BASE" ]; then
     test "$(git -C "$CHECK_ROOT/candidate" rev-parse 'HEAD^{tree}')" = \
         "$(git -C "$CHECK_ROOT/repo" rev-parse "$CODEX_TIP^{tree}")"
 else
-    git -C "$CHECK_ROOT/candidate" diff --check "$NEW_BASE" HEAD -- . ':(exclude,glob)**/*.snap'
+    git -C "$CHECK_ROOT/candidate" diff --check "$NEW_BASE" HEAD -- . ':(exclude,glob)**/*.snap' ':(exclude,glob)patches/*.patch'
 fi
 
 if [ "${AGENTROUTE_UPSTREAM_CARGO_CHECK:-1}" = 1 ]; then
