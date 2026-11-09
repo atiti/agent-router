@@ -347,7 +347,7 @@ def messages(team: str) -> None:
 
 @team_app.command("view")
 def view(team: str, member: str) -> None:
-    """Open/reuse a named watch-only TUI pane; use attach for deliberate interaction."""
+    """Open or reuse an interactive worker pane in the TUI."""
     with locked(team) as data:
         record = data["members"][member]
         terminal = own_terminal(data, record)
