@@ -150,16 +150,28 @@ def poll(team: str, stale_after: int, ack_after: int, now: float | None = None) 
                 if age >= stale_after:
                     alerts.append(f"{name}: canonical checkpoint overdue")
         for key, message in data["messages"].items():
-            # Older ledgers have no trustworthy submission timestamp; start a grace period now.
-            if key.startswith("health-") or not message.get("created_at"):
-                continue  # Legacy envelopes predate acknowledgments; do not invent receipt debt.
+            if key.startswith("health-"):
+                continue  # Avoid recursive health-alert acknowledgment debt.
+            if message["state"] in {"prepared", "unknown", "rejected"}:
+                alerts.append(f"message {key}: delivery {message['state']}; inspect, do not resend")
+                continue
+            if not message.get("created_at"):
+                continue  # Legacy submissions predate acknowledgments; do not invent receipt debt.
             since = message.setdefault("tracking_since", message.get("submitted_at", now))
             if (message["state"] == "submitted" and not message.get("acknowledgment")
                     and now-since >= ack_after):
                 alerts.append(f"message {key} to {message['member']}: receipt unacknowledged")
-            elif message["state"] in {"prepared", "unknown"}:
-                alerts.append(f"message {key}: delivery unresolved; inspect, do not resend")
         monitor = data.setdefault("monitor", {})
+        if data.get("anchor_terminal"):
+            pane = next((p for p in h.tui.panes(data["tui_session"])
+                         if p["terminal_id"] == data["anchor_terminal"]), None)
+            supervisor_state = pane.get("agent_status", "unknown") if pane else "missing"
+            monitor["supervisor_state"] = supervisor_state
+            monitor.pop("notification_hold", None)
+            if supervisor_state in {"blocked", "missing"}:
+                monitor["notification_hold"] = (
+                    f"Supervisor {supervisor_state}; inspection continues")
+                alerts.append(monitor["notification_hold"])
         monitor.update(checked_at=now, alerts=alerts)
         h.save(team, data)
     return {"team": team, "checked_at": now, "alerts": alerts}
@@ -188,7 +200,12 @@ def monitor(team: str, watch: bool = False, notify: bool = False,
                 previous = data.get("monitor", {}).get("notification", {})
                 if (notify and result["alerts"] and (previous.get("digest") != digest
                         or time.time()-previous.get("at", 0) >= stale_after)):
-                    key = f"health-{digest}-{int(time.time() // stale_after)}"
+                    if data.get("monitor", {}).get("notification_hold"):
+                        if not watch:
+                            return
+                        time.sleep(interval)
+                        continue
+                    key = f"health-{digest}-{time.time_ns()}"
                     # Same ID means same content. Unknown receipts are never retried automatically.
                     unresolved = any(k.startswith("health-")
                                      and v["state"] in {"prepared", "unknown"}

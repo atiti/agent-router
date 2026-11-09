@@ -344,8 +344,17 @@ def send(team: str, member: str, message_id: str = typer.Option(...),
                 if anchored else core(data, "send", terminal["address"], envelope, timeout=30))
             message["state"] = "submitted"  # transport only; ack is recorded separately
             message["submitted_at"] = time.time()
-        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
             message["state"] = "unknown"
+            message["delivery_error"] = str(error)
+            if anchored and isinstance(error, RuntimeError):
+                try:
+                    rejection = json.loads(str(error))
+                except ValueError:
+                    rejection = {}
+                if isinstance(rejection, dict) and rejection.get("error", {}).get(
+                        "code") == "agent_blocked":
+                    message["state"] = "rejected"  # explicit refusal before input submission
             raise
         finally:
             save(team, data)

@@ -1280,6 +1280,10 @@ A one-shot `team monitor TEAM` reports without sending notifications. Repeated
 alerts have a cooldown; unknown delivery is retained without automatic resend.
 The monitor observes and requests inspection; it never approves, restarts, or
 reassigns work. Its inspection timestamp must itself be checked if it stops.
+When the supervisor requires interactive input, inspections continue and status
+shows a notification hold until it becomes available. Herdr's explicit
+`agent_blocked` refusal is recorded as `rejected`; a timeout remains `unknown`.
+The detached monitor survives its invoking shell; start it again after reboot.
 
 A completed turn leaves the worker and pane open. For genuine completion, the
 canonical packet must be `done`, unassigned, have evidence for every criterion,

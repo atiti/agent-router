@@ -206,3 +206,37 @@ def test_recipient_ack_reconciles_unknown_transport(team, monkeypatch):
     message = h.load("demo")["messages"]["m1"]
     assert message["state"] == "submitted"
     assert message["delivery_reconciliation"]
+
+
+def test_explicit_supervisor_refusal_is_rejected_not_unknown(team, monkeypatch):
+    data = h.load("demo")
+    data["anchor_terminal"] = "supervisor-terminal"
+    h.save("demo", data)
+    monkeypatch.setattr(h.tui, "panes", lambda _: [{
+        "terminal_id": "supervisor-terminal", "pane_id": "w1:p1", "agent": "codex"}])
+    monkeypatch.setattr(h.tui, "command", Mock(side_effect=RuntimeError(json.dumps({
+        "error": {"code": "agent_blocked", "message": "requires interactive input"}}))))
+    with pytest.raises(RuntimeError):
+        h.send("demo", "supervisor", "blocked-report", "Report")
+    message = h.load("demo")["messages"]["blocked-report"]
+    assert message["state"] == "rejected"
+    assert "agent_blocked" in message["delivery_error"]
+
+
+def test_blocked_supervisor_holds_notifications_but_inspection_continues(team, monkeypatch):
+    data = h.load("demo")
+    data["anchor_terminal"] = "supervisor-terminal"
+    data["messages"]["legacy-unknown"] = {"member": "supervisor", "state": "unknown"}
+    h.save("demo", data)
+    monkeypatch.setattr(h.tui, "panes", lambda _: [{
+        "terminal_id": "supervisor-terminal", "agent_status": "blocked"}])
+    setup_poll(monkeypatch, {"id": "owned"},
+               {"address": "t1", "state": "live", "status": {"state": "working"}})
+    result = lifecycle.poll("demo", 900, 300)
+    assert "message legacy-unknown: delivery unknown; inspect, do not resend" in result["alerts"]
+    assert h.load("demo")["monitor"]["supervisor_state"] == "blocked"
+    send = Mock()
+    monkeypatch.setattr(h, "send", send)
+    lifecycle.monitor("demo", False, True, 900, 300, 30)
+    send.assert_not_called()
+    assert h.load("demo")["members"]["worker"]["health"]["checked_at"]
