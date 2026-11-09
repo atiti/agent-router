@@ -1138,3 +1138,24 @@ agentroute work new  # local work ID when there is no ticket yet
 The CLI provides this lookup; the closed mobile app does not yet expose the work
 links as a separate UI. Raw profiling is optional and bounded; inspect or clean
 storage using `agentroute storage status` and `agentroute storage prune`.
+
+## Herdr session cockpit
+
+Install [Herdr TUI](https://herdr.dev/tui/), then run `agentroute herdr install`
+to select it for `ar` and `focus`. Run `ar` to start/reuse the shared Codex owner
+and attach to the persistent `agentroute` Herdr session. `ar start --background`
+starts it without attaching. Existing Zellij sessions keep running.
+
+- `ar list --namespace markster` lists shared chats without resuming them.
+- `ar open <chat-id-or-title>` opens/resumes a chat or focuses its existing Herdr view.
+- `ar new --dir /path/to/repo --name "Task"` creates a shared chat and opens a tab.
+- `ar focus <chat>` focuses an existing view without starting a client.
+- `ar group set markster /path/to/repo` uses the existing project namespace rules.
+
+Each namespace has a Herdr workspace and each chat a tab. The client reports
+working, idle, and blocked (approval/user input) states from the shared owner to
+Herdr every two seconds. Shared writer guards remain in effect when a chat is
+already open elsewhere. Close a view before moving that chat from Zellij.
+Detach from Herdr with Ctrl+B then Q; the server and terminal processes persist.
+After a reboot, start the cockpit and use `ar open <chat>` to resume saved chats.
+To return the shortcuts to Zellij, run `agentroute zellij install`.

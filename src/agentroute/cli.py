@@ -105,6 +105,7 @@ from .desktop import (
 from .doctor import run_doctor
 from .efficiency import efficiency_report
 from .grok_cli import app as grok_app
+from .herdr_cli import herdr_app
 from .hook import _prompt_help, codex_interrupt, codex_stop, codex_user_prompt_submit
 from .install import hook_command as installed_hook_command
 from .install import merge_codex_hook, trust_agentroute_hooks
@@ -153,6 +154,7 @@ app.add_typer(storage_app, name="storage")
 app.add_typer(work_app, name="work")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(zellij_app, name="zellij")
+app.add_typer(herdr_app, name="herdr")
 console = Console()
 
 
