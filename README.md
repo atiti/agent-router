@@ -1198,9 +1198,9 @@ without resubmitting its original task. Team state is private local metadata und
 AgentRoute's shared-server state directory; core session names are short to fit Unix
 socket limits. Preserve these directories when moving or recovering the installation.
 
-`team view` opens or reuses a watch-only TUI pane. It forwards output and pane size
-through a private PTY and discards keyboard input, so watching cannot submit a prompt.
-Ctrl+\ closes only that viewer. Use `team attach` from a shell for interactive input;
+`team view` opens or reuses an interactive TUI pane. It forwards keyboard input,
+output and pane size through a private PTY. Focus the worker pane to type directly.
+Ctrl+\ closes only that attachment. `team attach` also connects from another shell;
 closing or detaching a viewer keeps the agent running. `team layout` arranges existing
 views into one tab; `team focus` selects an individual view. Herdr shows the Codex
 identity, member name and live working/idle/blocked status. Filter core directly with
@@ -1247,3 +1247,9 @@ launches report Codex identity from the terminal-side launcher; their state rema
 unknown until thread-specific reporting is available. `ar open UUID` already
 provides thread-specific lifecycle reporting. A launcher status outage never
 prevents Codex from starting.
+
+Herdr pane identity is passed to shared Codex threads through per-thread shell
+environment overrides when a client launches from Herdr. Restart the client to
+apply updated launcher settings; the shared owner does not need restarting.
+New team workers remove inherited `NO_COLOR` so Codex can detect terminal colors.
+Existing worker processes retain their startup environment until resumed.
