@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -326,3 +327,22 @@ def test_subcommand_feature_flags_keep_routing_dependencies(command):
         Path("/tmp/codex-bin"), [command, "--disable", "step_model_switching"], default_config()
     )
     assert _config_assignments(disabled)["features.step_model_switching"] == "false"
+
+
+def test_no_daemon_keeps_worker_execution_local_with_shared_owner_enabled(tmp_path, monkeypatch):
+    config = default_config()
+    config.shared_server.enabled = True
+    monkeypatch.setattr("agentroute.launcher.load_config", lambda: config)
+    monkeypatch.delenv("AGENTROUTE_CONFIG", raising=False)
+    monkeypatch.setenv("HC_TERMINAL_ID", "t3")
+    monkeypatch.setattr("agentroute.providers.refresh_launch_catalog", lambda _: None)
+    owner = Mock(side_effect=AssertionError("must not attach shared owner"))
+    monkeypatch.setattr("agentroute.shared_server.ensure_server", owner)
+    captured = {}
+    monkeypatch.setattr("agentroute.launcher.os.execve",
+                        lambda p, argv, env: captured.update(argv=argv, env=env))
+    launch_codex(tmp_path / "codex", ["--no-daemon", "bounded worker task"])
+    assert "--remote" not in captured["argv"]
+    assert "--no-daemon" in captured["argv"]
+    assert captured["env"]["HC_TERMINAL_ID"] == "t3"
+    owner.assert_not_called()

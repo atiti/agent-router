@@ -365,7 +365,10 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
             print(f"AgentRoute shared server: {error}", file=sys.stderr)
             raise SystemExit(1) from error
         argv = [sys.executable, "-m", "agentroute.shared_server", "proxy", str(endpoint)]
-    elif config.shared_server.enabled and interactive_launch(user_args) and not explicit_remote:
+    elif (
+        config.shared_server.enabled and interactive_launch(user_args) and not explicit_remote
+        and "--no-daemon" not in user_args
+    ):
         from .shared_server import SharedServerError, ensure_server, socket_path
 
         try:
