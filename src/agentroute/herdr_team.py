@@ -123,7 +123,7 @@ def member_prompt(data: dict, name: str, role: str, task: str) -> str:
         cwd = member.get("spec", {}).get("cwd", ".")
         launch = (
             f"You may launch ready session items with {cli} dispatch {data['id']} "
-            f"--dir {shlex.quote(cwd)} --max-workers 3. "
+            f"--dir {shlex.quote(cwd)} --max-workers 3 --allow-item ITEM. "
             "Run it after reviewing the packet. "
             "Each launch claims one ready session item for a dedicated worker "
             "and tiles that worker beside you. Operator and subagent items are never dispatched. "
@@ -498,13 +498,14 @@ def packet_command(data: dict, action: str, *args: str, request: dict | None = N
 @team_app.command("dispatch")
 def dispatch(team: str, directory: Path = typer.Option(..., "--dir", exists=True,
              file_okay=False), max_workers: int = typer.Option(3, min=1, max=20),
-             watch: bool = False) -> None:
+             watch: bool = False,
+             allow_item: list[str] = typer.Option(..., "--allow-item")) -> None:
     """Claim ready session outcomes and tile workers; --watch keeps filling free slots."""
     import time
 
     while True:
         try:
-            dispatch_once(team, directory, max_workers)
+            dispatch_once(team, directory, max_workers, set(allow_item))
         except (RuntimeError, OSError, subprocess.SubprocessError) as error:
             if not watch:
                 raise
@@ -514,8 +515,12 @@ def dispatch(team: str, directory: Path = typer.Option(..., "--dir", exists=True
         time.sleep(10)
 
 
-def dispatch_once(team: str, directory: Path, max_workers: int) -> None:
+def dispatch_once(team: str, directory: Path, max_workers: int,
+                  allowed: set[str]) -> None:
     # The team lock serializes dispatchers and persists launch intent before hc run.
+    if not allowed:
+        raise typer.BadParameter("At least one --allow-item is required")
+    allowed = {slug(item) for item in allowed}
     started = []
     with locked(team) as data:
         if not data:
@@ -526,7 +531,7 @@ def dispatch_once(team: str, directory: Path, max_workers: int) -> None:
         for item in packet["items"]:
             if active >= max_workers:
                 break
-            if (item["status"] != "ready" or item.get("assignment")
+            if (item["id"] not in allowed or item["status"] != "ready" or item.get("assignment")
                     or item.get("lane") != "session"
                     or not set(item.get("dependencies", [])) <= done):
                 continue

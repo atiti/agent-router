@@ -1226,8 +1226,8 @@ have not been implemented by this local prototype.
 Bind a team with `ar team init TEAM --namespace markster --packet PACKET --item ITEM`.
 Anchor worker views beside an existing supervisor with
 `ar team anchor TEAM --pane PANE_ID`, then run
-`ar team dispatch TEAM --dir ~/workspace --max-workers 3 --watch` in a dedicated
-terminal. Without `--watch`, dispatch runs once. The cap counts every active claim
+`ar team dispatch TEAM --dir ~/workspace --max-workers 3 --allow-item ITEM --watch` in a dedicated
+terminal. Repeat `--allow-item` for each explicitly selected item. Without `--watch`, dispatch runs once. The cap counts every active claim
 in that packet, including existing sessions. Only ready `session` outcomes with
 completed dependencies are eligible. The canonical tracker enforces namespace
 capacity, coordinator ownership and resource conflicts. Each worker receives its

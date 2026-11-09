@@ -183,7 +183,7 @@ def test_dispatch_skips_blocked_assigned_and_unmet_dependencies(team, monkeypatc
     monkeypatch.setattr(h, 'packet_command', lambda *_: json.dumps({'items': items}))
     core = Mock()
     monkeypatch.setattr(h, 'core', core)
-    h.dispatch_once('demo', tmp_path, 3)
+    h.dispatch_once('demo', tmp_path, 3, {'ready'})
     core.assert_not_called()
 
 
@@ -215,9 +215,9 @@ def test_dispatch_claims_before_launch_and_never_replays_uncertain_launch(team, 
     monkeypatch.setattr(h, 'packet_command', packet)
     monkeypatch.setattr(h, 'core', launch)
     with pytest.raises(subprocess.TimeoutExpired):
-        h.dispatch_once('demo', tmp_path, 3)
+        h.dispatch_once('demo', tmp_path, 3, {'ready'})
     assert h.load('demo')['members']['ready']['launch'] == 'unknown'
-    h.dispatch_once('demo', tmp_path, 3)
+    h.dispatch_once('demo', tmp_path, 3, {'ready'})
     assert actions.count('claim') == 1
 
 
@@ -239,7 +239,7 @@ def test_dispatch_success_verifies_operation_and_tiles(team, monkeypatch, tmp_pa
     view, layout = Mock(), Mock()
     monkeypatch.setattr(h, 'view', view)
     monkeypatch.setattr(h, 'layout', layout)
-    h.dispatch_once('demo', tmp_path, 3)
+    h.dispatch_once('demo', tmp_path, 3, {'ready'})
     operations = [request for action, request in actions if action == 'operation']
     assert [o['state'] for o in operations] == ['prepared', 'verified']
     assert operations[0]['key'] == operations[1]['key']
@@ -271,3 +271,18 @@ def test_only_supervisor_prompt_is_told_how_to_dispatch(team, tmp_path):
     assert "team dispatch demo --dir" in supervisor
     assert "Operator and subagent items are never dispatched" in supervisor
     assert "team dispatch" not in worker
+
+
+def test_dispatch_requires_nonempty_allowlist(team, tmp_path):
+    with pytest.raises(typer.BadParameter, match="allow-item"):
+        h.dispatch_once("demo", tmp_path, 3, set())
+
+
+def test_dispatch_ignores_ready_items_outside_allowlist(team, monkeypatch, tmp_path):
+    item = {"id": "not-selected", "status": "ready", "assignment": None,
+            "lane": "session", "dependencies": []}
+    monkeypatch.setattr(h, "packet_command", lambda *_: json.dumps({"items": [item]}))
+    core = Mock()
+    monkeypatch.setattr(h, "core", core)
+    h.dispatch_once("demo", tmp_path, 3, {"selected"})
+    core.assert_not_called()
