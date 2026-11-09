@@ -1246,7 +1246,8 @@ def install_command(bin_dir: Path | None = typer.Option(None)) -> None:
     for name, body in scripts.items():
         path = directory / name
         marker = "# AgentRoute Zellij cockpit"
-        if path.exists() and marker not in path.read_text():
+        if (path.exists() and marker not in path.read_text()
+                and "# AgentRoute Herdr cockpit" not in path.read_text()):
             raise typer.BadParameter(f"Refusing to replace an unrelated command: {path}")
         temporary = path.with_suffix(f".{os.getpid()}.tmp")
         temporary.write_text(f"#!/bin/sh\n{marker}\nset -eu\n{body}")

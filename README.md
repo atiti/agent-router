@@ -1138,3 +1138,85 @@ agentroute work new  # local work ID when there is no ticket yet
 The CLI provides this lookup; the closed mobile app does not yet expose the work
 links as a separate UI. Raw profiling is optional and bounded; inspect or clean
 storage using `agentroute storage status` and `agentroute storage prune`.
+
+## Herdr session cockpit
+
+Install [Herdr TUI](https://herdr.dev/tui/), then run `agentroute herdr install`
+to select it for `ar` and `focus`. Run `ar` to start/reuse the shared Codex owner
+and attach to the persistent `agentroute` Herdr session. `ar start --background`
+starts it without attaching. Existing Zellij sessions keep running.
+
+- `ar list --namespace markster` lists shared chats without resuming them.
+- `ar open <chat-id-or-title>` opens/resumes a chat or focuses its existing Herdr view.
+- `ar new --dir /path/to/repo --name "Task"` creates a shared chat and opens a tab.
+- `ar focus <chat>` focuses an existing view without starting a client.
+- `ar group set markster /path/to/repo` uses the existing project namespace rules.
+
+Each namespace has a Herdr workspace and each chat a tab. The client reports
+working, idle, and blocked (approval/user input) states from the shared owner to
+Herdr every two seconds. Shared writer guards remain in effect when a chat is
+already open elsewhere. Close a view before moving that chat from Zellij.
+Detach from Herdr with Ctrl+B then Q; the server and terminal processes persist.
+After a reboot, start the cockpit and use `ar open <chat>` to resume saved chats.
+To return the shortcuts to Zellij, run `agentroute zellij install`.
+
+### Local packet supervisor and visible workers
+
+Install [herdr-core](https://herdr.dev/core) (`hc`) alongside Herdr TUI. Their servers
+are separate: AgentRoute bridges core terminals into named TUI panes. Codex is the
+agent; AgentRoute supplies routing and durable packet/session bindings. Supervisor
+and worker are roles, carried as labels rather than agent brands.
+
+```sh
+ar team init delivery --namespace markster --packet my-packet --item my-outcome
+ar team run delivery lead --role supervisor --dir /path/to/worktree --prompt-file /tmp/lead.md
+ar team run delivery reviewer --parent lead --dir /path/to/worktree --prompt-file /tmp/review.md
+ar team layout delivery                    # watch them together in one tab
+ar team focus delivery reviewer
+ar team status delivery --role worker --state working
+ar team send delivery reviewer --message-id followup-1 --text 'Check the error path too.'
+ar team messages delivery
+ar team attach delivery reviewer           # deliberate interaction; Ctrl+\ detaches
+ar team resume delivery lead               # reuse live terminal, or resume saved chat
+```
+
+The canonical `~/workspace` tracker must already contain the explicitly selected
+namespace, packet and item. Claim the outcome before starting a team. The generated
+resume brief is included in each member's first task. The packet coordinator retains
+claim/checkpoint/completion authority; workers return evidence for it to reconcile.
+This local prototype does not automatically claim new outcomes or mark packets done.
+A supervisor can split authorized work by writing bounded worker prompts and using
+`team run` with its own member name as `--parent`. Workers do not delegate further by
+default. Each member registers its native Codex thread ID from inside its first turn.
+
+Members are interactive routed Codex sessions with `--no-daemon`; they inherit their
+own core identity and can report to one another. The team ledger and its isolated
+core state directory are added to each member's writable roots for coordination.
+Workers outlive their parent so supervisor exit does not discard their terminals.
+Use `team resume` explicitly after a process exits: it resumes the registered chat
+without resubmitting its original task. Team state is private local metadata under
+AgentRoute's shared-server state directory; core session names are short to fit Unix
+socket limits. Preserve these directories when moving or recovering the installation.
+
+`team view` opens or reuses a watch-only TUI pane. It forwards output and pane size
+through a private PTY and discards keyboard input, so watching cannot submit a prompt.
+Ctrl+\ closes only that viewer. Use `team attach` from a shell for interactive input;
+closing or detaching a viewer keeps the agent running. `team layout` arranges existing
+views into one tab; `team focus` selects an individual view. Herdr shows the Codex
+identity, member name and live working/idle/blocked status. Filter core directly with
+`HC_SESSION=<team-core-session> hc ls --label namespace=markster --label role=worker`,
+or use `team status` for role/status filters and the exact bound session IDs.
+
+Launches and messages save intent before calling core. Repeating the same member
+reconciles its unique attempt, and repeating a successfully submitted message ID
+returns its receipt. A timeout is recorded as unknown and is never automatically
+resent. Inspect `team messages`, `team status`, the target screen and core's terminal
+list before resolving an uncertain operation. A submitted receipt proves terminal
+submission, not acknowledgment or successful work. Reports remain evidence to review;
+idle/done is never packet completion.
+
+Remote machines are a separate rollout: this adapter launches local agents only.
+Core supports custom `--via` transports, but inventory-managed hosts must use the
+approved `marksterctl`/`privateinfractl` execution path and require a verified
+byte-transparent connection. Remote coordinator writeback and remote acceptance
+have not been implemented by this local prototype.
