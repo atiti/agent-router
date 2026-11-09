@@ -270,6 +270,9 @@ def test_only_supervisor_prompt_is_told_how_to_dispatch(team, tmp_path):
     worker = h.member_prompt(team, "worker", "worker", "task")
     assert "team dispatch demo --dir" in supervisor
     assert "Operator and subagent items are never dispatched" in supervisor
+    assert "select suitable ready items yourself" in supervisor
+    assert "Before any client communication, ask Attila" in supervisor
+    assert "Before any client communication, ask Attila" in worker
     assert "team dispatch" not in worker
 
 

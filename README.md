@@ -1227,7 +1227,8 @@ Bind a team with `ar team init TEAM --namespace markster --packet PACKET --item 
 Anchor worker views beside an existing supervisor with
 `ar team anchor TEAM --pane PANE_ID`, then run
 `ar team dispatch TEAM --dir ~/workspace --max-workers 3 --allow-item ITEM --watch` in a dedicated
-terminal. Repeat `--allow-item` for each explicitly selected item. Without `--watch`, dispatch runs once. The cap counts every active claim
+terminal. The supervisor reviews the packet and selects items, repeating `--allow-item` for each.
+Workers and supervisor ask Attila before any client communication and prepare it for review. Without `--watch`, dispatch runs once. The cap counts every active claim
 in that packet, including existing sessions. Only ready `session` outcomes with
 completed dependencies are eligible. The canonical tracker enforces namespace
 capacity, coordinator ownership and resource conflicts. Each worker receives its
