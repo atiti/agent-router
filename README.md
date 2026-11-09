@@ -1220,3 +1220,29 @@ Core supports custom `--via` transports, but inventory-managed hosts must use th
 approved `marksterctl`/`privateinfractl` execution path and require a verified
 byte-transparent connection. Remote coordinator writeback and remote acceptance
 have not been implemented by this local prototype.
+
+### Automatic Herdr packet workers
+
+Bind a team with `ar team init TEAM --namespace markster --packet PACKET --item ITEM`.
+Anchor worker views beside an existing supervisor with
+`ar team anchor TEAM --pane PANE_ID`, then run
+`ar team dispatch TEAM --dir ~/workspace --max-workers 3 --watch` in a dedicated
+terminal. Without `--watch`, dispatch runs once. The cap counts every active claim
+in that packet, including existing sessions. Only ready `session` outcomes with
+completed dependencies are eligible. The canonical tracker enforces namespace
+capacity, coordinator ownership and resource conflicts. Each worker receives its
+own claim identity and fresh brief and must satisfy ordinary delivery gates.
+
+Launch intent and canonical operations precede process creation. Uncertain claims
+or launches remain recorded and are never automatically replayed. Inspect the
+canonical claim and `hc` attempt label before recovery. Status alone does not
+complete a claim. `ar team status TEAM --role worker --state idle` filters views;
+`ar team attach TEAM MEMBER` opens deliberate interaction.
+
+For an existing shared Codex terminal, `agentroute herdr bridge --thread UUID
+--pane PANE_ID --pid CODEX_PID --session SESSION` reports live shared-server status
+while that exact foreground Codex process remains present. New ordinary Herdr
+launches report Codex identity from the terminal-side launcher; their state remains
+unknown until thread-specific reporting is available. `ar open UUID` already
+provides thread-specific lifecycle reporting. A launcher status outage never
+prevents Codex from starting.

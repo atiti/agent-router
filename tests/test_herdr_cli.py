@@ -57,3 +57,12 @@ def test_install_refuses_unrelated_focus_before_replacing_ar(tmp_path, monkeypat
     with pytest.raises(typer.BadParameter, match="unrelated"):
         h.install_command(tmp_path)
     assert (tmp_path / "ar").read_text().endswith("old")
+
+
+def test_launcher_reports_and_releases_even_when_client_fails(monkeypatch):
+    command = Mock()
+    monkeypatch.setattr(h, 'command', command)
+    monkeypatch.setattr(h.subprocess, 'run', Mock(return_value=SimpleNamespace(returncode=7)))
+    assert h.run_in_pane(['codex-bin'], {'HERDR_PANE_ID': 'w8:p2'}) == 7
+    assert command.call_args_list[0].args[1:3] == ('pane', 'report-agent')
+    assert command.call_args_list[-1].args[1:3] == ('pane', 'release-agent')

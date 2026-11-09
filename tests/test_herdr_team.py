@@ -124,6 +124,7 @@ def test_launch_intent_precedes_effect_and_workers_keep_identity(team, monkeypat
     monkeypatch.setattr(h, "core", launch_core)
     monkeypatch.setattr(h, "own_terminal", lambda *_: {"address": "t1", "state": "live"})
     monkeypatch.setattr(h, "view", lambda *_: None)
+    monkeypatch.setattr(h, "layout", lambda *_: None)
     h.run("demo", "new-worker", tmp_path, prompt, "worker", "worker")
     assert h.load("demo")["members"]["new-worker"]["address"] == "t2"
 
@@ -153,6 +154,7 @@ def test_explicit_resume_preserves_thread_without_replaying_initial_task(team, m
 
     monkeypatch.setattr(h, "core", launch_core)
     monkeypatch.setattr(h, "view", lambda *_: None)
+    monkeypatch.setattr(h, "layout", lambda *_: None)
     h.resume("demo", "worker")
     current = h.load("demo")
     assert current["members"]["worker"]["address"] == "t9"
@@ -168,3 +170,76 @@ def test_uncertain_resume_cannot_create_another_attempt(team, monkeypatch):
     with pytest.raises(typer.BadParameter, match="unresolved"):
         h.resume("demo", "worker")
     assert h.load("demo")["members"]["worker"]["attempt"] == "attempt-one"
+
+
+def test_dispatch_skips_blocked_assigned_and_unmet_dependencies(team, monkeypatch, tmp_path):
+    items = [dict(id='blocked', status='blocked'), dict(id='owned', status='active'),
+             dict(id='dependent', status='ready', dependencies=['missing'])]
+    for item in items:
+        item.setdefault('dependencies', [])
+        item.update(lane='session', assignment=None)
+    monkeypatch.setattr(h, 'packet_command', lambda *_: json.dumps({'items': items}))
+    core = Mock()
+    monkeypatch.setattr(h, 'core', core)
+    h.dispatch_once('demo', tmp_path, 3)
+    core.assert_not_called()
+
+
+def test_dispatch_claims_before_launch_and_never_replays_uncertain_launch(team, monkeypatch,
+                                                                        tmp_path):
+    item = dict(id='ready', status='ready', lane='session', assignment=None, dependencies=[],
+                next_action='review', revision=1, criteria=[{'id': 'acceptance', 'evidence': []}])
+    actions = []
+
+    def packet(data, action, *args, **kwargs):
+        actions.append(action)
+        if action == 'status':
+            return json.dumps({'items': [item]})
+        if action == 'claim':
+            return json.dumps({'revision': 2})
+        if action == 'brief':
+            return 'fresh claimed brief'
+        return '{"revision": 3}'
+
+    def launch(data, *args):
+        assert actions[:4] == ['status', 'claim', 'brief', 'checkpoint']
+        record = h.load('demo')['members']['ready']
+        assert record['packet_binding']['session'].startswith('herdr-')
+        assert 'fresh claimed brief' in args[-1]
+        assert 'You own the canonical claim' in args[-1]
+        assert 'item=ready' in args
+        raise subprocess.TimeoutExpired('hc', 30)
+
+    monkeypatch.setattr(h, 'packet_command', packet)
+    monkeypatch.setattr(h, 'core', launch)
+    with pytest.raises(subprocess.TimeoutExpired):
+        h.dispatch_once('demo', tmp_path, 3)
+    assert h.load('demo')['members']['ready']['launch'] == 'unknown'
+    h.dispatch_once('demo', tmp_path, 3)
+    assert actions.count('claim') == 1
+
+
+def test_dispatch_success_verifies_operation_and_tiles(team, monkeypatch, tmp_path):
+    item = dict(id='ready', status='ready', lane='session', assignment=None, dependencies=[],
+                next_action='review', revision=1, criteria=[])
+    actions = []
+
+    def packet(data, action, *args, **kwargs):
+        actions.append((action, dict(kwargs['request']) if kwargs.get('request') else None))
+        if action == 'status':
+            return json.dumps({'items': [item]})
+        if action == 'brief':
+            return 'resume brief'
+        return json.dumps({'revision': len(actions)})
+
+    monkeypatch.setattr(h, 'packet_command', packet)
+    monkeypatch.setattr(h, 'core', lambda *_: {'address': 't2'})
+    view, layout = Mock(), Mock()
+    monkeypatch.setattr(h, 'view', view)
+    monkeypatch.setattr(h, 'layout', layout)
+    h.dispatch_once('demo', tmp_path, 3)
+    operations = [request for action, request in actions if action == 'operation']
+    assert [o['state'] for o in operations] == ['prepared', 'verified']
+    assert operations[0]['key'] == operations[1]['key']
+    view.assert_called_once_with('demo', 'ready')
+    layout.assert_called_once_with('demo')

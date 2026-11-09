@@ -379,4 +379,8 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
             raise SystemExit(1) from error
         argv[1:1] = client_args
         environment["AGENTROUTE_LOCAL_SERVER_SOCKET"] = str(endpoint)
+    if environment.get("HERDR_ENV") == "1" and environment.get("HERDR_PANE_ID"):
+        from .herdr_cli import run_in_pane
+
+        raise SystemExit(run_in_pane(argv, environment))
     os.execve(argv[0], argv, environment)
