@@ -1253,3 +1253,41 @@ environment overrides when a client launches from Herdr. Restart the client to
 apply updated launcher settings; the shared owner does not need restarting.
 New team workers remove inherited `NO_COLOR` so Codex can detect terminal colors.
 Existing worker processes retain their startup environment until resumed.
+
+### Worker recovery and supervision
+
+`team resume TEAM MEMBER` retains the worker's packet claim, item and saved
+conversation. It never replays the initial task or automatically retries an
+uncertain launch. Terminal-specific view and health state are reset for the new
+attempt; earlier attempts remain in local history.
+
+Messages carry an envelope ID. The addressed recipient runs
+`agentroute herdr team ack TEAM MESSAGE_ID` from its own Codex session to record
+receipt. The transport remains `submitted`; `acknowledgment` is separate and does
+not approve an action or certify task completion. Repeated acknowledgments are
+idempotent. Older messages without envelope timestamps do not acquire retroactive
+receipt deadlines.
+
+Start persistent supervision with `agentroute herdr team monitor-start TEAM`.
+A per-team lock prevents concurrent monitors. It writes its PID, log path, last
+inspection and alerts into team metadata, visible with `team status`. The monitor
+checks every 30 seconds and alerts the supervisor about blocked/exited workers,
+idle workers awaiting follow-up, unacknowledged messages after five minutes, and
+output/checkpoint inactivity after fifteen minutes. Output activity does not hide
+an overdue canonical checkpoint. These deadlines are configurable with
+`team monitor TEAM --watch --notify --ack-after 300 --stale-after 900`.
+A one-shot `team monitor TEAM` reports without sending notifications. Repeated
+alerts have a cooldown; unknown delivery is retained without automatic resend.
+The monitor observes and requests inspection; it never approves, restarts, or
+reassigns work. Its inspection timestamp must itself be checked if it stops.
+
+A completed turn leaves the worker and pane open. For genuine completion, the
+canonical packet must be `done`, unassigned, have evidence for every criterion,
+resolve all seven delivery gates, and contain no pending/unknown operations.
+The monitor then tells the supervisor to arrange a safe worker exit. After the
+worker exits, `team cleanup TEAM MEMBER` previews eligibility;
+`team cleanup TEAM MEMBER --apply` archives the member and closes only its
+verified owned viewer pane. A pane repurposed by the user is preserved for manual
+reconciliation. Conversation history, packet binding, core terminal history and
+message receipts remain available. Cleanup never kills a working or idle worker
+and never treats the terminal's `done` badge as packet completion.

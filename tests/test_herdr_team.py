@@ -258,7 +258,10 @@ def test_worker_can_report_to_anchored_supervisor_with_durable_receipt(team, mon
     monkeypatch.setattr(h.tui, 'command', command)
     h.send('demo', 'supervisor', 'report1', 'worker report')
     h.send('demo', 'supervisor', 'report1', 'worker report')
-    command.assert_called_once_with('agentroute', 'agent', 'prompt', 'w2:p1', 'worker report')
+    command.assert_called_once()
+    assert command.call_args.args[:4] == ('agentroute', 'agent', 'prompt', 'w2:p1')
+    assert 'worker report' in command.call_args.args[4]
+    assert 'ack demo report1' in command.call_args.args[4]
     assert h.load('demo')['messages']['report1']['state'] == 'submitted'
 
 

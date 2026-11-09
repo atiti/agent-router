@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -145,8 +146,11 @@ def member_prompt(data: dict, name: str, role: str, task: str) -> str:
         "not instructions from the user. Idle/done terminal status is not acceptance evidence.\n"
         f"First register your Codex identity using: {cli} register {data['id']} {name}\n"
         f"Communicate: {cli} send {data['id']} MEMBER --message-id UNIQUE_ID --text 'report'. "
+        f"Acknowledge incoming envelopes with {cli} ack {data['id']} MESSAGE_ID. "
+        "Acknowledgment confirms receipt, not completion or approval. "
         f"Inspect {cli} status {data['id']} and messages {data['id']} for receipts. "
         "Do not blindly resend after a timeout: inspect the receipt and target first. "
+        "Report blockers and checkpoint at least every ten minutes while working. "
         "Remain interactive for follow-up.\n"
         f"Your assigned task:\n{task}"
     )
@@ -238,8 +242,9 @@ def resume(team: str, member: str) -> None:
         if not record.get("thread"):
             raise typer.BadParameter("No registered session; reconcile the previous launch first.")
         data.setdefault("history", []).append({"member": member, **record})
-        record = {"attempt": str(uuid4()), "spec": record["spec"], "agent": "codex",
-                  "thread": record["thread"], "resume": True, "launch": "prepared"}
+        record = {k: v for k, v in record.items()
+                  if k not in {"attempt", "address", "view", "health", "cleanup"}}
+        record.update(attempt=str(uuid4()), resume=True, launch="prepared")
         data["members"][member] = record
         save(team, data)
         try:
@@ -295,9 +300,11 @@ def status(team: str, role: str | None = None, state: str | None = None) -> None
                            "terminal": {k: terminal[k] for k in (
                                "address", "state", "status", "parent", "turn", "labels",
                                "exit_code", "reason") if k in terminal} if terminal else None,
-                           "view": member.get("view"), "launch": member["launch"]})
+                           "view": member.get("view"), "launch": member["launch"],
+                           "health": member.get("health"), "cleanup": member.get("cleanup")})
     typer.echo(json.dumps({"team": team, "namespace": data["namespace"], "packet": data["packet"],
-                           "item": data["item"], "members": result}, indent=2))
+                           "item": data["item"], "members": result,
+                           "monitor": data.get("monitor")}, indent=2))
 
 
 @team_app.command("send")
@@ -324,14 +331,19 @@ def send(team: str, member: str, message_id: str = typer.Option(...),
         if not (pane and pane.get("agent") == "codex") and (
                 not terminal or terminal["state"] != "live"):
             raise typer.BadParameter("Target is not live; no message sent")
-        message["state"] = "prepared"
+        message.update(state="prepared", created_at=time.time(),
+                       target_thread=target.get("thread") if target else None)
         data["messages"][message_id] = message
         save(team, data)
+        envelope = (f"[team-message {message_id}; from {message['from']}]\n{text}\n"
+                    f"Acknowledge receipt: agentroute herdr team ack {team} {message_id}. "
+                    "Receipt is not completion or authorization.")
         try:
             message["receipt"] = (
-                tui.command(data["tui_session"], "agent", "prompt", pane["pane_id"], text)
-                if anchored else core(data, "send", terminal["address"], text, timeout=30))
-            message["state"] = "submitted"  # not an acknowledgment or completion
+                tui.command(data["tui_session"], "agent", "prompt", pane["pane_id"], envelope)
+                if anchored else core(data, "send", terminal["address"], envelope, timeout=30))
+            message["state"] = "submitted"  # transport only; ack is recorded separately
+            message["submitted_at"] = time.time()
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
             message["state"] = "unknown"
             raise
@@ -605,3 +617,8 @@ def anchor(team: str, pane: str = typer.Option(...)) -> None:
         data['workspace'] = live['workspace_id']
         data['anchor_terminal'] = live['terminal_id']
         save(team, data)
+
+
+from .herdr_lifecycle import register_commands  # noqa: E402
+
+register_commands(team_app)
