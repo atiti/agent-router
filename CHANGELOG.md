@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.83 — 2026-11-09
 
 - Upgrade the routed Codex fork and matching Code Mode host to upstream 0.167.0.
 
