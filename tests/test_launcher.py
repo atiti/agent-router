@@ -346,3 +346,16 @@ def test_no_daemon_keeps_worker_execution_local_with_shared_owner_enabled(tmp_pa
     assert "--no-daemon" in captured["argv"]
     assert captured["env"]["HC_TERMINAL_ID"] == "t3"
     owner.assert_not_called()
+
+
+def test_herdr_session_args_are_scoped_and_escaped():
+    from agentroute.launcher import herdr_session_args
+
+    assert herdr_session_args({"HERDR_PANE_ID": "w1:p1"}) == []
+    args = herdr_session_args({"HERDR_ENV": "1", "HERDR_PANE_ID": 'w1:p"1',
+                               "HERDR_SESSION": "one", "SECRET": "no"})
+    assert args == ["-c", 'shell_environment_policy.set.HERDR_ENV="1"',
+                    "-c", 'shell_environment_policy.set.HERDR_PANE_ID="w1:p\\"1"',
+                    "-c", 'shell_environment_policy.set.HERDR_SESSION="one"']
+    other = herdr_session_args({"HERDR_ENV": "1", "HERDR_PANE_ID": "w2:p2"})
+    assert "w1:p" not in str(other)
