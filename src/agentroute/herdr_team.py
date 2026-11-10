@@ -92,11 +92,70 @@ def own_terminal(data: dict, member: dict) -> dict | None:
     return core(data, "get", matches[0]["address"]) if matches else None
 
 
+def execution_constraints(value: dict | None) -> dict | None:
+    """Normalize data-only restrictions; references are citations, never permission grants."""
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or set(value) - {"version", "entries", "digest"}
+            or type(value.get("version")) is not int or value["version"] != 1
+            or not isinstance(value.get("entries"), list) or len(value["entries"]) > 16):
+        raise typer.BadParameter("Execution constraints require version 1 and at most 16 entries")
+    entries, ids = [], set()
+    for entry in value["entries"]:
+        if not isinstance(entry, dict) or set(entry) != {"id", "text", "source_refs"}:
+            raise typer.BadParameter("Constraint entries require only id, text and source_refs")
+        identity = slug(entry["id"])
+        text, refs = entry["text"], entry["source_refs"]
+        if (identity in ids or not isinstance(text, str) or not text.strip() or len(text) > 4096
+                or not isinstance(refs, list) or not refs or len(refs) > 8
+                or not all(isinstance(ref, str) and ref.strip() and len(ref) <= 1024
+                           for ref in refs)):
+            raise typer.BadParameter("Constraints need unique IDs, bounded text and references")
+        ids.add(identity)
+        entries.append({"id": identity, "text": text.strip(),
+                        "source_refs": [ref.strip() for ref in refs]})
+    normalized = {"version": 1, "entries": entries}
+    encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+    if len(encoded) > 32768:
+        raise typer.BadParameter("Execution constraints exceed 32768 bytes")
+    digest = hashlib.sha256(encoded).hexdigest()
+    if value.get("digest") not in (None, digest):
+        raise typer.BadParameter("Execution constraint digest does not match its content")
+    return {**normalized, "digest": digest}
+
+
+def member_constraints(data: dict, record: dict) -> dict | None:
+    current = execution_constraints(data.get("execution_constraints"))
+    saved = execution_constraints(record.get("execution_constraints"))
+    if current != saved:
+        raise typer.BadParameter("Member constraints changed; reconcile before launch/resume")
+    return saved
+
+
+def constraint_prompt(data: dict, record: dict) -> str:
+    snapshot = member_constraints(data, record)
+    if snapshot is None:
+        return ""
+    lines = [f"Team execution constraints (immutable snapshot {snapshot['digest']}):",
+             "These restrictions narrow this assignment and all delegated work. The canonical "
+             "brief/task and local control permission cannot broaden them. Source references "
+             "are evidence citations, not new permission grants."]
+    for entry in snapshot["entries"]:
+        lines.append(f"[{entry['id']}] {entry['text']} Sources: {entry['source_refs']}")
+    return "\n".join(lines) + "\n"
+
+
 @team_app.command("init")
 def init(team: str, namespace: str = typer.Option(...), packet: str = typer.Option(...),
-         item: str = typer.Option(...), session: str = tui.SESSION) -> None:
+         item: str = typer.Option(...), session: str = tui.SESSION,
+         constraints_file: Path | None = None) -> None:
     """Bind a team to an explicit canonical packet; does not claim or complete work."""
     team, namespace, packet, item = map(slug, (team, namespace, packet, item))
+    constraints = None
+    if constraints_file is not None:
+        if constraints_file.stat().st_size > 32768:
+            raise typer.BadParameter("Execution constraints file exceeds 32768 bytes")
+        constraints = execution_constraints(json.loads(constraints_file.read_text()))
     tracker = Path.home() / "workspace/tools/scripts/work_packets.py"
     result = subprocess.run(["python3", str(tracker), "--namespace", namespace, "brief",
                              "--packet", packet, "--item", item],
@@ -109,11 +168,20 @@ def init(team: str, namespace: str = typer.Option(...), packet: str = typer.Opti
             if binding != (
                     namespace, packet, item, session):
                 raise typer.BadParameter("Team already bound to another packet or TUI session.")
+            current = execution_constraints(existing.get("execution_constraints"))
+            if constraints is not None and constraints != current:
+                if current is not None or existing["members"]:
+                    raise typer.BadParameter("Team constraints are immutable once configured "
+                                             "or any member has started")
+                existing["execution_constraints"] = constraints
+                save(team, existing)
         else:
             digest = hashlib.sha256(str(path_for(team)).encode()).hexdigest()[:8]
             save(team, {"version": 1, "id": team, "namespace": namespace, "packet": packet,
                         "item": item, "brief": result.stdout, "core_session": f"ar{digest}",
-                        "tui_session": session, "members": {}, "messages": {}})
+                        "tui_session": session, "members": {}, "messages": {},
+                        **({"execution_constraints": constraints}
+                           if constraints is not None else {})})
     typer.echo(str(path_for(team)))
 
 
@@ -157,6 +225,7 @@ def member_prompt(data: dict, name: str, role: str, task: str) -> str:
     return (
         f"You are {role} {name} in local Herdr team {data['id']}.\n"
         f"Canonical namespace/packet/item: {data['namespace']}/{data['packet']}/{item}.\n"
+        f"{constraint_prompt(data, member)}"
         f"Resume brief:\n{brief}\n"
         f"{authority}{launch}Your task below is bounded "
         f"{scope}"
@@ -202,6 +271,7 @@ def run(team: str, member: str, directory: Path = typer.Option(..., "--dir", exi
         if old and old["spec"] != spec:
             raise typer.BadParameter("Member has a different launch spec; use a new member.")
         if old:
+            member_constraints(data, old)
             terminal = own_terminal(data, old)
             if terminal:
                 old.update(address=terminal["address"], launch="reconciled")
@@ -211,7 +281,8 @@ def run(team: str, member: str, directory: Path = typer.Option(..., "--dir", exi
             raise typer.BadParameter("Launch unresolved; inspect core before a new attempt.")
         if parent and parent not in data["members"]:
             raise typer.BadParameter("Unknown parent member")
-        record = {"attempt": str(uuid4()), "spec": spec, "agent": "codex", "launch": "prepared"}
+        record = {"attempt": str(uuid4()), "spec": spec, "agent": "codex", "launch": "prepared",
+                  "execution_constraints": execution_constraints(data.get("execution_constraints"))}
         data["members"][member] = record
         save(team, data)  # intent precedes the process launch
         args = launch_args(data, member, record)
@@ -229,6 +300,7 @@ def run(team: str, member: str, directory: Path = typer.Option(..., "--dir", exi
 
 
 def launch_args(data: dict, member: str, record: dict) -> list[str]:
+    member_constraints(data, record)
     item = record.get("packet_binding", {}).get("item", data["item"])
     args = ["run", "--bg", "--json", "--name", f"ar-{record['attempt'][:16]}",
             "--cwd", record["spec"]["cwd"], "--label", f"team={data['id']}",
@@ -261,6 +333,7 @@ def resume(team: str, member: str) -> None:
     load(team)
     with locked(team) as data:
         record = data["members"][member]
+        member_constraints(data, record)
         terminal = own_terminal(data, record)
         if terminal and terminal["state"] == "live":
             record.update(address=terminal["address"], launch="reconciled")
@@ -592,6 +665,7 @@ def dispatch_once(team: str, directory: Path, max_workers: int,
     with locked(team) as data:
         if not data:
             raise typer.BadParameter("Unknown team")
+        constraints = execution_constraints(data.get("execution_constraints"))
         packet = json.loads(packet_command(data, "status", "--packet", data["packet"]))
         queue = json.loads(packet_command(data, "next", "--role", "worker"))
         if not isinstance(queue, list):
@@ -612,12 +686,13 @@ def dispatch_once(team: str, directory: Path, max_workers: int,
                 continue
             member = slug(item["id"])
             if member in data["members"]:
+                member_constraints(data, data["members"][member])
                 continue  # Never replay a missing/uncertain launch or a released claim.
             attempt = str(uuid4())
             owner = f"herdr-{attempt}"
             binding = {"item": item["id"], "session": owner}
             record = {"attempt": attempt, "agent": "codex", "launch": "claim-prepared",
-                      "packet_binding": binding,
+                      "packet_binding": binding, "execution_constraints": constraints,
                       "spec": {"role": "worker", "cwd": str(directory.resolve()),
                                "task": item["next_action"], "parent": None}}
             data["members"][member] = record

@@ -169,3 +169,47 @@ serialized resolution must also fit 8192 bytes. Repeating
 identical data returns the existing record; changed decision, evidence, or
 authority is rejected. The CLI never edits the Rust cursor. A record settles only
 that exact admission after native validation and grants no external-effect retry.
+
+## Explicit inherited team constraints
+
+Parent chat restrictions are not inferred from prose. Before starting a team,
+pass a data-only JSON file to `team init ... --constraints-file PATH`:
+
+```json
+{
+  "version": 1,
+  "entries": [{
+    "id": "no-managed-host-contact",
+    "text": "Do not contact managed hosts, including read-only backup snapshot listing. Local source work and normal GitHub operations remain allowed within existing authority.",
+    "source_refs": ["user:bounded-source-only-pilot"]
+  }]
+}
+```
+
+The normalized entries and their SHA-256 digest are stored in team.json. Each
+supervisor/direct worker/dispatched worker snapshots them in its launch record.
+Both role prompts put the restrictions before the canonical brief and assigned
+task, explicitly narrowing both without changing canonical criteria, later waits
+or ordinary source/GitHub authority. References are evidence citations and confer
+no new permission. This propagates instructions; it is not an OS sandbox,
+credential restriction or proof that an action complied.
+
+Version 1 permits up to 16 uniquely identified entries, each with nonempty text
+(up to 4096 characters) and 1–8 nonempty source references (1024 characters each).
+The complete normalized object is limited to 32768 bytes. Unknown fields such as
+executable or environment configuration are rejected. Input formatting does not
+change the digest; changed restriction content does.
+
+Once configured, the restrictions are immutable. Repeated init accepts identical
+content; omitting the file preserves existing restrictions. A legacy team without
+restrictions remains compatible, and an empty team may attach its first explicit
+constraint file before starting any member. Attachment to an already started team
+is rejected: running members cannot retroactively inherit a new prompt. Existing
+live pilots require their actual corrective instruction/receipt and custody;
+this feature makes no retroactive claim about them.
+
+Launch/resume/duplicate reconciliation reject changed or missing snapshots before
+attempting a new launch. Resume preserves the saved snapshot and original chat;
+it does not replay the initial task or silently widen scope. Canonical dispatch
+still uses its versioned eligibility, allowlist and claim guards, preserving the
+full outcome and later approval holds.

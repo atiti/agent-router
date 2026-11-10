@@ -7,6 +7,22 @@ import typer
 
 from agentroute import herdr_team as h
 
+HOST_CONSTRAINT = {
+    "version": 1, "entries": [{"id": "no-managed-host-contact",
+        "text": "Do not contact managed hosts, including read-only backup snapshot listing. "
+                "Local source work and normal GitHub operations remain allowed "
+                "within existing authority.",
+        "source_refs": ["user:bounded-source-only-pilot"]}]}
+
+
+def constrained_fixture_team(policy):
+    data = h.load("demo")
+    data["execution_constraints"] = policy
+    for record in data["members"].values():
+        record["execution_constraints"] = policy
+    h.save("demo", data)
+    return data
+
 
 @pytest.fixture
 def team(tmp_path, monkeypatch):
@@ -309,6 +325,8 @@ def test_dispatch_ignores_ready_items_outside_allowlist(team, monkeypatch, tmp_p
 
 def test_dispatch_uses_worker_step_eligibility_for_blocked_outcome_and_preserves_hold(
         team, monkeypatch, tmp_path):
+    policy = h.execution_constraints(HOST_CONSTRAINT)
+    constrained_fixture_team(policy)
     hold = {"state": "awaiting_user", "reason": "Later production release",
             "owner": "Attila", "resume_when": "Exact deployment approval",
             "question_ref": "delivered-question"}
@@ -346,6 +364,10 @@ def test_dispatch_uses_worker_step_eligibility_for_blocked_outcome_and_preserves
     h.dispatch_once("demo", tmp_path, 3, {"prepare"})
     h.dispatch_once("demo", tmp_path, 3, {"prepare"})
     launch.assert_called_once()
+    launched_prompt = launch.call_args.args[-1]
+    assert HOST_CONSTRAINT["entries"][0]["text"] in launched_prompt
+    assert policy["digest"] in launched_prompt
+    assert h.load("demo")["members"]["prepare"]["execution_constraints"] == policy
     assert sum(action == "claim" for action, _ in calls) == 1
     assert item["outcome_wait"] == hold and item["status"] == "blocked"
     assert h.load("demo")["members"]["prepare"]["packet_binding"]["item"] == "prepare"
@@ -377,3 +399,90 @@ def test_dispatch_does_not_launch_coordinator_waits_or_unknown_reconciliation(te
     h.dispatch_once("demo", tmp_path, 3, {"coordinator", "wait", "unknown"})
     launch.assert_not_called()
     assert calls == ["status", "next"]
+
+
+@pytest.mark.parametrize("role", ["supervisor", "worker"])
+def test_direct_launch_inherits_team_restriction_before_broader_task(
+        team, monkeypatch, tmp_path, role):
+    policy = h.execution_constraints(HOST_CONSTRAINT)
+    constrained_fixture_team(policy)
+    prompt = tmp_path / "broader.txt"
+    prompt.write_text("Review source and list managed-host backup snapshots")
+    monkeypatch.setattr(h, "view", lambda *_: None)
+    monkeypatch.setattr(h, "layout", lambda *_: None)
+    launch = Mock(return_value={"address": "t-restricted"})
+    monkeypatch.setattr(h, "core", launch)
+    h.run("demo", "bounded", tmp_path, prompt, role, None)
+    message = launch.call_args.args[-1]
+    restriction = HOST_CONSTRAINT["entries"][0]["text"]
+    assert restriction in message
+    assert message.index(restriction) < message.index("Resume brief:")
+    assert "brief/task and local control permission cannot broaden them" in message
+    assert h.load("demo")["members"]["bounded"]["execution_constraints"] == policy
+    assert "Local source work and normal GitHub operations remain allowed" in message
+    with h.locked("demo") as data:
+        data["members"]["bounded"]["execution_constraints"] = None
+        h.save("demo", data)
+    launch.reset_mock()
+    with pytest.raises(typer.BadParameter, match="constraints changed"):
+        h.run("demo", "bounded", tmp_path, prompt, role, None)
+    launch.assert_not_called()
+
+
+def test_explicit_constraints_init_is_immutable_and_old_teams_are_compatible(tmp_path, monkeypatch):
+    monkeypatch.setattr(h, "state_dir", lambda: tmp_path / "state")
+    monkeypatch.setattr(h.subprocess, "run", Mock(return_value=Mock(returncode=0, stdout="brief")))
+    source = tmp_path / "constraints.json"
+    source.write_text(json.dumps(HOST_CONSTRAINT))
+    h.init("fresh", "markster", "packet", "item", "test", source)
+    saved = h.load("fresh")["execution_constraints"]
+    h.init("fresh", "markster", "packet", "item", "test", source)
+    h.init("fresh", "markster", "packet", "item", "test", None)
+    assert h.load("fresh")["execution_constraints"] == saved
+    changed = json.loads(source.read_text())
+    changed["entries"][0]["text"] = "Broader scope"
+    source.write_text(json.dumps(changed))
+    with pytest.raises(typer.BadParameter, match="immutable"):
+        h.init("fresh", "markster", "packet", "item", "test", source)
+    h.init("legacy", "markster", "packet", "item", "test", None)
+    assert "execution_constraints" not in h.load("legacy")
+    with h.locked("legacy") as data:
+        data["members"]["existing"] = {"spec": {"role": "worker"}}
+        h.save("legacy", data)
+    with pytest.raises(typer.BadParameter, match="member has started"):
+        h.init("legacy", "markster", "packet", "item", "test", source)
+    assert "execution_constraints" not in h.load("legacy")
+
+
+def test_constraint_resume_preserves_snapshot_and_rejects_mismatch_before_core(team, monkeypatch):
+    policy = h.execution_constraints(HOST_CONSTRAINT)
+    data = constrained_fixture_team(policy)
+    data["members"]["worker"].update(thread="11111111-1111-1111-1111-111111111111",
+        spec={"role": "worker", "cwd": "/tmp", "task": "source", "parent": None})
+    h.save("demo", data)
+    monkeypatch.setattr(h, "own_terminal", lambda *_: {"state": "finished"})
+    monkeypatch.setattr(h, "view", lambda *_: None)
+    core = Mock(return_value={"address": "t-resumed"})
+    monkeypatch.setattr(h, "core", core)
+    h.resume("demo", "worker")
+    assert h.load("demo")["members"]["worker"]["execution_constraints"] == policy
+    with h.locked("demo") as data:
+        data["members"]["worker"]["execution_constraints"] = None
+        h.save("demo", data)
+    core.reset_mock()
+    with pytest.raises(typer.BadParameter, match="constraints changed"):
+        h.resume("demo", "worker")
+    core.assert_not_called()
+
+
+def test_constraints_are_bounded_data_refs_and_digest_validated():
+    policy = h.execution_constraints(HOST_CONSTRAINT)
+    assert h.execution_constraints(json.loads(json.dumps(policy))) == policy
+    bad = {**policy, "digest": "wrong"}
+    with pytest.raises(typer.BadParameter, match="digest"):
+        h.execution_constraints(bad)
+    with pytest.raises(typer.BadParameter):
+        h.execution_constraints({**HOST_CONSTRAINT, "env": {"BYPASS": "true"}})
+    bad = {"version": 1, "entries": [{"id": "deny", "text": " ", "source_refs": ["source"]}]}
+    with pytest.raises(typer.BadParameter):
+        h.execution_constraints(bad)
