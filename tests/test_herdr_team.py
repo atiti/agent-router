@@ -486,3 +486,17 @@ def test_constraints_are_bounded_data_refs_and_digest_validated():
     bad = {"version": 1, "entries": [{"id": "deny", "text": " ", "source_refs": ["source"]}]}
     with pytest.raises(typer.BadParameter):
         h.execution_constraints(bad)
+
+
+@pytest.mark.parametrize("identity", [None, 1, True, [], {}])
+def test_constraint_ids_reject_non_text_without_typeerror(identity):
+    value = {"version": 1, "entries": [{"id": identity, "text": "No host contact",
+                                        "source_refs": ["user:scope"]}]}
+    with pytest.raises(typer.BadParameter):
+        h.execution_constraints(value)
+
+
+def test_explicit_constraints_cannot_be_empty():
+    with pytest.raises(typer.BadParameter, match="1 to 16"):
+        h.execution_constraints({"version": 1, "entries": []})
+    assert h.execution_constraints(None) is None  # Legacy absence remains compatible.

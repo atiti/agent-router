@@ -98,11 +98,12 @@ def execution_constraints(value: dict | None) -> dict | None:
         return None
     if (not isinstance(value, dict) or set(value) - {"version", "entries", "digest"}
             or type(value.get("version")) is not int or value["version"] != 1
-            or not isinstance(value.get("entries"), list) or len(value["entries"]) > 16):
-        raise typer.BadParameter("Execution constraints require version 1 and at most 16 entries")
+            or not isinstance(value.get("entries"), list) or not 1 <= len(value["entries"]) <= 16):
+        raise typer.BadParameter("Execution constraints require version 1 and 1 to 16 entries")
     entries, ids = [], set()
     for entry in value["entries"]:
-        if not isinstance(entry, dict) or set(entry) != {"id", "text", "source_refs"}:
+        if (not isinstance(entry, dict) or set(entry) != {"id", "text", "source_refs"}
+                or not isinstance(entry["id"], str)):
             raise typer.BadParameter("Constraint entries require only id, text and source_refs")
         identity = slug(entry["id"])
         text, refs = entry["text"], entry["source_refs"]

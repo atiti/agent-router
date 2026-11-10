@@ -194,7 +194,7 @@ or ordinary source/GitHub authority. References are evidence citations and confe
 no new permission. This propagates instructions; it is not an OS sandbox,
 credential restriction or proof that an action complied.
 
-Version 1 permits up to 16 uniquely identified entries, each with nonempty text
+Version 1 requires 1–16 uniquely identified entries, each with nonempty text
 (up to 4096 characters) and 1–8 nonempty source references (1024 characters each).
 The complete normalized object is limited to 32768 bytes. Unknown fields such as
 executable or environment configuration are rejected. Input formatting does not
