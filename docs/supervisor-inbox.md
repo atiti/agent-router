@@ -213,3 +213,53 @@ attempting a new launch. Resume preserves the saved snapshot and original chat;
 it does not replay the initial task or silently widen scope. Canonical dispatch
 still uses its versioned eligibility, allowlist and claim guards, preserving the
 full outcome and later approval holds.
+
+## Retiring a completed step while its outcome stays held
+
+Full-outcome `cleanup` retains its existing completion/gate requirements. A
+separate `retire-step` path retires only a bounded, safely handed-off worker:
+
+```sh
+agentroute herdr team retire-step TEAM MEMBER --step STEP_ID \
+  --expected-revision CANONICAL_REVISION --evidence HANDOFF_RECEIPT
+# Inspect the dry-run identity, remaining wait and intent fingerprint, then:
+agentroute herdr team retire-step TEAM MEMBER --step STEP_ID \
+  --expected-revision CANONICAL_REVISION --evidence HANDOFF_RECEIPT --apply
+```
+
+The canonical item must be blocked/ready, have the requested done step and exact
+revision, no assignment, no prepared/unknown operations, and a last release from
+exactly that worker's packet-binding session. Its own-attempt core terminal must
+exist and be finished. Active/reclaimed owners, missing/live terminals and changed
+step/revision/attempt/view identities are rejected. Evidence is an inspected
+handoff receipt, not new authority or an assertion that the entire outcome passed.
+
+Apply persists a `cleanup` intent with `kind: step_handoff`,
+`outcome_complete: false`, original canonical revision/status/step/release/wait,
+immutable terminal/view identity, fingerprint and evidence. It re-reads canonical
+state before any close. Only the exact saved viewer terminal/pane and foreground
+viewer PID can be closed; a replacement viewer is refused. An independent pane
+readback must confirm the exact target and pane are absent before archiving.
+A viewer already absent needs no close. Codex chat, core history, binding and
+messages remain intact; canonical status, criteria, gates and outcome waits are
+never modified. Archived workers disappear from active monitoring/projection;
+this does not classify the remaining outcome as complete.
+
+A timeout, error or ambiguous post-close readback leaves an uncertain intent and
+blocks ordinary retries. After actual inspection, reconcile only that intent:
+
+```sh
+agentroute herdr team retire-step TEAM MEMBER --step STEP_ID \
+  --expected-revision ORIGINAL_REVISION --evidence INSPECTED_ABSENCE_RECEIPT \
+  --reconcile-closed --intent-fingerprint ORIGINAL_FINGERPRINT --apply
+```
+
+Reconciliation requires the same original attempt/terminal/view, unchanged
+canonical handoff snapshot and revision, a still-finished core terminal, explicit
+inspection evidence, and absence of both the original viewer terminal and pane
+ID (a reused pane is rejected). It sends no close or retry; it finalizes only the
+original metadata with an inspected reconciliation receipt. If ownership,
+canonical handoff or target absence cannot be established, retain the hold and
+return to the responsible owner; do not hand-edit records to manufacture proof.
+Repeated archived requests match the original retirement kind, requested
+step/revision and immutable identity before returning their historical receipt.

@@ -114,6 +114,122 @@ def cleanup(team: str, member: str, apply: bool = False) -> None:
         # Core terminal history, Codex conversation and message receipts are retained.
 
 
+def step_handoff_item(h, data: dict, record: dict, step: str, revision: int) -> dict:
+    binding = record.get("packet_binding", {})
+    packet = json.loads(h.packet_command(data, "status", "--packet", data["packet"]))
+    item = next((i for i in packet["items"] if i["id"] == binding.get("item")), None)
+    if (record.get("spec", {}).get("role") != "worker" or not binding.get("session")
+            or not record.get("thread") or not item or item.get("revision") != revision
+            or item.get("status") not in {"blocked", "ready"} or item.get("assignment")
+            or (item.get("next_step") or {}).get("id") != step
+            or item["next_step"].get("state") != "done"
+            or (item.get("last_release") or {}).get("session") != binding["session"]
+            or any(op.get("state") in {"prepared", "unknown"}
+                   for op in item.get("operations", {}).values())):
+        raise typer.BadParameter("Done step and exact released owner/revision required; "
+                                 "active owners or uncertain effects cannot retire")
+    return item
+
+
+def retire_step(team: str, member: str, step: str = typer.Option(...),
+                expected_revision: int = typer.Option(...),
+                evidence: list[str] = typer.Option(...), apply: bool = False,
+                reconcile_closed: bool = False, intent_fingerprint: str | None = None) -> None:
+    """Retire a released done-step worker, preserving the incomplete canonical outcome."""
+    if not evidence or not all(isinstance(ref, str) and ref.strip() for ref in evidence):
+        raise typer.BadParameter("Explicit handoff/inspection evidence is required")
+    h = api()
+    with h.locked(team) as data:
+        record = data["members"][member]
+        terminal = h.own_terminal(data, record)
+        if not terminal or terminal.get("state") != "finished":
+            raise typer.BadParameter("The exact worker terminal must exist and be finished")
+        view = {key: record.get("view", {}).get(key) for key in ("pane_id", "terminal_id", "pid")}
+        identity = {"team": team, "member": member, "attempt": record.get("attempt"),
+                    "thread": record.get("thread"), "binding": record.get("packet_binding"),
+                    "terminal": terminal["address"], "view": view,
+                    "step": step, "item_revision": expected_revision}
+        fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        previous = record.get("cleanup")
+        if previous:
+            if (previous.get("kind") != "step_handoff"
+                    or previous.get("intent_fingerprint") != fingerprint
+                    or previous.get("identity") != identity):
+                raise typer.BadParameter(
+                    "Retirement identity changed: kind/step/revision/attempt/view")
+            if intent_fingerprint not in (None, fingerprint):
+                raise typer.BadParameter("Intent fingerprint mismatch")
+            if previous["state"] == "archived":
+                typer.echo(json.dumps(previous))
+                return
+            if not reconcile_closed:
+                raise typer.BadParameter("Retirement outcome unresolved; inspect then use "
+                                         "--reconcile-closed with the exact intent fingerprint")
+        elif reconcile_closed:
+            raise typer.BadParameter("No original retirement intent to reconcile")
+        item = step_handoff_item(h, data, record, step, expected_revision)
+        if previous and any(previous.get(saved) != item.get(current) for saved, current in (
+                ("step", "next_step"), ("last_release", "last_release"),
+                ("outcome_wait", "outcome_wait"), ("outcome_status", "status"))):
+            raise typer.BadParameter("Original canonical handoff snapshot changed")
+        panes = h.tui.panes(data["tui_session"])
+        pane = next((p for p in panes if view["terminal_id"]
+                     and p["terminal_id"] == view["terminal_id"]), None)
+        if reconcile_closed:
+            if intent_fingerprint != fingerprint:
+                raise typer.BadParameter("Explicit original intent fingerprint is required")
+            if pane or any(p.get("pane_id") == view["pane_id"] for p in panes if view["pane_id"]):
+                raise typer.BadParameter("Original viewer is still present or its pane was reused")
+        elif pane:
+            if pane.get("pane_id") != view["pane_id"] or not view["pid"]:
+                raise typer.BadParameter("Viewer ownership changed; retain it for reconciliation")
+            info = h.tui.command(data["tui_session"], "pane", "process-info", "--pane",
+                                 pane["pane_id"])["process_info"]
+            if not any(process["pid"] == view["pid"]
+                       for process in info.get("foreground_processes", [])):
+                raise typer.BadParameter("Viewer ownership changed; retain it for reconciliation")
+        elif any(p.get("pane_id") == view["pane_id"] for p in panes if view["pane_id"]):
+            raise typer.BadParameter("Original viewer pane was reused")
+        if not apply:
+            typer.echo(json.dumps({"eligible": True, "kind": "step_handoff",
+                                   "outcome_complete": False, "identity": identity,
+                                   "intent_fingerprint": fingerprint, "step": item["next_step"],
+                                   "last_release": item["last_release"],
+                                   "outcome_wait": item.get("outcome_wait"),
+                                   "reconcile_closed": reconcile_closed}))
+            return
+        # Fresh canonical read before the sole external effect; never mutate that item.
+        fresh = step_handoff_item(h, data, record, step, expected_revision)
+        if fresh != item:
+            raise typer.BadParameter("Canonical handoff changed during inspection")
+        if not previous:
+            record["cleanup"] = {"state": "prepared", "kind": "step_handoff",
+                "outcome_complete": False, "at": time.time(), "identity": identity,
+                "intent_fingerprint": fingerprint, "item_revision": item["revision"],
+                "step": item["next_step"], "last_release": item["last_release"],
+                "outcome_status": item["status"], "outcome_wait": item.get("outcome_wait"),
+                "evidence": evidence}
+            h.save(team, data)
+        try:
+            if pane and not reconcile_closed:
+                h.tui.command(data["tui_session"], "pane", "close", pane["pane_id"])
+            remaining = h.tui.panes(data["tui_session"])
+            if any((view["terminal_id"] and p.get("terminal_id") == view["terminal_id"])
+                   or (view["pane_id"] and p.get("pane_id") == view["pane_id"])
+                   for p in remaining):
+                raise RuntimeError("Viewer close not independently verified; target remains/reused")
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+            record["cleanup"].update(state="unknown", error=str(error))
+            h.save(team, data)
+            raise
+        if reconcile_closed:
+            record["cleanup"]["reconciliation"] = {"at": time.time(), "evidence": evidence,
+                "intent_fingerprint": fingerprint, "observed": "exact viewer/pane absent"}
+        record["cleanup"].update(state="archived", verified_at=time.time())
+        h.save(team, data)
+        typer.echo(json.dumps(record["cleanup"]))
+
+
 def poll(team: str, stale_after: int, ack_after: int, now: float | None = None) -> dict:
     h = api()
     now = time.time() if now is None else now
@@ -289,3 +405,4 @@ def register_commands(app: typer.Typer) -> None:
     app.command("monitor")(monitor)
     app.command("monitor-start")(start_monitor)
     app.command("cleanup")(cleanup)
+    app.command("retire-step")(retire_step)

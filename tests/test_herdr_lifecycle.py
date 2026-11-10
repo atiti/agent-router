@@ -242,3 +242,160 @@ def test_blocked_supervisor_holds_notifications_but_inspection_continues(team, m
     send.assert_called_once()
     assert send.call_args.kwargs["notify"] is False
     assert h.load("demo")["members"]["worker"]["health"]["checked_at"]
+
+
+def released_step_item():
+    return {"id": "owned", "status": "blocked", "revision": 182, "assignment": None,
+            "next_step": {"id": "source", "state": "done", "kind": "work"},
+            "last_release": {"session": "owner", "at": "2026-11-11T00:00:00Z"},
+            "outcome_wait": {"state": "waiting_external", "reason": "Later recovery approval"},
+            "operations": {}, "criteria": [{"id": "full", "evidence": []}], "gates": {}}
+
+
+def test_step_retirement_dry_run_and_partial_archive_preserve_full_hold(team, monkeypatch):
+    item = released_step_item()
+    before = json.loads(json.dumps(item))
+    setup_poll(monkeypatch, item, {"state": "finished", "address": "t1"})
+    monkeypatch.setattr(h.tui, "panes", lambda _: [])
+    command = Mock()
+    monkeypatch.setattr(h.tui, "command", command)
+    lifecycle.retire_step("demo", "worker", "source", 182, ["merged-source-receipt"], False)
+    assert "cleanup" not in h.load("demo")["members"]["worker"]
+    lifecycle.retire_step("demo", "worker", "source", 182, ["merged-source-receipt"], True)
+    saved = h.load("demo")["members"]["worker"]
+    assert saved["thread"] == team["members"]["worker"]["thread"]
+    assert saved["packet_binding"] == team["members"]["worker"]["packet_binding"]
+    assert saved["cleanup"]["kind"] == "step_handoff"
+    assert saved["cleanup"]["outcome_complete"] is False
+    assert saved["cleanup"]["step"] == item["next_step"]
+    assert saved["cleanup"]["last_release"] == item["last_release"]
+    assert saved["cleanup"]["outcome_wait"] == item["outcome_wait"]
+    assert saved["cleanup"]["state"] == "archived" and item == before
+    command.assert_not_called()
+    lifecycle.retire_step("demo", "worker", "source", 182, ["same receipt"], True)
+    with pytest.raises(typer.BadParameter, match="identity changed"):
+        lifecycle.retire_step("demo", "worker", "other-step", 182, ["receipt"], True)
+    with pytest.raises(typer.BadParameter, match="identity changed"):
+        lifecycle.retire_step("demo", "worker", "source", 183, ["receipt"], True)
+
+
+@pytest.mark.parametrize("defect", ["active", "assigned", "owner", "step", "revision", "pending",
+                                    "live", "missing", "full-cleanup", "attempt"])
+def test_step_retirement_rejects_unreleased_or_mismatched_state(team, monkeypatch, defect):
+    item = released_step_item()
+    terminal = {"state": "finished", "address": "t1"}
+    if defect == "active":
+        item["status"] = "active"
+    if defect == "assigned":
+        item["assignment"] = {"session": "reclaimed-owner"}
+    if defect == "owner":
+        item["last_release"]["session"] = "different-owner"
+    if defect == "step":
+        item["next_step"]["state"] = "active"
+    if defect == "revision":
+        item["revision"] = 183
+    if defect == "pending":
+        item["operations"] = {"held": {"state": "unknown"}}
+    if defect == "live":
+        terminal["state"] = "live"
+    if defect == "missing":
+        terminal = None
+    setup_poll(monkeypatch, item, terminal)
+    monkeypatch.setattr(h.tui, "panes", lambda _: [])
+    command = Mock()
+    monkeypatch.setattr(h.tui, "command", command)
+    if defect == "full-cleanup":
+        with h.locked("demo") as data:
+            data["members"]["worker"]["cleanup"] = {"kind": "outcome", "state": "archived"}
+            h.save("demo", data)
+    if defect == "attempt":
+        lifecycle.retire_step("demo", "worker", "source", 182, ["receipt"], True)
+        with h.locked("demo") as data:
+            data["members"]["worker"]["attempt"] = "new-attempt"
+            h.save("demo", data)
+    with pytest.raises(typer.BadParameter):
+        lifecycle.retire_step("demo", "worker", "source", 182, ["receipt"], True)
+    command.assert_not_called()
+
+
+def test_step_retirement_unknown_close_requires_inspected_exact_absence(team, monkeypatch):
+    with h.locked("demo") as data:
+        data["members"]["worker"]["view"] = {"terminal_id": "view", "pane_id": "w1:p1", "pid": 99}
+        h.save("demo", data)
+    setup_poll(monkeypatch, released_step_item(), {"state": "finished", "address": "t1"})
+    panes = [{"terminal_id": "view", "pane_id": "w1:p1"}]
+    monkeypatch.setattr(h.tui, "panes", lambda _: list(panes))
+    command = Mock(side_effect=[{"process_info": {"foreground_processes": [{"pid": 99}]}},
+                                RuntimeError("close response lost")])
+    monkeypatch.setattr(h.tui, "command", command)
+    with pytest.raises(RuntimeError, match="lost"):
+        lifecycle.retire_step("demo", "worker", "source", 182, ["source receipt"], True)
+    original = h.load("demo")["members"]["worker"]["cleanup"]
+    assert original["state"] == "unknown"
+    fingerprint = original["intent_fingerprint"]
+    command.reset_mock()
+    with pytest.raises(typer.BadParameter, match="unresolved"):
+        lifecycle.retire_step("demo", "worker", "source", 182, ["receipt"], True)
+    with pytest.raises(typer.BadParameter, match="still present"):
+        lifecycle.retire_step("demo", "worker", "source", 182, ["inspection"],
+                              True, True, fingerprint)
+    panes[:] = [{"terminal_id": "replacement", "pane_id": "w1:p1"}]
+    with pytest.raises(typer.BadParameter, match="reused"):
+        lifecycle.retire_step("demo", "worker", "source", 182, ["inspection"],
+                              True, True, fingerprint)
+    panes.clear()
+    with pytest.raises(typer.BadParameter, match="fingerprint"):
+        lifecycle.retire_step("demo", "worker", "source", 182, ["inspection"], True, True, "wrong")
+    lifecycle.retire_step("demo", "worker", "source", 182, ["verified absent"],
+                          True, True, fingerprint)
+    saved = h.load("demo")["members"]["worker"]["cleanup"]
+    assert saved["state"] == "archived" and saved["outcome_complete"] is False
+    assert saved["identity"] == original["identity"] and saved["step"] == original["step"]
+    assert saved["reconciliation"]["evidence"] == ["verified absent"]
+    command.assert_not_called()
+
+
+@pytest.mark.parametrize("close_verified", [True, False])
+def test_step_retirement_closes_only_owned_viewer_and_requires_absence(team, monkeypatch,
+                                                                      close_verified):
+    with h.locked("demo") as data:
+        data["members"]["worker"]["view"] = {"terminal_id": "view", "pane_id": "w1:p1", "pid": 99}
+        h.save("demo", data)
+    setup_poll(monkeypatch, released_step_item(), {"state": "finished", "address": "t1"})
+    panes = [{"terminal_id": "view", "pane_id": "w1:p1"}]
+    monkeypatch.setattr(h.tui, "panes", lambda _: list(panes))
+    calls = []
+
+    def command(session, *args):
+        calls.append(args)
+        if args[1] == "process-info":
+            return {"process_info": {"foreground_processes": [{"pid": 99}]}}
+        assert args == ("pane", "close", "w1:p1")
+        assert h.load("demo")["members"]["worker"]["cleanup"]["state"] == "prepared"
+        if close_verified:
+            panes.clear()
+        return {}
+
+    monkeypatch.setattr(h.tui, "command", command)
+    if close_verified:
+        lifecycle.retire_step("demo", "worker", "source", 182, ["handoff receipt"], True)
+    else:
+        with pytest.raises(RuntimeError, match="not independently verified"):
+            lifecycle.retire_step("demo", "worker", "source", 182, ["handoff receipt"], True)
+    saved = h.load("demo")["members"]["worker"]["cleanup"]
+    assert saved["state"] == ("archived" if close_verified else "unknown")
+    assert calls == [("pane", "process-info", "--pane", "w1:p1"), ("pane", "close", "w1:p1")]
+
+
+def test_step_retirement_refuses_replaced_viewer_before_intent(team, monkeypatch):
+    with h.locked("demo") as data:
+        data["members"]["worker"]["view"] = {"terminal_id": "view", "pane_id": "w1:p1", "pid": 99}
+        h.save("demo", data)
+    setup_poll(monkeypatch, released_step_item(), {"state": "finished", "address": "t1"})
+    monkeypatch.setattr(h.tui, "panes", lambda _: [{"terminal_id": "view", "pane_id": "w1:p1"}])
+    command = Mock(return_value={"process_info": {"foreground_processes": [{"pid": 88}]}})
+    monkeypatch.setattr(h.tui, "command", command)
+    with pytest.raises(typer.BadParameter, match="ownership changed"):
+        lifecycle.retire_step("demo", "worker", "source", 182, ["receipt"], True)
+    assert "cleanup" not in h.load("demo")["members"]["worker"]
+    assert command.call_count == 1
