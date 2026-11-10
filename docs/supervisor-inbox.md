@@ -105,6 +105,16 @@ queued children with `source: canonical-scheduler` and `reconcile_required: true
 until a fresh scheduler read confirms an actual claim or readiness change. Recording
 a disposition does not prove dispatch and cannot close this obligation. Readiness
 grants no action authority; later outcome holds remain in canonical state.
+For explicitly structured `waiting_external`/`waiting_worker` step or outcome
+waits, a timezone-aware canonical `item.next_review` produces one durable
+`deadline_review` event when due. It is stable per item/deadline and never infers
+waits from legacy blocked prose. Future reviews, user waits, and terminal items
+remain quiet. The reminder directs inspection of the existing exact watch/source
+and recorded resume condition, preserving all effect/approval holds; it never
+starts another watch, job, retry or external action. A changed/resolved canonical
+wait or deadline supersedes the old review; the owner records the next review
+through the existing packet lifecycle.
+
 Eligibility epochs advance only when a previously absent step becomes a candidate
 again. Event and queued-child identities include that epoch, so a consumer that
 misses the claim/release interval still observes a fresh decision instead of an

@@ -585,3 +585,58 @@ def test_admission_resolution_rejects_unrelated_unresolved_and_insecure_cursor(t
     inbox.atomic_write(cursor, value)
     inbox.admission_reconcile("demo", "boss", "active-token", "interrupted",
                               ["receipt"], "exact-user-decision")
+
+
+def test_only_due_explicit_external_worker_waits_create_stable_review_events(team):
+    wait = {"state": "waiting_external", "reason": "Provider check queued",
+            "owner": "existing-worker",
+            "resume_when": "Exact known watch completes", "event_ref": "watch-handle-1"}
+    items = {
+        "due": {"id": "due", "status": "blocked", "next_review": "1970-01-01T00:00:02+00:00",
+                "next_step": {"state": "waiting_external", "wait": wait}},
+        "future": {"id": "future", "status": "blocked", "next_review": "2099-01-01T00:00:00+00:00",
+                   "outcome_wait": wait},
+        "legacy": {"id": "legacy", "status": "blocked", "next_review": "1970-01-01T00:00:01Z"},
+        "user": {"id": "user", "status": "blocked", "next_review": "1970-01-01T00:00:01Z",
+                 "outcome_wait": {**wait, "state": "awaiting_user"}},
+        "done": {"id": "done", "status": "done", "next_review": "1970-01-01T00:00:01Z",
+                 "outcome_wait": wait}}
+    with h.locked("demo") as data:
+        inbox.sync_due_reviews(data, items, 1)
+        h.save("demo", data)
+    assert not snapshot()["events"]
+    with h.locked("demo") as data:
+        inbox.sync_due_reviews(data, items, 2)
+        h.save("demo", data)
+    first = snapshot()["events"][0]
+    assert len(snapshot()["events"]) == 1 and first["kind"] == "deadline_review"
+    assert "no effect" in first["message"]
+    inbox.disposition("demo", first["id"], "resolved", "Reviewed exact watch",
+                      ["watch-receipt"], "boss")
+    with h.locked("demo") as data:
+        inbox.sync_due_reviews(data, items, 3)
+        h.save("demo", data)
+    assert not snapshot()["events"]  # No repeated inference for the same reviewed deadline.
+    items["due"]["next_review"] = "1970-01-01T00:00:04Z"
+    items["due"]["next_step"]["state"] = "waiting_worker"
+    with h.locked("demo") as data:
+        inbox.sync_due_reviews(data, items, 4)
+        h.save("demo", data)
+    assert snapshot()["events"][0]["id"] != first["id"]
+
+
+def test_malformed_explicit_review_deadline_has_one_stable_diagnostic(team):
+    items = {"invalid": {"id": "invalid", "status": "blocked", "next_review": "not-a-date",
+                         "outcome_wait": {"state": "waiting_external"}},
+             "naive": {"id": "naive", "status": "blocked", "next_review": "2026-01-01T00:00:00",
+                       "next_step": {"state": "waiting_worker", "wait": {}}}}
+    with h.locked("demo") as data:
+        inbox.sync_due_reviews(data, items, 1)
+        h.save("demo", data)
+    initial = snapshot()
+    assert len(initial["events"]) == 2
+    assert all(entry["kind"] == "deadline_diagnostic" for entry in initial["events"])
+    with h.locked("demo") as data:
+        inbox.sync_due_reviews(data, items, 2)
+        h.save("demo", data)
+    assert snapshot()["generation"] == initial["generation"]

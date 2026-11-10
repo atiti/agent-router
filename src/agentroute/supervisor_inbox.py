@@ -12,6 +12,7 @@ import os
 import re
 import stat
 import time
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -343,6 +344,68 @@ def inbox_resume(team: str, event_id: str, evidence: list[str] = typer.Option(..
         typer.echo(json.dumps(entry))
 
 
+def sync_due_reviews(data: dict, items: dict[str, dict], now: float) -> None:
+    """Wake only registered structured external/worker waits at their exact review deadline."""
+    current = set()
+    targets = list(supervisors(data))
+    if not targets and is_supervisor(data, "supervisor"):
+        targets = ["supervisor"]
+    for item_id, item in items.items():
+        if item.get("status") in {"done", "cancelled"}:
+            continue
+        step = item.get("next_step") or {}
+        outcome = item.get("outcome_wait") or {}
+        waits = []
+        if step.get("state") in {"waiting_external", "waiting_worker"}:
+            waits.append({**(step.get("wait") or {}), "state": step["state"]})
+        if outcome.get("state") in {"waiting_external", "waiting_worker"}:
+            waits.append(outcome)
+        deadline = item.get("next_review")
+        if not waits or deadline is None:
+            continue
+        diagnostic = None
+        try:
+            stamp = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                diagnostic = "Registered review deadline has no timezone"
+            elif stamp.timestamp() > now:
+                continue
+        except (AttributeError, TypeError, ValueError):
+            diagnostic = "Registered review deadline is malformed"
+        identity = json.dumps([data["packet"], item_id, deadline]).encode()
+        digest = hashlib.sha256(identity).hexdigest()[:24]
+        for target in targets:
+            target_digest = hashlib.sha256(target.encode()).hexdigest()[:8]
+            key = f"deadline-{digest}-{target_digest}"
+            current.add(key)
+            if key in data["messages"]:
+                continue
+            message = {"member": target, "from": "packet-deadline-review", "state": "queued",
+                       "created_at": now, "review": {"item": item_id, "deadline": deadline,
+                                                     "waits": waits,
+                                                     "revision": item.get("revision")},
+                       "text": f"Registered review for {data['packet']}/{item_id} at {deadline}. "
+                               "Inspect the existing exact watch/source and recorded "
+                               "resume condition; prefer an active watch handle. Record findings "
+                               "and the next review/owner action. This reminder grants no effect, "
+                               "retry, restart, dispatch or approval authority."}
+            if diagnostic:
+                message["text"] = diagnostic + "; correct the explicit canonical deadline. "
+            message["coordination_event"] = event(key, message, data["id"])
+            message["coordination_event"]["kind"] = (
+                "deadline_diagnostic" if diagnostic else "deadline_review")
+            data["messages"][key] = message
+    for key, message in data["messages"].items():
+        entry = message.get("coordination_event")
+        if (entry and entry["kind"] in {"deadline_review", "deadline_diagnostic"}
+                and key not in current
+                and entry["state"] != "dispositioned"):
+            entry.update(state="dispositioned", actionable=False, disposition={
+                "action": "superseded", "reason": "Canonical review deadline/wait changed",
+                "owner": "packet-deadline-review", "next_action": "Inspect current registered wait",
+                "evidence": [f"Canonical packet observed at {now}"]})
+
+
 def sync_packet_steps(data: dict, items: dict[str, dict], now: float) -> None:
     """Project canonical executable steps, never prose/status guesses or dispatch authority."""
     h = api()
@@ -397,6 +460,7 @@ def sync_packet_steps(data: dict, items: dict[str, dict], now: float) -> None:
                 message["coordination_event"] = event(key, message, data["id"])
                 message["coordination_event"]["kind"] = "packet_step"
                 data["messages"][key] = message
+    sync_due_reviews(data, items, now)
     data["packet_readiness"] = {"observed_at": now, "candidates": candidate_items,
                                 "epochs": epochs}
     for key, message in data["messages"].items():
