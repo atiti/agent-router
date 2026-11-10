@@ -151,7 +151,9 @@ def publish(data: dict) -> None:
                              "source": source, "reconcile_required": reconcile,
                              "observation_ttl_seconds": 120})
         for candidate in data.get("packet_readiness", {}).get("candidates", []):
-            children.append({"id": f"packet:{data['packet']}/{candidate}", "state": "queued",
+            children.append({"id": f"packet:{data['packet']}/{candidate}@"
+                      f"{data['packet_readiness'].get('epochs', {}).get(candidate, 0)}",
+                "state": "queued",
                 "observed_at": data["packet_readiness"].get("observed_at"),
                 "source": "canonical-scheduler", "reconcile_required": True,
                 "observation_ttl_seconds": 120})
@@ -350,6 +352,9 @@ def sync_packet_steps(data: dict, items: dict[str, dict], now: float) -> None:
                     if (item.get("next_step") or {}).get("state") == "coordination_required")
     current = set()
     candidate_items = []
+    previous_readiness = data.get("packet_readiness", {})
+    prior_candidates = set(previous_readiness.get("candidates", []))
+    epochs = dict(previous_readiness.get("epochs", {}))
     targets = [name for name in supervisors(data)]
     if not targets and is_supervisor(data, "supervisor"):
         targets = ["supervisor"]
@@ -367,10 +372,13 @@ def sync_packet_steps(data: dict, items: dict[str, dict], now: float) -> None:
                 or execution.get("coordination_required")):
             continue
         candidate_items.append(item_id)
+        if item_id not in prior_candidates:
+            epochs[item_id] = epochs.get(item_id, 0) + 1
         step = execution.get("next_step") or {}
         action = (step.get("action")
                   or items.get(item_id, {}).get("next_action", "Inspect execution"))
-        identity = {"item": item_id, "next_step": step, "action": action,
+        identity = {"item": item_id, "epoch": epochs.get(item_id, 0),
+                    "next_step": step, "action": action,
                     "assignment": execution.get("assignment")}
         digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
         for target in targets:
@@ -387,7 +395,8 @@ def sync_packet_steps(data: dict, items: dict[str, dict], now: float) -> None:
                 message["coordination_event"] = event(key, message, data["id"])
                 message["coordination_event"]["kind"] = "packet_step"
                 data["messages"][key] = message
-    data["packet_readiness"] = {"observed_at": now, "candidates": candidate_items}
+    data["packet_readiness"] = {"observed_at": now, "candidates": candidate_items,
+                                "epochs": epochs}
     for key, message in data["messages"].items():
         entry = message.get("coordination_event")
         if (entry and entry["kind"] == "packet_step" and key not in current

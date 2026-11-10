@@ -434,7 +434,7 @@ def test_execution_ready_preparation_and_assigned_coordination_feed_stop_guard(t
     assert len(value["events"]) == 2
     assert all(entry["kind"] == "packet_step" for entry in value["events"])
     assert {child["id"] for child in value["live_children"] if child["state"] == "queued"} == {
-        "packet:packet/prep", "packet:packet/overlap"}
+        "packet:packet/prep@1", "packet:packet/overlap@1"}
     messages = h.load("demo")["messages"]
     assert any(message["execution"]["outcome_wait"]["question_ref"] == "delivered-question"
                for message in messages.values())
@@ -486,3 +486,43 @@ def test_legacy_ack_command_handles_native_queued_event_without_faking_transport
     assert message["state"] == "queued"
     assert message["coordination_event"]["state"] == "acked"
     assert snapshot()["events"][0]["actionable"]
+
+
+def test_reeligible_packet_step_has_fresh_epoch_even_when_consumer_misses_gap(team, monkeypatch):
+    ready = True
+    item = {"id": "prep", "next_action": "Finish authorized source"}
+
+    def packet_command(data, action, *args):
+        if action == "next":
+            return json.dumps([{"packet": "packet", "id": "prep"}] if ready else [])
+        return json.dumps({"protocol_version": 1, "namespace": "markster", "packet": "packet",
+            "item": "prep", "revision": 1, "actionable": True, "claimable": True,
+            "coordination_required": False, "assignment": None,
+            "next_step": {"id": "source", "action": "Finish authorized source", "state": "ready"}})
+
+    monkeypatch.setattr(h, "packet_command", packet_command)
+    with h.locked("demo") as data:
+        inbox.sync_packet_steps(data, {"prep": item}, 1)
+        h.save("demo", data)
+    first = snapshot()["events"][0]["id"]
+    child = snapshot()["live_children"][-1]["id"]
+    inbox.disposition("demo", first, "owner_handoff", "Existing worker retained",
+                      ["existing-worker receipt"], "boss", None, None,
+                      "existing-worker", "Finish claimed source")
+    ready = False  # Claimed by a worker, not yet observed by the native consumer.
+    with h.locked("demo") as data:
+        inbox.sync_packet_steps(data, {"prep": item}, 2)
+        h.save("demo", data)
+    ready = True  # Released for a fresh coordination decision, with the same step identity.
+    with h.locked("demo") as data:
+        inbox.sync_packet_steps(data, {"prep": item}, 3)
+        h.save("demo", data)
+    second = snapshot()["events"][0]["id"]
+    assert first != second
+    assert child != snapshot()["live_children"][-1]["id"]
+    assert h.load("demo")["packet_readiness"]["epochs"]["prep"] == 2
+    with h.locked("demo") as data:
+        inbox.sync_packet_steps(data, {"prep": item}, 4)
+        h.save("demo", data)
+    assert [entry["id"] for entry in snapshot()["events"]] == [second]
+    assert h.load("demo")["packet_readiness"]["epochs"]["prep"] == 2

@@ -105,6 +105,10 @@ queued children with `source: canonical-scheduler` and `reconcile_required: true
 until a fresh scheduler read confirms an actual claim or readiness change. Recording
 a disposition does not prove dispatch and cannot close this obligation. Readiness
 grants no action authority; later outcome holds remain in canonical state.
+Eligibility epochs advance only when a previously absent step becomes a candidate
+again. Event and queued-child identities include that epoch, so a consumer that
+misses the claim/release interval still observes a fresh decision instead of an
+old disposition; repeated unchanged polls remain deduplicated.
 
 Registered supervisors retain a minimum automatic SMART route and their ongoing
 objective during short coordination turns. Explicit user routes and policy caps
