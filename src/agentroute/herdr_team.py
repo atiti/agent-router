@@ -583,12 +583,20 @@ def dispatch_once(team: str, directory: Path, max_workers: int,
         if not data:
             raise typer.BadParameter("Unknown team")
         packet = json.loads(packet_command(data, "status", "--packet", data["packet"]))
+        queue = json.loads(packet_command(data, "next", "--role", "worker"))
+        if not isinstance(queue, list):
+            raise typer.BadParameter("Worker queue must use the versioned canonical list contract")
+        eligible = {row["id"]: row for row in queue if row.get("packet") == data["packet"]
+                    and row.get("protocol_version") == 1}
         active = sum(1 for i in packet["items"] if i.get("assignment"))
         done = {i["id"] for i in packet["items"] if i["status"] == "done"}
         for item in packet["items"]:
             if active >= max_workers:
                 break
-            if (item["id"] not in allowed or item["status"] != "ready" or item.get("assignment")
+            candidate = eligible.get(item["id"])
+            if (item["id"] not in allowed or not candidate or item.get("assignment")
+                    or candidate.get("revision") != item["revision"]
+                    or (item.get("next_step") or {}).get("kind") == "reconcile_operation"
                     or item.get("lane") != "session"
                     or not set(item.get("dependencies", [])) <= done):
                 continue
@@ -616,7 +624,7 @@ def dispatch_once(team: str, directory: Path, max_workers: int,
                     "goal_review": {"advances_goal": True,
                                     "remaining_criteria": [c["id"] for c in item["criteria"]
                                                            if not c.get("evidence")],
-                                    "reason": "Dedicated worker advances this ready outcome."}}))
+                                    "reason": "Dedicated worker advances this executable step."}}))
                 operation = {"expected_revision": checkpoint["revision"], "session": owner,
                              "key": f"launch-{attempt}", "state": "prepared",
                              "fingerprint": attempt, "target": f"{team}/{member}",

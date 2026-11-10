@@ -181,7 +181,8 @@ def test_dispatch_skips_blocked_assigned_and_unmet_dependencies(team, monkeypatc
     for item in items:
         item.setdefault('dependencies', [])
         item.update(lane='session', assignment=None)
-    monkeypatch.setattr(h, 'packet_command', lambda *_: json.dumps({'items': items}))
+    monkeypatch.setattr(h, 'packet_command', lambda _, action, *args: json.dumps(
+        [] if action == 'next' else {'items': items}))
     core = Mock()
     monkeypatch.setattr(h, 'core', core)
     h.dispatch_once('demo', tmp_path, 3, {'ready'})
@@ -198,6 +199,9 @@ def test_dispatch_claims_before_launch_and_never_replays_uncertain_launch(team, 
         actions.append(action)
         if action == 'status':
             return json.dumps({'items': [item]})
+        if action == 'next':
+            assert args == ('--role', 'worker')
+            return json.dumps([{'protocol_version': 1, 'packet': 'packet', **item}])
         if action == 'claim':
             return json.dumps({'revision': 2})
         if action == 'brief':
@@ -205,7 +209,7 @@ def test_dispatch_claims_before_launch_and_never_replays_uncertain_launch(team, 
         return '{"revision": 3}'
 
     def launch(data, *args):
-        assert actions[:4] == ['status', 'claim', 'brief', 'checkpoint']
+        assert actions[:5] == ['status', 'next', 'claim', 'brief', 'checkpoint']
         record = h.load('demo')['members']['ready']
         assert record['packet_binding']['session'].startswith('herdr-')
         assert 'fresh claimed brief' in args[-1]
@@ -231,6 +235,9 @@ def test_dispatch_success_verifies_operation_and_tiles(team, monkeypatch, tmp_pa
         actions.append((action, dict(kwargs['request']) if kwargs.get('request') else None))
         if action == 'status':
             return json.dumps({'items': [item]})
+        if action == 'next':
+            assert args == ('--role', 'worker')
+            return json.dumps([{'protocol_version': 1, 'packet': 'packet', **item}])
         if action == 'brief':
             return 'resume brief'
         return json.dumps({'revision': len(actions)})
@@ -285,8 +292,81 @@ def test_dispatch_requires_nonempty_allowlist(team, tmp_path):
 def test_dispatch_ignores_ready_items_outside_allowlist(team, monkeypatch, tmp_path):
     item = {"id": "not-selected", "status": "ready", "assignment": None,
             "lane": "session", "dependencies": []}
-    monkeypatch.setattr(h, "packet_command", lambda *_: json.dumps({"items": [item]}))
+    monkeypatch.setattr(h, "packet_command", lambda _, action, *args: json.dumps(
+        [] if action == "next" else {"items": [item]}))
     core = Mock()
     monkeypatch.setattr(h, "core", core)
     h.dispatch_once("demo", tmp_path, 3, {"selected"})
     core.assert_not_called()
+
+
+def test_dispatch_uses_worker_step_eligibility_for_blocked_outcome_and_preserves_hold(
+        team, monkeypatch, tmp_path):
+    hold = {"state": "awaiting_user", "reason": "Later production release",
+            "owner": "Attila", "resume_when": "Exact deployment approval",
+            "question_ref": "delivered-question"}
+    item = {"id": "prepare", "status": "blocked", "lane": "session", "assignment": None,
+            "dependencies": [], "next_action": "Prepare authorized source", "revision": 1,
+            "criteria": [{"id": "source", "evidence": []}, {"id": "release", "evidence": []}],
+            "outcome_wait": dict(hold), "next_step": {"id": "prepare-source", "state": "ready",
+            "kind": "work", "action": "Prepare authorized source",
+            "authority": ["source-approval"]}}
+    calls = []
+
+    def packet(data, action, *args, **kwargs):
+        calls.append((action, kwargs.get("request")))
+        if action == "status":
+            return json.dumps({"items": [item]})
+        if action == "next":
+            assert args == ("--role", "worker")
+            return json.dumps([{"protocol_version": 1, "packet": "packet", **item}])
+        request = kwargs.get("request") or {}
+        if action == "claim":
+            assert request == {"expected_revision": 1, "session": request["session"]}
+            assert item["outcome_wait"] == hold
+            item.update(revision=2, assignment={"session": request["session"]})
+            return json.dumps(item)
+        if action == "brief":
+            return "Execute authorized source only; later deployment remains awaiting_user."
+        item["revision"] += 1
+        return json.dumps(item)
+
+    monkeypatch.setattr(h, "packet_command", packet)
+    launch = Mock(return_value={"address": "t-source"})
+    monkeypatch.setattr(h, "core", launch)
+    monkeypatch.setattr(h, "view", lambda *_: None)
+    monkeypatch.setattr(h, "layout", lambda *_: None)
+    h.dispatch_once("demo", tmp_path, 3, {"prepare"})
+    h.dispatch_once("demo", tmp_path, 3, {"prepare"})
+    launch.assert_called_once()
+    assert sum(action == "claim" for action, _ in calls) == 1
+    assert item["outcome_wait"] == hold and item["status"] == "blocked"
+    assert h.load("demo")["members"]["prepare"]["packet_binding"]["item"] == "prepare"
+    checkpoints = [request for action, request in calls if action == "checkpoint"]
+    assert checkpoints[0]["goal_review"]["remaining_criteria"] == ["source", "release"]
+
+
+def test_dispatch_does_not_launch_coordinator_waits_or_unknown_reconciliation(team, monkeypatch,
+                                                                            tmp_path):
+    common = {"status": "blocked", "lane": "session", "assignment": None, "dependencies": [],
+              "revision": 1, "criteria": [], "next_action": "Inspect"}
+    items = [{**common, "id": "coordinator", "next_step": {"state": "coordination_required"}},
+             {**common, "id": "wait", "next_step": {"state": "waiting_external"}},
+             {**common, "id": "unknown", "next_step": {"state": "ready",
+                 "kind": "reconcile_operation", "operation_key": "unknown-op"}}]
+    calls = []
+
+    def packet(data, action, *args, **kwargs):
+        calls.append(action)
+        if action == "status":
+            return json.dumps({"items": items})
+        assert action == "next" and args == ("--role", "worker")
+        return json.dumps([{"protocol_version": 1, "packet": "packet", **items[-1]},
+                           {"protocol_version": 1, "packet": "other-packet", **items[0]}])
+
+    monkeypatch.setattr(h, "packet_command", packet)
+    launch = Mock()
+    monkeypatch.setattr(h, "core", launch)
+    h.dispatch_once("demo", tmp_path, 3, {"coordinator", "wait", "unknown"})
+    launch.assert_not_called()
+    assert calls == ["status", "next"]

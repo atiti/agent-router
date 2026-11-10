@@ -96,6 +96,14 @@ without creating repeated inference. Archived children are retained only in hist
 no pending event is dropped. The native notice directs the model to the complete
 ledger when a summary is insufficient. These bounds do not limit durable history.
 
+Worker dispatch uses canonical `next --role worker` eligibility, joins the
+full bound packet item at the same revision, and preserves lane, ownership,
+dependency, allowlist, and revision-checked claim guards. Thus a blocked outcome
+can dispatch an authorized ready preparation step while its later outcome hold
+survives. Coordinator-only steps and waits cannot dispatch workers. Automatic
+new-worker launch excludes `reconcile_operation` steps: an existing owner/operator
+reconciles unknown effects through the supported workflow before any new launch.
+
 The monitor also reads canonical `next --role coordinator`, filters the exact
 packet, and verifies each candidate with the v1 `execution` contract. Unassigned
 claimable steps and explicitly coordination-required assigned items produce stable
