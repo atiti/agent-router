@@ -189,6 +189,20 @@ def interactive_launch(user_args: Sequence[str]) -> bool:
     return _launch_command(user_args) in {"start", "resume", "fork"}
 
 
+def herdr_session_args(environment: dict[str, str]) -> list[str]:
+    """Pass only pane identity to a shared owner's per-thread shell policy."""
+    if environment.get("HERDR_ENV") != "1" or not environment.get("HERDR_PANE_ID"):
+        return []
+    names = ("HERDR_ENV", "HERDR_PANE_ID", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID",
+             "HERDR_SESSION", "HERDR_SOCKET_PATH")
+    args = []
+    for name in names:
+        if name in environment:
+            value = json.dumps(environment[name])
+            args.extend(["-c", f"shell_environment_policy.set.{name}={value}"])
+    return args
+
+
 def shared_client_args(user_args: Sequence[str], endpoint: Path) -> list[str]:
     if _has_config_override(user_args, "model_provider") or any(
         arg in {"--oss", "-p", "--profile"} or arg.startswith("--profile=") for arg in user_args
@@ -377,6 +391,10 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
         except (OSError, SharedServerError) as error:
             print(f"AgentRoute shared server: {error}", file=sys.stderr)
             raise SystemExit(1) from error
-        argv[1:1] = client_args
+        argv[1:1] = [*client_args, *herdr_session_args(environment)]
         environment["AGENTROUTE_LOCAL_SERVER_SOCKET"] = str(endpoint)
+    if environment.get("HERDR_ENV") == "1" and environment.get("HERDR_PANE_ID"):
+        from .herdr_cli import run_in_pane
+
+        raise SystemExit(run_in_pane(argv, environment))
     os.execve(argv[0], argv, environment)

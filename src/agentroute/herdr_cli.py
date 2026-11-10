@@ -25,8 +25,9 @@ SESSION = "agentroute"
 SOURCE = "agentroute"
 
 
-def command(session: str, *args: str) -> dict:
-    result = subprocess.run([chats.executable("herdr"), "--session", session, *args],
+def command(session: str | None, *args: str) -> dict:
+    result = subprocess.run([chats.executable("herdr"),
+                             *(["--session", session] if session else []), *args],
                             capture_output=True, text=True, timeout=15)
     if result.returncode:
         raise SharedServerError(result.stderr.strip() or result.stdout.strip())
@@ -251,3 +252,52 @@ def install_command(bin_dir: Path | None = typer.Option(None)) -> None:
         temporary.chmod(0o755)
         temporary.replace(path)
     typer.echo(f"Installed Herdr ar/focus commands in {directory}")
+
+
+@herdr_app.command("bridge")
+def bridge(thread: str = typer.Option(...), pane: str = typer.Option(...),
+           pid: int = typer.Option(..., min=1), session: str = SESSION) -> None:
+    """Report an existing shared client; verify its foreground PID on every poll."""
+    thread = str(UUID(thread))
+    identity = command(session, "pane", "get", pane)["pane"]
+    terminal = identity["terminal_id"]
+    source = f"agentroute-bridge-{pid}"
+    try:
+        while True:
+            live = next((p for p in panes(session) if p["terminal_id"] == terminal), None)
+            if not live:
+                break
+            pane = live["pane_id"]
+            info = command(session, "pane", "process-info", "--pane", pane)["process_info"]
+            processes = info.get("foreground_processes", [])
+            if not any(p["pid"] == pid and p.get("name") == "codex-bin" for p in processes):
+                break
+            with RpcClient(socket_path(), timeout=5) as client:
+                current = client.request("thread/read", {"threadId": thread})["thread"]
+            state = {"RUNNING": "working", "APPROVAL": "blocked", "INPUT": "blocked",
+                     "READY": "idle"}.get(chats.status(current), "unknown")
+            command(session, "pane", "report-agent", pane, "--source", source,
+                    "--agent", "codex", "--state", state, "--agent-session-id", thread)
+            time.sleep(2)
+    finally:
+        command(session, "pane", "release-agent", pane, "--source", source, "--agent", "codex")
+
+
+def run_in_pane(argv: list[str], environment: dict[str, str]) -> int:
+    """Keep pane reporting beside the client, outside the shared app-server owner."""
+    pane = environment["HERDR_PANE_ID"]
+    session = environment.get("HERDR_SESSION")
+    source = f"agentroute-launch-{os.getpid()}"
+    try:
+        command(session, "pane", "report-agent", pane, "--source", source,
+                "--agent", "codex", "--state", "unknown")
+    except chats.ERRORS:
+        pass  # Missing Herdr status must never prevent an interactive launch.
+    try:
+        return subprocess.run(argv, env=environment, check=False).returncode
+    finally:
+        try:
+            command(session, "pane", "release-agent", pane, "--source", source,
+                    "--agent", "codex")
+        except chats.ERRORS:
+            pass

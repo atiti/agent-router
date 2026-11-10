@@ -1,4 +1,4 @@
-"""Exercise the real PTY boundary: output and resize pass, human input doesn't."""
+"""Exercise the real PTY boundary: output, resize and keyboard input pass."""
 import errno
 import fcntl
 import os
@@ -11,7 +11,7 @@ import termios
 import time
 
 
-def test_watch_resizes_and_drops_human_keyboard_input(tmp_path):
+def test_watch_resizes_and_forwards_human_keyboard_input(tmp_path):
     child = tmp_path / "child.py"
     child.write_text('''import os, select, time, tty
 
@@ -19,7 +19,7 @@ tty.setraw(0)
 print("INITIAL", os.get_terminal_size(0).columns, flush=True)
 time.sleep(.6)
 ready, _, _ = select.select([0], [], [], .1)
-print("INPUT_BLOCKED" if not ready else "INPUT_LEAKED", flush=True)
+print("INPUT " + os.read(0, 100).decode().strip() if ready else "INPUT_MISSING", flush=True)
 print("RESIZED", os.get_terminal_size(0).columns, flush=True)
 ''')
     runner = tmp_path / "runner.py"
@@ -51,14 +51,14 @@ raise SystemExit(watch([sys.executable, sys.argv[1]], dict(os.environ)))
                     break
                 output += chunk
             if b"INITIAL 80" in output and not changed:
-                os.write(master, b"human input must not reach the worker\n")
+                os.write(master, b"hello worker\n")
                 fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
                 changed = True
             if process.poll() is not None:
                 break
         assert process.wait(timeout=2) == 0
-        assert b"INPUT_BLOCKED" in output
-        assert b"INPUT_LEAKED" not in output
+        assert b"INPUT hello worker" in output
+        assert b"INPUT_MISSING" not in output
         assert b"RESIZED 100" in output
     finally:
         os.close(master)

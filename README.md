@@ -1198,9 +1198,9 @@ without resubmitting its original task. Team state is private local metadata und
 AgentRoute's shared-server state directory; core session names are short to fit Unix
 socket limits. Preserve these directories when moving or recovering the installation.
 
-`team view` opens or reuses a watch-only TUI pane. It forwards output and pane size
-through a private PTY and discards keyboard input, so watching cannot submit a prompt.
-Ctrl+\ closes only that viewer. Use `team attach` from a shell for interactive input;
+`team view` opens or reuses an interactive TUI pane. It forwards keyboard input,
+output and pane size through a private PTY. Focus the worker pane to type directly.
+Ctrl+\ closes only that attachment. `team attach` also connects from another shell;
 closing or detaching a viewer keeps the agent running. `team layout` arranges existing
 views into one tab; `team focus` selects an individual view. Herdr shows the Codex
 identity, member name and live working/idle/blocked status. Filter core directly with
@@ -1220,3 +1220,78 @@ Core supports custom `--via` transports, but inventory-managed hosts must use th
 approved `marksterctl`/`privateinfractl` execution path and require a verified
 byte-transparent connection. Remote coordinator writeback and remote acceptance
 have not been implemented by this local prototype.
+
+### Automatic Herdr packet workers
+
+Bind a team with `ar team init TEAM --namespace markster --packet PACKET --item ITEM`.
+Anchor worker views beside an existing supervisor with
+`ar team anchor TEAM --pane PANE_ID`, then run
+`ar team dispatch TEAM --dir ~/workspace --max-workers 3 --allow-item ITEM --watch` in a dedicated
+terminal. The supervisor reviews the packet and selects items, repeating `--allow-item` for each.
+Workers and supervisor ask Attila before any client communication and prepare it for review. Without `--watch`, dispatch runs once. The cap counts every active claim
+in that packet, including existing sessions. Only ready `session` outcomes with
+completed dependencies are eligible. The canonical tracker enforces namespace
+capacity, coordinator ownership and resource conflicts. Each worker receives its
+own claim identity and fresh brief and must satisfy ordinary delivery gates.
+
+Launch intent and canonical operations precede process creation. Uncertain claims
+or launches remain recorded and are never automatically replayed. Inspect the
+canonical claim and `hc` attempt label before recovery. Status alone does not
+complete a claim. `ar team status TEAM --role worker --state idle` filters views;
+`ar team attach TEAM MEMBER` opens deliberate interaction.
+
+For an existing shared Codex terminal, `agentroute herdr bridge --thread UUID
+--pane PANE_ID --pid CODEX_PID --session SESSION` reports live shared-server status
+while that exact foreground Codex process remains present. New ordinary Herdr
+launches report Codex identity from the terminal-side launcher; their state remains
+unknown until thread-specific reporting is available. `ar open UUID` already
+provides thread-specific lifecycle reporting. A launcher status outage never
+prevents Codex from starting.
+
+Herdr pane identity is passed to shared Codex threads through per-thread shell
+environment overrides when a client launches from Herdr. Restart the client to
+apply updated launcher settings; the shared owner does not need restarting.
+New team workers remove inherited `NO_COLOR` so Codex can detect terminal colors.
+Existing worker processes retain their startup environment until resumed.
+
+### Worker recovery and supervision
+
+`team resume TEAM MEMBER` retains the worker's packet claim, item and saved
+conversation. It never replays the initial task or automatically retries an
+uncertain launch. Terminal-specific view and health state are reset for the new
+attempt; earlier attempts remain in local history.
+
+Messages carry an envelope ID. The addressed recipient runs
+`agentroute herdr team ack TEAM MESSAGE_ID` from its own Codex session to record
+receipt. The transport remains `submitted`; `acknowledgment` is separate and does
+not approve an action or certify task completion. Repeated acknowledgments are
+idempotent. Older messages without envelope timestamps do not acquire retroactive
+receipt deadlines.
+
+Start persistent supervision with `agentroute herdr team monitor-start TEAM`.
+A per-team lock prevents concurrent monitors. It writes its PID, log path, last
+inspection and alerts into team metadata, visible with `team status`. The monitor
+checks every 30 seconds and alerts the supervisor about blocked/exited workers,
+idle workers awaiting follow-up, unacknowledged messages after five minutes, and
+output/checkpoint inactivity after fifteen minutes. Output activity does not hide
+an overdue canonical checkpoint. These deadlines are configurable with
+`team monitor TEAM --watch --notify --ack-after 300 --stale-after 900`.
+A one-shot `team monitor TEAM` reports without sending notifications. Repeated
+alerts have a cooldown; unknown delivery is retained without automatic resend.
+The monitor observes and requests inspection; it never approves, restarts, or
+reassigns work. Its inspection timestamp must itself be checked if it stops.
+When the supervisor requires interactive input, inspections continue and status
+shows a notification hold until it becomes available. Herdr's explicit
+`agent_blocked` refusal is recorded as `rejected`; a timeout remains `unknown`.
+The detached monitor survives its invoking shell; start it again after reboot.
+
+A completed turn leaves the worker and pane open. For genuine completion, the
+canonical packet must be `done`, unassigned, have evidence for every criterion,
+resolve all seven delivery gates, and contain no pending/unknown operations.
+The monitor then tells the supervisor to arrange a safe worker exit. After the
+worker exits, `team cleanup TEAM MEMBER` previews eligibility;
+`team cleanup TEAM MEMBER --apply` archives the member and closes only its
+verified owned viewer pane. A pane repurposed by the user is preserved for manual
+reconciliation. Conversation history, packet binding, core terminal history and
+message receipts remain available. Cleanup never kills a working or idle worker
+and never treats the terminal's `done` badge as packet completion.
