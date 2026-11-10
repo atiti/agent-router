@@ -500,3 +500,25 @@ def test_explicit_constraints_cannot_be_empty():
     with pytest.raises(typer.BadParameter, match="1 to 16"):
         h.execution_constraints({"version": 1, "entries": []})
     assert h.execution_constraints(None) is None  # Legacy absence remains compatible.
+
+
+@pytest.mark.parametrize("action", ["run", "resume"])
+def test_archived_member_cannot_reuse_released_binding(team, monkeypatch, tmp_path, action):
+    with h.locked("demo") as data:
+        data["members"]["worker"].update(
+            spec={"role": "worker", "cwd": str(tmp_path), "task": "source", "parent": None},
+            cleanup={"state": "archived", "kind": "step_handoff", "outcome_complete": False})
+        h.save("demo", data)
+    prompt = tmp_path / "task.txt"
+    prompt.write_text("source")
+    terminal = Mock(return_value={"state": "finished"})
+    core = Mock()
+    monkeypatch.setattr(h, "own_terminal", terminal)
+    monkeypatch.setattr(h, "core", core)
+    with pytest.raises(typer.BadParameter, match="Archived member"):
+        if action == "run":
+            h.run("demo", "worker", tmp_path, prompt, "worker", None)
+        else:
+            h.resume("demo", "worker")
+    terminal.assert_not_called()
+    core.assert_not_called()

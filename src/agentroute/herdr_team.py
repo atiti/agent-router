@@ -272,6 +272,9 @@ def run(team: str, member: str, directory: Path = typer.Option(..., "--dir", exi
         if old and old["spec"] != spec:
             raise typer.BadParameter("Member has a different launch spec; use a new member.")
         if old:
+            if old.get("cleanup", {}).get("state") == "archived":
+                raise typer.BadParameter("Archived member cannot run; use history or a fresh "
+                                         "authorized worker/team")
             member_constraints(data, old)
             terminal = own_terminal(data, old)
             if terminal:
@@ -334,6 +337,9 @@ def resume(team: str, member: str) -> None:
     load(team)
     with locked(team) as data:
         record = data["members"][member]
+        if record.get("cleanup", {}).get("state") == "archived":
+            raise typer.BadParameter("Archived member cannot resume; use history or a fresh "
+                                     "authorized worker/team")
         member_constraints(data, record)
         terminal = own_terminal(data, record)
         if terminal and terminal["state"] == "live":

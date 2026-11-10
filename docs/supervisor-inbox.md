@@ -263,3 +263,21 @@ canonical handoff or target absence cannot be established, retain the hold and
 return to the responsible owner; do not hand-edit records to manufacture proof.
 Repeated archived requests match the original retirement kind, requested
 step/revision and immutable identity before returning their historical receipt.
+
+When the recorded viewer has exited normally, an operator may explicitly add
+`--idle-shell-pid INSPECTED_PID`. This is not an automatic missing-PID fallback.
+It requires `view.active` to be exactly false, the same saved pane and terminal,
+and exactly one foreground process named sh/bash/zsh/fish/dash/ksh whose PID
+matches the supplied PID, `process_info.shell_pid`, and
+`foreground_process_group_id`. Ownership is checked again immediately before
+close. An active viewer, replacement/non-shell process, extra foreground process,
+changed PID or nested/replacement shell is refused. Only names/ownership numbers
+are relevant; argv, command lines and environment are not retirement evidence.
+The explicit ownership mode/PID are part of the immutable intent fingerprint and
+must also match on idempotency or `--reconcile-closed` requests. The default saved
+viewer-PID guard remains unchanged.
+
+Archived members cannot be reused through run/resume with a released binding.
+History remains available through read/attach; a new authorized step needs a
+fresh correctly bound worker/team. Nonarchived members retain their existing
+launch/resume behavior, and full-outcome cleanup keeps its original strict gates.

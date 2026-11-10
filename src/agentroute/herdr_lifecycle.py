@@ -132,13 +132,35 @@ def step_handoff_item(h, data: dict, record: dict, step: str, revision: int) -> 
     return item
 
 
+def retirement_viewer_owner(h, data: dict, record: dict, view: dict, pane: dict,
+                            idle_shell_pid: int | None) -> None:
+    if pane.get("pane_id") != view["pane_id"] or not view["pid"]:
+        raise typer.BadParameter("Viewer ownership changed; retain it for reconciliation")
+    info = h.tui.command(data["tui_session"], "pane", "process-info", "--pane",
+                         pane["pane_id"])["process_info"]
+    processes = info.get("foreground_processes", [])
+    if idle_shell_pid is None:
+        if not any(process["pid"] == view["pid"] for process in processes):
+            raise typer.BadParameter("Viewer ownership changed; retain it for reconciliation")
+    elif (info.get("pane_id") != view["pane_id"]
+            or record.get("view", {}).get("active") is not False
+            or info.get("shell_pid") != idle_shell_pid
+            or info.get("foreground_process_group_id") != idle_shell_pid
+            or len(processes) != 1 or processes[0].get("pid") != idle_shell_pid
+            or processes[0].get("name") not in {"sh", "bash", "zsh", "fish", "dash", "ksh"}):
+        raise typer.BadParameter("Explicit inactive original idle-shell ownership was not verified")
+
+
 def retire_step(team: str, member: str, step: str = typer.Option(...),
                 expected_revision: int = typer.Option(...),
                 evidence: list[str] = typer.Option(...), apply: bool = False,
-                reconcile_closed: bool = False, intent_fingerprint: str | None = None) -> None:
+                reconcile_closed: bool = False, intent_fingerprint: str | None = None,
+                idle_shell_pid: int | None = None) -> None:
     """Retire a released done-step worker, preserving the incomplete canonical outcome."""
     if not evidence or not all(isinstance(ref, str) and ref.strip() for ref in evidence):
         raise typer.BadParameter("Explicit handoff/inspection evidence is required")
+    if idle_shell_pid is not None and (type(idle_shell_pid) is not int or idle_shell_pid <= 0):
+        raise typer.BadParameter("Explicit idle-shell PID must be a positive integer")
     h = api()
     with h.locked(team) as data:
         record = data["members"][member]
@@ -149,7 +171,9 @@ def retire_step(team: str, member: str, step: str = typer.Option(...),
         identity = {"team": team, "member": member, "attempt": record.get("attempt"),
                     "thread": record.get("thread"), "binding": record.get("packet_binding"),
                     "terminal": terminal["address"], "view": view,
-                    "step": step, "item_revision": expected_revision}
+                    "step": step, "item_revision": expected_revision,
+                    "ownership": {"mode": "idle_shell" if idle_shell_pid is not None else "viewer",
+                                  "idle_shell_pid": idle_shell_pid}}
         fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         previous = record.get("cleanup")
         if previous:
@@ -182,13 +206,7 @@ def retire_step(team: str, member: str, step: str = typer.Option(...),
             if pane or any(p.get("pane_id") == view["pane_id"] for p in panes if view["pane_id"]):
                 raise typer.BadParameter("Original viewer is still present or its pane was reused")
         elif pane:
-            if pane.get("pane_id") != view["pane_id"] or not view["pid"]:
-                raise typer.BadParameter("Viewer ownership changed; retain it for reconciliation")
-            info = h.tui.command(data["tui_session"], "pane", "process-info", "--pane",
-                                 pane["pane_id"])["process_info"]
-            if not any(process["pid"] == view["pid"]
-                       for process in info.get("foreground_processes", [])):
-                raise typer.BadParameter("Viewer ownership changed; retain it for reconciliation")
+            retirement_viewer_owner(h, data, record, view, pane, idle_shell_pid)
         elif any(p.get("pane_id") == view["pane_id"] for p in panes if view["pane_id"]):
             raise typer.BadParameter("Original viewer pane was reused")
         if not apply:
@@ -203,6 +221,21 @@ def retire_step(team: str, member: str, step: str = typer.Option(...),
         fresh = step_handoff_item(h, data, record, step, expected_revision)
         if fresh != item:
             raise typer.BadParameter("Canonical handoff changed during inspection")
+        # Re-check exact ownership immediately before any close, including explicit shell mode.
+        checked_panes = h.tui.panes(data["tui_session"])
+        checked = next((p for p in checked_panes if view["terminal_id"]
+                        and p.get("terminal_id") == view["terminal_id"]), None)
+        if reconcile_closed:
+            if checked or any(p.get("pane_id") == view["pane_id"]
+                              for p in checked_panes if view["pane_id"]):
+                raise typer.BadParameter("Original viewer is still present or its pane was reused")
+        elif pane:
+            if checked is None:
+                raise typer.BadParameter("Viewer disappeared during inspection; inspect first")
+            retirement_viewer_owner(h, data, record, view, checked, idle_shell_pid)
+        elif checked or any(p.get("pane_id") == view["pane_id"]
+                            for p in checked_panes if view["pane_id"]):
+            raise typer.BadParameter("Original viewer target changed during inspection")
         if not previous:
             record["cleanup"] = {"state": "prepared", "kind": "step_handoff",
                 "outcome_complete": False, "at": time.time(), "identity": identity,

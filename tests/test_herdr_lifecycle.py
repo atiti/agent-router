@@ -329,6 +329,7 @@ def test_step_retirement_unknown_close_requires_inspected_exact_absence(team, mo
     panes = [{"terminal_id": "view", "pane_id": "w1:p1"}]
     monkeypatch.setattr(h.tui, "panes", lambda _: list(panes))
     command = Mock(side_effect=[{"process_info": {"foreground_processes": [{"pid": 99}]}},
+                                {"process_info": {"foreground_processes": [{"pid": 99}]}},
                                 RuntimeError("close response lost")])
     monkeypatch.setattr(h.tui, "command", command)
     with pytest.raises(RuntimeError, match="lost"):
@@ -387,7 +388,8 @@ def test_step_retirement_closes_only_owned_viewer_and_requires_absence(team, mon
             lifecycle.retire_step("demo", "worker", "source", 182, ["handoff receipt"], True)
     saved = h.load("demo")["members"]["worker"]["cleanup"]
     assert saved["state"] == ("archived" if close_verified else "unknown")
-    assert calls == [("pane", "process-info", "--pane", "w1:p1"), ("pane", "close", "w1:p1")]
+    assert calls == [("pane", "process-info", "--pane", "w1:p1"),
+                     ("pane", "process-info", "--pane", "w1:p1"), ("pane", "close", "w1:p1")]
 
 
 def test_step_retirement_refuses_replaced_viewer_before_intent(team, monkeypatch):
@@ -402,3 +404,61 @@ def test_step_retirement_refuses_replaced_viewer_before_intent(team, monkeypatch
         lifecycle.retire_step("demo", "worker", "source", 182, ["receipt"], True)
     assert "cleanup" not in h.load("demo")["members"]["worker"]
     assert command.call_count == 1
+
+
+@pytest.mark.parametrize("defect", [None, "active", "missing-active", "shell-pid", "group",
+                                    "process", "name", "multiple", "changed-before-close"])
+def test_step_retirement_explicit_inactive_idle_shell_guard(team, monkeypatch, defect):
+    with h.locked("demo") as data:
+        view = {"terminal_id": "view", "pane_id": "w1:p1", "pid": 99, "active": False}
+        if defect == "active":
+            view["active"] = True
+        if defect == "missing-active":
+            view.pop("active")
+        data["members"]["worker"]["view"] = view
+        h.save("demo", data)
+    setup_poll(monkeypatch, released_step_item(), {"state": "finished", "address": "t1"})
+    panes = [{"terminal_id": "view", "pane_id": "w1:p1"}]
+    monkeypatch.setattr(h.tui, "panes", lambda _: list(panes))
+    inspected = {"pane_id": "w1:p1", "shell_pid": 77, "foreground_process_group_id": 77,
+                 "foreground_processes": [{"pid": 77, "name": "zsh"}]}
+    if defect == "shell-pid":
+        inspected["shell_pid"] = 78
+    if defect == "group":
+        inspected["foreground_process_group_id"] = 78
+    if defect == "process":
+        inspected["foreground_processes"][0]["pid"] = 78
+    if defect == "name":
+        inspected["foreground_processes"][0]["name"] = "python"
+    if defect == "multiple":
+        inspected["foreground_processes"].append({"pid": 78, "name": "zsh"})
+    calls = []
+
+    def command(session, *args):
+        calls.append(args)
+        if args[1] == "process-info":
+            if defect == "changed-before-close" and len(calls) == 2:
+                return {"process_info": {**inspected, "shell_pid": 78}}
+            return {"process_info": inspected}
+        assert args == ("pane", "close", "w1:p1")
+        panes.clear()
+        return {}
+
+    monkeypatch.setattr(h.tui, "command", command)
+    if defect:
+        with pytest.raises(typer.BadParameter, match="idle-shell"):
+            lifecycle.retire_step("demo", "worker", "source", 182, ["inspected original shell"],
+                                  True, idle_shell_pid=77)
+        assert not any(args[1] == "close" for args in calls)
+        assert "cleanup" not in h.load("demo")["members"]["worker"]
+    else:
+        with pytest.raises(typer.BadParameter, match="ownership changed"):
+            lifecycle.retire_step("demo", "worker", "source", 182, ["receipt"], True)
+        lifecycle.retire_step("demo", "worker", "source", 182, ["inspected original shell"],
+                              True, idle_shell_pid=77)
+        saved = h.load("demo")["members"]["worker"]["cleanup"]
+        assert saved["state"] == "archived" and saved["outcome_complete"] is False
+        assert saved["identity"]["ownership"] == {"mode": "idle_shell", "idle_shell_pid": 77}
+        with pytest.raises(typer.BadParameter, match="identity changed"):
+            lifecycle.retire_step("demo", "worker", "source", 182, ["receipt"],
+                                  True, idle_shell_pid=78)
