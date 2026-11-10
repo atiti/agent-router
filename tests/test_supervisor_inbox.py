@@ -526,3 +526,62 @@ def test_reeligible_packet_step_has_fresh_epoch_even_when_consumer_misses_gap(te
         h.save("demo", data)
     assert [entry["id"] for entry in snapshot()["events"]] == [second]
     assert h.load("demo")["packet_readiness"]["epochs"]["prep"] == 2
+
+
+def test_operator_admission_resolution_is_bound_private_immutable_and_does_not_edit_cursor(team):
+    root = inbox.codex_home()
+    cursor = root / "supervisor-inbox-cursors" / f"{THREAD}.json"
+    inbox.atomic_write(cursor, {"generation": 7, "suspended": False,
+                                "reservation": "token_1-Ab", "in_flight": False})
+    before = cursor.read_bytes()
+    inbox.admission_reconcile("demo", "boss", "token_1-Ab", "not_admitted",
+                              ["verified-no-admission"], "exact-synthetic-user-decision")
+    path = root / "supervisor-admission-resolutions" / THREAD / "token_1-Ab.json"
+    first = path.read_bytes()
+    value = json.loads(first)
+    assert value["thread_id"] == THREAD and value["reservation"] == "token_1-Ab"
+    assert value["decision"] == "not_admitted" and value["authority"]
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.parent.stat().st_mode & 0o777 == 0o700
+    assert cursor.read_bytes() == before
+    inbox.atomic_write(cursor, {"generation": 7, "suspended": False, "reservation": None,
+                                "in_flight": False, "last_resolution": "token_1-Ab"})
+    inbox.admission_reconcile("demo", "boss", "token_1-Ab", "not_admitted",
+                              ["verified-no-admission"], "exact-synthetic-user-decision")
+    assert path.read_bytes() == first
+    with pytest.raises(typer.BadParameter, match="immutable"):
+        inbox.admission_reconcile("demo", "boss", "token_1-Ab", "completed",
+                                  ["verified-terminal"], "different-decision")
+    for token in ("../escape", "a/b", "x" * 161):
+        with pytest.raises(typer.BadParameter, match="token"):
+            inbox.admission_reconcile("demo", "boss", token, "interrupted", ["receipt"], "decision")
+    with pytest.raises(typer.BadParameter, match="recipient"):
+        inbox.admission_reconcile("demo", "worker", "token", "interrupted", ["receipt"], "decision")
+    with pytest.raises(typer.BadParameter, match="nonempty"):
+        inbox.admission_reconcile("demo", "boss", "token", "interrupted", [" "], "decision")
+    with pytest.raises(typer.BadParameter, match="nonempty"):
+        inbox.admission_reconcile("demo", "boss", "token", "interrupted", ["receipt"], " ")
+
+
+def test_admission_resolution_rejects_unrelated_unresolved_and_insecure_cursor(team):
+    cursor = inbox.codex_home() / "supervisor-inbox-cursors" / f"{THREAD}.json"
+    value = {"generation": 8, "suspended": False, "reservation": None,
+             "admission_token": "active-token", "in_flight": True}
+    inbox.atomic_write(cursor, value)
+    args = ("demo", "boss", "unrelated-token", "interrupted", ["receipt"], "exact-user-decision")
+    with pytest.raises(typer.BadParameter, match="current unresolved"):
+        inbox.admission_reconcile(*args)
+    cursor.chmod(0o644)
+    with pytest.raises(typer.BadParameter, match="owner-private"):
+        inbox.admission_reconcile("demo", "boss", "active-token", "interrupted",
+                                  ["receipt"], "exact-user-decision")
+    cursor.chmod(0o600)
+    value.update(in_flight=False)
+    inbox.atomic_write(cursor, value)
+    with pytest.raises(typer.BadParameter, match="current unresolved"):
+        inbox.admission_reconcile("demo", "boss", "active-token", "interrupted",
+                                  ["receipt"], "exact-user-decision")
+    value.update(in_flight=True)
+    inbox.atomic_write(cursor, value)
+    inbox.admission_reconcile("demo", "boss", "active-token", "interrupted",
+                              ["receipt"], "exact-user-decision")

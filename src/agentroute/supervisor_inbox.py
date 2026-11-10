@@ -9,6 +9,8 @@ import fcntl
 import hashlib
 import json
 import os
+import re
+import stat
 import time
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -435,7 +437,92 @@ def inbox_enable(team: str, consumer_version: int = typer.Option(...),
         typer.echo(json.dumps(data["inbox_consumer"]))
 
 
+def admission_cursor(thread: str) -> dict:
+    path = codex_home() / "supervisor-inbox-cursors" / f"{UUID(thread)}.json"
+    directory = path.parent.stat()
+    if (path.parent.is_symlink() or directory.st_mode & 0o777 != 0o700
+            or directory.st_uid != os.getuid()):
+        raise typer.BadParameter("Native cursor directory must be private and not a symlink")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_size > 1024):
+            raise typer.BadParameter("Native cursor requires private regular file <=1024 bytes")
+        encoded = stream.read(1025)
+    if len(encoded) > 1024:
+        raise typer.BadParameter("Native cursor exceeds its byte limit")
+    cursor = json.loads(encoded)
+    generation = cursor.get("generation")
+    if (not isinstance(generation, int) or isinstance(generation, bool)
+            or not 0 <= generation <= 2**64-1 or not isinstance(cursor.get("suspended"), bool)):
+        raise typer.BadParameter("Invalid native cursor generation/suspension state")
+    if not isinstance(cursor.get("in_flight", False), bool):
+        raise typer.BadParameter("Invalid native admission state")
+    for key in ("reservation", "admission_token", "last_resolution"):
+        token = cursor.get(key)
+        if token is not None and (not isinstance(token, str) or not re.fullmatch(
+                r"[A-Za-z0-9_-]{1,160}", token)):
+            raise typer.BadParameter("Invalid native admission token")
+    return cursor
+
+
+def admission_reconcile(team: str, member: str = typer.Option(...),
+                        reservation: str = typer.Option(...), decision: str = typer.Option(...),
+                        evidence: list[str] = typer.Option(...),
+                        authority: str = typer.Option(...)) -> None:
+    """Operator-only admission recovery; references do not prove approval or retry rights."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", reservation):
+        raise typer.BadParameter("Invalid admission reservation token")
+    if decision not in {"not_admitted", "completed", "interrupted"}:
+        raise typer.BadParameter("Decision must be not_admitted, completed or interrupted")
+    if (not evidence or len(evidence) > 32 or not all(
+            isinstance(ref, str) and ref.strip() and len(ref) <= 4096 for ref in evidence)
+            or not authority.strip() or len(authority) > 4096):
+        raise typer.BadParameter("Bounded nonempty evidence and operator authority refs required")
+    data = api().load(team)
+    thread = supervisors(data).get(member)
+    if not thread:
+        raise typer.BadParameter("A registered supervisor recipient is required")
+    thread = str(UUID(thread))
+    root = codex_home() / "supervisor-admission-resolutions"
+    directory = root / thread
+    path = directory / f"{reservation}.json"
+    lock_path = path.with_suffix(".lock")
+    if any(value.is_symlink() for value in (root, directory, path, lock_path)):
+        raise typer.BadParameter("Admission resolution paths must not be symlinks")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(root, 0o700)
+    os.chmod(directory, 0o700)
+    record = {"version": 1, "thread_id": thread, "reservation": reservation,
+              "decision": decision, "evidence": evidence, "authority": authority}
+    with lock_path.open("a") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if path.exists():
+            metadata = path.stat()
+            if (metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600
+                    or metadata.st_size > 8192 or not stat.S_ISREG(metadata.st_mode)):
+                raise typer.BadParameter("Existing resolution requires private regular file <=8192 bytes")
+            previous = json.loads(path.read_text())
+            if {key: value for key, value in previous.items() if key != "created_at"} != record:
+                raise typer.BadParameter("Admission resolution has different immutable data")
+            typer.echo(json.dumps(previous))
+            return
+        cursor = admission_cursor(thread)
+        token = cursor.get("reservation") or cursor.get("admission_token")
+        if (reservation != token or not (cursor.get("reservation") or cursor.get("in_flight"))
+                or cursor.get("last_resolution") == reservation):
+            raise typer.BadParameter("Reservation does not match current unresolved admission")
+        record["created_at"] = time.time()
+        if len(json.dumps(record, indent=2).encode()) > 8192:
+            raise typer.BadParameter("Admission resolution exceeds its 8192-byte limit")
+        atomic_write(path, record)
+        typer.echo(json.dumps(record))
+
+
 def register_commands(app: typer.Typer) -> None:
+    app.command("admission-reconcile")(admission_reconcile)
     app.command("inbox-enable")(inbox_enable)
     app.command("inbox")(inbox)
     app.command("inbox-ack")(inbox_ack)

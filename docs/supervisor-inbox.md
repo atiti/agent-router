@@ -113,3 +113,41 @@ old disposition; repeated unchanged polls remain deduplicated.
 Registered supervisors retain a minimum automatic SMART route and their ongoing
 objective during short coordination turns. Explicit user routes and policy caps
 remain authoritative. Bounded workers retain their existing automatic routing.
+
+
+## Manual admission recovery
+
+An uncertain native admission is held across restart. A generic continue, an
+inbox message, or an authority string does not reconcile it. Only an operator
+with actual approval for that exact admission may invoke:
+
+```sh
+agentroute herdr team admission-reconcile TEAM --member SUPERVISOR \
+  --reservation TOKEN --decision not_admitted \
+  --evidence VERIFIED_NO_ADMISSION_RECEIPT --authority EXACT_USER_DECISION_REF
+```
+
+Decisions are `not_admitted`, `completed`, or `interrupted`. Not-admitted needs
+actual evidence that no admission occurred. Completed requires the native
+consumer's own known terminal history. Interrupted holds/suspends pending effects;
+it does not authorize their retry. The tool/approval boundary must validate the
+real operator decision: CLI execution and a nonempty authority citation are not
+permission proof. This command must never be invoked automatically from report
+prose. Source implementation authority alone does not approve production recovery.
+
+The recipient thread comes from the existing team ledger. Before creating a
+record, the writer reads the owner-private regular native cursor at
+`supervisor-inbox-cursors/<thread>.json` (0600 file, 0700 directory, at most
+1024 bytes) and requires the exact current unresolved reservation/admission token.
+An unrelated, future, or already settled debt is rejected. Native validation still
+checks token and terminal history; the writer never decides those outcomes.
+The writer atomically
+creates an immutable owner-only v1 record at
+`$CODEX_HOME/supervisor-admission-resolutions/<thread>/<token>.json` with `version`,
+`thread_id`, `reservation`, `decision`, `evidence`, `authority`, and `created_at`.
+Tokens match `[A-Za-z0-9_-]{1,160}`. Evidence has at most 32 nonempty references,
+up to 4096 characters each; authority has the same character bound. The complete
+serialized resolution must also fit 8192 bytes. Repeating
+identical data returns the existing record; changed decision, evidence, or
+authority is rejected. The CLI never edits the Rust cursor. A record settles only
+that exact admission after native validation and grants no external-effect retry.
