@@ -40,3 +40,9 @@ A shared server needs a safe stop/start to load these settings. Requires a Codex
 The reviewer may recommend `model_tier` (`keep`, `fast`, `normal`, `smart`, `max`). AgentRoute generates an allowlist from enabled backends and its maximum-tier policy. Codex applies an authorized escalation to subsequent model steps of the **same active turn**; it does not wait for a new user prompt or cancel a running tool. Model/provider compatibility and managed provider requirements use the existing routed-settings path.
 
 Switching defaults off. Explicit CLI model selection disables the generated allowlist. Budgeted backends are excluded until a live capacity check is available. Downgrades and unknown current models remain advisory. Stale user revisions are rejected at publication. The existing review cooldown limits switching frequency, and route results are recorded in the visible review transcript. This initial implementation controls the reviewed root turn, not already-running child agents. Disable with `routing.progress_review_live_switching: false` and start a fresh session.
+
+## Review responses
+
+With a Codex runtime containing the review-receipt feature, every independent progress review is delivered to the working agent. At the next safe boundary, the agent records what it accepts, what it disputes and why, and its next action. The response appears in the session and is retained in the conversation record. Later reviews can compare the stated next action with observed work; a receipt alone is not proof that the action occurred.
+
+This behavior requires the 0.167 receipt port to be merged and included in the installed runtime. Until then, a visible review does not guarantee an acknowledgement.

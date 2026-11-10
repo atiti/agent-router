@@ -5,6 +5,7 @@
 - Preserve worker packet bindings on Herdr resume; add recipient acknowledgments, persistent inactivity/checkpoint monitoring and conservative verified-completion cleanup that retains conversation and message history.
 
 - Add Herdr packet worker dispatch, supervisor anchors and live agent identity reporting. Worker panes accept direct keyboard input, shared clients forward pane context per thread, and new workers clear inherited `NO_COLOR` for terminal color detection.
+- Upgrade the routed Codex fork and matching Code Mode host to upstream 0.167.0.
 
 - Require fresh per-account model support for automatic ChatGPT account failover, block known incompatible account targets, and prevent interrupted turns from restoring a rejected model. Recover to the preferred account below the quota recovery margin and show selection/access reasons in the account banner.
 
