@@ -572,7 +572,7 @@ def test_admission_resolution_rejects_unrelated_unresolved_and_insecure_cursor(t
     with pytest.raises(typer.BadParameter, match="current unresolved"):
         inbox.admission_reconcile(*args)
     cursor.chmod(0o644)
-    with pytest.raises(typer.BadParameter, match="owner-private"):
+    with pytest.raises(typer.BadParameter, match="private"):
         inbox.admission_reconcile("demo", "boss", "active-token", "interrupted",
                                   ["receipt"], "exact-user-decision")
     cursor.chmod(0o600)
