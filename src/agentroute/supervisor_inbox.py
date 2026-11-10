@@ -503,7 +503,8 @@ def admission_reconcile(team: str, member: str = typer.Option(...),
             metadata = path.stat()
             if (metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600
                     or metadata.st_size > 8192 or not stat.S_ISREG(metadata.st_mode)):
-                raise typer.BadParameter("Existing resolution requires private regular file <=8192 bytes")
+                raise typer.BadParameter(
+                    "Existing resolution requires an owner-private file <=8192 bytes")
             previous = json.loads(path.read_text())
             if {key: value for key, value in previous.items() if key != "created_at"} != record:
                 raise typer.BadParameter("Admission resolution has different immutable data")
