@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.5.83 — 2026-11-09
+## 0.5.83 — 2026-11-10
+
+- Add visible Herdr supervisor and worker sessions, separately claimed work-packet dispatch, live status and conversation titles, worker follow-up, and recovery and cleanup controls.
+- Give supervisors a durable inbox for worker reports and coordination, with role-aware routing, bounded continuation and recovery of uncertain turn admissions. Discover enrollment after an ordinary thread becomes idle while preserving interruption, pause and missing-inbox holds.
+- Show how an agent responds to each independent progress review: accepted advice, any disagreement and its reason, and the next action.
+- Use the routed turn model for compaction after account failover so compaction respects the selected account's model support.
 
 - Upgrade the routed Codex fork and matching Code Mode host to upstream 0.167.0.
 
