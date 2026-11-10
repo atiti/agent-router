@@ -355,8 +355,8 @@ def send(team: str, member: str, message_id: str = typer.Option(...),
         from . import supervisor_inbox as inbox
 
         supervisor = inbox.is_supervisor(data, member)
-        # Persistence is the delivery channel. Pane prompts are optional notifications.
-        # This path must also work when permission UI refuses prompt submission.
+        # Persistence is the supervisor delivery channel. Never submit user-style
+        # turns that could bypass the native pause, budget or usage-limit state.
         if supervisor:
             message.update(state="queued", created_at=time.time(),
                            target_thread=inbox.supervisors(data).get(member))

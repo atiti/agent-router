@@ -45,9 +45,12 @@ def ack(team: str, message_id: str) -> None:
             raise typer.BadParameter("Only the addressed recipient may acknowledge this message")
         if message.get("target_thread") not in (None, os.environ.get("CODEX_THREAD_ID")):
             raise typer.BadParameter("Message belongs to another recipient session")
-        if message["state"] not in {"submitted", "unknown", "prepared"}:
+        allowed = {"submitted", "unknown", "prepared"}
+        if message.get("coordination_event"):
+            allowed |= {"queued", "rejected"}
+        if message["state"] not in allowed:
             raise typer.BadParameter("Unsupported delivery state")
-        if message["state"] != "submitted":
+        if message["state"] != "submitted" and not message.get("coordination_event"):
             message["delivery_reconciliation"] = "Confirmed received by the bound recipient"
             message["state"] = "submitted"
         message.setdefault("acknowledgment", {"at": time.time(), "by": recipient,

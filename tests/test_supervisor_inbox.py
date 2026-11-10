@@ -474,3 +474,15 @@ def test_whitespace_wait_receipts_are_rejected(team, monkeypatch, field):
         inbox.disposition(**args)
     with pytest.raises(typer.BadParameter):
         inbox.inbox_resume("demo", "wait", [" "], "boss")
+
+
+def test_legacy_ack_command_handles_native_queued_event_without_faking_transport(team, monkeypatch):
+    from agentroute import herdr_lifecycle as lifecycle
+    monkeypatch.setenv("AGENTROUTE_HERDR_TEAM", "demo")
+    monkeypatch.setenv("AGENTROUTE_HERDR_MEMBER", "boss")
+    h.send("demo", "boss", "native-receipt", "coordination")
+    lifecycle.ack("demo", "native-receipt")
+    message = h.load("demo")["messages"]["native-receipt"]
+    assert message["state"] == "queued"
+    assert message["coordination_event"]["state"] == "acked"
+    assert snapshot()["events"][0]["actionable"]
