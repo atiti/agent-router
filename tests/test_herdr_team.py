@@ -276,6 +276,13 @@ def test_only_supervisor_prompt_is_told_how_to_dispatch(team, tmp_path):
     h.save("demo", team)
     supervisor = h.member_prompt(team, "supervisor", "supervisor", "coordinate")
     worker = h.member_prompt(team, "worker", "worker", "task")
+    for prompt in (supervisor, worker):
+        assert 'sandbox_permissions="require_escalated"' in prompt
+        assert "register, status, messages, send, inbox, ack, inbox-ack and disposition" in prompt
+        assert "normal tool approval flow" in prompt
+        assert "If review denies the action or escalation is unavailable" in prompt
+        assert "Never fabricate identity or start an alternative worker/session" in prompt
+        assert "does not authorize production changes or customer communication" in prompt
     assert "team dispatch demo --dir" in supervisor
     assert "Operator and subagent items are never dispatched" in supervisor
     assert "select suitable ready items yourself" in supervisor
