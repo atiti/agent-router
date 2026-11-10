@@ -35,7 +35,8 @@ def test_resume_keeps_binding_and_new_terminal_item_label(team, monkeypatch):
 
 
 def setup_poll(monkeypatch, item, terminal):
-    monkeypatch.setattr(h, "packet_command", lambda *_: json.dumps({"items": [item]}))
+    monkeypatch.setattr(h, "packet_command", lambda _, action, *args: json.dumps(
+        [] if action == "next" else {"items": [item]}))
     monkeypatch.setattr(h, "own_terminal", lambda *_: terminal)
     monkeypatch.setattr(h, "core", lambda *_: {"text": terminal.get("screen", "")})
 
@@ -164,7 +165,7 @@ def test_unknown_notification_is_not_replayed(team, monkeypatch):
     monkeypatch.setattr(lifecycle, "poll", lambda *_: {
         "alerts": ["worker: blocked"], "team": "demo"})
 
-    def unknown_send(team, recipient, key, text):
+    def unknown_send(team, recipient, key, text, **kwargs):
         data = h.load(team)
         data["messages"][key] = {"state": "unknown", "member": recipient}
         h.save(team, data)
@@ -208,7 +209,7 @@ def test_recipient_ack_reconciles_unknown_transport(team, monkeypatch):
     assert message["delivery_reconciliation"]
 
 
-def test_explicit_supervisor_refusal_is_rejected_not_unknown(team, monkeypatch):
+def test_supervisor_report_never_reaches_prompt_refusal(team, monkeypatch):
     data = h.load("demo")
     data["anchor_terminal"] = "supervisor-terminal"
     h.save("demo", data)
@@ -216,11 +217,11 @@ def test_explicit_supervisor_refusal_is_rejected_not_unknown(team, monkeypatch):
         "terminal_id": "supervisor-terminal", "pane_id": "w1:p1", "agent": "codex"}])
     monkeypatch.setattr(h.tui, "command", Mock(side_effect=RuntimeError(json.dumps({
         "error": {"code": "agent_blocked", "message": "requires interactive input"}}))))
-    with pytest.raises(RuntimeError):
-        h.send("demo", "supervisor", "blocked-report", "Report")
+    h.send("demo", "supervisor", "blocked-report", "Report")
     message = h.load("demo")["messages"]["blocked-report"]
-    assert message["state"] == "rejected"
-    assert "agent_blocked" in message["delivery_error"]
+    assert message["state"] == "queued"
+    h.tui.command.assert_not_called()
+    assert message["delivery_hold"] == "native_inbox_enrollment_required"
 
 
 def test_blocked_supervisor_holds_notifications_but_inspection_continues(team, monkeypatch):
@@ -238,5 +239,6 @@ def test_blocked_supervisor_holds_notifications_but_inspection_continues(team, m
     send = Mock()
     monkeypatch.setattr(h, "send", send)
     lifecycle.monitor("demo", False, True, 900, 300, 30)
-    send.assert_not_called()
+    send.assert_called_once()
+    assert send.call_args.kwargs["notify"] is False
     assert h.load("demo")["members"]["worker"]["health"]["checked_at"]

@@ -52,6 +52,10 @@ def ack(team: str, message_id: str) -> None:
             message["state"] = "submitted"
         message.setdefault("acknowledgment", {"at": time.time(), "by": recipient,
                                               "thread": os.environ.get("CODEX_THREAD_ID")})
+        if message.get("coordination_event"):
+            entry = message["coordination_event"]
+            if entry["state"] != "dispositioned":
+                entry.update(state="acked", acknowledged_at=time.time())
         h.save(team, data)
         typer.echo(json.dumps(message["acknowledgment"]))
 
@@ -119,6 +123,9 @@ def poll(team: str, stale_after: int, ack_after: int, now: float | None = None) 
                 continue
             terminal = h.own_terminal(data, member)
             state = h.reported_state(terminal)
+            member["terminal_observation"] = {"at": now,
+                "terminal_state": terminal.get("state") if terminal else "missing",
+                "reported_state": state}
             health = member.setdefault("health", {"last_activity": now, "state_since": now})
             binding = member.get("packet_binding", {})
             item = items.get(binding.get("item"), {})
@@ -161,6 +168,9 @@ def poll(team: str, stale_after: int, ack_after: int, now: float | None = None) 
             if (message["state"] == "submitted" and not message.get("acknowledgment")
                     and now-since >= ack_after):
                 alerts.append(f"message {key} to {message['member']}: receipt unacknowledged")
+        from .supervisor_inbox import sync_packet_steps
+
+        sync_packet_steps(data, items, now)
         monitor = data.setdefault("monitor", {})
         if data.get("anchor_terminal"):
             pane = next((p for p in h.tui.panes(data["tui_session"])
@@ -198,30 +208,43 @@ def monitor(team: str, watch: bool = False, notify: bool = False,
                 data = h.load(team)
                 digest = hashlib.sha256(json.dumps(result["alerts"]).encode()).hexdigest()[:16]
                 previous = data.get("monitor", {}).get("notification", {})
-                if (notify and result["alerts"] and (previous.get("digest") != digest
-                        or time.time()-previous.get("at", 0) >= stale_after)):
-                    if data.get("monitor", {}).get("notification_hold"):
-                        if not watch:
-                            return
-                        time.sleep(interval)
-                        continue
-                    key = f"health-{digest}-{time.time_ns()}"
-                    # Same ID means same content. Unknown receipts are never retried automatically.
-                    unresolved = any(k.startswith("health-")
-                                     and v["state"] in {"prepared", "unknown"}
-                                     for k, v in data["messages"].items())
-                    if unresolved:
-                        if not watch:
-                            return
-                        time.sleep(interval)
-                        continue
-                    if key not in data["messages"]:
+                if notify:
+                    with h.locked(team) as current:
+                        monitor_state = current.setdefault("monitor", {})
+                        if monitor_state.get("event_digest") != digest:
+                            sequence = monitor_state.get("event_sequence", 0) + 1
+                            monitor_state.update(event_digest=digest, event_sequence=sequence,
+                                                 event_key=f"health-{digest}-{sequence}")
+                        key = monitor_state["event_key"]
+                        h.save(team, current)  # Stable occurrence identity precedes delivery.
+                    if (result["alerts"] and key not in data["messages"]
+                            and previous.get("event_key") != key):
+                        due = not previous.get("at") or time.time()-previous["at"] >= stale_after
+                        prompt = due and not data.get("monitor", {}).get("notification_hold")
                         h.send(team, "supervisor", key,
                                "Team health requires inspection (no automatic approval/restart):\n"
-                               + "\n".join(result["alerts"]))
+                               + "\n".join(result["alerts"]), notify=bool(prompt))
+                        with h.locked(team) as current:
+                            current.setdefault("monitor", {})["notification"] = {
+                                "digest": digest, "event_key": key,
+                                "at": time.time() if prompt else previous.get("at")}
+                            h.save(team, current)
+                    # Fresh observations can supersede older health sets only after the
+                    # new pending event is durable, avoiding an empty-inbox completion gap.
                     with h.locked(team) as current:
-                        current.setdefault("monitor", {})["notification"] = {
-                            "digest": digest, "at": time.time()}
+                        for message_key, message in current["messages"].items():
+                            entry = message.get("coordination_event")
+                            if (entry and entry["kind"] == "health"
+                                    and entry["state"] != "dispositioned" and message_key != key):
+                                entry.update(state="dispositioned", actionable=False,
+                                    disposition={"action": "superseded" if result["alerts"]
+                                                 else "resolved",
+                                        "reason": "Fresh health poll replaced this set",
+                                        "owner": "team-monitor",
+                                        "next_action": "Inspect the latest health event" if
+                                            result["alerts"] else "No current health alert",
+                                        "evidence": [f"herdr poll {result.get('checked_at')} "
+                                                     f"alerts-sha256:{digest}"]})
                         h.save(team, current)
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError,
                     typer.BadParameter) as error:
