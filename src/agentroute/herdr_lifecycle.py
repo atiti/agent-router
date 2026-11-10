@@ -120,7 +120,8 @@ def step_handoff_item(h, data: dict, record: dict, step: str, revision: int) -> 
     item = next((i for i in packet["items"] if i["id"] == binding.get("item")), None)
     if (record.get("spec", {}).get("role") != "worker" or not binding.get("session")
             or not record.get("thread") or not item or item.get("revision") != revision
-            or item.get("status") not in {"blocked", "ready"} or item.get("assignment")
+            or item.get("status") not in {"blocked", "ready"}
+            or item.get("assignment") is not None
             or (item.get("next_step") or {}).get("id") != step
             or item["next_step"].get("state") != "done"
             or (item.get("last_release") or {}).get("session") != binding["session"]

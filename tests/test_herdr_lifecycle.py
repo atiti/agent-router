@@ -279,7 +279,8 @@ def test_step_retirement_dry_run_and_partial_archive_preserve_full_hold(team, mo
         lifecycle.retire_step("demo", "worker", "source", 183, ["receipt"], True)
 
 
-@pytest.mark.parametrize("defect", ["active", "assigned", "owner", "step", "revision", "pending",
+@pytest.mark.parametrize("defect", ["active", "assigned", "empty_assignment", "owner", "step",
+                                    "revision", "pending",
                                     "live", "missing", "full-cleanup", "attempt"])
 def test_step_retirement_rejects_unreleased_or_mismatched_state(team, monkeypatch, defect):
     item = released_step_item()
@@ -288,6 +289,8 @@ def test_step_retirement_rejects_unreleased_or_mismatched_state(team, monkeypatc
         item["status"] = "active"
     if defect == "assigned":
         item["assignment"] = {"session": "reclaimed-owner"}
+    if defect == "empty_assignment":
+        item["assignment"] = {}
     if defect == "owner":
         item["last_release"]["session"] = "different-owner"
     if defect == "step":
