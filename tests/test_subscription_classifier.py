@@ -95,3 +95,65 @@ def test_timeout_kills_only_isolated_process_group(tmp_path, monkeypatch):
         classifier.classify(RouteContext(session_id="test", latest_prompt="hello"))
     assert killed[0][0] == 12345
     assert classifier.last_status == classifier.last_error_type == "timeout"
+
+
+@pytest.mark.parametrize("failure", ["tool", "malformed", "exit"])
+def test_invalid_subprocess_results_are_rejected(tmp_path, monkeypatch, failure):
+    _, classifier = setup_classifier(tmp_path, monkeypatch)
+
+    class Process:
+        returncode = 1 if failure == "exit" else 0
+
+        def __init__(self, command, **kwargs):
+            from pathlib import Path
+
+            self.output = Path(command[command.index("-o") + 1])
+
+        def communicate(self, *args, **kwargs):
+            self.output.write_text(
+                "{}"
+                if failure == "malformed"
+                else json.dumps(
+                    dict(
+                        tier="NORMAL",
+                        confidence=0.9,
+                        task_type="analysis",
+                        reason="Routine analysis",
+                    )
+                )
+            )
+            return (
+                json.dumps({"type": "item.completed", "item": {"type": "mcp_tool_call"}})
+                if failure == "tool"
+                else ""
+            ), ""
+
+    monkeypatch.setattr(subprocess, "Popen", Process)
+    with pytest.raises((RuntimeError, ValueError)):
+        classifier.classify(RouteContext(session_id="test", latest_prompt="Explain the result"))
+    assert classifier.last_status == "error"
+
+
+def test_subscription_fallback_timeout_keeps_router_available(tmp_path, monkeypatch):
+    config, classifier = setup_classifier(tmp_path, monkeypatch)
+    config.routing.mode = "llm"
+    config.routing.classifier.engine = "jev"
+    from agentroute.classifier import ClassifierResult
+
+    class LowConfidenceJev:
+        source = "cloud_jev"
+
+        def classify(self, context):
+            return ClassifierResult.from_payload(
+                dict(tier="NORMAL", confidence=0.4, task_type="analysis", reason="Ambiguous")
+            )
+
+    def timeout(prompt):
+        raise subprocess.TimeoutExpired("isolated-codex", 20)
+
+    monkeypatch.setattr(classifier, "_classify", timeout)
+    decision = Router(config, classifier=LowConfidenceJev(), fallback_classifier=classifier).route(
+        RouteContext(session_id="test", latest_prompt="Explain why this might be failing")
+    )
+    assert decision.classification_source == "heuristic_fallback"
+    assert decision.classifier_status == "timeout"
