@@ -12,6 +12,8 @@ from .config import AppConfig, save_config
 
 def refresh_classifier_catalog(config: AppConfig, path: Path | None = None) -> None:
     settings = config.routing.classifier
+    if settings.transport == "codex_subscription" and settings.engine != "jev":
+        return  # Codex validates access using the selected account at inference.
     active = settings.jev_shadow if settings.engine == "jev" else settings
     if not settings.enabled or is_loopback_endpoint(active.endpoint):
         return

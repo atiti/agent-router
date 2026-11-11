@@ -1958,6 +1958,16 @@ def classifier_verify_command() -> None:
     """Verify the configured model against the provider catalog and cache the receipt."""
     config = load_config()
     settings = config.routing.classifier
+    if settings.transport == "codex_subscription" and settings.engine != "jev":
+        from .subscription_classifier import SubscriptionClassifier
+
+        result = SubscriptionClassifier(config).classify(
+            RouteContext(session_id="classifier-verify", latest_prompt="Say hello.")
+        )
+        console.print(
+            f"Verified subscription inference {settings.backend}/{settings.model}: {result.tier}"
+        )
+        return
     active = settings.jev_shadow if settings.engine == "jev" else settings
     classifier = (
         JevShadowClassifier(active)

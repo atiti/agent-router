@@ -546,6 +546,12 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
     classifier = config.routing.classifier
     if not classifier.enabled:
         checks.append(DoctorCheck("classifier", "warn", "disabled; deterministic routing only"))
+    elif classifier.transport == "codex_subscription" and classifier.engine != "jev":
+        checks.append(DoctorCheck(
+            "classifier", "warn",
+            f"subscription {classifier.backend}/{classifier.model}; "
+            "use classifier-verify to validate live inference",
+        ))
     elif classifier.engine == "jev":
         active = classifier.jev_shadow
         try:
