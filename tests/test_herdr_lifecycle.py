@@ -406,19 +406,20 @@ def test_step_retirement_refuses_replaced_viewer_before_intent(team, monkeypatch
     assert command.call_count == 1
 
 
-@pytest.mark.parametrize("defect", [None, "active", "missing-active", "shell-pid", "group",
+@pytest.mark.parametrize("defect", [None, "active", "active-absent", "missing-active",
+                                    "shell-pid", "group",
                                     "process", "name", "multiple", "changed-before-close"])
 def test_step_retirement_explicit_inactive_idle_shell_guard(team, monkeypatch, defect):
     with h.locked("demo") as data:
         view = {"terminal_id": "view", "pane_id": "w1:p1", "pid": 99, "active": False}
-        if defect == "active":
+        if defect in {"active", "active-absent"}:
             view["active"] = True
         if defect == "missing-active":
             view.pop("active")
         data["members"]["worker"]["view"] = view
         h.save("demo", data)
     setup_poll(monkeypatch, released_step_item(), {"state": "finished", "address": "t1"})
-    panes = [{"terminal_id": "view", "pane_id": "w1:p1"}]
+    panes = [] if defect == "active-absent" else [{"terminal_id": "view", "pane_id": "w1:p1"}]
     monkeypatch.setattr(h.tui, "panes", lambda _: list(panes))
     inspected = {"pane_id": "w1:p1", "shell_pid": 77, "foreground_process_group_id": 77,
                  "foreground_processes": [{"pid": 77, "name": "zsh"}]}

@@ -164,6 +164,8 @@ def retire_step(team: str, member: str, step: str = typer.Option(...),
     h = api()
     with h.locked(team) as data:
         record = data["members"][member]
+        if idle_shell_pid is not None and record.get("view", {}).get("active") is not False:
+            raise typer.BadParameter("Explicit idle-shell mode requires an inactive viewer record")
         terminal = h.own_terminal(data, record)
         if not terminal or terminal.get("state") != "finished":
             raise typer.BadParameter("The exact worker terminal must exist and be finished")
