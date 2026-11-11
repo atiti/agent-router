@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.84 — 2026-11-11
+
+- Make macOS release builds fetch Cargo Git dependencies with the Git CLI and cache native build inputs, avoiding repeated V8 submodule connection failures.
+- Include the supervisor, worker, routing and compaction improvements listed under 0.5.83. The 0.5.83 tag is retained, but its release payload was not published because the macOS builds failed.
+
 ## 0.5.83 — 2026-11-11
 
 - Add visible Herdr supervisor and worker sessions, separately claimed work-packet dispatch, live worker status, worker follow-up, and recovery and cleanup controls.
