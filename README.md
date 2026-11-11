@@ -312,6 +312,54 @@ requests, high-confidence rules, and credential-shaped prompts never reach it. I
 cheapest sufficient tier, confidence, and task type; only the task type, confidence, and a hash of
 its explanation are audited.
 
+### Adaptive provider selection
+
+Tier classification answers how much capability the task needs. Optional provider selection then
+chooses among your configured tier targets on GPT, Claude, Grok and DeepSeek. Enable and inspect it:
+
+```bash
+agentroute provider-selection shadow --candidate gpt --candidate claude --candidate grok --candidate deepseek
+agentroute provider-selection adaptive
+agentroute provider-selection
+agentroute provider-selection static  # return to backend_by_tier
+```
+
+`static` is the default. `shadow` records a recommendation while execution keeps the existing
+provider. `adaptive` uses the recommendation on the next turn; it requires no chat/server restart.
+It does not switch a model in the middle of a running request. Existing explicit source/model tags,
+session preferences and qualified child models still win. Use `@auto` to clear a prior explicit
+provider pin. Automatic provider choices, including goal continuations, do not create pins. An
+automatically inherited child provider becomes a preference rather than a lock in adaptive mode.
+
+The selector excludes disabled/unconfigured providers, missing credentials, unavailable local
+Claude/Grok bridges, exhausted quotas, reached configured API budgets, models without tools and
+known insufficient context windows, and providers whose configured risk floor exceeds the
+classified tier. Switching an existing measured context to a model with no
+configured context limit is also excluded; add its verified `context_window` to the tier target or
+model capabilities. The prior input count is a lower bound, not proof that a future assembled
+request fits. Codex still owns compaction and final request admission. If every admitted provider
+is excluded, the turn stops with an explanation instead of escaping the candidate list.
+
+Ranking uses task preferences, fresh subscription usage, configured budget headroom, an
+API-equivalent 4K-input/1K-output cost proxy, and a penalty for switching providers. Unknown usage
+and prices remain labeled unknown and receive conservative penalties. The cost proxy is not a
+subscription charge or a forecast of the task's total cost. GPT account failover uses the existing
+account/catalog validation before rejecting an exhausted account pool. Claude reads identity-bound
+local quota samples (up to one hour old); Grok reads its existing short-lived usage/cooldown cache.
+The selector sends no prompt to candidate execution providers. API budgets/quotas require
+`capacity.enabled: true`; it does not create budgets or enable providers for you.
+
+Configure `routing.provider_selection.task_preferences` to reorder providers for a task type,
+for example `architecture: [claude, gpt, grok, deepseek]`. These defaults are operator-tunable
+policy priors, not benchmark rankings. `switch_penalty`, `usage_weight`,
+`unknown_capacity_penalty` and `cost_weight` tune the tradeoffs. Each route's selection receipt
+includes `provider_selection` with scores, usage observations, exclusions and the recommendation.
+
+Short continuations such as `ok continue`, `okay, please continue`, and `finish it` preserve the
+ongoing task's capability. Classifiers receive bounded prior context plus objective, coordination
+role, scope and failure counters. `include_previous_assistant: false` or `max_context_chars: 0`
+omits prior/objective text; runtime signals remain bounded and contain no conversation text.
+
 An agent that knows its current tier is insufficient can explicitly ask for the next turn's tier by
 ending its final response with two visible plain-text lines:
 

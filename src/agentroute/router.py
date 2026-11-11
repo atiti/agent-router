@@ -4,8 +4,9 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Callable
 
-from .capacity import backend_state, fallback_chain
+from .capacity import CapacityState, backend_state, fallback_chain
 from .classifier import (
     JevShadowClassifier,
     OpenAICompatibleClassifier,
@@ -17,6 +18,8 @@ from .config import AppConfig, load_config, model_capabilities
 from .economics import cache_switch_estimate
 from .model_selection import DirectModelError, resolve_model, source_models
 from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
+from .profiles import TurnProfileSelection
+from .provider_selection import inferred_task_type, select_provider
 from .providers import backend_readiness
 from .signals import (
     contains_credential,
@@ -28,7 +31,7 @@ from .signals import (
     route_overrides,
 )
 
-CLASSIFIER_VERSION = "hybrid-v9"
+CLASSIFIER_VERSION = "hybrid-v10"
 
 FAST_SAFE_TASK_TYPES = {
     "greeting",
@@ -90,8 +93,10 @@ class Router:
         config: AppConfig | None = None,
         classifier: TierClassifier | None = None,
         fallback_classifier: TierClassifier | None = None,
+        gpt_profile_selector: Callable[[Tier], TurnProfileSelection | None] | None = None,
     ) -> None:
         self.config = config or load_config()
+        self.gpt_profile_selector = gpt_profile_selector
         classifier_config = self.config.routing.classifier
         self.classifier = classifier
         if self.classifier is None and classifier_config.enabled:
@@ -439,6 +444,32 @@ class Router:
             or context.inherited_backend
             or self.config.routing.backend_by_tier.get(str(proposed), "gpt")
         )
+        provider_lock = (
+            "explicit_backend" if backend_override else
+            "requested_backend" if context.requested_backend else
+            "explicit_session_preference" if context.sticky_backend else
+            "interrupted_turn" if interrupted_turn_affinity and context.interrupted_backend else
+            "explicit_spawn_model" if context.spawn_model_explicit else None
+        )
+        if self.config.routing.provider_selection.mode == "adaptive" and not provider_lock:
+            backend_name = self.config.routing.backend_by_tier.get(str(proposed), "gpt")
+        selected_provider, provider_selection = select_provider(
+            self.config, context, proposed,
+            classifier_task_type or inferred_task_type(context, reason_codes(contributions)),
+            backend_name, locked_by=provider_lock, gpt_profile_selector=self.gpt_profile_selector,
+            risk_codes=reason_codes(contributions), enforce_risk_floors=not manual,
+        )
+        adaptive_unavailable = selected_provider is None
+        if selected_provider:
+            backend_name = selected_provider
+        if self.config.routing.provider_selection.mode == "adaptive" and not provider_lock:
+            contributions.append(ScoreContribution(
+                code=ReasonCode.PROVIDER_SELECTION_BLOCKED if adaptive_unavailable
+                else ReasonCode.PROVIDER_SELECTION,
+                weight=0,
+                detail="no admitted provider is eligible" if adaptive_unavailable else
+                f"task/capacity policy selected {backend_name}; see provider selection receipt",
+            ))
         backend = self.config.backends.get(backend_name)
         if backend_override:
             contributions.append(
@@ -502,7 +533,8 @@ class Router:
                 not self.config.capacity.enabled and not context.requested_backend
             ):
                 candidates = (
-                    fallback_chain(self.config, backend_name)
+                    [] if self.config.routing.provider_selection.mode == "adaptive"
+                    and not provider_lock else fallback_chain(self.config, backend_name)
                     if self.config.capacity.enabled
                     else ["gpt"]
                 )
@@ -515,6 +547,9 @@ class Router:
                     ):
                         selected_ready = candidate
                         break
+            if (self.config.routing.provider_selection.mode == "adaptive"
+                    and not provider_lock and selected_ready is None):
+                adaptive_unavailable = True
             backend_name = selected_ready or (
                 unavailable_requested_backend
                 if unavailable_requested_backend in self.config.backends
@@ -552,6 +587,15 @@ class Router:
                 or context.inherited_backend
                 or self.config.routing.backend_by_tier.get(str(proposed), "gpt")
             )
+            selected_provider, provider_selection = select_provider(
+                self.config, context, proposed,
+                classifier_task_type or inferred_task_type(context, reason_codes(contributions)),
+                backend_name, locked_by=provider_lock,
+                gpt_profile_selector=self.gpt_profile_selector,
+                risk_codes=reason_codes(contributions), enforce_risk_floors=not manual,
+            )
+            adaptive_unavailable = selected_provider is None
+            backend_name = selected_provider or backend_name
             backend = self.config.backends.get(backend_name)
             if (
                 backend is None
@@ -589,6 +633,10 @@ class Router:
                 and context.previous_capacity_status in {"fallback", "blocked", "exhausted"}
             ),
         )
+        if self.config.routing.provider_selection.mode == "adaptive" and not provider_lock:
+            for candidate in provider_selection.get("candidates", []):
+                if candidate["backend"] == backend_name and candidate.get("profile_capacity"):
+                    capacity = CapacityState(**candidate["profile_capacity"])
         capacity_blocked = False
         capacity_detail = capacity.detail
         capacity_trigger = capacity.trigger
@@ -664,7 +712,15 @@ class Router:
             else:
                 fallback_details: list[str] = []
                 selected_fallback: str | None = None
-                for candidate in fallback_chain(self.config, backend_name):
+                # An adaptive choice has already passed admission checks. If its
+                # capacity changes during revalidation, stop this turn; the next
+                # route can rank a fresh snapshot. Legacy chains must not escape
+                # its allowlist or revive a context/tool-ineligible provider.
+                fallback_candidates = (
+                    [] if self.config.routing.provider_selection.mode == "adaptive"
+                    and not provider_lock else fallback_chain(self.config, backend_name)
+                )
+                for candidate in fallback_candidates:
                     candidate_backend = self.config.backends.get(candidate)
                     ready = bool(
                         candidate_backend
@@ -718,7 +774,19 @@ class Router:
                             detail=capacity_detail,
                         )
                     )
+        if adaptive_unavailable:
+            capacity_blocked = True
+            capacity_status = "blocked"
+            capacity_trigger = "provider_selection"
+            capacity_detail = (
+                "No admitted provider meets task/capacity constraints; see exclusions."
+            )
         target = model_target or backend.target(proposed)
+        if backend_name == "gpt" and model_target is None:
+            for candidate in provider_selection.get("candidates", []):
+                if candidate["backend"] == "gpt" and candidate.get("subscription_profile"):
+                    profile = self.config.capacity.profiles[candidate["subscription_profile"]]
+                    target = profile.target(proposed, target)
         inherited_effort = (
             context.previous_reasoning_effort if inherited or interrupted_turn_affinity else None
         )
@@ -827,7 +895,8 @@ class Router:
         )
         previous_context_sent = bool(
             classifier_request_hash
-            and getattr(self._last_classifier, "last_previous_context_chars", 0)
+            and (getattr(self._last_classifier, "last_previous_context_chars", 0)
+                 or getattr(self._last_classifier, "last_objective_context_chars", 0))
         )
         task_context_used = resolved_task_inherited or previous_context_sent
         active_config = getattr(
@@ -921,9 +990,13 @@ class Router:
                 "previous_context_chars": getattr(
                     self._last_classifier, "last_previous_context_chars", 0
                 ),
+                "objective_context_chars": getattr(
+                    self._last_classifier, "last_objective_context_chars", 0
+                ),
             },
             "resolved_task_hash": hashlib.sha256(resolved_task.encode("utf-8")).hexdigest(),
             "candidates": candidates,
+            "provider_selection": provider_selection,
             "proposed_tier": str(score_proposed),
             "selected": {
                 "tier": str(proposed),
@@ -1043,7 +1116,9 @@ class Router:
         if routing.mode == "heuristic" or self.classifier is None:
             return proposed, confidence, "heuristic", None, None, None, None
         codes = {item.code for item in contributions}
-        if ReasonCode.CREDENTIAL_EXPOSURE in codes or contains_credential(context.task_definition):
+        if (ReasonCode.CREDENTIAL_EXPOSURE in codes
+                or contains_credential(context.task_definition)
+                or contains_credential(context.ongoing_objective)):
             return proposed, confidence, "heuristic_sensitive", None, None, None, None
         if (
             routing.mode == "hybrid"

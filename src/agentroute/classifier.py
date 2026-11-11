@@ -43,6 +43,10 @@ debugging, operations, architecture, security, research, orchestration, other), 
 Treat a confirmation as approval of the task described in prior assistant context. Otherwise,
 classify the action requested by the latest message; use prior assistant context only as supporting
 facts, not as work that must be repeated.
+For a continuation such as "ok continue", resolve the approved task from prior context and the
+ongoing objective. It is executable work, not an acknowledgment-only turn. Runtime failures and
+scope are evidence of uncertainty; a registered supervisor's objective describes its coordination
+work. A new substantive request replaces prior task scope unless it explicitly continues it.
 """
 
 
@@ -144,6 +148,40 @@ class TierClassifier(Protocol):
     def classify(self, context: RouteContext) -> ClassifierResult: ...
 
 
+def _task_context(
+    context: RouteContext, config: ClassifierConfig | JevShadowConfig
+) -> tuple[str, str, dict[str, object]]:
+    """Bound historical text under one budget and honor its prompt-egress switch."""
+    previous = ""
+    objective = ""
+    budget = config.max_context_chars if config.include_previous_assistant else 0
+    if budget:
+        previous = context.task_definition or ""
+        objective = context.ongoing_objective or ""
+        # Do not send the same supervisor objective twice. When both differ,
+        # retain space for each instead of letting a long transcript crowd it out.
+        if objective == previous:
+            previous = ""
+        objective_budget = max(1, budget // 2) if previous and objective else budget
+        objective = objective[-objective_budget:] if objective else ""
+        previous_budget = budget - len(objective)
+        previous = previous[-previous_budget:] if previous_budget else ""
+    state: dict[str, object] = {
+        "route_scope": context.route_scope[:32],
+        "coordination_role": (context.coordination_role or "")[:32],
+        "previous_task_tier": (
+            str(context.previous_task_tier) if context.previous_task_tier is not None else None
+        ),
+        "touched_files": max(0, min(context.touched_files, 100_000)),
+        "changed_lines": max(0, min(context.changed_lines, 1_000_000)),
+        "tool_errors": max(0, min(context.tool_errors, 10_000)),
+        "repeated_errors": max(0, min(context.repeated_errors, 10_000)),
+        "failed_tests": max(0, min(context.failed_tests, 10_000)),
+        "risk_flags": [flag[:64] for flag in sorted(context.task_risk_flags)[:10]],
+    }
+    return previous, objective, state
+
+
 def is_loopback_endpoint(endpoint: str) -> bool:
     parsed = urllib.parse.urlparse(endpoint)
     return parsed.hostname in {"127.0.0.1", "localhost", "::1"}
@@ -222,6 +260,7 @@ class OpenAICompatibleClassifier:
         self.last_latency_ms: float | None = None
         self.last_usage: dict[str, int | float] = {}
         self.last_previous_context_chars = 0
+        self.last_objective_context_chars = 0
         self.last_tier_signals: dict[str, float] = {}
         self.last_status = "idle"
         self.last_error_type: str | None = None
@@ -272,6 +311,7 @@ class OpenAICompatibleClassifier:
         self.last_usage = {}
         self.last_tier_signals = {}
         self.last_previous_context_chars = 0
+        self.last_objective_context_chars = 0
         self.last_status = "started"
         self.last_error_type = None
         if self.source != "local_llm" and not self.config.allow_remote:
@@ -288,13 +328,12 @@ class OpenAICompatibleClassifier:
         if self.config.catalog_models and self.config.model not in self.config.catalog_models:
             raise RuntimeError("configured classifier model is absent from the verified catalog")
 
-        previous = context.task_definition or ""
-        if not self.config.include_previous_assistant:
-            previous = ""
-        previous = previous[-self.config.max_context_chars :]
+        previous, objective, state = _task_context(context, self.config)
         classifier_input = {
             "latest_user_message": context.latest_prompt,
             "previous_assistant_context": previous,
+            "ongoing_objective": objective,
+            "task_state": state,
             "current_tier": str(context.current_tier),
             "candidate_tiers": ["FAST", "NORMAL", "SMART", "MAX"],
             "candidate_reasoning_efforts": ["LOW", "MEDIUM", "HIGH", "XHIGH"],
@@ -303,6 +342,7 @@ class OpenAICompatibleClassifier:
             classifier_input, sort_keys=True, separators=(",", ":")
         )
         self.last_previous_context_chars = len(previous)
+        self.last_objective_context_chars = len(objective)
         payload: dict[str, object] = {
             "model": self.config.model,
             "messages": [
@@ -391,6 +431,7 @@ class JevShadowClassifier:
         self.last_latency_ms: float | None = None
         self.last_usage: dict[str, int | float] = {}
         self.last_previous_context_chars = 0
+        self.last_objective_context_chars = 0
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "User-Agent": "agentroute/0.5"}
@@ -426,14 +467,15 @@ class JevShadowClassifier:
         self.last_request_hash = None
         self.last_latency_ms = None
         self.last_usage = {}
-        previous = context.task_definition or ""
-        if not self.config.include_previous_assistant:
-            previous = ""
-        previous = previous[-self.config.max_context_chars :]
+        previous, objective, task_state = _task_context(context, self.config)
         self.last_previous_context_chars = len(previous)
+        self.last_objective_context_chars = len(objective)
         state = context.latest_prompt
         if previous:
             state = f"Latest user request:\n{state}\n\nPrior task context:\n{previous}"
+        if objective:
+            state += f"\n\nOngoing objective:\n{objective}"
+        state += "\n\nTask state:\n" + json.dumps(task_state, separators=(",", ":"))
         payload = {
             "model": self.config.model,
             "state": state,

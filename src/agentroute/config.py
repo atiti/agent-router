@@ -8,6 +8,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
+from .claude_models import MODERN_CLAUDE_MODELS
 from .models import Tier
 
 
@@ -119,6 +120,34 @@ class ClassifierConfig(BaseModel):
     jev_shadow: JevShadowConfig = Field(default_factory=JevShadowConfig)
 
 
+class ProviderSelectionConfig(BaseModel):
+    """Explicitly admitted providers, with operator-tunable task preferences.
+
+    Preferences are policy priors, not claims of measured model quality. Shadow
+    mode produces the same receipt without changing the execution provider.
+    """
+
+    mode: Literal["static", "shadow", "adaptive"] = "static"
+    candidates: list[str] = Field(
+        default_factory=lambda: ["gpt", "claude", "grok", "deepseek"], max_length=20
+    )
+    task_preferences: dict[str, list[str]] = Field(default_factory=lambda: {
+        "implementation": ["gpt", "claude", "deepseek", "grok"],
+        "debugging": ["gpt", "claude", "grok", "deepseek"],
+        "operations": ["gpt", "claude", "grok", "deepseek"],
+        "orchestration": ["gpt", "claude", "grok", "deepseek"],
+        "security": ["gpt", "claude", "grok", "deepseek"],
+        "architecture": ["claude", "gpt", "grok", "deepseek"],
+        "communication": ["claude", "gpt", "deepseek", "grok"],
+        "research": ["grok", "gpt", "claude", "deepseek"],
+        "formatting": ["deepseek", "claude", "gpt", "grok"],
+    })
+    switch_penalty: float = Field(default=1.0, ge=0, le=10)
+    usage_weight: float = Field(default=4.0, ge=0, le=20)
+    unknown_capacity_penalty: float = Field(default=1.0, ge=0, le=10)
+    cost_weight: float = Field(default=0.5, ge=0, le=10)
+
+
 class RoutingConfig(BaseModel):
     mode: Literal["heuristic", "hybrid", "llm"] = "hybrid"
     progress_review_live_switching: bool = False
@@ -127,6 +156,7 @@ class RoutingConfig(BaseModel):
     reasoning_effort_policy: Literal["adaptive", "tier_default"] = "adaptive"
     switching: SwitchingConfig = Field(default_factory=SwitchingConfig)
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
+    provider_selection: ProviderSelectionConfig = Field(default_factory=ProviderSelectionConfig)
     fast_quality_floor: bool = True
     continuation_capability_floor: bool = True
     security_daybreak_enabled: bool = False
@@ -591,6 +621,11 @@ def default_config() -> AppConfig:
         ),
     }
     config.capacity.profiles["default"] = SubscriptionProfileConfig(priority=0)
+    for model in MODERN_CLAUDE_MODELS:
+        config.capabilities.models.setdefault(model, ModelCapabilities(
+            tool_calling="apply_patch_only", reasoning=True,
+            context_window=1_000_000, pricing_model=model,
+        ))
     config.capacity.active_profile = "default"
     return config
 
