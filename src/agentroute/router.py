@@ -30,6 +30,7 @@ from .signals import (
     reason_codes,
     route_overrides,
 )
+from .subscription_classifier import SubscriptionClassifier
 
 CLASSIFIER_VERSION = "hybrid-v10"
 
@@ -103,7 +104,11 @@ class Router:
             self.classifier = (
                 JevShadowClassifier(classifier_config.jev_shadow)
                 if classifier_config.engine == "jev"
-                else OpenAICompatibleClassifier(classifier_config)
+                else (
+                    SubscriptionClassifier(self.config)
+                    if classifier_config.transport == "codex_subscription"
+                    else OpenAICompatibleClassifier(classifier_config)
+                )
             )
         self.fallback_classifier = fallback_classifier
         if (
@@ -112,7 +117,11 @@ class Router:
             and classifier_config.engine == "jev"
             and classifier_config.jev_shadow.llm_fallback_enabled
         ):
-            self.fallback_classifier = OpenAICompatibleClassifier(classifier_config)
+            self.fallback_classifier = (
+                SubscriptionClassifier(self.config)
+                if classifier_config.transport == "codex_subscription"
+                else OpenAICompatibleClassifier(classifier_config)
+            )
         self._last_classifier: TierClassifier | None = None
         self._jev_observation: dict[str, object] | None = None
 
@@ -338,6 +347,8 @@ class Router:
                 "private_llm",
                 "cloud_llm",
                 "local_llm_fallback",
+                "subscription_llm",
+                "subscription_llm_fallback",
                 "private_llm_fallback",
                 "cloud_llm_fallback",
                 "local_jev",
@@ -845,6 +856,8 @@ class Router:
             "private_llm",
             "cloud_llm",
             "local_llm_fallback",
+                "subscription_llm",
+                "subscription_llm_fallback",
             "private_llm_fallback",
             "cloud_llm_fallback",
             "local_jev",
@@ -873,6 +886,8 @@ class Router:
                 "private_llm",
                 "cloud_llm",
                 "local_llm_fallback",
+                "subscription_llm",
+                "subscription_llm_fallback",
                 "private_llm_fallback",
                 "cloud_llm_fallback",
                 "local_jev",

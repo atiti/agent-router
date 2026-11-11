@@ -98,6 +98,10 @@ class JevShadowConfig(BaseModel):
 
 
 class ClassifierConfig(BaseModel):
+    transport: Literal["openai_compatible", "codex_subscription"] = "openai_compatible"
+    backend: str = "gpt"
+    chatgpt_profile: str | None = None
+    codex_binary: Path | None = None
     engine: Literal["llm", "jev"] = "llm"
     enabled: bool = False
     endpoint: str = "https://api.openai.com/v1/chat/completions"

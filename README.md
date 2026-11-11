@@ -1385,3 +1385,23 @@ verified owned viewer pane. A pane repurposed by the user is preserved for manua
 reconciliation. Conversation history, packet binding, core terminal history and
 message receipts remain available. Cleanup never kills a working or idle worker
 and never treats the terminal's `done` badge as packet completion.
+
+### Subscription-backed LLM classifier
+
+Select the model and configured subscription backend used for ambiguous requests:
+
+```bash
+agentroute classifier-subscription-enable --backend gpt --model gpt-6-luna --timeout 20
+agentroute classifier-status
+```
+
+When JEV is primary, this changes its LLM fallback while retaining JEV. Otherwise
+it enables the selected LLM classifier. `--reasoning-effort low` is the default;
+`--chatgpt-profile NAME` selects a GPT subscription profile. Other configured
+subscription backends can be selected with `--backend` and their model ID.
+The backend must be enabled and explicitly listed in
+`routing.provider_selection.subscription_backends`; that list describes the
+operator's actual credential setup. A bridge using API credentials remains
+metered even if its name is listed there. The classifier uses the Codex
+subscription transport with routing isolated from its own classification call.
+Use `classifier-enable` to return to an OpenAI-compatible API or local endpoint.
