@@ -355,6 +355,14 @@ and prices remain labeled unknown and receive conservative penalties. The cost p
 subscription charge or a forecast of the task's total cost. GPT account failover uses the existing
 account/catalog validation before rejecting an exhausted account pool. Claude reads identity-bound
 local quota samples (up to one hour old); Grok reads its existing short-lived usage/cooldown cache.
+Inspect a recorded decision with `agentroute why --decision-id 123` (find IDs with
+`agentroute history`). The report shows candidate billing classes, scores, quota status, exclusions,
+provider pool and actual application state. `agentroute audit-report --limit 500` summarizes
+classifier status, outcomes, provider selection and feedback coverage. Add human judgments with
+`agentroute label 123 correct` or `too-low`, `too-high`, `failed`, `changed-task`, or `overridden`.
+Unlabeled decisions and manual overrides alone do not establish routing quality. The report uses
+existing local receipts and does not add prompt logging.
+
 The selector sends no prompt to candidate execution providers. API budgets/quotas require
 `capacity.enabled: true`; it does not create budgets or enable providers for you.
 
