@@ -534,6 +534,11 @@ def codex_user_prompt_submit(
             current_account_id,
         )
         sticky_profile = store.subscription_profile_affinity(session_id)
+        from .supervisor_inbox import routing_context
+
+        supervision = routing_context(session_id) if route_scope == "root" else None
+        if supervision:
+            task_definition = supervision["objective"] or task_definition
         context = RouteContext(
             session_id=session_id,
             turn_id=str(payload["turn_id"]) if payload.get("turn_id") else None,
@@ -561,6 +566,8 @@ def codex_user_prompt_submit(
             interrupted_model=interrupted_model,
             interrupted_model_provider=interrupted_model_provider,
             task_definition=task_definition,
+            coordination_role="supervisor" if supervision else None,
+            ongoing_objective=supervision["objective"] if supervision else None,
             agent_requested_tier=(Tier.parse(agent_request.tier) if agent_request else None),
             agent_request_reason_hash=(
                 hashlib.sha256(agent_request.reason.encode("utf-8")).hexdigest()
