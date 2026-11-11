@@ -379,7 +379,15 @@ def test_bridge_model_update_is_explicit_and_preserves_automatic_routes(tmp_path
     ensure_claude_bridge_backend(config, 8091)
     assert config.backends["fable"].tool_compatibility == "full"
     assert config.backends["fable"].base_url == "http://127.0.0.1:8091/v1"
+    config.backends["fable"].tiers["max"] = ModelTarget(model="claude-fable-5-1")
+    ensure_claude_bridge_backend(config, 8091)
+    assert config.backends["fable"].tiers["max"].model == "claude-fable-5-1"
     ensure_claude_bridge_backend(config, 8091, update_models=True)
     assert config.backends["claude"].tiers["smart"].model == "claude-sonnet-5-5"
+    assert config.backends["claude"].tiers["max"].model == "claude-fable-5-2"
+    assert all(
+        target.model == "claude-fable-5-2" and target.reasoning_effort == "high"
+        for target in config.backends["fable"].tiers.values()
+    )
     assert config.routing.backend_by_tier == routes
     assert config.backends["fable"].review_model == "claude-haiku-5-5"

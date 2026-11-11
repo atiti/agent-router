@@ -1308,25 +1308,25 @@ def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, mo
     )
 
     specific = output["hookSpecificOutput"]
-    assert specific["model"] == "claude-opus-5-5@agentroute-profile-second"
+    assert specific["model"] == "claude-fable-5-2@agentroute-profile-second"
     assert specific["stripProviderState"] is True
     assert specific["modelProvider"] == "agentroute-claude"
     assert specific["stripPromptPrefixBytes"] == len(b"@claude:second @max ")
-    assert "claude-opus-5-5" in specific["routeMessage"]
+    assert "claude-fable-5-2" in specific["routeMessage"]
     assert "Claude profile second" in specific["routeMessage"]
     assert "Claude limits 5h 18% used" in specific["routeMessage"]
     assert "Claude limits 5h 99% used" not in specific["routeMessage"]
-    assert store.latest("same-thread")["model"] == "claude-opus-5-5"
+    assert store.latest("same-thread")["model"] == "claude-fable-5-2"
 
     receipt = {
         "status": "applied",
         "requested": {
-            "model": "claude-opus-5-5@agentroute-profile-second",
+            "model": "claude-fable-5-2@agentroute-profile-second",
             "provider": "agentroute-claude",
             "reasoning_effort": "high",
         },
         "actual": {
-            "model": "claude-opus-5-5@agentroute-profile-second",
+            "model": "claude-fable-5-2@agentroute-profile-second",
             "provider": "agentroute-claude",
             "reasoning_effort": "high",
         },
@@ -1337,7 +1337,7 @@ def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, mo
                 {
                     "session_id": "same-thread",
                     "turn_id": "turn-1",
-                    "model": "claude-opus-5-5@agentroute-profile-second",
+                    "model": "claude-fable-5-2@agentroute-profile-second",
                     "agentroute_application": receipt,
                 }
             )
@@ -1347,16 +1347,16 @@ def test_manual_claude_profile_routes_and_strips_the_profile_handle(tmp_path, mo
     )
     completed = store.latest("same-thread")
     assert completed["route_application_state"] == "applied"
-    assert completed["answer_model"] == "claude-opus-5-5"
-    assert completed["reported_answer_model"] == "claude-opus-5-5"
+    assert completed["answer_model"] == "claude-fable-5-2"
+    assert completed["reported_answer_model"] == "claude-fable-5-2"
     assert completed["answer_model_mismatch"] == 0
 
 
 @pytest.mark.parametrize(
     "actual_model",
     [
-        "claude-opus-5-5@agentroute-profile-default",
-        "claude-opus-5-5",
+        "claude-fable-5-2@agentroute-profile-default",
+        "claude-fable-5-2",
     ],
 )
 def test_manual_claude_profile_receipt_rejects_a_different_or_missing_profile(
@@ -1391,7 +1391,7 @@ def test_manual_claude_profile_receipt_rejects_a_different_or_missing_profile(
                     "agentroute_application": {
                         "status": "applied",
                         "requested": {
-                            "model": "claude-opus-5-5@agentroute-profile-second",
+                            "model": "claude-fable-5-2@agentroute-profile-second",
                             "provider": "agentroute-claude",
                             "reasoning_effort": "high",
                         },
@@ -1410,7 +1410,7 @@ def test_manual_claude_profile_receipt_rejects_a_different_or_missing_profile(
 
     completed = store.latest("same-thread")
     assert completed["route_application_state"] == "mismatch"
-    assert completed["answer_model"] == "claude-opus-5-5"
+    assert completed["answer_model"] == "claude-fable-5-2"
 
 
 @pytest.mark.parametrize(

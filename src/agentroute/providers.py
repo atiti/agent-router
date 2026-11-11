@@ -35,8 +35,11 @@ CLAUDE_BRIDGE_TIERS: dict[str, str] = {
     "fast": "claude-haiku-5-5",
     "normal": "claude-sonnet-5-5",
     "smart": "claude-sonnet-5-5",
-    "max": "claude-opus-5-5",
+    "max": "claude-fable-5-2",
 }
+# The explicit `@fable` backend pins every tier to the current Fable model so a
+# tier tag can never move a Fable session onto another family.
+CLAUDE_FABLE_MODEL = "claude-fable-5-2"
 SIGNED_REASONING_COMPATIBILITY_MIN_RUNTIME = 54
 
 
@@ -58,7 +61,8 @@ def ensure_claude_bridge_backend(
 ) -> bool:
     """Register Claude and its explicit Fable route without changing default routing.
 
-    Existing tier choices survive reinstall unless ``update_models`` is requested.
+    Existing tier choices on both backends survive reinstall unless
+    ``update_models`` is requested.
     """
     base_url = f"http://{host}:{port}/v1"
     created = "claude" not in config.backends
@@ -96,7 +100,10 @@ def ensure_claude_bridge_backend(
         if update_models:
             config.backends["claude"].tiers = tiers
     # Separate backend: never added to backend_by_tier or a fallback chain.
-    # Every tier uses Fable so @fable cannot accidentally select another model.
+    fable_tiers = {
+        tier: ModelTarget(model=CLAUDE_FABLE_MODEL, reasoning_effort="high")
+        for tier in CLAUDE_BRIDGE_TIERS
+    }
     if "fable" not in config.backends:
         config.backends["fable"] = ExecutionBackendConfig(
             enabled=True,
@@ -105,10 +112,7 @@ def ensure_claude_bridge_backend(
             base_url=base_url,
             tool_compatibility="functions_and_apply_patch_preserve_reasoning",
             review_model=CLAUDE_BRIDGE_TIERS["fast"],
-            tiers={
-                tier: ModelTarget(model="claude-fable-5-1", reasoning_effort="high")
-                for tier in CLAUDE_BRIDGE_TIERS
-            },
+            tiers=fable_tiers,
         )
     else:
         config.backends["fable"].base_url = base_url
@@ -119,6 +123,8 @@ def ensure_claude_bridge_backend(
             config.backends[
                 "fable"
             ].tool_compatibility = "functions_and_apply_patch_preserve_reasoning"
+        if update_models:
+            config.backends["fable"].tiers = fable_tiers
     config.policy.backend_risk_floors.setdefault(
         "claude", {flag: "max" for flag in ("auth", "security", "database_migration", "production")}
     )

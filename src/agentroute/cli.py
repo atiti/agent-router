@@ -2315,11 +2315,14 @@ def bridge_install_command(
         console.print(f"✓ Reused the existing `claude` backend; synced {providers_path}")
     if providers_backup:
         console.print(f"  Provider backup: {providers_backup}")
-    console.print("✓ Explicit Fable route available: @fable (not in automatic tier mappings)")
+    console.print(
+        "✓ Explicit Fable route available: @fable (Fable 5.2 on every tier; "
+        "automatic Claude routes use Fable 5.2 only at MAX)"
+    )
     if update_models:
         console.print(
             "✓ Updated Claude tiers: Haiku 5.5 low / Sonnet 5.5 medium / "
-            "Sonnet 5.5 high / Opus 5.5 high"
+            "Sonnet 5.5 high / Fable 5.2 high; @fable now Fable 5.2"
         )
     console.print(f"✓ Bridge service installed: {path}")
     console.print(f"✓ {detail}")

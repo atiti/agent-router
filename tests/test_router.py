@@ -781,9 +781,10 @@ def test_typesafe_key_in_prompt_stays_out_of_hosted_classifier():
         ("@claude @fast", "claude-haiku-5-5", "low"),
         ("@claude @normal", "claude-sonnet-5-5", "medium"),
         ("@claude @smart", "claude-sonnet-5-5", "high"),
-        ("@claude @max", "claude-opus-5-5", "high"),
-        ("@fable @max", "claude-fable-5-1", "high"),
-        ("@fable @max @ultra", "claude-fable-5-1", "ultra"),
+        ("@claude @max", "claude-fable-5-2", "high"),
+        ("@fable @fast", "claude-fable-5-2", "high"),
+        ("@fable @max", "claude-fable-5-2", "high"),
+        ("@fable @max @ultra", "claude-fable-5-2", "ultra"),
         ("@claude @normal @none", "claude-sonnet-5-5", "low"),
     ],
 )
@@ -800,7 +801,7 @@ def test_claude_updated_routes(tag, model, effort):
     assert decision.backend == ("fable" if "@fable" in tag else "claude")
 
 
-def test_fable_is_never_selected_from_automatic_claude_tiers():
+def test_fable_is_only_selected_from_the_automatic_max_tier():
     from agentroute.providers import ensure_claude_bridge_backend
 
     config = default_config()
@@ -812,10 +813,14 @@ def test_fable_is_never_selected_from_automatic_claude_tiers():
         )
         assert result.backend == "claude"
         assert result.model != "claude-fable-5-1"
+        if tier is Tier.MAX:
+            assert result.model == "claude-fable-5-2"
+        else:
+            assert not result.model.startswith("claude-fable")
 
 
 @pytest.mark.parametrize("risk", ["auth", "security", "database_migration", "production"])
-def test_claude_risk_floor_uses_opus_without_changing_gpt(risk):
+def test_claude_risk_floor_uses_fable_without_changing_gpt(risk):
     from agentroute.providers import ensure_claude_bridge_backend
 
     config = default_config()
@@ -831,7 +836,7 @@ def test_claude_risk_floor_uses_opus_without_changing_gpt(risk):
         )
         assert result.tier == expected
         if backend == "claude":
-            assert result.model == "claude-opus-5-5"
+            assert result.model == "claude-fable-5-2"
     manual = Router(config).route(
         RouteContext(
             session_id="manual", latest_prompt="@claude @normal implement", task_risk_flags=[risk]
