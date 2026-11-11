@@ -37,9 +37,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ${{ github.workspace }}/.release-cargo-target
-          key: release-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install.sh', 'pyproject.toml') }}-${{ github.sha }}
+          key: release-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install.sh') }}-${{ github.sha }}
           restore-keys: |
-            release-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install.sh', 'pyproject.toml') }}-
+            release-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install.sh') }}-
+            release-cargo-${{ runner.os }}-${{ runner.arch }}-
       - name: Verify tag matches package version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
