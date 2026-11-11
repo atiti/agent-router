@@ -340,6 +340,15 @@ model capabilities. The prior input count is a lower bound, not proof that a fut
 request fits. Codex still owns compaction and final request admission. If every admitted provider
 is excluded, the turn stops with an explanation instead of escaping the candidate list.
 
+By default the selector ranks eligible subscription backends (`gpt` and `grok`)
+first. Claude must be explicitly added to this list after confirming its bridge uses
+`claude-code` credentials; API-key and auto modes may incur per-token charges. It considers other
+eligible backends when no subscription is eligible; unknown quota does
+not count as exhausted. Explicit provider and model choices still take precedence. Configure
+`routing.provider_selection.subscription_backends` for your billing arrangements, or set
+`prefer_subscriptions: false` for score-only ranking. Receipts include `billing_class` and
+`selection_pool` to explain the choice.
+
 Ranking uses task preferences, fresh subscription usage, configured budget headroom, an
 API-equivalent 4K-input/1K-output cost proxy, and a penalty for switching providers. Unknown usage
 and prices remain labeled unknown and receive conservative penalties. The cost proxy is not a

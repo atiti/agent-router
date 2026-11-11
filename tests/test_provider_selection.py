@@ -13,6 +13,7 @@ from agentroute.router import Router
 def setup_policy(monkeypatch):
     config = default_config()
     config.routing.provider_selection = ProviderSelectionConfig(mode="adaptive", cost_weight=0)
+    config.routing.provider_selection.subscription_backends = ["gpt", "claude", "grok"]
     for name in ("claude", "grok"):
         config.backends[name] = deepcopy(config.backends["deepseek"])
         config.backends[name].api_key_env = None
@@ -47,7 +48,7 @@ def pick(config, task="implementation", **kwargs):
         ("implementation", "gpt"),
         ("architecture", "claude"),
         ("research", "grok"),
-        ("formatting", "deepseek"),
+        ("formatting", "claude"),
     ],
 )
 def test_task_preferences_change_provider(setup_policy, task, expected):
@@ -268,3 +269,46 @@ def test_builtin_claude_limits_match_bridge_and_keep_long_history_eligible(setup
     assert selected == "claude"
     row = next(r for r in receipt["candidates"] if r["backend"] == "claude")
     assert row["prior_input_fits"]
+
+
+def test_subscription_preferred_despite_api_score_and_switching(setup_policy):
+    config, states = setup_policy
+    states["gpt"] = CapacityState("gpt", "healthy", "74% used", used_percent=74)
+    selected, receipt = pick(config, task="formatting", current_model="deepseek-flash",
+                             current_model_provider="agentroute-deepseek")
+    assert selected in {"gpt", "claude", "grok"}
+    assert receipt["selection_pool"] == "subscription"
+    assert next(r for r in receipt["candidates"] if r["backend"] == "deepseek")["eligible"]
+
+
+def test_metered_fallback_when_subscriptions_unavailable(setup_policy):
+    config, states = setup_policy
+    for name in ("gpt", "claude", "grok"):
+        states[name] = CapacityState(name, "exhausted", "quota reached")
+    selected, receipt = pick(config)
+    assert selected == "deepseek"
+    assert receipt["selection_pool"] == "all_eligible"
+
+
+def test_subscription_preference_can_be_disabled(setup_policy):
+    config, _ = setup_policy
+    config.routing.provider_selection.prefer_subscriptions = False
+    assert pick(config, task="formatting")[0] == "deepseek"
+
+
+def test_custom_subscription_backend_is_configurable(setup_policy):
+    config, _ = setup_policy
+    config.routing.provider_selection.subscription_backends = ["deepseek"]
+    assert pick(config)[0] == "deepseek"
+
+
+def test_claude_is_not_assumed_subscription_by_default():
+    assert "claude" not in ProviderSelectionConfig().subscription_backends
+
+
+def test_subscription_api_equivalent_price_does_not_penalize_score(setup_policy):
+    config, _ = setup_policy
+    config.routing.provider_selection.cost_weight = 2
+    _, receipt = pick(config)
+    assert all(row["cost_penalty"] == 0 for row in receipt["candidates"]
+               if row["backend"] in {"gpt", "claude", "grok"})

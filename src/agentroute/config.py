@@ -142,6 +142,10 @@ class ProviderSelectionConfig(BaseModel):
         "research": ["grok", "gpt", "claude", "deepseek"],
         "formatting": ["deepseek", "claude", "gpt", "grok"],
     })
+    prefer_subscriptions: bool = True
+    subscription_backends: list[str] = Field(
+        default_factory=lambda: ["gpt", "grok"], max_length=20
+    )
     switch_penalty: float = Field(default=1.0, ge=0, le=10)
     usage_weight: float = Field(default=4.0, ge=0, le=20)
     unknown_capacity_penalty: float = Field(default=1.0, ge=0, le=10)

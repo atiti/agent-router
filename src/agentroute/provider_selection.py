@@ -138,6 +138,7 @@ def select_provider(
         "task_type": task_type,
         "default_backend": default_backend,
         "locked_by": locked_by,
+        "prefer_subscriptions": policy.prefer_subscriptions,
     }
     if policy.mode == "static" or locked_by:
         receipt.update(selected_backend=default_backend, candidates=[])
@@ -162,7 +163,10 @@ def select_provider(
     for name in names:
         backend = config.backends.get(name)
         exclusions: list[str] = []
-        row: dict[str, object] = {"backend": name, "exclusions": exclusions}
+        row: dict[str, object] = {
+            "backend": name, "exclusions": exclusions,
+            "billing_class": "subscription" if name in policy.subscription_backends else "other",
+        }
         rows.append(row)
         if backend is None:
             exclusions.append("not_configured")
@@ -247,6 +251,7 @@ def select_provider(
         current = backend.codex_provider == context.current_model_provider
         switch_penalty = policy.switch_penalty if context.current_model and not current else 0
         cost_penalty = (
+            0.0 if name in policy.subscription_backends else
             policy.cost_weight * math.log1p(cost * 100) if cost is not None else policy.cost_weight
         )
         # Budget headroom influences ranking before the hard budget guard fires.
@@ -277,9 +282,14 @@ def select_provider(
             prior_input_fits=bool(required_context and window and required_context <= window),
         )
     eligible = [row for row in rows if row["eligible"]]
+    subscriptions = [row for row in eligible if row["billing_class"] == "subscription"]
+    ranked = subscriptions if policy.prefer_subscriptions and subscriptions else eligible
+    receipt["selection_pool"] = (
+        "subscription" if policy.prefer_subscriptions and subscriptions else "all_eligible"
+    )
     selected = (
         max(
-            eligible,
+            ranked,
             key=lambda row: (
                 row["score"],
                 config.backends[row["backend"]].codex_provider == context.current_model_provider
@@ -287,7 +297,7 @@ def select_provider(
                 else False,
             ),
         )["backend"]
-        if eligible
+        if ranked
         else None
     )
     receipt.update(
