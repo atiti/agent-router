@@ -25,7 +25,7 @@ BUILD_HOME=${AGENTROUTE_RELEASE_PREBUILT_HOME:-"$BUILD_ROOT/home"}
 mkdir -p "$PAYLOAD" "$OUTPUT_DIR"
 if [ -z "${AGENTROUTE_RELEASE_PREBUILT_HOME:-}" ]; then
     AGENTROUTE_HOME="$BUILD_HOME" AGENTROUTE_INSTALL_ACTIVATE=0 \
-        AGENTROUTE_KEEP_BUILD=0 "$PROJECT_ROOT/scripts/install.sh"
+        AGENTROUTE_KEEP_BUILD="${AGENTROUTE_RELEASE_KEEP_BUILD:-0}" "$PROJECT_ROOT/scripts/install.sh"
 fi
 for required in codex-bin codex-code-mode-host; do
     if [ ! -x "$BUILD_HOME/bin/$required" ]; then

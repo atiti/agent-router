@@ -13,6 +13,11 @@ permissions:
 
 jobs:
   build:
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.release-cargo-target
+      AGENTROUTE_CODEX_TARGET: ${{ github.workspace }}/.release-cargo-target
+      AGENTROUTE_RELEASE_KEEP_BUILD: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -25,6 +30,16 @@ jobs:
         with:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
+      - name: Restore Cargo downloads and compiled artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ github.workspace }}/.release-cargo-target
+          key: release-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install.sh', 'pyproject.toml') }}-${{ github.sha }}
+          restore-keys: |
+            release-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install.sh', 'pyproject.toml') }}-
       - name: Verify tag matches package version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
