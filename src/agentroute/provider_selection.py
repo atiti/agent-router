@@ -251,6 +251,7 @@ def select_provider(
         current = backend.codex_provider == context.current_model_provider
         switch_penalty = policy.switch_penalty if context.current_model and not current else 0
         cost_penalty = (
+            0.0 if name in policy.subscription_backends else
             policy.cost_weight * math.log1p(cost * 100) if cost is not None else policy.cost_weight
         )
         # Budget headroom influences ranking before the hard budget guard fires.

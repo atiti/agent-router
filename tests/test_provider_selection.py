@@ -13,6 +13,7 @@ from agentroute.router import Router
 def setup_policy(monkeypatch):
     config = default_config()
     config.routing.provider_selection = ProviderSelectionConfig(mode="adaptive", cost_weight=0)
+    config.routing.provider_selection.subscription_backends = ["gpt", "claude", "grok"]
     for name in ("claude", "grok"):
         config.backends[name] = deepcopy(config.backends["deepseek"])
         config.backends[name].api_key_env = None
@@ -299,3 +300,15 @@ def test_custom_subscription_backend_is_configurable(setup_policy):
     config, _ = setup_policy
     config.routing.provider_selection.subscription_backends = ["deepseek"]
     assert pick(config)[0] == "deepseek"
+
+
+def test_claude_is_not_assumed_subscription_by_default():
+    assert "claude" not in ProviderSelectionConfig().subscription_backends
+
+
+def test_subscription_api_equivalent_price_does_not_penalize_score(setup_policy):
+    config, _ = setup_policy
+    config.routing.provider_selection.cost_weight = 2
+    _, receipt = pick(config)
+    assert all(row["cost_penalty"] == 0 for row in receipt["candidates"]
+               if row["backend"] in {"gpt", "claude", "grok"})
