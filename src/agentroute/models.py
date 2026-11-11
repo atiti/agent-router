@@ -47,6 +47,7 @@ class ReasonCode(str, Enum):
     MODEL_OVERRIDE = "MODEL_OVERRIDE"
     CLASSIFIER_REASONING_EFFORT = "CLASSIFIER_REASONING_EFFORT"
     MODEL_REASONING_FLOOR = "MODEL_REASONING_FLOOR"
+    SUPERVISOR_CAPABILITY_FLOOR = "SUPERVISOR_CAPABILITY_FLOOR"
     FAST_QUALITY_FLOOR = "FAST_QUALITY_FLOOR"
     CONTINUATION_CAPABILITY_FLOOR = "CONTINUATION_CAPABILITY_FLOOR"
     RISK_FLOOR = "RISK_FLOOR"
@@ -103,6 +104,8 @@ class RouteContext(BaseModel):
     interrupted_model: str | None = None
     interrupted_model_provider: str | None = None
     task_definition: str | None = None
+    coordination_role: str | None = None
+    ongoing_objective: str | None = None
     agent_requested_tier: Tier | None = None
     agent_request_reason_hash: str | None = None
     touched_files: int = 0

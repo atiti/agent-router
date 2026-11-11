@@ -7,11 +7,16 @@
 - Show how an agent responds to each independent progress review: accepted advice, any disagreement and its reason, and the next action.
 - Use the routed turn model for compaction after account failover so compaction respects the selected account's model support.
 
+- Preserve worker packet bindings on Herdr resume; add recipient acknowledgments, persistent inactivity/checkpoint monitoring and conservative verified-completion cleanup that retains conversation and message history.
+
+- Add Herdr packet worker dispatch, supervisor anchors and live agent identity reporting. Worker panes accept direct keyboard input, shared clients forward pane context per thread, and new workers clear inherited `NO_COLOR` for terminal color detection.
 - Upgrade the routed Codex fork and matching Code Mode host to upstream 0.167.0.
 
 - Require fresh per-account model support for automatic ChatGPT account failover, block known incompatible account targets, and prevent interrupted turns from restoring a rejected model. Recover to the preferred account below the quota recovery margin and show selection/access reasons in the account banner.
 
 - Add an `account-models` doctor check that compares each ChatGPT account's GPT tier targets with that account's own fresh model catalog. Codex rejects a model the signed-in account does not list, which previously surfaced as a compaction error after a model switch. The check points to `agentroute capacity profile-model` for a per-account override.
+- Read current native tool/compaction receipts, preserve unobserved coverage, and distinguish unpriced costs and classifier errors without latency in analytics; compare savings on the same priced-turn population.
+- Allow an optional classifier-scoped TLS CA bundle for catalog and inference requests, preserving default trust behavior and certificate verification.
 
 ## 0.5.82 — 2026-11-02
 

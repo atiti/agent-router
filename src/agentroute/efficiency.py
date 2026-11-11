@@ -38,7 +38,7 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
     responses: dict[str, dict] = {}
     tools: dict[tuple[str, str], dict] = {}
     started = False
-    compactions = 0
+    compactions: set[str] = set()
     progress_reviews: dict[str, dict[str, Any] | None] = {}
     for line in lines:
         try:
@@ -59,9 +59,25 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
             if kind in {"task_started", "turn_started"}:
                 started = True
             elif kind == "context_compacted":
-                compactions += 1
+                compactions.add(str(payload.get("id") or event.get("timestamp") or line))
             elif kind == "item_completed":
                 item = payload.get("item")
+                if not isinstance(item, dict):
+                    continue
+                item_kind = item.get("type")
+                item_id = item.get("id")
+                if isinstance(item_id, str) and item_id:
+                    if item_kind == "ContextCompaction":
+                        compactions.add(item_id)
+                    tool_kind = {
+                        "CommandExecution": "command",
+                        "McpToolCall": "mcp",
+                        "FileChange": "patch",
+                        "CollabAgentToolCall": "collab",
+                        "DynamicToolCall": "dynamic",
+                    }.get(item_kind)
+                    if tool_kind:
+                        tools[(tool_kind, item_id.removeprefix("exec-"))] = item
                 if isinstance(item, dict) and str(item.get("id", "")).startswith("goal-review-"):
                     content = item.get("content")
                     if isinstance(content, list):
@@ -110,7 +126,8 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
             elif kind in {"exec_command_end", "mcp_tool_call_end"}:
                 call_id = payload.get("call_id")
                 if isinstance(call_id, str) and call_id:
-                    tools[(kind, call_id)] = payload
+                    tool_kind = "command" if kind == "exec_command_end" else "mcp"
+                    tools.setdefault((tool_kind, call_id.removeprefix("exec-")), payload)
     if not responses and not tools and not started and not compactions and not progress_reviews:
         return {}
     durations = []
@@ -121,13 +138,21 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
             secs, nanos = _number(duration.get("secs")), _number(duration.get("nanos"))
             if secs is not None and nanos is not None and nanos < 1_000_000_000:
                 durations.append(secs * 1000 + nanos / 1_000_000)
-        if kind == "exec_command_end":
-            failures += isinstance(tool.get("exit_code"), int) and tool["exit_code"] != 0
-        else:
+        failed = tool.get("status") == "failed"
+        if kind == "command":
+            code = tool.get("exit_code")
+            failed |= isinstance(code, int) and not isinstance(code, bool) and code != 0
+        elif kind == "mcp":
             result = tool.get("result")
             if isinstance(result, dict):
                 ok = result.get("Ok")
-                failures += "Err" in result or (isinstance(ok, dict) and ok.get("isError") is True)
+                failed |= (
+                    "Err" in result or result.get("isError") is True
+                    or (isinstance(ok, dict) and ok.get("isError") is True)
+                )
+        elif kind == "dynamic":
+            failed |= tool.get("success") is False
+        failures += bool(failed)
     totals = {key: 0 for key in ("input_tokens", "cached_input_tokens", "output_tokens")}
     for response in responses.values():
         usage = response.get("usage")
@@ -137,17 +162,38 @@ def execution_receipt(path: object, turn_id: object) -> dict[str, Any]:
     last = next(reversed(responses.values()), {})
     last_usage = last.get("usage")
     last_usage = last_usage if isinstance(last_usage, dict) else {}
+    # Preserve individual request counters; cumulative turn totals cannot identify
+    # which requests crossed a model's long-context price threshold.
+    request_usage = [
+        {
+            "response_id": response_id,
+            "usage": {
+                key: value
+                for key in (
+                    "input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+                    "output_tokens",
+                )
+                if isinstance(response.get("usage"), dict)
+                and (value := response["usage"].get(key)) is not None
+                and isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            },
+        }
+        for response_id, response in responses.items()
+    ]
     return {
-        "version": 1,
+        "version": 2,
         "source": "codex_rollout",
         "coverage": "turn_start_seen" if started else "partial",
         "tail_truncated": bool(offset),
         "response_count": len(responses),
+        "request_usage_version": 1,
+        "request_usage": request_usage,
         "observed_tool_completions": len(tools),
+        "tool_events_observed": bool(tools),
         "observed_tool_failures": int(failures),
         "tool_duration_receipts": len(durations),
         "tool_work_ms": sum(durations) if durations else None,
-        "observed_compactions": compactions,
+        "observed_compactions": len(compactions),
         "progress_review_count": len(progress_reviews),
         "progress_review_usage_observed": sum(
             value is not None for value in progress_reviews.values()
@@ -178,7 +224,7 @@ def efficiency_report(rows: list, pricing: Any = None) -> dict[str, Any]:
             receipt = json.loads(row["execution_receipt"] or "{}")
         except (KeyError, IndexError, TypeError, ValueError):
             continue
-        if isinstance(receipt, dict) and receipt.get("version") == 1:
+        if isinstance(receipt, dict) and receipt.get("version") in {1, 2}:
             receipts.append(receipt)
     inputs = sum(r.get("input_tokens", 0) for r in receipts)
     cached = sum(r.get("cached_input_tokens", 0) for r in receipts)
@@ -198,14 +244,22 @@ def efficiency_report(rows: list, pricing: Any = None) -> dict[str, Any]:
         and canonical_model(review["model"], pricing) in pricing.models
         and "cache_write_input_tokens" in review
     ]
+    tool_receipts = [r for r in receipts if r.get("observed_tool_completions", 0) > 0]
+    timed = [r["tool_work_ms"] for r in tool_receipts if _number(r.get("tool_work_ms")) is not None]
     return {
         "measured_turns": len(receipts),
         "unmeasured_turns": len(rows) - len(receipts),
         "partial_turns": sum(r.get("coverage") != "turn_start_seen" for r in receipts),
         "response_count": sum(r.get("response_count", 0) for r in receipts),
         "observed_tool_completions": sum(r.get("observed_tool_completions", 0) for r in receipts),
-        "observed_tool_failures": sum(r.get("observed_tool_failures", 0) for r in receipts),
-        "tool_work_ms": sum(r.get("tool_work_ms") or 0 for r in receipts),
+        "observed_tool_failures": (
+            sum(r.get("observed_tool_failures", 0) for r in tool_receipts)
+            if tool_receipts else None
+        ),
+        "tool_work_ms": sum(timed) if timed else None,
+        "tool_duration_receipts": sum(r.get("tool_duration_receipts", 0) for r in tool_receipts),
+        "legacy_tool_unverified_turns": sum(r.get("version") == 1 for r in receipts),
+        "tool_unobserved_turns": len(rows) - len(tool_receipts),
         "observed_compactions": sum(r.get("observed_compactions", 0) for r in receipts),
         "progress_review_priced_count": len(priced),
         "progress_review_unpriced_or_unobserved_count": sum(

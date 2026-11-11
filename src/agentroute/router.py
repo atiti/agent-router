@@ -395,6 +395,14 @@ class Router:
                     detail="retained active model: estimated next-request cache reuse is cheaper",
                 )
             )
+        # The current short coordination report does not replace the supervisor's
+        # continuing objective. Explicit user routes and policy caps still win.
+        if not manual and context.coordination_role == "supervisor" and proposed < Tier.SMART:
+            proposed = Tier.SMART
+            contributions.append(ScoreContribution(
+                code=ReasonCode.SUPERVISOR_CAPABILITY_FLOOR, weight=0,
+                detail="registered supervisor retains at least SMART for its ongoing objective",
+            ))
         max_tier = Tier.parse(self.config.policy.max_tier)
         if requested_model and model_target is not None:
             policy_profile = (

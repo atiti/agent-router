@@ -58,6 +58,104 @@ def test_missing_or_malformed_receipt_is_not_zero_work(tmp_path):
     assert execution_receipt(str(path), None) == {}
 
 
+def test_request_receipts_keep_observed_cache_writes_and_omit_unknown_counters(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    response = {
+        "type": "token_usage_record",
+        "payload": {
+            "turn_id": "t", "response_id": "r-1", "private": "do not retain",
+            "usage": {
+                "input_tokens": 300_000, "cached_input_tokens": 200_000,
+                "cache_write_input_tokens": 90_000, "output_tokens": 10,
+                "private": "do not retain",
+            },
+        },
+    }
+    missing = {
+        "type": "token_usage_record",
+        "payload": {"turn_id": "t", "response_id": "r-2", "usage": {"input_tokens": 10}},
+    }
+    records = [event("task_started"), response, response, missing]
+    path.write_text("\n".join(map(json.dumps, records)))
+    receipt = execution_receipt(str(path), "t")
+    assert receipt["request_usage_version"] == 1
+    assert len(receipt["request_usage"]) == 2
+    assert receipt["request_usage"][0]["usage"]["cache_write_input_tokens"] == 90_000
+    assert receipt["request_usage"][1]["usage"] == {"input_tokens": 10}
+    assert "private" not in json.dumps(receipt)
+
+
+def test_native_items_count_tools_compaction_and_failures_without_payloads(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    command = event("item_completed", item={
+        "type": "CommandExecution", "id": "cmd", "status": "completed",
+        "exit_code": 2, "duration": {"secs": 1, "nanos": 500_000_000},
+        "aggregated_output": "private output", "command": "private command",
+    })
+    mcp = event("item_completed", item={
+        "type": "McpToolCall", "id": "mcp", "status": "failed",
+        "result": {"Ok": {"isError": True, "content": "private response"}},
+        "duration": {"secs": 2, "nanos": 0},
+    })
+    compaction = event("item_completed", item={"type": "ContextCompaction", "id": "comp"})
+    path.write_text("\n".join(map(json.dumps, [
+        event("task_started"), command, command,
+        event("exec_command_end", call_id="cmd", exit_code=2,
+              duration={"secs": 1, "nanos": 500_000_000}),
+        mcp, compaction, compaction,
+        event("item_completed", turn="other", item={
+            "type": "CommandExecution", "id": "other", "exit_code": 1,
+        }),
+    ])))
+
+    receipt = execution_receipt(str(path), "t")
+
+    assert receipt["version"] == 2
+    assert receipt["observed_tool_completions"] == 2
+    assert receipt["observed_tool_failures"] == 2
+    assert receipt["observed_compactions"] == 1
+    assert receipt["tool_work_ms"] == 3500
+    assert "private" not in json.dumps(receipt)
+
+
+def test_unobserved_timing_and_legacy_zero_counts_stay_unknown():
+    report = efficiency_report([{"execution_receipt": json.dumps({
+        "version": 1, "observed_tool_completions": 0,
+        "observed_tool_failures": 0, "tool_work_ms": None,
+    })}])
+
+    assert report["tool_work_ms"] is None
+    assert report["observed_tool_failures"] is None
+    assert report["legacy_tool_unverified_turns"] == 1
+
+
+def test_reparsed_legacy_rollout_does_not_establish_tool_coverage(tmp_path):
+    path = tmp_path / "rollout"
+    path.write_text(json.dumps(event("task_started")))
+    receipt = execution_receipt(str(path), "t")
+    assert receipt["version"] == 2
+    assert receipt["tool_events_observed"] is False
+    report = efficiency_report([{"execution_receipt": json.dumps(receipt)}])
+    assert report["observed_tool_failures"] is None
+    assert report["tool_work_ms"] is None
+    assert report["tool_unobserved_turns"] == 1
+
+
+def test_dynamic_tool_failure_and_duration_are_observed_once(tmp_path):
+    path = tmp_path / "rollout"
+    tool = event("item_completed", item={
+        "type": "DynamicToolCall", "id": "dynamic", "status": "completed",
+        "success": False, "duration": {"secs": 2, "nanos": 0},
+        "arguments": {"private": "input"}, "content_items": ["private output"],
+    })
+    path.write_text("\n".join(map(json.dumps, [tool, tool])))
+    receipt = execution_receipt(str(path), "t")
+    assert receipt["observed_tool_completions"] == 1
+    assert receipt["observed_tool_failures"] == 1
+    assert receipt["tool_work_ms"] == 2000
+    assert "private" not in json.dumps(receipt)
+
+
 def test_progress_review_receipts_are_bounded_deduplicated_and_private(tmp_path):
     path = tmp_path / "rollout.jsonl"
     item = {

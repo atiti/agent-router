@@ -1,4 +1,4 @@
-"""A watch-only keyboard boundary around hc's resizing terminal attachment."""
+"""Interactive, resizable terminal attachment for Herdr worker panes."""
 from __future__ import annotations
 
 import errno
@@ -13,12 +13,7 @@ import tty
 
 
 def watch(argv: list[str], environment: dict[str, str]) -> int:
-    """Relay output and window size, discard input; Ctrl+\\ closes only the viewer.
-
-    hc --observe intentionally cannot resize. Its 200x120 headless grid cannot
-    paint faithfully into a smaller TUI pane. Give the normal attachment a PTY
-    matching this pane, but never forward any human keyboard bytes into that PTY.
-    """
+    """Relay input, output and size; Ctrl+\\ closes only the attachment."""
     input_fd, output_fd = 0, 1
     previous = termios.tcgetattr(input_fd)
     master, slave = pty.openpty()
@@ -60,7 +55,8 @@ def watch(argv: list[str], environment: dict[str, str]) -> int:
                 if not keys or b"\x1c" in keys or b"\x1b[92;5u" in keys:
                     detached = True
                     break
-                # Never forward typed input, terminal replies, or paste to hc.
+                while keys:
+                    keys = keys[os.write(master, keys):]
             if process.poll() is not None:
                 break
     finally:
