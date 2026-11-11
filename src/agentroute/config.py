@@ -103,6 +103,7 @@ class ClassifierConfig(BaseModel):
     model: str = "gpt-5.6-luna"
     api_key_env: str = "AGENTROUTE_CLASSIFIER_API_KEY"
     api_key_file: str | None = None
+    tls_ca_file: str | None = None
     allow_remote: bool = False
     allow_private_http: bool = False
     timeout_seconds: float = Field(default=5.0, ge=0.1, le=30)
