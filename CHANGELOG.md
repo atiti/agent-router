@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.83 — 2026-11-10
+## 0.5.83 — 2026-11-11
 
 - Add visible Herdr supervisor and worker sessions, separately claimed work-packet dispatch, live status and conversation titles, worker follow-up, and recovery and cleanup controls.
 - Give supervisors a durable inbox for worker reports and coordination, with role-aware routing, bounded continuation and recovery of uncertain turn admissions. Discover enrollment after an ordinary thread becomes idle while preserving interruption, pause and missing-inbox holds.
@@ -17,6 +17,7 @@
 - Add an `account-models` doctor check that compares each ChatGPT account's GPT tier targets with that account's own fresh model catalog. Codex rejects a model the signed-in account does not list, which previously surfaced as a compaction error after a model switch. The check points to `agentroute capacity profile-model` for a per-account override.
 - Read current native tool/compaction receipts, preserve unobserved coverage, and distinguish unpriced costs and classifier errors without latency in analytics; compare savings on the same priced-turn population.
 - Allow an optional classifier-scoped TLS CA bundle for catalog and inference requests, preserving default trust behavior and certificate verification.
+- Show configured tier reasoning and effective context in the model table, skip full audit scans when capacity management is disabled, and integrate reviewed dependency and CI action updates.
 
 ## 0.5.82 — 2026-11-02
 
