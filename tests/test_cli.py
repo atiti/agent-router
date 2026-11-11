@@ -1,6 +1,7 @@
 import json
 from unittest.mock import call, patch
 
+from rich.console import Console
 from rich.text import Text
 from typer.testing import CliRunner
 
@@ -8,6 +9,9 @@ from agentroute.capacity import CapacityState
 from agentroute.cli import app
 from agentroute.config import (
     ClaudeSubscriptionProfile,
+    ExecutionBackendConfig,
+    ModelCapabilities,
+    ModelTarget,
     SubscriptionProfileConfig,
     default_config,
     load_config,
@@ -17,6 +21,67 @@ from agentroute.profiles import ProfileStatus
 from agentroute.providers import ensure_claude_bridge_backend
 
 runner = CliRunner()
+
+
+def test_models_reports_configured_efforts_and_tier_context_overrides(monkeypatch):
+    config = default_config()
+    config.backends = {
+        "shared": ExecutionBackendConfig(
+            enabled=True,
+            codex_provider="example",
+            display_name="Shared",
+            tiers={
+                "fast": ModelTarget(model="model-a", reasoning_effort="medium", context_window=500),
+                "normal": ModelTarget(model="model-a", reasoning_effort="xhigh"),
+                "smart": ModelTarget(model="model-b"),
+                "max": ModelTarget(model="model-c"),
+            },
+        ),
+    }
+    config.capabilities.models = {
+        "model-a": ModelCapabilities(reasoning=True, context_window=900),
+        "model-b": ModelCapabilities(reasoning=False, context_window=300),
+        "model-c": ModelCapabilities(reasoning=None, context_window=None),
+    }
+    monkeypatch.setattr("agentroute.cli.load_config", lambda: config)
+
+    with patch("agentroute.cli.console", Console(width=180)):
+        result = runner.invoke(app, ["models"])
+
+    assert result.exit_code == 0, result.output
+    lines = [" ".join(line.replace("│", " ").split()) for line in result.output.splitlines()]
+    assert "Effort" in result.output
+    assert any("FAST model-a" in line and "yes medium" in line and "500" in line for line in lines)
+    assert any("NORMAL model-a" in line and "yes xhigh" in line and "900" in line for line in lines)
+    assert any("SMART model-b" in line and "no unset" in line and "300" in line for line in lines)
+    assert any("MAX model-c" in line and "unknown unset" in line for line in lines)
+    assert "Effort can change per request" in result.output
+
+
+def test_models_shows_complete_values_at_normal_terminal_width(monkeypatch):
+    config = default_config()
+    config.capabilities.models["claude-sonnet-5-5"] = ModelCapabilities(reasoning=True)
+    config.backends = {
+        "local": ExecutionBackendConfig(
+            enabled=True,
+            codex_provider="local",
+            display_name="Local",
+            tool_compatibility="functions_and_apply_patch",
+            tiers={
+                "normal": ModelTarget(model="qwen3-4b-instruct-2507", context_window=65_536),
+                "smart": ModelTarget(model="claude-sonnet-5-5", reasoning_effort="medium"),
+            },
+        ),
+    }
+    monkeypatch.setattr("agentroute.cli.load_config", lambda: config)
+    with patch("agentroute.cli.console", Console(width=120)):
+        result = runner.invoke(app, ["models"])
+    assert result.exit_code == 0
+    lines = result.output.splitlines()
+    assert "qwen3-4b-instru" in result.output
+    assert "-2507" in result.output
+    assert "…" not in "\n".join(line for line in lines if "│" in line)
+    assert "65,536" in result.output
 
 
 def test_help_lists_prompt_tags(tmp_path, monkeypatch):
