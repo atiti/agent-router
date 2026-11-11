@@ -8,6 +8,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
+from .claude_models import MODERN_CLAUDE_MODELS
 from .models import Tier
 
 
@@ -620,6 +621,11 @@ def default_config() -> AppConfig:
         ),
     }
     config.capacity.profiles["default"] = SubscriptionProfileConfig(priority=0)
+    for model in MODERN_CLAUDE_MODELS:
+        config.capabilities.models.setdefault(model, ModelCapabilities(
+            tool_calling="apply_patch_only", reasoning=True,
+            context_window=1_000_000, pricing_model=model,
+        ))
     config.capacity.active_profile = "default"
     return config
 

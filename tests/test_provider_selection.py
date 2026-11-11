@@ -214,9 +214,15 @@ def test_revalidated_capacity_cannot_escape_adaptive_allowlist(setup_policy, mon
     config, _ = setup_policy
     config.routing.provider_selection.candidates = ["gpt"]
     config.capacity.enabled = True
-    monkeypatch.setattr("agentroute.router.backend_state", lambda *a, **kw: CapacityState(
-        "gpt", "exhausted", "quota changed after selection", "subscription",
-    ))
+    monkeypatch.setattr(
+        "agentroute.router.backend_state",
+        lambda *a, **kw: CapacityState(
+            "gpt",
+            "exhausted",
+            "quota changed after selection",
+            "subscription",
+        ),
+    )
     decision = Router(config).route(context())
     assert decision.capacity_blocked
     assert decision.backend == "gpt"
@@ -227,8 +233,9 @@ def test_claude_pool_missing_sample_is_unknown_not_zero(monkeypatch):
 
     config = default_config()
     monkeypatch.setattr("agentroute.claude_profiles.profile_account_identity", lambda _: "id")
-    monkeypatch.setattr("agentroute.claude_profile_pool.ClaudeProfilePool._recorded_percent",
-                        lambda *a: None)
+    monkeypatch.setattr(
+        "agentroute.claude_profile_pool.ClaudeProfilePool._recorded_percent", lambda *a: None
+    )
     state = _claude_capacity(config, CapacityState("claude", "healthy", "budget okay"))
     assert state.status == "unknown"
     assert state.used_percent is None
@@ -245,3 +252,19 @@ def test_candidate_cannot_bypass_its_backend_specific_risk_floor(setup_policy):
     manual = Router(config).route(context(latest_prompt="@smart Review security of this change"))
     assert manual.tier is Tier.SMART
     assert not manual.capacity_blocked
+
+
+def test_builtin_claude_limits_match_bridge_and_keep_long_history_eligible(setup_policy):
+    from agentroute.claude_models import MODERN_CLAUDE_MODELS
+    from agentroute.config import model_capabilities
+
+    config, _ = setup_policy
+    for model in MODERN_CLAUDE_MODELS:
+        assert model_capabilities(config, "claude", model).context_window == 1_000_000
+    config.backends["claude"].tiers["smart"].model = "claude-sonnet-5-5"
+    selected, receipt = pick(
+        config, "architecture", previous_response_usage={"input_tokens": 800_000}
+    )
+    assert selected == "claude"
+    row = next(r for r in receipt["candidates"] if r["backend"] == "claude")
+    assert row["prior_input_fits"]
