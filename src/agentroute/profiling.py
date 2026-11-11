@@ -12,7 +12,7 @@ from typing import Any
 
 from .config import PricingConfig, data_dir
 from .context_profile import capture_enabled, count, profile_root, summarize_context
-from .pricing import canonical_model
+from .pricing import canonical_model, long_context_multipliers
 
 _USAGE_KEYS = (
     "input_tokens",
@@ -377,11 +377,8 @@ def price_usage(record: dict[str, Any], pricing: PricingConfig) -> dict[str, Any
         assumptions.append("cache write TTL missing; using configured default write rate")
     if one_hour and rate.cache_write_1h_per_million is None:
         return {"priced": False, "total_usd": None, "reason": "1h cache write price missing"}
-    multiplier = (
-        rate.long_context_multiplier
-        if rate.long_context_threshold_tokens is not None
-        and usage["input_tokens"] > rate.long_context_threshold_tokens
-        else 1
+    multiplier, output_multiplier = long_context_multipliers(
+        rate, usage["input_tokens"]
     )
     components = {
         "uncached_input": uncached * rate.input_per_million * multiplier / 1_000_000,
@@ -395,7 +392,7 @@ def price_usage(record: dict[str, Any], pricing: PricingConfig) -> dict[str, Any
         * multiplier
         / 1_000_000,
         "cache_write_unknown_ttl": unknown * write_rate * multiplier / 1_000_000,
-        "output": usage["output_tokens"] * rate.output_per_million * multiplier / 1_000_000,
+        "output": usage["output_tokens"] * rate.output_per_million * output_multiplier / 1_000_000,
     }
     return {
         "priced": True,

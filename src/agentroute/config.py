@@ -103,6 +103,7 @@ class ClassifierConfig(BaseModel):
     model: str = "gpt-5.6-luna"
     api_key_env: str = "AGENTROUTE_CLASSIFIER_API_KEY"
     api_key_file: str | None = None
+    tls_ca_file: str | None = None
     allow_remote: bool = False
     allow_private_http: bool = False
     timeout_seconds: float = Field(default=5.0, ge=0.1, le=30)
@@ -243,6 +244,7 @@ class ModelPrice(BaseModel):
     long_context_threshold_tokens: int | None = Field(default=None, gt=0)
     long_context_threshold_inclusive: bool = False
     long_context_multiplier: float = Field(default=1, ge=1)
+    long_context_output_multiplier: float | None = Field(default=None, ge=1)
 
 
 class ModelCapabilities(BaseModel):
@@ -306,6 +308,17 @@ class PricingConfig(BaseModel):
                 input_per_million=2.00,
                 cached_input_per_million=0.20,
                 output_per_million=10.00,
+            ),
+            # https://developers.openai.com/api/docs/models/gpt-6.1-terra
+            # Standard API rates, checked 2026-11-03; default 30-minute cache writes.
+            "gpt-6.1-terra": ModelPrice(
+                input_per_million=1.00,
+                cached_input_per_million=0.05,
+                cache_write_per_million=1.25,
+                output_per_million=5.00,
+                long_context_threshold_tokens=272_000,
+                long_context_multiplier=2,
+                long_context_output_multiplier=1.5,
             ),
             "gpt-6.1-sol": ModelPrice(
                 input_per_million=2.00,

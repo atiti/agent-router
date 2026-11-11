@@ -737,6 +737,13 @@ agentroute classifier-enable \
 
 Use `agentroute classifier-disable` to return to deterministic-only routing.
 
+For an HTTPS classifier that needs a trust bundle independent of the launching
+process, set `routing.classifier.tls_ca_file` to a readable PEM CA bundle in your
+AgentRoute configuration. It applies only to that OpenAI-compatible classifier's
+catalog and inference requests. Leaving it unset preserves the usual environment
+and system trust selection. Explicit invalid bundles fail closed; certificate and
+hostname verification remain enabled. Local HTTP and other services are unchanged.
+
 ### Hosted TypeSafe JEV as primary classifier
 
 Use [TypeSafe's official System One API](https://docs.typesafe.ai/api) with a private key file
@@ -889,6 +896,24 @@ and a different model may produce a different number of tokens. Grok rates were 
 [Grok guide](docs/grok-bridge.md#usage-and-cost-estimates) for rates and estimate limitations.
 Grok's subscription FAST model has no verified published rate and is reported as unpriced
 unless you configure one; use a priced model for local cost ceilings.
+
+GPT-6.1 Terra Standard API rates were checked on 2026-11-03 against the
+[model documentation](https://developers.openai.com/api/docs/models/gpt-6.1-terra) and
+[pricing table](https://developers.openai.com/api/docs/pricing): per million tokens, input is
+$1, cached input $0.05, default 30-minute cache writes $1.25, and output $5. A request
+with more than 272,000 input tokens uses twice the input/cache rates and 1.5 times the
+output rate. `long_context_output_multiplier` supports this distinction; omitting it
+preserves the existing shared input/output multiplier. These are Standard API equivalents;
+subscription credits, other service tiers, regional prices and 12-hour cache writes differ.
+
+New Stop-hook receipts retain deduplicated request token counters, including observed cache
+writes, without prompt or tool content. `stats` and `analytics` price each request and reconcile
+the sum against the turn total. The configured rate uses the turn's attributed model; this is
+an estimate, not independent billing proof for every inference. Incomplete or mismatched request
+receipts are excluded from both sides of savings comparisons and named in the output. Older
+aggregate-only receipts can be priced when rates are flat or their total input remains below
+the long-context threshold; a larger aggregate cannot establish the request price tier. Local
+budget guards conservatively use the aggregate upper bound when request detail is unavailable.
 
 For a local model mix and timeline, use:
 

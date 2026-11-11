@@ -513,7 +513,10 @@ def codex_user_prompt_submit(
         agent_request = (
             parse_agent_model_request(task_definition) if is_confirmation(routing_input) else None
         )
-        daily_spend, monthly_spend = backend_spend(store.rows_since(), config)
+        # Spend affects API budget routing only while capacity management is enabled.
+        daily_spend, monthly_spend = (
+            backend_spend(store.rows_since(), config) if config.capacity.enabled else ({}, {})
+        )
         rate_limits = (
             dict(payload.get("rate_limits"))
             if isinstance(payload.get("rate_limits"), dict)
