@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections import Counter
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -963,12 +964,22 @@ def hook_command(provider: str, event: str) -> None:
 
 
 @app.command("why")
-def why_command(session: str | None = None) -> None:
-    """Explain the latest recorded routing decision."""
-    row = AuditStore().latest(session)
+def why_command(session: str | None = None, decision_id: int | None = None) -> None:
+    """Explain the latest decision, or a specific decision ID."""
+    store = AuditStore()
+    if decision_id is not None:
+        with store.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM routing_decisions WHERE id = ?", (decision_id,)
+            ).fetchone()
+        if row is not None and session and row["session_id"] != session:
+            row = None
+    else:
+        row = store.latest(session)
     if row is None:
         console.print("No routing decisions recorded.")
         raise typer.Exit(1)
+    console.print(f"Decision {row['id']} · {row['created_at']} · session {row['session_id']}")
     console.print(
         f"[bold]{row['selected_tier'].upper()}[/bold] → {row['model']} "
         f"via {row['backend']}/{row['model_provider']} ({row['route_scope']})"
@@ -1011,9 +1022,53 @@ def why_command(session: str | None = None) -> None:
         )
     if row["agent_requested_tier"]:
         console.print(f"Approved agent request: {row['agent_requested_tier']}")
-    goal_routing = json.loads(row["selection_receipt"] or "{}").get("goal_routing")
+    try:
+        goal_routing = json.loads(row["selection_receipt"] or "{}").get("goal_routing")
+    except (TypeError, json.JSONDecodeError, AttributeError):
+        goal_routing = None
     if goal_routing:
         console.print(f"Goal routing: {goal_routing['goal_id']} · {goal_routing['mode']}")
+    try:
+        receipt = json.loads(row["selection_receipt"] or "{}")
+        if not isinstance(receipt, dict):
+            receipt = {}
+    except (TypeError, json.JSONDecodeError):
+        receipt = {}
+    provider = receipt.get("provider_selection")
+    if isinstance(provider, dict):
+        console.print(
+            f"Provider selection: mode={provider.get('mode', 'unknown')}; "
+            f"pool={provider.get('selection_pool', 'not recorded')}; "
+            f"recommended={provider.get('recommended_backend') or 'none'}; "
+            f"selected={provider.get('selected_backend') or 'none'}; "
+            f"lock={provider.get('locked_by') or 'none'}"
+        )
+        for candidate in provider.get("candidates", []):
+            if not isinstance(candidate, dict):
+                continue
+            exclusions = ", ".join(str(x) for x in candidate.get("exclusions", [])) or "none"
+            used = candidate.get("used_percent")
+            console.print(
+                f"  {candidate.get('backend', '?')}: "
+                f"billing={candidate.get('billing_class', 'not recorded')}, "
+                f"eligible={candidate.get('eligible', 'unknown')}, "
+                f"score={candidate.get('score', 'unknown')}, "
+                f"capacity={candidate.get('capacity_status', 'unknown')}, "
+                f"used={used if used is not None else 'unknown'}%, "
+                f"excluded={exclusions}"
+            )
+            console.print(
+                "    score components: "
+                f"suitability={candidate.get('suitability', 'unknown')}, "
+                f"usage_penalty={candidate.get('usage_penalty', 'unknown')}, "
+                f"switch_penalty={candidate.get('switch_penalty', 'unknown')}, "
+                f"cost_penalty={candidate.get('cost_penalty', 'unknown')}, "
+                f"budget_fraction={candidate.get('budget_fraction', 'unknown')}"
+            )
+    console.print(
+        f"Turn outcome: {row['turn_outcome'] or 'unknown'}; "
+        f"feedback: {row['outcome_label'] or 'unlabeled'}"
+    )
     if row["selection_receipt_hash"]:
         console.print(f"Selection receipt: {row['selection_receipt_hash']}")
     for item in json.loads(row["contributions"]):
@@ -1106,7 +1161,7 @@ def audit_report_command(limit: int = 500) -> None:
     llm = [
         row
         for row in automatic
-        if row["classification_source"] in {"local_llm", "private_llm", "cloud_llm"}
+        if row["classifier_latency_ms"] is not None
     ]
     latencies = [float(row["classifier_latency_ms"]) for row in llm if row["classifier_latency_ms"]]
     if latencies:
@@ -1121,6 +1176,38 @@ def audit_report_command(limit: int = 500) -> None:
                 usage_totals[name] = usage_totals.get(name, 0) + value
     if usage_totals:
         console.print(f"LLM usage totals: {json.dumps(usage_totals, sort_keys=True)}")
+
+    def counts(label: str, values: list[str]) -> None:
+        counter = Counter(values)
+        console.print(f"{label}: " + (", ".join(
+            f"{name}={count}" for name, count in sorted(counter.items())
+        ) if counter else "none"))
+
+    counts("Classifier status", [str(row["classifier_status"] or "unknown") for row in rows])
+    counts("Classifier versions", [str(row["classifier_version"] or "unknown") for row in rows])
+    counts("Classified task types", [str(row["classifier_task_type"] or "unknown") for row in rows])
+    counts("Application states", [str(row["route_application_state"] or "unknown") for row in rows])
+    counts("Turn outcomes", [str(row["turn_outcome"] or "unknown") for row in rows])
+    receipts = []
+    for row in automatic:
+        try:
+            selection = json.loads(row["selection_receipt"] or "{}").get("provider_selection")
+        except (TypeError, json.JSONDecodeError, AttributeError):
+            continue
+        if isinstance(selection, dict):
+            receipts.append(selection)
+    console.print(f"Provider receipts: {len(receipts)} of {len(automatic)} automatic decisions")
+    counts("Provider modes", [str(x.get("mode") or "unknown") for x in receipts])
+    counts("Selection pools", [str(x.get("selection_pool") or "not recorded") for x in receipts])
+    counts("Selected providers", [str(x.get("selected_backend") or "none") for x in receipts])
+    counts("Candidate exclusions", [str(reason) for receipt in receipts
+        for candidate in receipt.get("candidates", []) if isinstance(candidate, dict)
+        for reason in candidate.get("exclusions", [])])
+    counts("Provider locks", [str(x.get("locked_by")) for x in receipts if x.get("locked_by")])
+    console.print(
+        "Feedback is voluntary and may be biased; unlabeled, pending and older decisions "
+        "are not evidence of correctness. Pool=all_eligible includes fallback and score-only mode."
+    )
 
 
 @app.command("stats")
