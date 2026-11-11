@@ -23,6 +23,22 @@ from agentroute.providers import ensure_claude_bridge_backend
 runner = CliRunner()
 
 
+def test_provider_selection_configuration_survives_reload_and_can_revert(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
+    save_config(default_config())
+    result = runner.invoke(app, ["provider-selection", "adaptive", "--candidate", "deepseek"])
+    assert result.exit_code == 0, result.output
+    assert load_config().routing.provider_selection.candidates == ["deepseek"]
+    assert load_config().routing.provider_selection.mode == "adaptive"
+    assert runner.invoke(app, ["provider-selection", "static"]).exit_code == 0
+    assert load_config().routing.provider_selection.mode == "static"
+    prior = path.read_text()
+    result = runner.invoke(app, ["provider-selection", "adaptive", "--candidate", "missing"])
+    assert result.exit_code != 0
+    assert path.read_text() == prior
+
+
 def test_models_reports_configured_efforts_and_tier_context_overrides(monkeypatch):
     config = default_config()
     config.backends = {

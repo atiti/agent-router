@@ -59,12 +59,17 @@ CONCURRENCY = re.compile(
 )
 MIGRATION = re.compile(r"\b(migration|zero[- ]downtime|schema change|backfill)\b", re.I)
 PERFORMANCE = re.compile(r"\b(performance|latency|throughput|memory leak|profil(?:e|ing))\b", re.I)
-CONFIRMATION = re.compile(
-    r"^\s*(yes|yep|yeah|ok(?:ay)?(?:,?\s+(?:do it|go ahead|proceed))?|"
-    r"do it|go ahead|continue|implement (?:it|that)|proceed|"
-    r"sounds good)[.!]?\s*$",
-    re.I,
+APPROVAL = r"(?:yes|yep|yeah|ok(?:ay)?|sounds good)"
+CONTINUATION = (
+    r"(?:do it|go ahead|continue|keep going|resume|implement (?:it|that)|"
+    r"finish (?:it|that)|proceed)"
 )
+APPROVAL_SEPARATOR = r"(?:\s*[,;:\u2014-]\s*|\s+)"
+CONFIRMATION_BODY = (
+    rf"(?:please\s+)?(?:{APPROVAL}(?:{APPROVAL_SEPARATOR}(?:please\s+)?"
+    rf"{CONTINUATION})?|{CONTINUATION})(?:[,\s]+please)?"
+)
+CONFIRMATION = re.compile(rf"^\s*{CONFIRMATION_BODY}[.!]?\s*$", re.I)
 CONTEXT_FOLLOWUP = re.compile(
     r"^\s*(?:check|try|run|look|test)\s+(?:it\s+)?again[.!?]?\s*$"
     r"|^\s*so\s+how\s+(?:do\s+we\s+|to\s+)?fix(?:\s+(?:it|that|this))?[?]?\s*$"
@@ -301,8 +306,10 @@ def continues_previous_task(prompt: str) -> bool:
         return True
     return bool(
         re.match(
-            r"^\s*(?:yes|yep|yeah|ok(?:ay)?|do it|go ahead|continue|proceed|sounds good)"
-            r"(?:\s+do it)?[.!,:;\-]+\s+\S",
+            rf"^\s*(?:please\s+)?(?:{APPROVAL}{APPROVAL_SEPARATOR})?"
+            rf"(?:please\s+)?{CONTINUATION}(?:[,\s]+please)?[.!,:;\u2014-]+\s+\S"
+            rf"|^\s*{APPROVAL}[.!,:;\u2014-]+\s+"
+            r"(?:but\b|with\b|without\b|should it\b|can it\b|make sure it\b)",
             prompt,
             re.IGNORECASE,
         )

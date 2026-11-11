@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.5.85 — 2026-11-11
+
+- Reuse native release build caches across Python package version bumps. Cargo still validates
+  source/dependency fingerprints; changing the router version no longer discards the compiled cache.
+
+- Add optional `agentroute provider-selection shadow|adaptive|static` with an explicit candidate
+  list, tunable task preferences, quota/budget headroom, switching and API-equivalent cost penalties,
+  local bridge checks and candidate/exclusion receipts. Preserve explicit source/model preferences;
+  automatic goal/child routes no longer become provider pins in adaptive mode. Stop when no
+  admitted provider is eligible, and preserve that block across ChatGPT account recovery.
+- Resolve `ok continue` and polite approval variants as continued work. Send bounded objective,
+  role, failure and scope context to the classifiers; honor a zero prior-context budget.
+
 - Add Claude Fable 5.2 (`claude-fable-5-2`, 1M context, 128K output) with Anthropic's published
   standard and cache prices. The Claude subscription MAX tier and the explicit `@fable` backend
   now default to Fable 5.2; `agentroute bridge install --update-models` adopts both. The bridge

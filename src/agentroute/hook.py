@@ -451,7 +451,8 @@ def codex_user_prompt_submit(
             previous_tier = None
             previous_reasoning_effort = None
         sticky_backend = store.route_preference(session_id, route_scope, agent_id)
-        if goal_continuation and sticky_backend is None:
+        adaptive_provider = config.routing.provider_selection.mode == "adaptive"
+        if goal_continuation and sticky_backend is None and not adaptive_provider:
             sticky_backend = store.previous_backend(session_id, route_scope, agent_id)
         requested_backend = (
             str(payload.get("requested_backend"))
@@ -480,7 +481,7 @@ def codex_user_prompt_submit(
         opaque_subagent_followup = (
             route_scope == "subagent" and not routed_prompt.strip() and previous_tier is not None
         )
-        if opaque_subagent_followup and sticky_backend is None:
+        if opaque_subagent_followup and sticky_backend is None and not adaptive_provider:
             sticky_backend = store.previous_backend(session_id, route_scope, agent_id)
         if tier_override == "auto":
             sticky_backend = None
@@ -609,9 +610,22 @@ def codex_user_prompt_submit(
             ):
                 route_config = config.model_copy(deep=True)
                 route_config.capacity.active_profile = explicit_profile_selection.selected.name
-        decision = Router(route_config).route(context)
+        adaptive_profiles = {}
+
+        def adaptive_gpt_profile(tier):
+            if tier not in adaptive_profiles:
+                adaptive_profiles[tier] = select_turn_profile(
+                    config, current_subscription, current_account_id=current_account_id,
+                    sticky_profile=sticky_profile, tier=tier, requested_model=requested_model,
+                )
+            return adaptive_profiles[tier]
+
+        decision = Router(
+            route_config, gpt_profile_selector=adaptive_gpt_profile if adaptive_provider else None,
+        ).route(context)
         profile_selection = (
             explicit_profile_selection
+            or adaptive_profiles.get(decision.tier)
             or select_turn_profile(
                 config,
                 current_subscription,
@@ -621,6 +635,8 @@ def codex_user_prompt_submit(
                 requested_model=requested_model,
             )
             if decision.capacity_requested_backend == "gpt"
+            and decision.capacity_trigger != "provider_selection"
+            and (not adaptive_provider or decision.backend == "gpt")
             and backend_override in {None, "gpt"}
             and sticky_backend in {None, "gpt"}
             else None

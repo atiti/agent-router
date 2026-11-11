@@ -1477,6 +1477,29 @@ def analytics_command(
     )
 
 
+@app.command("provider-selection")
+def provider_selection_command(
+    mode: str | None = typer.Argument(None, help="static, shadow, or adaptive"),
+    candidate: list[str] = typer.Option(None, "--candidate", help="Admit this configured backend."),
+) -> None:
+    """Inspect or change turn-boundary provider selection without restarting chats."""
+    config = load_config()
+    policy = config.routing.provider_selection
+    if mode is not None and mode not in {"static", "shadow", "adaptive"}:
+        raise typer.BadParameter("mode must be static, shadow, or adaptive")
+    if candidate:
+        unknown = set(candidate) - set(config.backends)
+        if unknown:
+            raise typer.BadParameter(f"Unknown backends: {', '.join(sorted(unknown))}")
+        policy.candidates = list(dict.fromkeys(candidate))
+    if mode is not None:
+        policy.mode = mode
+    if mode is not None or candidate:
+        save_config(config)
+    console.print(f"Provider selection: {policy.mode}; admitted: {', '.join(policy.candidates)}")
+    console.print("Explicit source/model preferences stay pinned; @auto clears the preference.")
+
+
 @app.command("classifier-status")
 def classifier_status_command() -> None:
     """Show classifier backend, privacy gate, and credential readiness."""
