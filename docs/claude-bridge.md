@@ -258,31 +258,41 @@ The bridge serves the tiers of the `claude` backend and advertises them through
 | FAST (low effort) | `claude-haiku-5-5` | $0.10 / $0.50 | $0.01 / $0.05 | $0.125 / $0.625 | $0.50 / $2.50 |
 | NORMAL (medium effort) | `claude-sonnet-5-5` | $2 | $0.20 | $2.50 | $10 |
 | SMART (high effort) | `claude-sonnet-5-5` | $2 | $0.20 | $2.50 | $10 |
-| MAX (high effort) | `claude-opus-5-5` | $4 | $0.20 | $5.00 | $20 |
+| MAX (high effort) | `claude-fable-5-2` | $8 | $0.20 | $10.00 | $40 |
 
-| Explicit `@fable` (high effort) | `claude-fable-5-1` | $10 | $0.25 | $12.50 | $50 |
+| Explicit `@fable` (high effort, every tier) | `claude-fable-5-2` | $8 | $0.20 | $10.00 | $40 |
+
+Fable 5.2 has a 1M-token context window at standard pricing (no long-context
+multiplier) and up to 128K output tokens per request. The 1-hour cache write
+rate is $16. These are API-equivalent estimates; the subscription bills by
+quota, and Fable usage counts against its own weekly scoped window. The older
+`claude-fable-5-1` price ($10 / $0.25 / $12.50 / $50) is retained for sessions
+that still reference it.
 
 Automatic Claude routes with auth, security, database migration or production risk flags
-use MAX/Opus 5.5. These backend-specific floors are under `policy.backend_risk_floors.claude`;
+use MAX/Fable 5.2. These backend-specific floors are under `policy.backend_risk_floors.claude`;
 other backend policies keep their existing floors. An explicit tier tag overrides automatic floors.
 
 New installs use these tiers. Existing custom mappings survive a plain reinstall. To adopt
-these defaults explicitly and restart the bridge:
+these defaults on both the `claude` and `fable` backends and restart the bridge:
 
 ```sh
 agentroute bridge install --update-models
 ```
 
-Fable is registered as a separate backend and is never added to automatic tier mappings or
-fallback chains. It uses the same bridge and subscription credential. Your plan must include
-Fable access; its weekly scoped quota is distinct from the overall weekly limit. Use:
+Fable is also registered as a separate `@fable` backend that pins every tier to Fable 5.2, so a
+tier tag never moves a Fable session onto another family. That backend is never added to
+automatic tier mappings or fallback chains. Automatic Claude routing reaches Fable 5.2 only
+through MAX (classifier, risk floor or `@max`); FAST/NORMAL/SMART stay on Haiku and Sonnet.
+Both routes use the same bridge and subscription credential. Your plan must include Fable
+access; its weekly scoped quota is distinct from the overall weekly limit. Use:
 
 ```text
 @claude @normal continue               # Sonnet 5.5, medium effort
 @claude @smart continue                # Sonnet 5.5, high effort
-@claude @max continue                  # Opus 5.5, high effort
-@fable @high solve this difficult task # Fable 5.1, explicit opt-in
-@fable @ultra continue                 # Fable 5.1, Anthropic max effort
+@claude @max continue                  # Fable 5.2, high effort
+@fable @high solve this difficult task # Fable 5.2 on every tier, explicit opt-in
+@fable @ultra continue                 # Fable 5.2, Anthropic max effort
 @claude continue                      # leave Fable
 @auto continue                        # clear the manual backend preference
 ```
@@ -293,7 +303,7 @@ never consumes Fable tokens just because the worker is Fable.
 
 The bridge forwards Responses `reasoning.effort` as Anthropic `output_config.effort`:
 `low`, `medium`, `high`, and `xhigh` pass through; `ultra` and `persistent` map to `max`;
-`none` and `minimal` map to `low`. Opus 5.5 and Fable cannot disable thinking. Haiku 5.5 supports all effort levels and uses adaptive thinking. Legacy Haiku 4.5 still
+`none` and `minimal` map to `low`. Opus 5.5 and Fable cannot disable thinking. Fable 5.2 defaults to `high` effort upstream, so an omitted effort runs one level above Opus 5.5's `medium`. Haiku 5.5 supports all effort levels and uses adaptive thinking. Legacy Haiku 4.5 still
 advertises no effort levels.
 Modern models use adaptive thinking and a default 128k output cap (thinking plus visible text);
 an explicit caller cap is preserved. Top-level effort changes can invalidate Anthropic's prompt
@@ -312,8 +322,17 @@ from numeric cache telemetry. Blocks are limited to 4 MiB and total stored conte
 128 MiB. Existing blocks are never evicted automatically. Missing, corrupt or unavailable
 storage produces an explicit error rather than silently discarding signed thinking.
 
+Fable 5.2 validates each signed thinking block against the exact system prompt, tools and
+history that preceded it, for every account. Codex edits that prefix legitimately between
+turns (compaction, routed instructions, tool catalog changes), so for `claude-fable-5-2` the
+bridge sends the `thinking-binding-controls-2026-08-01` beta with
+`prefix_mismatch_behavior: "drop_block"`. A mismatched block is then dropped by Anthropic and
+the turn continues without that block's reasoning continuity; the bridge log records any
+reported `input_transformations`. Fable 5.1 and Opus 5.5 do not read Fable 5.2's thinking
+blocks, so a session that moves off Fable 5.2 continues without them.
+
 Haiku 5.5 accepts native forced tool choices; thinking is skipped for those calls.
-Sonnet 5.5, Opus 5.5 and Fable 5.1 reject forced `tool_choice` modes. For required calls the
+Sonnet 5.5, Opus 5.5, Fable 5.1 and Fable 5.2 reject forced `tool_choice` modes. For required calls the
 bridge uses `auto` plus a tool-call instruction; for a named call it exposes only that tool.
 This is a prompting request, not a provider-enforced guarantee. Legacy models retain native
 forced tool choice. Execution sandbox and approval checks remain enforced by Codex.

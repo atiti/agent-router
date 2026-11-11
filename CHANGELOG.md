@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Add Claude Fable 5.2 (`claude-fable-5-2`, 1M context, 128K output) with Anthropic's published
+  standard and cache prices. The Claude subscription MAX tier and the explicit `@fable` backend
+  now default to Fable 5.2; `agentroute bridge install --update-models` adopts both. The bridge
+  requests Anthropic's `drop_block` thinking-binding behavior for Fable 5.2 so a prefix edited by
+  compaction or routing drops the stale block instead of failing the turn, and logs reported
+  input transformations.
+- Present the installed Claude Code version (read from the CLI's versioned install path, or
+  `AGENTROUTE_CLAUDE_CODE_VERSION`) on subscription requests, with a 2.1.322 floor. Anthropic
+  refuses Fable 5.2 from Claude Code older than 2.1.290 (`claude_code_version_too_old`).
+
 ## 0.5.84 — 2026-11-11
 
 - Make macOS release builds fetch Cargo Git dependencies with the Git CLI and cache native build inputs, avoiding repeated V8 submodule connection failures.

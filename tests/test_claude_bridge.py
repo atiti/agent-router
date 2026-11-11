@@ -22,6 +22,7 @@ from agentroute.claude_bridge import (
     LONG_CONTEXT_BETA,
     RATE_LIMIT_EVENT,
     REFRESH_FAILURE_COOLDOWN_SECONDS,
+    THINKING_BINDING_BETA,
     ApiKeyCredential,
     BridgeHandler,
     BridgeServer,
@@ -320,6 +321,84 @@ def test_api_key_mode_uses_api_key_header_and_plain_betas():
 def test_api_key_credential_rejects_empty_values():
     with pytest.raises(CredentialError):
         ApiKeyCredential("")
+
+
+def test_fable_5_2_requests_drop_block_thinking_binding():
+    for mode in ("claude-code", "api-key"):
+        fable = anthropic_headers("token", "claude-fable-5-2", mode)["anthropic-beta"]
+        opus = anthropic_headers("token", "claude-opus-5-5", mode)["anthropic-beta"]
+        assert THINKING_BINDING_BETA in fable.split(",")
+        assert THINKING_BINDING_BETA not in opus.split(",")
+    payload, _, _ = translate_request({"model": "claude-fable-5-2", "input": []})
+    assert payload["thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+        "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+    }
+    assert payload["max_tokens"] == 128000
+    for model in ("claude-fable-5-1", "claude-opus-5-5"):
+        payload, _, _ = translate_request({"model": model, "input": []})
+        assert "block_binding" not in payload["thinking"]
+
+
+def test_claude_code_version_mirrors_installed_cli_or_pinned_floor(tmp_path):
+    from agentroute.claude_bridge import (
+        CC_VERSION_FALLBACK,
+        installed_claude_code_version,
+    )
+
+    newer = tmp_path / "versions" / "9.9.9"
+    newer.parent.mkdir()
+    newer.write_text("", encoding="utf-8")
+    link = tmp_path / "claude"
+    link.symlink_to(newer)
+    assert installed_claude_code_version(environ={}, which=lambda _: str(link)) == "9.9.9"
+    # Fable 5.2 needs at least the pinned floor; an older install never lowers it.
+    older = tmp_path / "versions" / "2.1.283"
+    older.write_text("", encoding="utf-8")
+    assert (
+        installed_claude_code_version(environ={}, which=lambda _: str(older))
+        == CC_VERSION_FALLBACK
+    )
+    assert installed_claude_code_version(environ={}, which=lambda _: None) == CC_VERSION_FALLBACK
+    assert (
+        installed_claude_code_version(
+            environ={"AGENTROUTE_CLAUDE_CODE_VERSION": "3.0.1"}, which=lambda _: None
+        )
+        == "3.0.1"
+    )
+    assert tuple(int(p) for p in CC_VERSION_FALLBACK.split(".")) >= (2, 1, 290)
+
+
+def test_bridge_logs_upstream_input_transformations(bridge_server, monkeypatch):
+    server, captured = bridge_server
+    logs: list[str] = []
+    monkeypatch.setattr(BridgeHandler, "logger", staticmethod(logs.append))
+    captured["message_start"] = {
+        "message": {
+            "usage": {"input_tokens": 5},
+            "input_transformations": [
+                {"type": "prefix_binding_mismatch", "action": "drop_block", "index": 3}
+            ],
+        }
+    }
+    host, port = server.server_address[:2]
+    body = json.dumps(
+        {
+            "model": "claude-sonnet-5",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "stream": True,
+        }
+    ).encode()
+    request = urllib.request.Request(
+        f"http://{host}:{port}/v1/responses",
+        data=body,
+        headers={"content-type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        assert response.status == 200
+        response.read()
+    assert any("prefix_binding_mismatch" in line for line in logs)
 
 
 def test_resolve_credential_prefers_api_key_and_honours_explicit_modes(monkeypatch):
@@ -1171,7 +1250,10 @@ def bridge_server(tmp_path, monkeypatch):
             yield RATE_LIMIT_EVENT, captured["rate_limits"]
         if captured.get("upstream_ping"):
             yield "ping", {"type": "ping"}
-        yield "message_start", {"message": {"usage": {"input_tokens": 5}}}
+        yield (
+            "message_start",
+            captured.get("message_start") or {"message": {"usage": {"input_tokens": 5}}},
+        )
         yield "content_block_start", {"index": 0, "content_block": {"type": "text"}}
         yield (
             "content_block_delta",
@@ -1994,7 +2076,9 @@ def test_http_bridge_profiles_translated_request_without_prompt_text(
     assert "private user message" not in json.dumps(rows)
 
 
-@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"])
+@pytest.mark.parametrize(
+    "model", ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-fable-5-2"]
+)
 @pytest.mark.parametrize(
     "effort,expected",
     [
@@ -2009,7 +2093,8 @@ def test_http_bridge_profiles_translated_request_without_prompt_text(
 def test_modern_claude_effort_and_adaptive_thinking(model, effort, expected):
     payload, _, _ = translate_request({"model": model, "reasoning": {"effort": effort}})
     assert payload["output_config"] == {"effort": expected}
-    assert payload["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert payload["thinking"]["type"] == "adaptive"
+    assert payload["thinking"]["display"] == "summarized"
     assert payload["max_tokens"] == 128000
 
 
@@ -2023,7 +2108,9 @@ def test_explicit_output_cap_and_haiku_effort():
     assert "thinking" not in haiku
 
 
-@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"])
+@pytest.mark.parametrize(
+    "model", ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-fable-5-2"]
+)
 @pytest.mark.parametrize("choice", ["required", {"type": "function", "name": "read.file"}])
 def test_modern_claude_uses_auto_for_required_tools(model, choice):
     body = {
@@ -2049,9 +2136,11 @@ def test_effort_catalog_and_opt_in_fable():
     config = default_config()
     ensure_claude_bridge_backend(config, 8090)
     models = catalog_from_config(config)
-    assert ("claude-fable-5-1", 1000000) in models
+    assert ("claude-fable-5-2", 1000000) in models
+    assert "claude-fable-5-1" not in dict(models)
     descriptors = {entry["slug"]: entry for entry in model_catalog(models)["models"]}
-    for name in ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]:
+    assert descriptors["claude-fable-5-2"]["default_reasoning_level"] == "high"
+    for name in ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-fable-5-2"]:
         assert descriptors[name]["supports_reasoning_effort_updates"] is True
         assert [level["effort"] for level in descriptors[name]["supported_reasoning_levels"]] == [
             "low",

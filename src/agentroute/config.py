@@ -391,6 +391,13 @@ class PricingConfig(BaseModel):
                 cache_write_per_million=12.50, cache_write_1h_per_million=20.00,
                 output_per_million=50.00,
             ),
+            # Fable 5.2 (platform.claude.com/docs/en/models/fable-5-2/overview):
+            # 1M context at standard pricing, no long-context multiplier.
+            "claude-fable-5-2": ModelPrice(
+                input_per_million=8.00, cached_input_per_million=0.20,
+                cache_write_per_million=10.00, cache_write_1h_per_million=16.00,
+                output_per_million=40.00,
+            ),
             "claude-opus-5": ModelPrice(
                 input_per_million=5.00,
                 cached_input_per_million=0.50,

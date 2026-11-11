@@ -236,6 +236,7 @@ def test_existing_gpt_smart_default_migrates_without_overriding_custom_target():
         ("claude-sonnet-5", 2.0, 2.50, 0.20, 10.0),
         ("claude-sonnet-5-5", 2.0, 2.50, 0.20, 10.0),
         ("claude-fable-5-1", 10.0, 12.50, 0.25, 50.0),
+        ("claude-fable-5-2", 8.0, 10.00, 0.20, 40.0),
         ("claude-opus-5", 5.0, 6.25, 0.50, 25.0),
         ("claude-opus-5-5", 4.0, 5.00, 0.20, 20.0),
     ],

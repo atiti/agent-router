@@ -29,6 +29,7 @@ import json
 import math
 import os
 import re
+import shutil
 import socketserver
 import subprocess
 import tempfile
@@ -37,7 +38,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -54,6 +55,7 @@ from .claude_models import (
     EFFORT_MODELS,
     FORCED_TOOL_CHOICE_UNSUPPORTED,
     MODERN_CLAUDE_MODELS,
+    PREFIX_BOUND_THINKING_MODELS,
     claude_effort,
 )
 from .claude_reasoning_summary import summary_delta
@@ -80,7 +82,48 @@ OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 API_KEY_ENV = "ANTHROPIC_API_KEY"
-CC_VERSION = "2.1.283"
+# Anthropic gates some models on the Claude Code version a subscription request
+# claims (Fable 5.2 refuses anything below 2.1.290 with
+# `claude_code_version_too_old`). Mirror the installed CLI when it can be read
+# cheaply from its versioned install path; otherwise use this known-good pin.
+CC_VERSION_FALLBACK = "2.1.322"
+CC_VERSION_ENV = "AGENTROUTE_CLAUDE_CODE_VERSION"
+
+
+def installed_claude_code_version(
+    *,
+    environ: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+    fallback: str = CC_VERSION_FALLBACK,
+) -> str:
+    """Return the Claude Code version to present upstream.
+
+    The native installer links ``claude`` to ``.../versions/<version>``; the link
+    target is read without executing the CLI so hook and CLI startup stay fast.
+    """
+    env = os.environ if environ is None else environ
+    override = (env.get(CC_VERSION_ENV) or "").strip()
+    if re.fullmatch(r"\d+\.\d+\.\d+", override):
+        return override
+    try:
+        executable = which("claude")
+        if executable:
+            target = os.path.realpath(executable)
+            name = os.path.basename(target)
+            if re.fullmatch(r"\d+\.\d+\.\d+", name) and _version_tuple(name) > _version_tuple(
+                fallback
+            ):
+                return name
+    except OSError:
+        pass
+    return fallback
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+CC_VERSION = installed_claude_code_version()
 
 # Claude Code identifies itself as `claude-cli/<version> (external, <entry>)`.
 # Anthropic's OAuth token endpoint is picky about this: an unknown user agent is
@@ -128,6 +171,9 @@ USAGE_HISTORY_LIMIT = 500
 
 LONG_CONTEXT_BETA = "context-1m-2025-08-07"
 MODELS_WITHOUT_LONG_CONTEXT = ("claude-haiku",)
+# Lets `thinking.block_binding.prefix_mismatch_behavior` ask Anthropic to drop a
+# signed thinking block whose prefix changed instead of rejecting the request.
+THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
 
 API_KEY_BETAS: tuple[str, ...] = ("prompt-caching-2024-07-31",)
 
@@ -661,6 +707,8 @@ def _betas_for(model: str, mode: CredentialMode) -> str:
         model.startswith(prefix) for prefix in MODELS_WITHOUT_LONG_CONTEXT
     ):
         betas.insert(2, LONG_CONTEXT_BETA)
+    if model in PREFIX_BOUND_THINKING_MODELS:
+        betas.append(THINKING_BINDING_BETA)
     return ",".join(betas)
 
 
@@ -1000,6 +1048,13 @@ def translate_request(
         payload["output_config"] = {"effort": effort}
     if model in MODERN_CLAUDE_MODELS:
         payload["thinking"] = {"type": "adaptive", "display": "summarized"}
+        if model in PREFIX_BOUND_THINKING_MODELS:
+            # Codex rewrites the prefix between turns (compaction, routed
+            # instructions, tool catalog changes). A mismatched block then only
+            # loses that block's reasoning continuity instead of the turn.
+            payload["thinking"]["block_binding"] = {
+                "prefix_mismatch_behavior": "drop_block"
+            }
         # Thinking and visible output share the cap. Respect explicit caller caps.
         if not body.get("max_output_tokens"):
             payload["max_tokens"] = 128000
@@ -2306,6 +2361,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     continue
                 if event_type == "message_start" and callable(mark_started):
                     mark_started(body, self.headers, request_credentials)
+                if event_type == "message_start":
+                    transformations = (data.get("message") or {}).get("input_transformations")
+                    if transformations:
+                        self.logger(
+                            f"{response_id} {model}: upstream input transformations "
+                            f"{json.dumps(transformations)[:500]}"
+                        )
                 if event_type == "message_delta":
                     stop_reason = (data.get("delta") or {}).get("stop_reason") or stop_reason
                 if event_type == "message_stop":
