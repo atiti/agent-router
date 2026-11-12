@@ -2458,3 +2458,17 @@ def test_goal_continuation_still_checks_capacity(tmp_path):
     assert output["continue"] is False
     assert "5h quota exhausted" in output["stopReason"]
     assert json.loads(store.latest()["selection_receipt"])["goal_routing"]["mode"] == "continuation"
+
+
+def test_goal_continuation_records_opted_in_task_summary(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.routing.classifier.enabled = False
+    config.capacity.enabled = False
+    config.audit.store_task_summary = True
+    store = AuditStore(tmp_path / "audit.sqlite")
+    invoke(config, store, "Implement the complete feature", goal_id="goal-1")
+    invoke(config, store, "Implement the complete feature", goal_id="goal-1", turn_id="turn-2")
+    row = store.latest()
+    assert row["task_summary"] == "Implement the complete feature"
+    assert json.loads(row["selection_receipt"])["current_tier_attribution"]["source"]

@@ -312,6 +312,32 @@ def _previous_response_usage(
         return {}
 
 
+def _effective_current_tier(
+    config: AppConfig, model: str, provider: str, row: Any
+) -> tuple[Tier, str]:
+    """Use a proved matching applied route to disambiguate shared tier models."""
+    if row is not None:
+        try:
+            actual_model, _ = split_profile_model(str(row["actual_model"] or ""))
+            if (
+                row["route_application_state"] == "applied"
+                and row["turn_outcome"] == "completed"
+                and actual_model == model
+                and row["actual_model_provider"] == provider
+            ):
+                return Tier.parse(row["selected_tier"]), "matching_applied_route"
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass
+    backend = next((b for b in config.backends.values() if b.codex_provider == provider), None)
+    if backend is not None:
+        tiers = [
+            Tier.parse(name) for name, target in backend.tiers.items() if target.model == model
+        ]
+        if tiers:
+            return max(tiers), "backend_model_conservative"
+    return config.providers["codex"].tier_for_model(model), "codex_model_fallback"
+
+
 def codex_user_prompt_submit(
     source: TextIO = sys.stdin,
     sink: TextIO = sys.stdout,
@@ -335,9 +361,7 @@ def codex_user_prompt_submit(
             )
         )
         config = config or load_config()
-        provider = config.providers["codex"]
         current_model, current_claude_profile = split_profile_model(str(payload.get("model", "")))
-        current_tier = provider.tier_for_model(current_model)
         store = store or AuditStore()
         session_id = str(payload["session_id"])
         prompt = str(payload.get("prompt", ""))
@@ -360,6 +384,9 @@ def codex_user_prompt_submit(
                 flags=re.I,
             )
         previous_route = store.latest_route(session_id, route_scope, agent_id)
+        current_tier, current_tier_source = _effective_current_tier(
+            config, current_model, str(payload.get("model_provider", "openai")), previous_route
+        )
         previous_tier = store.previous_tier(session_id, route_scope, agent_id)
         previous_reasoning_effort = store.previous_reasoning_effort(
             session_id, route_scope, agent_id
@@ -809,7 +836,14 @@ def codex_user_prompt_submit(
                     decision.selection_receipt, sort_keys=True, separators=(",", ":")
                 ).encode()
             ).hexdigest()
+        decision.selection_receipt["current_tier_attribution"] = {
+            "tier": str(current_tier), "source": current_tier_source,
+            "previous_response_usage_observed": bool(context.previous_response_usage),
+        }
         _record_jev_shadow(decision, context, config)
+        decision.selection_receipt_hash = hashlib.sha256(
+            json.dumps(decision.selection_receipt, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
         decision_id = store.record(
             decision,
             current_tier,
@@ -818,7 +852,7 @@ def codex_user_prompt_submit(
                 "pending" if config.enabled and not decision.capacity_blocked else "not_requested"
             ),
         )
-        if config.audit.store_task_summary and not goal_continuation:
+        if config.audit.store_task_summary:
             store.set_task_summary(decision_id, prompt_without_profile)
         if goal_id and config.enabled and not decision.capacity_blocked:
             store.remember_goal_route(session_id, route_scope, agent_id, goal_id, goal_hash)
