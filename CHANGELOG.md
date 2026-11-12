@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix GitHub event waits missing completed runs when CI output exceeds 4 KB or emits warnings.
+
 - Add event-driven waits. `agentroute wait pr|run|file|timer|event|url|command` parks a thread
   without model turns: it pauses the active goal, a detached daemon evaluates the condition, and
   the thread is woken with one turn when the condition holds or the deadline passes. Scripts and
