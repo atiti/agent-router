@@ -156,7 +156,7 @@ prose. Source implementation authority alone does not approve production recover
 The recipient thread comes from the existing team ledger. Before creating a
 record, the writer reads the owner-private regular native cursor at
 `supervisor-inbox-cursors/<thread>.json` (0600 file, 0700 directory, at most
-1024 bytes) and requires the exact current unresolved reservation/admission token.
+4096 bytes) and requires the exact current unresolved reservation/admission token.
 An unrelated, future, or already settled debt is rejected. Native validation still
 checks token and terminal history; the writer never decides those outcomes.
 The writer atomically
@@ -281,3 +281,7 @@ Archived members cannot be reused through run/resume with a released binding.
 History remains available through read/attach; a new authorized step needs a
 fresh correctly bound worker/team. Nonarchived members retain their existing
 launch/resume behavior, and full-outcome cleanup keeps its original strict gates.
+
+## Batched delivery receipts
+
+The native supervisor groups nearby inbox changes for three quiet seconds, with a ten-second maximum collection window. Each admitted turn writes an owner-private receipt containing only the event IDs included in its notice. Team monitoring reconciles these receipts into the ledger; delivery remains distinct from acknowledgement and disposition. Unknown admission remains held until reconciled. Receipts are retained under `supervisor-delivery-receipts/<thread>/<admission-token>.json`.

@@ -311,6 +311,9 @@ def poll(team: str, stale_after: int, ack_after: int, now: float | None = None) 
                 age = now-datetime.fromisoformat(checkpoint.replace("Z", "+00:00")).timestamp()
                 if age >= stale_after:
                     alerts.append(f"{name}: canonical checkpoint overdue")
+        from .supervisor_inbox import apply_admission_receipts
+
+        apply_admission_receipts(data)
         for key, message in data["messages"].items():
             if key.startswith("health-"):
                 continue  # Avoid recursive health-alert acknowledgment debt.

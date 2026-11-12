@@ -463,3 +463,26 @@ def test_step_retirement_explicit_inactive_idle_shell_guard(team, monkeypatch, d
         with pytest.raises(typer.BadParameter, match="identity changed"):
             lifecycle.retire_step("demo", "worker", "source", 182, ["receipt"],
                                   True, idle_shell_pid=78)
+
+
+def test_monitor_reconciles_admitted_delivery_receipt(team, monkeypatch, tmp_path):
+    from agentroute import supervisor_inbox as inbox
+
+    monkeypatch.setattr(inbox, "codex_home", lambda: tmp_path / "codex")
+    data = h.load("demo")
+    supervisor = "22222222-2222-4222-8222-222222222222"
+    data["members"]["boss"] = {"thread": supervisor, "attempt": "boss",
+        "spec": {"role": "supervisor"}}
+    data["inbox_consumer"] = {"version": 1, "evidence": ["test"]}
+    h.save("demo", data)
+    h.send("demo", "boss", "report", "Worker completed the check")
+    path = inbox.codex_home() / "supervisor-delivery-receipts" / supervisor / "batch.json"
+    inbox.atomic_write(path, {"version": 1, "thread_id": supervisor, "turn_id": "turn",
+                              "admission_token": "batch", "event_ids": ["report"]})
+    path.parent.parent.chmod(0o700)
+    setup_poll(monkeypatch, {"id": "owned"},
+               {"address": "t1", "state": "live", "status": {"state": "working"}})
+    lifecycle.poll("demo", 900, 300)
+    entry = h.load("demo")["messages"]["report"]["coordination_event"]
+    assert entry["state"] == "delivered" and entry["actionable"]
+    assert entry["delivery"]["turn_id"] == "turn"

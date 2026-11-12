@@ -511,10 +511,10 @@ def admission_cursor(thread: str) -> dict:
     with os.fdopen(descriptor, "rb") as stream:
         metadata = os.fstat(stream.fileno())
         if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
-                or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_size > 1024):
-            raise typer.BadParameter("Native cursor requires private regular file <=1024 bytes")
-        encoded = stream.read(1025)
-    if len(encoded) > 1024:
+                or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_size > 4096):
+            raise typer.BadParameter("Native cursor requires private regular file <=4096 bytes")
+        encoded = stream.read(4097)
+    if len(encoded) > 4096:
         raise typer.BadParameter("Native cursor exceeds its byte limit")
     cursor = json.loads(encoded)
     generation = cursor.get("generation")
@@ -529,6 +529,59 @@ def admission_cursor(thread: str) -> dict:
                 r"[A-Za-z0-9_-]{1,160}", token)):
             raise typer.BadParameter("Invalid native admission token")
     return cursor
+
+
+def apply_admission_receipts(data: dict) -> int:
+    """Apply immutable native turn receipts under the team lock.
+
+    Entries stay actionable until dispositioned. Receipt files are retained for audit;
+    missing, malformed, or unbound files never change event state.
+    """
+    changed = 0
+    for member, thread in supervisors(data).items():
+        root = codex_home() / "supervisor-delivery-receipts"
+        directory = root / str(UUID(thread))
+        try:
+            for path in (root, directory):
+                info = path.lstat()
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                        or stat.S_IMODE(info.st_mode) != 0o700):
+                    raise ValueError("Invalid receipt directory")
+            paths = sorted(directory.glob("*.json"))
+        except (OSError, ValueError):
+            continue
+        for path in paths:
+            try:
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,160}\.json", path.name):
+                    continue
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(descriptor, "rb") as stream:
+                    metadata = os.fstat(stream.fileno())
+                    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                            or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_size > 4096):
+                        continue
+                    receipt = json.loads(stream.read(4097))
+                token = receipt.get("admission_token")
+                turn = receipt.get("turn_id")
+                ids = receipt.get("event_ids")
+                if (receipt.get("version") != 1 or receipt.get("thread_id") != str(UUID(thread))
+                        or token != path.stem or not isinstance(turn, str) or not turn
+                        or not isinstance(ids, list) or len(ids) > 3
+                        or not all(isinstance(i, str) and 0 < len(i) <= 120 for i in ids)):
+                    continue
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+            for event_id in ids:
+                message = data["messages"].get(event_id, {})
+                entry = message.get("coordination_event")
+                if (message.get("member") != member or not entry
+                        or entry.get("state") != "persisted"):
+                    continue
+                entry.update(state="delivered", delivered_at=time.time(),
+                             delivery={"state": "delivered", "turn_id": turn,
+                                       "admission_token": token})
+                changed += 1
+    return changed
 
 
 def admission_reconcile(team: str, member: str = typer.Option(...),
