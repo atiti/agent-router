@@ -154,3 +154,66 @@ def test_read_only_store_can_still_be_queried(tmp_path):
         tmp_path.chmod(0o755)
         path.chmod(0o644)
     assert json.loads(AuditStore(path).history(limit=1)[0]["selection_receipt"])
+
+
+def test_effective_tier_uses_matching_applied_route_and_disambiguates_backends():
+    from agentroute.hook import _effective_current_tier
+
+    config = default_config()
+    backend = config.backends["gpt"]
+    backend.tiers["fast"].model = "shared"
+    backend.tiers["normal"].model = "shared"
+    row = {
+        "route_application_state": "applied",
+        "turn_outcome": "completed",
+        "actual_model": "shared",
+        "actual_model_provider": backend.codex_provider,
+        "selected_tier": "normal",
+    }
+    assert _effective_current_tier(config, "shared", backend.codex_provider, row) == (
+        Tier.NORMAL,
+        "matching_applied_route",
+    )
+    row["selected_tier"] = "fast"
+    assert _effective_current_tier(config, "shared", backend.codex_provider, row) == (
+        Tier.FAST,
+        "matching_applied_route",
+    )
+    row["route_application_state"] = "rejected"
+    assert _effective_current_tier(config, "shared", backend.codex_provider, row) == (
+        Tier.NORMAL,
+        "backend_model_conservative",
+    )
+    row["route_application_state"] = "applied"
+    row["actual_model_provider"] = "different"
+    assert _effective_current_tier(config, "shared", backend.codex_provider, row) == (
+        Tier.NORMAL,
+        "backend_model_conservative",
+    )
+
+
+def test_applied_normal_shared_model_holds_first_large_context_downgrade():
+    from agentroute.hook import _effective_current_tier
+
+    config = default_config()
+    backend = config.backends["gpt"]
+    backend.tiers["fast"].model = "shared"
+    backend.tiers["normal"].model = "shared"
+    row = {
+        "route_application_state": "applied",
+        "turn_outcome": "completed",
+        "actual_model": "shared",
+        "actual_model_provider": backend.codex_provider,
+        "selected_tier": "normal",
+    }
+    tier, _ = _effective_current_tier(config, "shared", backend.codex_provider, row)
+    decision = Router(config).route(
+        RouteContext(
+            session_id="x",
+            latest_prompt=MECHANICAL,
+            current_tier=tier,
+            previous_response_usage=LARGE,
+        )
+    )
+    assert decision.tier == Tier.NORMAL
+    assert ReasonCode.TASK_STICKINESS in decision.reason_codes
