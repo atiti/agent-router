@@ -14,6 +14,14 @@
   filters) skip approval review, plus `agentroute gh-get` for GET-only GitHub REST reads and
   `agentroute approvals explain` to show which shell construct forces a review. Mutations stay
   reviewed. See [routine approvals](docs/routine-approvals.md).
+- Hold routing steady in long conversations. The provider-switch penalty now grows with the
+  measured context (`routing.provider_selection.switch_context_scale_tokens`), and a lower tier
+  is applied only after `routing.switching.downgrade_confirmations` consecutive proposals once the
+  context exceeds `hold_context_tokens`. Upgrades, explicit tags and capacity failover are
+  unchanged. Held proposals are recorded as `TASK_STICKINESS`.
+- Add `audit.store_task_summary` and `agentroute audit-sample` so a weekly sample of completed
+  decisions can be judged and labelled without matching transcripts. Read-only commands such as
+  `audit-report` no longer fail when the audit store cannot be written.
 
 ## 0.5.85 — 2026-11-11
 

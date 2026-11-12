@@ -1138,6 +1138,40 @@ def label_command(
     console.print(f"Labeled decision {decision_id}: {outcome}")
 
 
+@app.command("audit-sample")
+def audit_sample_command(
+    count: int = typer.Option(20, min=1, max=200, help="Decisions to draw."),
+    days: int = typer.Option(7, min=1, help="Look-back window."),
+) -> None:
+    """Draw unlabelled completed decisions, spread across classifier sources, for labelling.
+
+    Judge each against its outcome, then record `agentroute label ID correct|too-low|too-high`.
+    """
+    rows = AuditStore().sample(count=count, days=days)
+    if not rows:
+        console.print("No unlabelled completed automatic decisions in that window.")
+        return
+    table = Table(title=f"Routing sample: {len(rows)} unlabelled decisions")
+    for column in ("ID", "When (UTC)", "Source", "Task type", "Tier", "Model", "Turn", "Summary"):
+        table.add_column(column)
+    for row in rows:
+        duration = row["turn_duration_ms"]
+        table.add_row(
+            str(row["id"]),
+            str(row["created_at"])[5:16].replace("T", " "),
+            str(row["classification_source"]),
+            str(row["classifier_task_type"] or "-"),
+            str(row["selected_tier"]),
+            str(row["actual_model"] or row["model"]),
+            f"{duration / 1000:.0f}s" if duration else "-",
+            str(row["task_summary"] or "(enable audit.store_task_summary)"),
+        )
+    console.print(table)
+    console.print(
+        "Inspect one with `agentroute why --decision-id ID`; label with `agentroute label`."
+    )
+
+
 @app.command("audit-report")
 def audit_report_command(limit: int = 500) -> None:
     """Summarize automatic routes and available quality labels."""

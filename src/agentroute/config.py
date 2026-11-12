@@ -64,6 +64,10 @@ class SwitchingConfig(BaseModel):
     cache_economics: Literal["off", "shadow", "retain"] = "off"
     cache_minimum_fraction: float = Field(default=0.80, ge=0, le=1)
     cache_minimum_savings: float = Field(default=0.10, ge=0, le=1)
+    # Once a conversation carries this much context, a lower tier must be proposed on this
+    # many consecutive prompts before it is applied. Upgrades always apply immediately.
+    downgrade_confirmations: int = Field(default=2, ge=1, le=5)
+    hold_context_tokens: int = Field(default=40_000, ge=0)
 
 
 class ContextConfig(BaseModel):
@@ -147,6 +151,9 @@ class ProviderSelectionConfig(BaseModel):
         "formatting": ["deepseek", "claude", "gpt", "grok"],
     })
     prefer_subscriptions: bool = True
+    # A provider change re-reads the whole conversation uncached, so its penalty grows with
+    # the measured context: penalty = switch_penalty * (1 + context / this). 0 keeps it flat.
+    switch_context_scale_tokens: int = Field(default=50_000, ge=0)
     subscription_backends: list[str] = Field(
         default_factory=lambda: ["gpt", "grok"], max_length=20
     )
@@ -196,6 +203,9 @@ class PolicyConfig(BaseModel):
 class AuditConfig(BaseModel):
     enabled: bool = True
     store_prompts: bool = False
+    # Keep the first line of each routed prompt (at most 160 characters) so sampled
+    # decisions can be judged later without matching transcripts.
+    store_task_summary: bool = False
 
 
 class UIConfig(BaseModel):

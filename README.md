@@ -372,6 +372,24 @@ policy priors, not benchmark rankings. `switch_penalty`, `usage_weight`,
 `unknown_capacity_penalty` and `cost_weight` tune the tradeoffs. Each route's selection receipt
 includes `provider_selection` with scores, usage observations, exclusions and the recommendation.
 
+Changing the model in a long conversation re-reads the whole context uncached, so routing
+holds steady once a conversation is large. A provider change costs
+`switch_penalty * (1 + context / switch_context_scale_tokens)` (default scale 50,000 tokens):
+free choice at the start of a session, effectively pinned at a few hundred thousand tokens
+unless the active provider runs out of capacity. Within a provider, a lower tier is applied only
+after it has been proposed on `routing.switching.downgrade_confirmations` consecutive prompts
+(default 2) once the context exceeds `hold_context_tokens` (default 40,000). Upgrades, explicit
+tags and capacity failover always apply immediately. A held proposal appears in the route as
+`TASK_STICKINESS` and in the receipt under `task_stickiness`.
+
+To build accuracy evidence, set `audit.store_task_summary: true` to keep the first 160 characters
+of each routed prompt, then draw a labelling sample across classifier sources:
+
+```sh
+agentroute audit-sample --count 20 --days 7
+agentroute label 23584 too-high --notes "status lookup did not need SMART"
+```
+
 Short continuations such as `ok continue`, `okay, please continue`, and `finish it` preserve the
 ongoing task's capability. Classifiers receive bounded prior context plus objective, coordination
 role, scope and failure counters. `include_previous_assistant: false` or `max_context_chars: 0`
