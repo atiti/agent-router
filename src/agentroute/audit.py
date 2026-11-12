@@ -4,7 +4,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import data_dir
@@ -114,6 +114,7 @@ ON routing_decisions(created_at, id ASC);
 """
 
 MIGRATIONS = {
+    "task_summary": "TEXT",
     "execution_receipt": "TEXT NOT NULL DEFAULT '{}'",
     "turn_id": "TEXT",
     "backend": "TEXT NOT NULL DEFAULT 'gpt'",
@@ -184,87 +185,92 @@ class AuditStore:
         self.path = path or data_dir() / "audit.db"
         self.timeout = timeout
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.connection() as connection:
-            connection.executescript(SCHEMA)
-            columns = {
-                row["name"]
-                for row in connection.execute("PRAGMA table_info(routing_decisions)").fetchall()
-            }
-            for name, declaration in MIGRATIONS.items():
-                if name not in columns:
-                    connection.execute(
-                        f"ALTER TABLE routing_decisions ADD COLUMN {name} {declaration}"
-                    )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_routing_turn "
-                "ON routing_decisions(session_id, turn_id)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_routing_created_at "
-                "ON routing_decisions(created_at, id ASC)"
-            )
-            # Runtime releases before v23 sent the frozen session-start model to Stop hooks.
-            # Preserve that observed value for diagnostics, but attribute usage to the routed
-            # model that actually produced the step. This repair is idempotent.
-            connection.execute(
-                "UPDATE routing_decisions SET reported_answer_model = answer_model, "
-                "answer_model_mismatch = 1, answer_model = model "
-                "WHERE usage_recorded_at IS NOT NULL AND answer_model IS NOT NULL "
-                "AND answer_model != model AND reported_answer_model IS NULL"
-            )
-            connection.execute(
-                "UPDATE routing_decisions SET turn_completed_at = usage_recorded_at, "
-                "turn_duration_ms = MAX(0, "
-                "(julianday(usage_recorded_at) - julianday(created_at)) * 86400000.0) "
-                "WHERE usage_recorded_at IS NOT NULL AND turn_completed_at IS NULL"
-            )
-            connection.execute(
-                "UPDATE routing_decisions SET turn_outcome = 'completed', "
-                "completion_source = COALESCE(completion_source, 'legacy_usage'), "
-                "usage_status = 'recorded' WHERE usage_recorded_at IS NOT NULL "
-                "AND turn_outcome = 'pending'"
-            )
-            connection.execute(
-                "UPDATE routing_decisions SET turn_outcome = 'completed', "
-                "completion_source = COALESCE(completion_source, 'stop_hook'), "
-                "usage_status = 'missing' WHERE turn_completed_at IS NOT NULL "
-                "AND usage_recorded_at IS NULL AND turn_outcome = 'pending'"
-            )
-            connection.execute(
-                "UPDATE routing_decisions SET classifier_status = 'succeeded' "
-                "WHERE classification_source IN ('local_llm', 'private_llm', 'cloud_llm') "
-                "AND classifier_status = 'skipped'"
-            )
-            connection.execute(
-                "UPDATE routing_decisions SET classifier_status = 'fallback' "
-                "WHERE classification_source = 'heuristic_fallback' "
-                "AND classifier_status = 'skipped'"
-            )
-            # Older releases treated a next-turn manual tier choice as proof that the
-            # previous route was wrong. Preserve it as a behavioral signal instead.
-            connection.execute(
-                "UPDATE routing_decisions SET "
-                "next_manual_override_tier = substr(outcome_notes, 29), "
-                "next_manual_override_at = COALESCE(next_manual_override_at, created_at), "
-                "outcome_label = NULL "
-                "WHERE outcome_label = 'overridden' "
-                "AND outcome_notes LIKE 'next turn manually selected %' "
-                "AND next_manual_override_tier IS NULL"
-            )
-            # A newer prompt in the same route proves the older turn is no longer active,
-            # but it does not prove an exact completion time. Keep latency unknown instead
-            # of inflating it with user idle time.
-            connection.execute(
-                "UPDATE routing_decisions AS old SET turn_outcome = 'superseded', "
-                "completion_source = COALESCE(completion_source, 'next_prompt'), "
-                "usage_status = 'missing' WHERE turn_outcome = 'pending' "
-                "AND turn_completed_at IS NULL AND EXISTS ("
-                "SELECT 1 FROM routing_decisions AS newer WHERE newer.id > old.id "
-                "AND newer.session_id = old.session_id "
-                "AND newer.route_scope = old.route_scope "
-                "AND (newer.agent_id = old.agent_id OR "
-                "(newer.agent_id IS NULL AND old.agent_id IS NULL)))"
-            )
+        try:
+            with self.connection() as connection:
+                connection.executescript(SCHEMA)
+                columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(routing_decisions)").fetchall()
+                }
+                for name, declaration in MIGRATIONS.items():
+                    if name not in columns:
+                        connection.execute(
+                            f"ALTER TABLE routing_decisions ADD COLUMN {name} {declaration}"
+                        )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_routing_turn "
+                    "ON routing_decisions(session_id, turn_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_routing_created_at "
+                    "ON routing_decisions(created_at, id ASC)"
+                )
+                # Runtime releases before v23 sent the frozen session-start model to Stop hooks.
+                # Preserve that observed value for diagnostics, but attribute usage to the routed
+                # model that actually produced the step. This repair is idempotent.
+                connection.execute(
+                    "UPDATE routing_decisions SET reported_answer_model = answer_model, "
+                    "answer_model_mismatch = 1, answer_model = model "
+                    "WHERE usage_recorded_at IS NOT NULL AND answer_model IS NOT NULL "
+                    "AND answer_model != model AND reported_answer_model IS NULL"
+                )
+                connection.execute(
+                    "UPDATE routing_decisions SET turn_completed_at = usage_recorded_at, "
+                    "turn_duration_ms = MAX(0, "
+                    "(julianday(usage_recorded_at) - julianday(created_at)) * 86400000.0) "
+                    "WHERE usage_recorded_at IS NOT NULL AND turn_completed_at IS NULL"
+                )
+                connection.execute(
+                    "UPDATE routing_decisions SET turn_outcome = 'completed', "
+                    "completion_source = COALESCE(completion_source, 'legacy_usage'), "
+                    "usage_status = 'recorded' WHERE usage_recorded_at IS NOT NULL "
+                    "AND turn_outcome = 'pending'"
+                )
+                connection.execute(
+                    "UPDATE routing_decisions SET turn_outcome = 'completed', "
+                    "completion_source = COALESCE(completion_source, 'stop_hook'), "
+                    "usage_status = 'missing' WHERE turn_completed_at IS NOT NULL "
+                    "AND usage_recorded_at IS NULL AND turn_outcome = 'pending'"
+                )
+                connection.execute(
+                    "UPDATE routing_decisions SET classifier_status = 'succeeded' "
+                    "WHERE classification_source IN ('local_llm', 'private_llm', 'cloud_llm') "
+                    "AND classifier_status = 'skipped'"
+                )
+                connection.execute(
+                    "UPDATE routing_decisions SET classifier_status = 'fallback' "
+                    "WHERE classification_source = 'heuristic_fallback' "
+                    "AND classifier_status = 'skipped'"
+                )
+                # Older releases treated a next-turn manual tier choice as proof that the
+                # previous route was wrong. Preserve it as a behavioral signal instead.
+                connection.execute(
+                    "UPDATE routing_decisions SET "
+                    "next_manual_override_tier = substr(outcome_notes, 29), "
+                    "next_manual_override_at = COALESCE(next_manual_override_at, created_at), "
+                    "outcome_label = NULL "
+                    "WHERE outcome_label = 'overridden' "
+                    "AND outcome_notes LIKE 'next turn manually selected %' "
+                    "AND next_manual_override_tier IS NULL"
+                )
+                # A newer prompt in the same route proves the older turn is no longer active,
+                # but it does not prove an exact completion time. Keep latency unknown instead
+                # of inflating it with user idle time.
+                connection.execute(
+                    "UPDATE routing_decisions AS old SET turn_outcome = 'superseded', "
+                    "completion_source = COALESCE(completion_source, 'next_prompt'), "
+                    "usage_status = 'missing' WHERE turn_outcome = 'pending' "
+                    "AND turn_completed_at IS NULL AND EXISTS ("
+                    "SELECT 1 FROM routing_decisions AS newer WHERE newer.id > old.id "
+                    "AND newer.session_id = old.session_id "
+                    "AND newer.route_scope = old.route_scope "
+                    "AND (newer.agent_id = old.agent_id OR "
+                    "(newer.agent_id IS NULL AND old.agent_id IS NULL)))"
+                )
+        except sqlite3.OperationalError as error:
+            # A sandboxed or read-only caller can still query an existing store.
+            if "readonly" not in str(error).lower():
+                raise
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -760,6 +766,49 @@ class AuditStore:
                 "ORDER BY id DESC LIMIT 1",
                 params,
             ).fetchone()
+
+    def downgrade_streak(
+        self, session_id: str, route_scope: str = "root", agent_id: str | None = None
+    ) -> int:
+        """Consecutive immediately preceding prompts whose lower-tier proposal was held."""
+        row = self._latest_for_route(session_id, route_scope, agent_id)
+        if row is None:
+            return 0
+        try:
+            state = json.loads(row["selection_receipt"] or "{}").get("task_stickiness") or {}
+        except ValueError:
+            return 0
+        return int(state.get("streak", 0)) if state.get("held") else 0
+
+    def set_task_summary(self, decision_id: int, prompt: str) -> None:
+        summary = " ".join(prompt.strip().split())[:160]
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE routing_decisions SET task_summary = ? WHERE id = ?",
+                (summary, decision_id),
+            )
+
+    def sample(self, count: int = 20, days: int = 7) -> list[sqlite3.Row]:
+        """Unlabelled completed automatic decisions, spread evenly across classifier sources."""
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM routing_decisions WHERE created_at >= ? AND outcome_label IS NULL "
+                "AND manual_override = 0 AND turn_outcome = 'completed' "
+                "AND route_application_state = 'applied' "
+                "AND classification_source NOT IN ('session_affinity', 'inheritance', "
+                "'interrupted_turn_affinity', 'manual') ORDER BY RANDOM()",
+                (since,),
+            ).fetchall()
+        groups: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            groups.setdefault(row["classification_source"], []).append(row)
+        picked: list[sqlite3.Row] = []
+        while len(picked) < count and any(groups.values()):
+            for source in sorted(groups):
+                if groups[source] and len(picked) < count:
+                    picked.append(groups[source].pop())
+        return sorted(picked, key=lambda row: row["id"])
 
     def previous_tier(
         self, session_id: str, route_scope: str = "root", agent_id: str | None = None

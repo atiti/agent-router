@@ -57,6 +57,7 @@ class ReasonCode(str, Enum):
     PROVIDER_SELECTION_BLOCKED = "PROVIDER_SELECTION_BLOCKED"
     DOWNGRADE_HYSTERESIS = "DOWNGRADE_HYSTERESIS"
     CACHE_REUSE = "CACHE_REUSE"
+    TASK_STICKINESS = "TASK_STICKINESS"
     AGENT_ESCALATION = "AGENT_ESCALATION"
     MODEL_COMPATIBILITY_FALLBACK = "MODEL_COMPATIBILITY_FALLBACK"
     LLM_CLASSIFIER = "LLM_CLASSIFIER"
@@ -99,6 +100,7 @@ class RouteContext(BaseModel):
     current_model: str = ""
     previous_response_usage: dict[str, int] = Field(default_factory=dict)
     current_tier: Tier = Tier.NORMAL
+    downgrade_streak: int = 0
     previous_task_tier: Tier | None = None
     previous_reasoning_effort: str | None = None
     interrupted_turn_affinity: bool = False

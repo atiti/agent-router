@@ -372,6 +372,24 @@ policy priors, not benchmark rankings. `switch_penalty`, `usage_weight`,
 `unknown_capacity_penalty` and `cost_weight` tune the tradeoffs. Each route's selection receipt
 includes `provider_selection` with scores, usage observations, exclusions and the recommendation.
 
+Changing the model in a long conversation re-reads the whole context uncached, so routing
+holds steady once a conversation is large. A provider change costs
+`switch_penalty * (1 + context / switch_context_scale_tokens)` (default scale 50,000 tokens):
+free choice at the start of a session, effectively pinned at a few hundred thousand tokens
+unless the active provider runs out of capacity. Within a provider, a lower tier is applied only
+after it has been proposed on `routing.switching.downgrade_confirmations` consecutive prompts
+(default 2) once the context exceeds `hold_context_tokens` (default 40,000). Upgrades, explicit
+tags and capacity failover always apply immediately. A held proposal appears in the route as
+`TASK_STICKINESS` and in the receipt under `task_stickiness`.
+
+To build accuracy evidence, set `audit.store_task_summary: true` to keep the first 160 characters
+of each routed prompt, then draw a labelling sample across classifier sources:
+
+```sh
+agentroute audit-sample --count 20 --days 7
+agentroute label 23584 too-high --notes "status lookup did not need SMART"
+```
+
 Short continuations such as `ok continue`, `okay, please continue`, and `finish it` preserve the
 ongoing task's capability. Classifiers receive bounded prior context plus objective, coordination
 role, scope and failure counters. `include_previous_assistant: false` or `max_context_chars: 0`
@@ -1229,6 +1247,29 @@ The CLI provides this lookup; the closed mobile app does not yet expose the work
 links as a separate UI. Raw profiling is optional and bounded; inspect or clean
 storage using `agentroute storage status` and `agentroute storage prune`.
 
+## Waiting without spending turns
+
+A goal that is blocked on CI, a deploy or another process otherwise continues turn after turn to
+report the same state. `agentroute wait` parks the thread instead: it pauses the active goal,
+checks the condition in a small background daemon, and wakes the thread with one turn on the
+event or its deadline.
+
+```sh
+agentroute wait pr atiti/agent-router 179 --note "merge when green, then tag the release"
+agentroute wait timer 20m
+agentroute wait event import-finished          # a script later runs: agentroute wait fire import-finished
+agentroute wake --name "Ivan work packet" --message "nightly sync finished"   # from cron or an app
+```
+
+See [event-driven waits](docs/event-waits.md) for every condition, outside triggers and limits.
+
+## Routine approvals
+
+`agentroute approvals install` adds allow rules for routine read-only commands so they stop
+costing an approval review each time; mutations stay reviewed. `agentroute approvals explain
+"<command>"` shows why a given line would still be reviewed. See
+[routine approvals](docs/routine-approvals.md).
+
 ## Herdr session cockpit
 
 Install [Herdr TUI](https://herdr.dev/tui/), then run `agentroute herdr install`
@@ -1385,3 +1426,23 @@ verified owned viewer pane. A pane repurposed by the user is preserved for manua
 reconciliation. Conversation history, packet binding, core terminal history and
 message receipts remain available. Cleanup never kills a working or idle worker
 and never treats the terminal's `done` badge as packet completion.
+
+### Subscription-backed LLM classifier
+
+Select the model and configured subscription backend used for ambiguous requests:
+
+```bash
+agentroute classifier-subscription-enable --backend gpt --model gpt-6-luna --timeout 20
+agentroute classifier-status
+```
+
+When JEV is primary, this changes its LLM fallback while retaining JEV. Otherwise
+it enables the selected LLM classifier. `--reasoning-effort low` is the default;
+`--chatgpt-profile NAME` selects a GPT subscription profile. Other configured
+subscription backends can be selected with `--backend` and their model ID.
+The backend must be enabled and explicitly listed in
+`routing.provider_selection.subscription_backends`; that list describes the
+operator's actual credential setup. A bridge using API credentials remains
+metered even if its name is listed there. The classifier uses the Codex
+subscription transport with routing isolated from its own classification call.
+Use `classifier-enable` to return to an OpenAI-compatible API or local endpoint.

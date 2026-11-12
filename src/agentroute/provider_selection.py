@@ -249,7 +249,12 @@ def select_provider(
             else 0
         )
         current = backend.codex_provider == context.current_model_provider
-        switch_penalty = policy.switch_penalty if context.current_model and not current else 0
+        scale = policy.switch_context_scale_tokens
+        switch_penalty = (
+            policy.switch_penalty * (1 + (required_context / scale if scale else 0))
+            if context.current_model and not current
+            else 0
+        )
         cost_penalty = (
             0.0 if name in policy.subscription_backends else
             policy.cost_weight * math.log1p(cost * 100) if cost is not None else policy.cost_weight
@@ -270,7 +275,7 @@ def select_provider(
             score=round(score, 6),
             suitability=suitability,
             usage_penalty=round(usage_penalty, 6),
-            switch_penalty=switch_penalty,
+            switch_penalty=round(switch_penalty, 6),
             cost_penalty=round(cost_penalty, 6),
             api_equivalent_cost_proxy_usd=cost,
             budget_fraction=round(budget_fraction, 6),

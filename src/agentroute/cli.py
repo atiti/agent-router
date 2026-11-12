@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .analytics import usage_analytics
+from .approvals import approvals_app, gh_get
 from .audit import AuditStore
 from .bridge_service import (
     BridgeServiceError,
@@ -127,6 +128,7 @@ from .release import install_latest_release
 from .router import Router
 from .server_cli import server_app
 from .storage_cli import storage_app
+from .wait_cli import wait_app, wake
 from .work_cli import sessions_app, work_app
 from .zellij_cli import zellij_app
 
@@ -154,6 +156,10 @@ bridge_app.add_typer(claude_cache_app, name="cache")
 app.add_typer(server_app, name="server")
 app.add_typer(storage_app, name="storage")
 app.add_typer(work_app, name="work")
+app.add_typer(wait_app, name="wait")
+app.add_typer(approvals_app, name="approvals")
+app.command("gh-get")(gh_get)
+app.command("wake")(wake)
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(zellij_app, name="zellij")
 herdr_app.add_typer(team_app, name="team")
@@ -599,8 +605,7 @@ def capacity_status_command(
                 "detail": state.detail,
                 "used_percent": state.used_percent,
                 "remaining_percent": (
-                    max(0.0, 100.0 - state.used_percent)
-                    if state.used_percent is not None else None
+                    max(0.0, 100.0 - state.used_percent) if state.used_percent is not None else None
                 ),
                 "resets_at": state.resets_at,
                 "reset_local": reset_description(state.resets_at),
@@ -873,7 +878,14 @@ def models_command() -> None:
     """Show configured answer models and their declared agent capabilities."""
     config = load_config()
     table = Table(
-        "Backend", "Tier", "Model", "Tools", "Reasoning", "Effort", "Vision", "Context",
+        "Backend",
+        "Tier",
+        "Model",
+        "Tools",
+        "Reasoning",
+        "Effort",
+        "Vision",
+        "Context",
         "Price / 1M",
     )
     table.columns[2].overflow = "fold"
@@ -1126,6 +1138,40 @@ def label_command(
     console.print(f"Labeled decision {decision_id}: {outcome}")
 
 
+@app.command("audit-sample")
+def audit_sample_command(
+    count: int = typer.Option(20, min=1, max=200, help="Decisions to draw."),
+    days: int = typer.Option(7, min=1, help="Look-back window."),
+) -> None:
+    """Draw unlabelled completed decisions, spread across classifier sources, for labelling.
+
+    Judge each against its outcome, then record `agentroute label ID correct|too-low|too-high`.
+    """
+    rows = AuditStore().sample(count=count, days=days)
+    if not rows:
+        console.print("No unlabelled completed automatic decisions in that window.")
+        return
+    table = Table(title=f"Routing sample: {len(rows)} unlabelled decisions")
+    for column in ("ID", "When (UTC)", "Source", "Task type", "Tier", "Model", "Turn", "Summary"):
+        table.add_column(column)
+    for row in rows:
+        duration = row["turn_duration_ms"]
+        table.add_row(
+            str(row["id"]),
+            str(row["created_at"])[5:16].replace("T", " "),
+            str(row["classification_source"]),
+            str(row["classifier_task_type"] or "-"),
+            str(row["selected_tier"]),
+            str(row["actual_model"] or row["model"]),
+            f"{duration / 1000:.0f}s" if duration else "-",
+            str(row["task_summary"] or "(enable audit.store_task_summary)"),
+        )
+    console.print(table)
+    console.print(
+        "Inspect one with `agentroute why --decision-id ID`; label with `agentroute label`."
+    )
+
+
 @app.command("audit-report")
 def audit_report_command(limit: int = 500) -> None:
     """Summarize automatic routes and available quality labels."""
@@ -1158,11 +1204,7 @@ def audit_report_command(limit: int = 500) -> None:
         f"Next-turn manual tier signals: {len(override_signals)} ({stronger} stronger). "
         "These are navigation signals, not quality labels."
     )
-    llm = [
-        row
-        for row in automatic
-        if row["classifier_latency_ms"] is not None
-    ]
+    llm = [row for row in automatic if row["classifier_latency_ms"] is not None]
     latencies = [float(row["classifier_latency_ms"]) for row in llm if row["classifier_latency_ms"]]
     if latencies:
         console.print(
@@ -1179,9 +1221,14 @@ def audit_report_command(limit: int = 500) -> None:
 
     def counts(label: str, values: list[str]) -> None:
         counter = Counter(values)
-        console.print(f"{label}: " + (", ".join(
-            f"{name}={count}" for name, count in sorted(counter.items())
-        ) if counter else "none"))
+        console.print(
+            f"{label}: "
+            + (
+                ", ".join(f"{name}={count}" for name, count in sorted(counter.items()))
+                if counter
+                else "none"
+            )
+        )
 
     counts("Classifier status", [str(row["classifier_status"] or "unknown") for row in rows])
     counts("Classifier versions", [str(row["classifier_version"] or "unknown") for row in rows])
@@ -1200,9 +1247,16 @@ def audit_report_command(limit: int = 500) -> None:
     counts("Provider modes", [str(x.get("mode") or "unknown") for x in receipts])
     counts("Selection pools", [str(x.get("selection_pool") or "not recorded") for x in receipts])
     counts("Selected providers", [str(x.get("selected_backend") or "none") for x in receipts])
-    counts("Candidate exclusions", [str(reason) for receipt in receipts
-        for candidate in receipt.get("candidates", []) if isinstance(candidate, dict)
-        for reason in candidate.get("exclusions", [])])
+    counts(
+        "Candidate exclusions",
+        [
+            str(reason)
+            for receipt in receipts
+            for candidate in receipt.get("candidates", [])
+            if isinstance(candidate, dict)
+            for reason in candidate.get("exclusions", [])
+        ],
+    )
     counts("Provider locks", [str(x.get("locked_by")) for x in receipts if x.get("locked_by")])
     console.print(
         "Feedback is voluntary and may be biased; unlabeled, pending and older decisions "
@@ -1458,7 +1512,8 @@ def analytics_command(
             f"{item.total_tokens:,}",
             f"{currency} {item.answer_cost:.4f}"
             + (" (partial)" if item.cost_status == "partial" else "")
-            if item.answer_cost is not None else item.cost_status,
+            if item.answer_cost is not None
+            else item.cost_status,
         )
     console.print(models)
 
@@ -1496,7 +1551,8 @@ def analytics_command(
             f"{item.total_tokens:,}",
             f"{currency} {item.answer_cost:.4f}"
             + (" (partial)" if item.cost_status == "partial" else "")
-            if item.answer_cost is not None else item.cost_status,
+            if item.answer_cost is not None
+            else item.cost_status,
         )
     console.print(timeline)
 
@@ -1593,6 +1649,10 @@ def classifier_status_command() -> None:
     routing = load_config().routing
     classifier = routing.classifier
     engine = classifier.engine
+    console.print(
+        f"LLM transport: {classifier.transport}; backend: {classifier.backend}; "
+        f"model: {classifier.model}; timeout: {classifier.timeout_seconds:g}s"
+    )
     active = classifier.jev_shadow if engine == "jev" else classifier
     backend = (
         "local"
@@ -1601,7 +1661,15 @@ def classifier_status_command() -> None:
         if is_private_endpoint(active.endpoint)
         else "cloud"
     )
-    if backend == "local":
+    subscription_active = engine != "jev" and classifier.transport == "codex_subscription"
+    subscription_credential = (
+        "ChatGPT subscription login (no API key read)"
+        if classifier.backend == "gpt"
+        else f"{classifier.backend} selected backend credentials (subscription bridge)"
+    )
+    if subscription_active:
+        credential_detail = subscription_credential
+    elif backend == "local":
         credential_detail = "not required"
     else:
         try:
@@ -1616,12 +1684,17 @@ def classifier_status_command() -> None:
     console.print(f"Model: {active_model}")
     console.print(f"Endpoint: {active_endpoint}")
     console.print(f"Remote prompt egress: {'allowed' if active.allow_remote else 'blocked'}")
-    credential_source = active.api_key_file or active.api_key_env
-    console.print(f"Credential {credential_source}: {credential_detail}")
+    if subscription_active:
+        console.print(f"Credential: {credential_detail}")
+    else:
+        credential_source = active.api_key_file or active.api_key_env
+        console.print(f"Credential {credential_source}: {credential_detail}")
     console.print(
         f"Ambiguity threshold: {classifier.ambiguity_threshold:.0%}; "
         f"timeout: {active.timeout_seconds:g}s"
     )
+    if engine == "jev" and classifier.transport == "codex_subscription":
+        console.print(f"LLM fallback credential: {subscription_credential}")
     age = catalog_age_seconds(active)
     catalog_status = (
         "unverified" if age is None else "fresh" if age <= active.catalog_ttl_seconds else "stale"
@@ -1641,7 +1714,7 @@ def classifier_status_command() -> None:
             "JEV acceptance threshold: "
             f"{classifier.jev_shadow.acceptance_threshold:.0%} "
             + (
-                "(lower-confidence selections use the configured local LLM fallback)"
+                "(lower-confidence selections use the configured LLM fallback)"
                 if classifier.jev_shadow.llm_fallback_enabled
                 else "(lower-confidence selections retain the heuristic route)"
             )
@@ -1811,6 +1884,48 @@ def classifier_jev_shadow_report_command(
     )
 
 
+@app.command("classifier-subscription-enable")
+def classifier_subscription_enable_command(
+    backend: str = typer.Option("gpt", help="Configured subscription backend."),
+    model: str = typer.Option("gpt-6-luna", help="Classifier model on that backend."),
+    timeout_seconds: float = typer.Option(20.0, "--timeout", min=0.1, max=30),
+    reasoning_effort: str = typer.Option("low"),
+    chatgpt_profile: str | None = typer.Option(None),
+    codex_binary: Path | None = typer.Option(None),
+) -> None:
+    """Select a subscription-backed LLM classifier, preserving JEV when primary."""
+    config = load_config()
+    target = config.backends.get(backend)
+    if target is None or not target.enabled:
+        raise typer.BadParameter("backend must be configured and enabled")
+    if backend not in config.routing.provider_selection.subscription_backends:
+        raise typer.BadParameter("backend must be explicitly classified as subscription-backed")
+    if chatgpt_profile and backend != "gpt":
+        raise typer.BadParameter("--chatgpt-profile requires the gpt backend")
+    if reasoning_effort not in {"low", "medium", "high", "xhigh"}:
+        raise typer.BadParameter("reasoning effort must be low, medium, high or xhigh")
+    settings = config.routing.classifier
+    settings.transport = "codex_subscription"
+    settings.backend = backend
+    settings.model = model
+    settings.chatgpt_profile = chatgpt_profile
+    settings.codex_binary = codex_binary
+    settings.timeout_seconds = timeout_seconds
+    settings.reasoning_effort = reasoning_effort
+    settings.allow_remote = True
+    settings.enabled = True
+    settings.jev_shadow.llm_fallback_enabled = True
+    settings.catalog_checked_at = None
+    settings.catalog_hash = None
+    settings.catalog_models = []
+    if settings.engine != "jev":
+        config.routing.mode = "hybrid"
+    save_config(config)
+    console.print(
+        f"Selected subscription classifier {backend}/{model}; timeout {timeout_seconds:g}s."
+    )
+
+
 @app.command("classifier-enable")
 def classifier_enable_command(
     endpoint: str = typer.Option(
@@ -1856,6 +1971,7 @@ def classifier_enable_command(
     config = load_config()
     config.routing.mode = "hybrid"
     config.routing.classifier.enabled = True
+    config.routing.classifier.transport = "openai_compatible"
     config.routing.classifier.endpoint = endpoint
     config.routing.classifier.model = model
     config.routing.classifier.api_key_env = api_key_env
@@ -1882,6 +1998,16 @@ def classifier_verify_command() -> None:
     """Verify the configured model against the provider catalog and cache the receipt."""
     config = load_config()
     settings = config.routing.classifier
+    if settings.transport == "codex_subscription" and settings.engine != "jev":
+        from .subscription_classifier import SubscriptionClassifier
+
+        result = SubscriptionClassifier(config).classify(
+            RouteContext(session_id="classifier-verify", latest_prompt="Say hello.")
+        )
+        console.print(
+            f"Verified subscription inference {settings.backend}/{settings.model}: {result.tier}"
+        )
+        return
     active = settings.jev_shadow if settings.engine == "jev" else settings
     classifier = (
         JevShadowClassifier(active)

@@ -30,6 +30,7 @@ from .signals import (
     reason_codes,
     route_overrides,
 )
+from .subscription_classifier import SubscriptionClassifier
 
 CLASSIFIER_VERSION = "hybrid-v10"
 
@@ -103,7 +104,11 @@ class Router:
             self.classifier = (
                 JevShadowClassifier(classifier_config.jev_shadow)
                 if classifier_config.engine == "jev"
-                else OpenAICompatibleClassifier(classifier_config)
+                else (
+                    SubscriptionClassifier(self.config)
+                    if classifier_config.transport == "codex_subscription"
+                    else OpenAICompatibleClassifier(classifier_config)
+                )
             )
         self.fallback_classifier = fallback_classifier
         if (
@@ -112,7 +117,11 @@ class Router:
             and classifier_config.engine == "jev"
             and classifier_config.jev_shadow.llm_fallback_enabled
         ):
-            self.fallback_classifier = OpenAICompatibleClassifier(classifier_config)
+            self.fallback_classifier = (
+                SubscriptionClassifier(self.config)
+                if classifier_config.transport == "codex_subscription"
+                else OpenAICompatibleClassifier(classifier_config)
+            )
         self._last_classifier: TierClassifier | None = None
         self._jev_observation: dict[str, object] | None = None
 
@@ -338,6 +347,8 @@ class Router:
                 "private_llm",
                 "cloud_llm",
                 "local_llm_fallback",
+                "subscription_llm",
+                "subscription_llm_fallback",
                 "private_llm_fallback",
                 "cloud_llm_fallback",
                 "local_jev",
@@ -400,6 +411,42 @@ class Router:
                     detail="retained active model: estimated next-request cache reuse is cheaper",
                 )
             )
+        # Counting cache loss: with a large context every model change re-reads the whole
+        # conversation uncached, and an A->B->A reversal pays that twice. A lower tier is
+        # therefore applied only once it has been proposed on consecutive prompts.
+        switching = self.config.routing.switching
+        context_tokens = context.previous_response_usage.get("input_tokens", 0)
+        stickiness: dict[str, object] = {}
+        if (
+            not manual
+            and override != "auto"
+            and context.agent_requested_tier is None
+            and switching.downgrade_confirmations > 1
+            and context_tokens >= switching.hold_context_tokens
+            and proposed < context.current_tier
+        ):
+            streak = context.downgrade_streak + 1
+            held = streak < switching.downgrade_confirmations
+            stickiness = {
+                "proposed": str(proposed),
+                "streak": streak,
+                "required": switching.downgrade_confirmations,
+                "held": held,
+                "context_tokens": context_tokens,
+            }
+            if held:
+                proposed = context.current_tier
+                contributions.append(
+                    ScoreContribution(
+                        code=ReasonCode.TASK_STICKINESS,
+                        weight=0,
+                        detail=(
+                            f"kept {proposed.name}: a lower tier must repeat on "
+                            f"{switching.downgrade_confirmations} consecutive prompts once "
+                            f"{context_tokens:,} context tokens would be re-read uncached"
+                        ),
+                    )
+                )
         # The current short coordination report does not replace the supervisor's
         # continuing objective. Explicit user routes and policy caps still win.
         if not manual and context.coordination_role == "supervisor" and proposed < Tier.SMART:
@@ -845,6 +892,8 @@ class Router:
             "private_llm",
             "cloud_llm",
             "local_llm_fallback",
+                "subscription_llm",
+                "subscription_llm_fallback",
             "private_llm_fallback",
             "cloud_llm_fallback",
             "local_jev",
@@ -873,6 +922,8 @@ class Router:
                 "private_llm",
                 "cloud_llm",
                 "local_llm_fallback",
+                "subscription_llm",
+                "subscription_llm_fallback",
                 "private_llm_fallback",
                 "cloud_llm_fallback",
                 "local_jev",
@@ -1032,6 +1083,8 @@ class Router:
         }
         if economics:
             receipt["cache_economics"] = economics
+        if stickiness:
+            receipt["task_stickiness"] = stickiness
         if self._jev_observation is not None:
             receipt["jev_first_pass"] = self._jev_observation
         receipt_hash = hashlib.sha256(

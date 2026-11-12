@@ -39,6 +39,7 @@ from .signals import (
     model_route_overrides,
 )
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
+from .waits import hook_context as wait_hook_context
 
 
 def _prompt_help(config: AppConfig) -> str:
@@ -563,6 +564,7 @@ def codex_user_prompt_submit(
                 previous_route, current_model, str(payload.get("model_provider", "openai"))
             ),
             current_tier=current_tier,
+            downgrade_streak=store.downgrade_streak(session_id, route_scope, agent_id),
             previous_task_tier=previous_tier,
             previous_reasoning_effort=previous_reasoning_effort,
             interrupted_turn_affinity=interrupted_route is not None,
@@ -808,7 +810,7 @@ def codex_user_prompt_submit(
                 ).encode()
             ).hexdigest()
         _record_jev_shadow(decision, context, config)
-        store.record(
+        decision_id = store.record(
             decision,
             current_tier,
             context.latest_prompt if config.audit.store_prompts else None,
@@ -816,6 +818,8 @@ def codex_user_prompt_submit(
                 "pending" if config.enabled and not decision.capacity_blocked else "not_requested"
             ),
         )
+        if config.audit.store_task_summary and not goal_continuation:
+            store.set_task_summary(decision_id, prompt_without_profile)
         if goal_id and config.enabled and not decision.capacity_blocked:
             store.remember_goal_route(session_id, route_scope, agent_id, goal_id, goal_hash)
         action = "Selected" if config.enabled else "Would select"
@@ -848,7 +852,13 @@ def codex_user_prompt_submit(
                     "If this tier is materially insufficient, end your final response with "
                     "two plain lines: MODEL_REQUEST: <FAST|NORMAL|SMART|MAX> and "
                     "MODEL_REQUEST_REASON: <one-line reason>. Request only when needed; it is "
-                    "applied only after explicit user confirmation." + related_context
+                    "applied only after explicit user confirmation."
+                    + related_context
+                    + (
+                        wait_hook_context(session_id, goal_continuation)
+                        if route_scope == "root"
+                        else ""
+                    )
                 ),
             },
         }
