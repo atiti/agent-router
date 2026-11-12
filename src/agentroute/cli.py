@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .analytics import usage_analytics
+from .approvals import approvals_app, gh_get
 from .audit import AuditStore
 from .bridge_service import (
     BridgeServiceError,
@@ -156,6 +157,8 @@ app.add_typer(server_app, name="server")
 app.add_typer(storage_app, name="storage")
 app.add_typer(work_app, name="work")
 app.add_typer(wait_app, name="wait")
+app.add_typer(approvals_app, name="approvals")
+app.command("gh-get")(gh_get)
 app.command("wake")(wake)
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(zellij_app, name="zellij")

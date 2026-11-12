@@ -102,8 +102,7 @@ def _register(
                 "wait": waits.describe(wait),
                 "goal": goal,
                 "next": (
-                    "End your turn now. The thread is woken on the event or deadline; "
-                    "do not poll."
+                    "End your turn now. The thread is woken on the event or deadline; do not poll."
                 ),
             },
             indent=2,
@@ -113,7 +112,10 @@ def _register(
 
 @wait_app.command("pr")
 def wait_pr(
-    pull_request: str = typer.Argument(..., help="owner/repo#NUMBER or a github.com pull URL."),
+    pull_request: str = typer.Argument(
+        ..., help="'owner/repo#NUMBER' (quote the #), owner/repo with NUMBER, or a pull URL."
+    ),
+    number: int | None = typer.Argument(None, help="Pull request number when given separately."),
     until: str = typer.Option("checks", help="checks (all checks settled), merged, or change."),
     thread: str = THREAD,
     timeout: str = TIMEOUT,
@@ -123,10 +125,11 @@ def wait_pr(
     if until not in {"checks", "merged", "change"}:
         raise typer.BadParameter("--until must be checks, merged or change")
     try:
-        repo, number = waits.parse_pr(pull_request)
+        reference = f"{pull_request}#{number}" if number is not None else pull_request
+        repo, parsed = waits.parse_pr(reference)
     except waits.WaitError as error:
         raise typer.BadParameter(str(error)) from error
-    _register("pr", {"repo": repo, "number": number, "until": until}, thread, timeout, note)
+    _register("pr", {"repo": repo, "number": parsed, "until": until}, thread, timeout, note)
 
 
 @wait_app.command("run")

@@ -9,6 +9,11 @@
   `~/.agentroute/state/waits/triggers/`, or `agentroute wake --thread ID`. Notes and outside
   payloads are read with `agentroute wait show` as data and never enter the user-role wake
   message. See [event-driven waits](docs/event-waits.md).
+- Add `agentroute approvals install`, a managed block of allow rules so routine read-only
+  commands (GitHub reads, AgentRoute reads, wait registration, the team ledger, plain output
+  filters) skip approval review, plus `agentroute gh-get` for GET-only GitHub REST reads and
+  `agentroute approvals explain` to show which shell construct forces a review. Mutations stay
+  reviewed. See [routine approvals](docs/routine-approvals.md).
 
 ## 0.5.85 — 2026-11-11
 

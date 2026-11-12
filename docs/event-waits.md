@@ -13,9 +13,9 @@ Run these from the session that should be woken. The thread comes from `CODEX_TH
 `--thread ID` to target another thread.
 
 ```sh
-agentroute wait pr atiti/agent-router#179                 # all checks settled, merged or closed
-agentroute wait pr atiti/agent-router#179 --until merged
-agentroute wait pr atiti/agent-router#179 --until change  # any change in state, head, review, checks
+agentroute wait pr atiti/agent-router 179                 # all checks settled, merged or closed
+agentroute wait pr atiti/agent-router 179 --until merged
+agentroute wait pr atiti/agent-router 179 --until change  # any change in state, head, review, checks
 agentroute wait run atiti/agent-router 43097645030        # workflow run completed
 agentroute wait file build/out.tar                        # --until exists | changed | gone
 agentroute wait timer 20m

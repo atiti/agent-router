@@ -1237,13 +1237,20 @@ checks the condition in a small background daemon, and wakes the thread with one
 event or its deadline.
 
 ```sh
-agentroute wait pr atiti/agent-router#179 --note "merge when green, then tag the release"
+agentroute wait pr atiti/agent-router 179 --note "merge when green, then tag the release"
 agentroute wait timer 20m
 agentroute wait event import-finished          # a script later runs: agentroute wait fire import-finished
 agentroute wake --name "Ivan work packet" --message "nightly sync finished"   # from cron or an app
 ```
 
 See [event-driven waits](docs/event-waits.md) for every condition, outside triggers and limits.
+
+## Routine approvals
+
+`agentroute approvals install` adds allow rules for routine read-only commands so they stop
+costing an approval review each time; mutations stay reviewed. `agentroute approvals explain
+"<command>"` shows why a given line would still be reviewed. See
+[routine approvals](docs/routine-approvals.md).
 
 ## Herdr session cockpit
 
