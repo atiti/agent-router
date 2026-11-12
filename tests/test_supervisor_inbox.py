@@ -640,3 +640,48 @@ def test_malformed_explicit_review_deadline_has_one_stable_diagnostic(team):
         inbox.sync_due_reviews(data, items, 2)
         h.save("demo", data)
     assert snapshot()["generation"] == initial["generation"]
+
+
+def test_native_receipts_require_exact_bound_admitted_turn_and_preserve_action(team, monkeypatch):
+    h.send("demo", "boss", "first", "First report")
+    h.send("demo", "boss", "second", "Second report")
+    root = inbox.codex_home() / "supervisor-delivery-receipts" / THREAD
+    receipt = root / "token-1.json"
+    record = {"version": 1, "thread_id": OTHER, "turn_id": "turn-1",
+              "admission_token": "token-1", "event_ids": ["first"]}
+    inbox.atomic_write(receipt, record)
+    root.parent.chmod(0o700)
+    with h.locked("demo") as data:
+        assert inbox.apply_admission_receipts(data) == 0
+        assert data["messages"]["first"]["coordination_event"]["state"] == "persisted"
+    record["thread_id"] = THREAD
+    inbox.atomic_write(receipt, record)
+    with h.locked("demo") as data:
+        assert inbox.apply_admission_receipts(data) == 1
+        entry = data["messages"]["first"]["coordination_event"]
+        assert entry["state"] == "delivered" and entry["actionable"]
+        assert entry["delivery"]["turn_id"] == "turn-1"
+        assert data["messages"]["second"]["coordination_event"]["state"] == "persisted"
+        assert inbox.apply_admission_receipts(data) == 0
+        h.save("demo", data)
+    assert snapshot()["events"][0]["state"] == "delivered"
+    record.update(admission_token="token-2", turn_id="turn-2", event_ids=["second"])
+    inbox.atomic_write(root / "token-2.json", record)
+    with h.locked("demo") as data:
+        assert inbox.apply_admission_receipts(data) == 1
+        assert data["messages"]["second"]["coordination_event"]["delivery"]["turn_id"] == "turn-2"
+
+
+def test_native_receipts_reject_insecure_and_unbound_files(team):
+    h.send("demo", "boss", "first", "Report")
+    path = inbox.codex_home() / "supervisor-delivery-receipts" / THREAD / "token.json"
+    inbox.atomic_write(path, {"version": 1, "thread_id": THREAD, "turn_id": "turn",
+                              "admission_token": "different", "event_ids": ["first"]})
+    path.parent.parent.chmod(0o700)
+    with h.locked("demo") as data:
+        assert inbox.apply_admission_receipts(data) == 0
+    inbox.atomic_write(path, {"version": 1, "thread_id": THREAD, "turn_id": "turn",
+                              "admission_token": "token", "event_ids": ["first"]})
+    path.chmod(0o644)
+    with h.locked("demo") as data:
+        assert inbox.apply_admission_receipts(data) == 0
