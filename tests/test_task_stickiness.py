@@ -1,13 +1,27 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+from pathlib import Path
 
 from agentroute.audit import AuditStore
 from agentroute.config import default_config
 from agentroute.models import ReasonCode, RouteContext, Tier
 from agentroute.router import Router
-from tests.test_provider_selection import context as selection_context
-from tests.test_provider_selection import select_provider, setup_policy  # noqa: F401
+
+# Pytest's importlib mode does not put the repository root on sys.path, so the
+# sibling helpers cannot be imported as a package. Loading the file registers
+# setup_policy as a fixture in this module.
+_spec = importlib.util.spec_from_file_location(
+    "task_stickiness_selection_helpers",
+    Path(__file__).with_name("test_provider_selection.py"),
+)
+_selection = importlib.util.module_from_spec(_spec)
+assert _spec.loader is not None
+_spec.loader.exec_module(_selection)
+selection_context = _selection.context
+select_provider = _selection.select_provider
+setup_policy = _selection.setup_policy
 
 LARGE = {"input_tokens": 220_000, "cached_input_tokens": 210_000, "output_tokens": 900}
 MECHANICAL = "Rename the label and fix the typo"
