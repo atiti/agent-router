@@ -39,6 +39,7 @@ from .signals import (
     model_route_overrides,
 )
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
+from .waits import hook_context as wait_hook_context
 
 
 def _prompt_help(config: AppConfig) -> str:
@@ -848,7 +849,13 @@ def codex_user_prompt_submit(
                     "If this tier is materially insufficient, end your final response with "
                     "two plain lines: MODEL_REQUEST: <FAST|NORMAL|SMART|MAX> and "
                     "MODEL_REQUEST_REASON: <one-line reason>. Request only when needed; it is "
-                    "applied only after explicit user confirmation." + related_context
+                    "applied only after explicit user confirmation."
+                    + related_context
+                    + (
+                        wait_hook_context(session_id, goal_continuation)
+                        if route_scope == "root"
+                        else ""
+                    )
                 ),
             },
         }

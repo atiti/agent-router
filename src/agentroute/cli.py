@@ -127,6 +127,7 @@ from .release import install_latest_release
 from .router import Router
 from .server_cli import server_app
 from .storage_cli import storage_app
+from .wait_cli import wait_app, wake
 from .work_cli import sessions_app, work_app
 from .zellij_cli import zellij_app
 
@@ -154,6 +155,8 @@ bridge_app.add_typer(claude_cache_app, name="cache")
 app.add_typer(server_app, name="server")
 app.add_typer(storage_app, name="storage")
 app.add_typer(work_app, name="work")
+app.add_typer(wait_app, name="wait")
+app.command("wake")(wake)
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(zellij_app, name="zellij")
 herdr_app.add_typer(team_app, name="team")

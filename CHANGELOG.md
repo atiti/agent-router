@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add event-driven waits. `agentroute wait pr|run|file|timer|event|url|command` parks a thread
+  without model turns: it pauses the active goal, a detached daemon evaluates the condition, and
+  the thread is woken with one turn when the condition holds or the deadline passes. Scripts and
+  other apps can trigger a turn with `agentroute wait fire NAME`, a file dropped into
+  `~/.agentroute/state/waits/triggers/`, or `agentroute wake --thread ID`. Notes and outside
+  payloads are read with `agentroute wait show` as data and never enter the user-role wake
+  message. See [event-driven waits](docs/event-waits.md).
+
 ## 0.5.85 — 2026-11-11
 
 - Reuse native release build caches across Python package version bumps. Cargo still validates

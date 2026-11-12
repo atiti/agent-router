@@ -1229,6 +1229,22 @@ The CLI provides this lookup; the closed mobile app does not yet expose the work
 links as a separate UI. Raw profiling is optional and bounded; inspect or clean
 storage using `agentroute storage status` and `agentroute storage prune`.
 
+## Waiting without spending turns
+
+A goal that is blocked on CI, a deploy or another process otherwise continues turn after turn to
+report the same state. `agentroute wait` parks the thread instead: it pauses the active goal,
+checks the condition in a small background daemon, and wakes the thread with one turn on the
+event or its deadline.
+
+```sh
+agentroute wait pr atiti/agent-router#179 --note "merge when green, then tag the release"
+agentroute wait timer 20m
+agentroute wait event import-finished          # a script later runs: agentroute wait fire import-finished
+agentroute wake --name "Ivan work packet" --message "nightly sync finished"   # from cron or an app
+```
+
+See [event-driven waits](docs/event-waits.md) for every condition, outside triggers and limits.
+
 ## Herdr session cockpit
 
 Install [Herdr TUI](https://herdr.dev/tui/), then run `agentroute herdr install`
