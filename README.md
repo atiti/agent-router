@@ -1332,7 +1332,14 @@ socket limits. Preserve these directories when moving or recovering the installa
 `team view` opens or reuses an interactive TUI pane. It forwards keyboard input,
 output and pane size through a private PTY. Focus the worker pane to type directly.
 Ctrl+\ closes only that attachment. `team attach` also connects from another shell;
-closing or detaching a viewer keeps the agent running. `team layout` arranges existing
+closing or detaching a viewer keeps the agent running.
+
+For a specific worker route, add `--route '@claude @smart'` to `team run` or
+`team dispatch`; exact models can use `--route '@grok @model:grok-4.7'`. The route is
+saved with the launch identity and cannot be changed by repeating a member. Omit it to
+let AgentRoute choose dynamically. Availability and policy checks still apply.
+
+`team layout` arranges existing
 views into one tab; `team focus` selects an individual view. Herdr shows the Codex
 identity, member name and live working/idle/blocked status. Filter core directly with
 `HC_SESSION=<team-core-session> hc ls --label namespace=markster --label role=worker`,

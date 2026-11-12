@@ -522,3 +522,71 @@ def test_archived_member_cannot_reuse_released_binding(team, monkeypatch, tmp_pa
             h.resume("demo", "worker")
     terminal.assert_not_called()
     core.assert_not_called()
+
+
+def test_worker_route_prefix_is_validated_and_persisted_before_launch(team, monkeypatch, tmp_path):
+    from agentroute.config import default_config
+    from agentroute.signals import model_route_overrides
+
+    config = default_config()
+    config.backends["claude"] = config.backends["gpt"].model_copy(deep=True)
+    config.backends["grok"] = config.backends["gpt"].model_copy(deep=True)
+    monkeypatch.setattr("agentroute.config.load_config", lambda: config)
+    prompt = tmp_path / "task.txt"
+    prompt.write_text("Implement a bounded task")
+    def launch(data, *args):
+        stored = h.load("demo")["members"]["chosen"]
+        assert stored["spec"]["route"] == "@claude @smart"
+        tier, backend, _, _, _, remaining = model_route_overrides(
+            args[-1], config.backends)
+        assert (tier, backend) == ("smart", "claude")
+        assert "Implement a bounded task" in remaining
+        return {"address": "t2"}
+    monkeypatch.setattr(h, "core", launch)
+    monkeypatch.setattr(h, "own_terminal", lambda *_: None)
+    monkeypatch.setattr(h, "view", lambda *_: None)
+    monkeypatch.setattr(h, "layout", lambda *_: None)
+    h.run("demo", "chosen", tmp_path, prompt, "worker", None, "@claude @smart")
+    with pytest.raises(typer.BadParameter, match="different launch spec"):
+        h.run("demo", "chosen", tmp_path, prompt, "worker", None, "@grok @fast")
+
+
+def test_worker_route_rejects_prompt_injection_and_conflicts(monkeypatch):
+    from agentroute.config import default_config
+    config = default_config()
+    config.backends["claude"] = config.backends["gpt"].model_copy(deep=True)
+    config.backends["grok"] = config.backends["gpt"].model_copy(deep=True)
+    monkeypatch.setattr("agentroute.config.load_config", lambda: config)
+    for value in ("hello", "@claude arbitrary text", "@smart @fast", "@unknown", ""):
+        with pytest.raises(typer.BadParameter):
+            h.validated_route(value)
+    assert h.validated_route("@grok @model:grok-4.7 @high") == "@grok @model:grok-4.7 @high"
+
+
+def test_dispatch_persists_selected_route_before_worker_launch(team, monkeypatch, tmp_path):
+    from agentroute.config import default_config
+    from agentroute.signals import model_route_overrides
+    monkeypatch.setattr("agentroute.config.load_config", default_config)
+    item = dict(id="ready", status="ready", lane="session", assignment=None, dependencies=[],
+                next_action="review", revision=1, criteria=[])
+    actions = []
+    def packet(data, action, *args, **kwargs):
+        actions.append(action)
+        if action == "status":
+            return json.dumps({"items": [item]})
+        if action == "next":
+            return json.dumps([{"protocol_version": 1, "packet": "packet", **item}])
+        if action == "brief":
+            return "resume brief"
+        return json.dumps({"revision": len(actions)})
+    def core(data, *args):
+        spec = h.load("demo")["members"]["ready"]["spec"]
+        assert spec["route"] == "@azure @smart"
+        tier, backend, *_ = model_route_overrides(args[-1], ["azure"])
+        assert (tier, backend) == ("smart", "azure")
+        return {"address": "t2"}
+    monkeypatch.setattr(h, "packet_command", packet)
+    monkeypatch.setattr(h, "core", core)
+    monkeypatch.setattr(h, "view", lambda *_: None)
+    monkeypatch.setattr(h, "layout", lambda *_: None)
+    h.dispatch_once("demo", tmp_path, 3, {"ready"}, "@azure @smart")

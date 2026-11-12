@@ -186,6 +186,27 @@ def init(team: str, namespace: str = typer.Option(...), packet: str = typer.Opti
     typer.echo(str(path_for(team)))
 
 
+def validated_route(route: str | None) -> str | None:
+    """Accept only explicit routing selectors, never arbitrary prompt text."""
+    if route is None:
+        return None
+    from .config import load_config
+    from .signals import model_route_overrides
+
+    value = " ".join(route.split())
+    if not value or len(value) > 512:
+        raise typer.BadParameter("--route must contain explicit AgentRoute selectors")
+    try:
+        tier, backend, effort, model, profile, remaining = model_route_overrides(
+            value + " ROUTE_SENTINEL", load_config().backends
+        )
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+    if remaining != "ROUTE_SENTINEL" or not any((tier, backend, effort, model, profile)):
+        raise typer.BadParameter("--route accepts only routing tags, e.g. '@claude @smart'")
+    return value
+
+
 def member_prompt(data: dict, name: str, role: str, task: str) -> str:
     cli = shlex.join([sys.executable, "-m", "agentroute.cli", "herdr", "team"])
     member = data["members"].get(name, {})
@@ -215,7 +236,8 @@ def member_prompt(data: dict, name: str, role: str, task: str) -> str:
             f"You may launch ready session items with {cli} dispatch {data['id']} "
             f"--dir {shlex.quote(cwd)} --max-workers 3 --allow-item ITEM. "
             "Review the packet and select suitable ready items yourself; "
-            "repeat --allow-item for each. "
+            "repeat --allow-item for each. Use --route '@claude @smart' or other "
+            "explicit routing tags to select a provider and model tier for launched workers. "
             "Reassess selection as work changes. "
             "Each launch claims one ready session item for a dedicated worker "
             "and tiles that worker beside you. Operator and subagent items are never dispatched. "
@@ -223,8 +245,9 @@ def member_prompt(data: dict, name: str, role: str, task: str) -> str:
     scope = ("to the packet. You may dispatch selected workers as instructed. "
              if role == "supervisor" else
              "to this coordinator's outcome. No further delegation unless explicitly requested. ")
+    route_prefix = f"{member['spec']['route']} " if member.get("spec", {}).get("route") else ""
     return (
-        f"You are {role} {name} in local Herdr team {data['id']}.\n"
+        route_prefix + f"You are {role} {name} in local Herdr team {data['id']}.\n"
         f"Canonical namespace/packet/item: {data['namespace']}/{data['packet']}/{item}.\n"
         f"{constraint_prompt(data, member)}"
         f"Resume brief:\n{brief}\n"
@@ -259,14 +282,18 @@ def member_prompt(data: dict, name: str, role: str, task: str) -> str:
 @team_app.command("run")
 def run(team: str, member: str, directory: Path = typer.Option(..., "--dir", exists=True,
         file_okay=False), prompt_file: Path = typer.Option(..., exists=True, dir_okay=False),
-        role: str = "worker", parent: str | None = None) -> None:
+        role: str = "worker", parent: str | None = None,
+        route: str | None = None) -> None:
     """Start one interactive routed Codex; repeating a member reconciles, never reruns."""
     member = slug(member)
     if role not in {"supervisor", "worker"}:
         raise typer.BadParameter("role must be supervisor or worker")
     load(team)  # Fail before taking a mutation lock for an unknown team.
     task = prompt_file.read_text()
+    route = validated_route(route)
     spec = {"role": role, "cwd": str(directory.resolve()), "task": task, "parent": parent}
+    if route:
+        spec["route"] = route
     with locked(team) as data:
         old = data["members"].get(member)
         if old and old["spec"] != spec:
@@ -646,13 +673,15 @@ def packet_command(data: dict, action: str, *args: str, request: dict | None = N
 def dispatch(team: str, directory: Path = typer.Option(..., "--dir", exists=True,
              file_okay=False), max_workers: int = typer.Option(3, min=1, max=20),
              watch: bool = False,
-             allow_item: list[str] = typer.Option(..., "--allow-item")) -> None:
+             allow_item: list[str] = typer.Option(..., "--allow-item"),
+             route: str | None = None) -> None:
     """Claim ready session outcomes and tile workers; --watch keeps filling free slots."""
     import time
 
+    route = validated_route(route)
     while True:
         try:
-            dispatch_once(team, directory, max_workers, set(allow_item))
+            dispatch_once(team, directory, max_workers, set(allow_item), route)
         except (RuntimeError, OSError, subprocess.SubprocessError) as error:
             if not watch:
                 raise
@@ -663,8 +692,9 @@ def dispatch(team: str, directory: Path = typer.Option(..., "--dir", exists=True
 
 
 def dispatch_once(team: str, directory: Path, max_workers: int,
-                  allowed: set[str]) -> None:
+                  allowed: set[str], route: str | None = None) -> None:
     # The team lock serializes dispatchers and persists launch intent before hc run.
+    route = validated_route(route)
     if not allowed:
         raise typer.BadParameter("At least one --allow-item is required")
     allowed = {slug(item) for item in allowed}
@@ -702,6 +732,8 @@ def dispatch_once(team: str, directory: Path, max_workers: int,
                       "packet_binding": binding, "execution_constraints": constraints,
                       "spec": {"role": "worker", "cwd": str(directory.resolve()),
                                "task": item["next_action"], "parent": None}}
+            if route:
+                record["spec"]["route"] = route
             data["members"][member] = record
             save(team, data)
             args = ("--packet", data["packet"], "--item", item["id"])
