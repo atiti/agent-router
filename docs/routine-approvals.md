@@ -10,7 +10,7 @@ command is safe, and new sessions pick the rules up.
 
 ```sh
 agentroute approvals install
-agentroute approvals install --extra "python3 /Users/me/workspace/tools/scripts/work_packets.py"
+agentroute packet-read --namespace private startup --query "task"
 agentroute approvals status
 agentroute approvals uninstall
 ```
@@ -20,13 +20,16 @@ agentroute approvals uninstall
 | Group | Commands |
 |---|---|
 | GitHub reads | `gh pr view/checks/list/diff/status`, `gh run view/list`, `gh issue view/list/status`, `gh repo view`, `gh release view/list`, `gh workflow view/list`, `gh search`, `gh auth status` |
+| Work packets | `agentroute packet-read --namespace NAMESPACE startup/status/next/execution/brief/audit/claims` uses the canonical tracker and cannot mutate it |
 | GitHub REST reads | `agentroute gh-get PATH [--jq EXPR] [--paginate]`, which always sends `GET` |
 | AgentRoute reads | `history`, `why`, `version`, `analytics`, `audit-report`, `stats`, `models`, `classifier-status`, `approvals status/explain`, `herdr list` |
 | Waits | `agentroute wait pr/run/file/timer/event/list/show/cancel` |
 | Team ledger | `agentroute herdr team status/messages/inbox/inbox-ack/ack/send`, also through the venv Python |
 | Output filters | `head`, `tail`, `wc`, `cut`, `jq`, `grep` |
 
-Everything else stays reviewed, including `gh api`, merges, comments, workflow dispatch, pushes,
+The managed block does not override existing rules outside it; `agentroute approvals explain` checks the full rules file. The installer removes its legacy `work_packets.py` blanket extra because that prefix also allowed mutations.
+
+Everything else stays reviewed unless another existing rule allows it, including `gh api`, merges, comments, workflow dispatch, pushes,
 `agentroute wake`, `wait url`, `wait command`, `wait fire`, and launching or cleaning up workers.
 Filters that can write a file or run a program (`sort`, `sed`, `awk`, `rg`, `xargs`, `tee`) are
 left out on purpose.

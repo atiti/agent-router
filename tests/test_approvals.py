@@ -22,7 +22,7 @@ def test_install_is_idempotent_and_preserves_user_rules_and_extras(tmp_path):
     path = approvals.rules_path()
     path.parent.mkdir(parents=True)
     path.write_text('prefix_rule(pattern=["git", "push"], decision="allow")\n')
-    tool = tmp_path / "work_packets.py"
+    tool = tmp_path / "custom_reader.py"
     tool.write_text("print('ok')\n")
     _, first = approvals.install([["python3", str(tool)]])
     once = path.read_text()
@@ -127,3 +127,36 @@ def test_generated_rules_are_accepted_by_codex_execpolicy(tmp_path):
     assert decision("agentroute", "wait", "timer", "20m") == "allow"
     assert decision("gh", "pr", "merge", "179") != "allow"
     assert Path(path).read_text().count("prefix_rule(") > 40
+
+
+def test_packet_read_rejects_mutations_and_unexpected_options(monkeypatch):
+    calls = []
+    monkeypatch.setattr(approvals.subprocess, "run",
+                        lambda argv, **kw: calls.append((argv, kw)) or
+                        subprocess.CompletedProcess(argv, 0))
+    runner = CliRunner()
+    assert runner.invoke(app, ["packet-read", "--namespace", "private", "status",
+                               "--packet", "sample"]).exit_code == 0
+    argv, options = calls[0]
+    assert argv[-3:] == ["status", "--packet", "sample"]
+    assert "--root" in argv and "WORK_PACKETS_ROOT" not in options["env"]
+    for args in (["checkpoint"], ["sync"], ["coordinator"], ["import"],
+                 ["status", "--request-file", "/tmp/x"], ["status", "--root", "/tmp/x"]):
+        assert runner.invoke(app, ["packet-read", "--namespace", "private", *args]).exit_code != 0
+    assert len(calls) == 1
+
+
+def test_install_replaces_only_legacy_tracker_extra(tmp_path):
+    path = approvals.rules_path()
+    path.parent.mkdir(parents=True)
+    tracker = tmp_path / "work_packets.py"
+    tracker.write_text("pass")
+    extra = ["python3", str(tracker)]
+    path.write_text('prefix_rule(pattern=["git", "push"], decision="allow")\n' +
+                    approvals.render([extra]))
+    approvals.install()
+    assert extra not in approvals.allowed_patterns()
+    assert ["git", "push"] in approvals.allowed_patterns()
+    assert ["agentroute", "packet-read"] in approvals.allowed_patterns()
+    with pytest.raises(ValueError, match="mutates state"):
+        approvals.install([extra])

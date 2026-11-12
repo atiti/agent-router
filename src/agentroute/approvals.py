@@ -12,8 +12,10 @@ Mutations, credential reads and anything that executes caller-supplied code stay
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import typer
@@ -32,7 +34,8 @@ GH_READ = [
 ]  # fmt: skip
 AGENTROUTE_READ = [
     ["history"], ["why"], ["version"], ["analytics"], ["audit-report"], ["stats"], ["models"],
-    ["classifier-status"], ["gh-get"], ["approvals", "status"], ["approvals", "explain"],
+    ["classifier-status"], ["gh-get"], ["packet-read"], ["approvals", "status"],
+    ["approvals", "explain"],
     ["wait", "pr"], ["wait", "run"], ["wait", "file"], ["wait", "timer"], ["wait", "event"],
     ["wait", "list"], ["wait", "show"], ["wait", "cancel"], ["herdr", "list"],
 ]  # fmt: skip
@@ -103,6 +106,11 @@ def existing_extras(text: str) -> list[list[str]]:
     return extras
 
 
+def legacy_tracker_prefix(tokens: list[str]) -> bool:
+    return (len(tokens) >= 2 and Path(tokens[0]).name in {"python", "python3"}
+            and Path(tokens[1]).name == "work_packets.py")
+
+
 def render(extras: list[list[str]]) -> str:
     lines = [
         BEGIN,
@@ -127,8 +135,12 @@ def render(extras: list[list[str]]) -> str:
 def install(extras: list[list[str]] | None = None, path: Path | None = None) -> tuple[Path, int]:
     path = path or rules_path()
     text = path.read_text() if path.exists() else ""
-    merged = existing_extras(text)
+    # Old blanket tracker prefix also allowed claim/checkpoint/sync. Migrate only
+    # this known managed extra to the dedicated read-only command.
+    merged = [extra for extra in existing_extras(text) if not legacy_tracker_prefix(extra)]
     for extra in extras or []:
+        if legacy_tracker_prefix(extra):
+            raise ValueError("work_packets.py mutates state; use agentroute packet-read")
         if validate_extra(extra) not in merged:
             merged.append(extra)
     block = render(merged)
@@ -286,3 +298,44 @@ def gh_get(
     if paginate:
         argv.append("--paginate")
     raise typer.Exit(subprocess.run(argv, check=False).returncode)
+
+
+PACKET_READ_COMMANDS = {"startup", "status", "next", "execution", "brief", "audit", "claims"}
+
+def packet_read(
+    namespace: str = typer.Option(..., "--namespace"),
+    command: str = typer.Argument(...),
+    query: str = typer.Option("", "--query"),
+    full: bool = typer.Option(False, "--full"),
+    packet: str = typer.Option("", "--packet"),
+    item: str = typer.Option("", "--item"),
+    role: str = typer.Option("worker", "--role"),
+) -> None:
+    """Read the canonical work tracker; state-changing actions are unavailable."""
+    if command not in PACKET_READ_COMMANDS or not re.fullmatch(r"[a-z][a-z0-9-]*", namespace):
+        raise typer.BadParameter("Use an explicit namespace and a read-only tracker command")
+    if (query or full) and command != "startup":
+        raise typer.BadParameter("--query and --full are only valid for startup")
+    if packet and command not in {"status", "execution", "brief"}:
+        raise typer.BadParameter("--packet is not valid for this read")
+    if item and command not in {"execution", "brief"}:
+        raise typer.BadParameter("--item is not valid for this read")
+    if command in {"execution", "brief"} and (not packet or not item):
+        raise typer.BadParameter("execution and brief require --packet and --item")
+    if role not in {"worker", "coordinator"} or (role != "worker" and command != "next"):
+        raise typer.BadParameter("--role is only valid for next")
+    script = Path.home() / "workspace" / "tools" / "scripts" / "work_packets.py"
+    argv = [sys.executable, str(script), "--root", str(Path.home() / "workspace"),
+            "--namespace", namespace, command]
+    if query:
+        argv.extend(["--query", query])
+    if full:
+        argv.append("--full")
+    if packet:
+        argv.extend(["--packet", packet])
+    if item:
+        argv.extend(["--item", item])
+    if command == "next":
+        argv.extend(["--role", role])
+    env = {key: value for key, value in os.environ.items() if key != "WORK_PACKETS_ROOT"}
+    raise typer.Exit(subprocess.run(argv, env=env, check=False).returncode)
