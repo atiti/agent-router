@@ -37,6 +37,8 @@ MAX_TIMEOUT = 7 * 24 * 3600
 MAX_PENDING_PER_THREAD = 8
 MAX_NOTE = 1000
 MAX_PAYLOAD = 4000
+# GitHub responses are structured data, not user-visible payloads.
+MAX_STRUCTURED_OUTPUT = 2_000_000
 MAX_DELIVERY_ATTEMPTS = 20
 TICK_SECONDS = 5.0
 IDLE_EXIT_SECONDS = 60.0
@@ -260,6 +262,13 @@ def run_command(argv: list[str], timeout: float, cwd: str | None = None) -> tupl
         return 124, "timed out"
     except OSError as error:
         return 127, str(error)
+    if argv[:2] in (["gh", "run"], ["gh", "pr"]):
+        # Parse complete stdout only. Warnings on stderr are not part of JSON.
+        if result.returncode:
+            return result.returncode, (result.stderr or result.stdout)[-MAX_PAYLOAD:]
+        if len(result.stdout.encode("utf-8")) > MAX_STRUCTURED_OUTPUT:
+            raise WaitError("GitHub structured output exceeds the 2 MB limit")
+        return result.returncode, result.stdout
     return result.returncode, (result.stdout + result.stderr)[-MAX_PAYLOAD:]
 
 

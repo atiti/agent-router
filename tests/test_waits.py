@@ -257,3 +257,28 @@ def test_limits_and_validation():
         waits.register("not a thread", "timer", {})
     with pytest.raises(waits.WaitError):
         waits.register("01a1bf89-0000", "timer", {}, note="x" * 2000)
+
+
+def test_github_wait_parses_complete_json_over_payload_limit(monkeypatch):
+    import subprocess
+
+    payload = {"status": "completed", "conclusion": "failure", "jobs": [
+        {"name": "macOS", "status": "completed", "conclusion": "cancelled",
+         "steps": [{"name": "large step description " * 400}]}]}
+    encoded = json.dumps(payload)
+    assert len(encoded) > waits.MAX_PAYLOAD
+    monkeypatch.setattr(waits.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(
+        argv, 0, stdout=encoded, stderr="non-fatal warning\n"))
+    wait = {"kind": "run", "spec": {"repo": "a/b", "run_id": 1, "until": "completed"}}
+    met, summary, _ = waits.evaluate(wait)
+    assert met and "status completed" in summary and "cancelled" in summary
+
+
+def test_github_output_above_structured_limit_is_an_explicit_observation_error(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(waits.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(
+        argv, 0, stdout="x" * (waits.MAX_STRUCTURED_OUTPUT + 1), stderr=""))
+    wait = {"kind": "run", "spec": {"repo": "a/b", "run_id": 1, "until": "completed"}}
+    with pytest.raises(waits.WaitError, match="exceeds"):
+        waits.evaluate(wait)
