@@ -57,6 +57,9 @@ def _pause_goal(wait: dict[str, Any]) -> str:
                         mutation_guard=waits.capture_pause_guard(before, paused),
                     ),
                 )
+                current = next(w for w in waits.load() if w["id"] == wait["id"])
+                if not current["goal"].get("mutation_guard"):
+                    return "paused; automatic resume ownership unavailable, resume goal manually"
                 return "paused until this wait ends"
             if status == "paused" and any(
                 waits.pause_owned(w, goal) and w["id"] != wait["id"]
@@ -287,6 +290,7 @@ def _public(wait: dict[str, Any]) -> dict[str, Any]:
         "recipient_read": wait.get("recipient_read"),
         "disposition": wait.get("disposition"),
         "goal_paused_by_wait": wait["goal"].get("paused_by_wait", False),
+        "automatic_resume_guarded": bool(wait["goal"].get("mutation_guard")),
     }
 
 

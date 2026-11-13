@@ -161,3 +161,9 @@ other outstanding waits parked. A changed goal or later user pause remains untou
 waits without a pause snapshot and mutation guard do not automatically resume a goal. If a user resumes early,
 the routing reminder permits independently runnable work and says to retain pending waits
 when the remaining prerequisite is unchanged.
+
+If the durable pause guard cannot be established, registration reports that automatic resume
+ownership is unavailable and manual goal resume is required. `show` exposes
+`automatic_resume_guarded`. The current native API has no conditional goal mutation: the
+read/validate/resume sequence is not atomic against a simultaneous user edit. The guard
+preserves observed prior edits; an atomic compare-and-set would require a native protocol change.
