@@ -167,3 +167,20 @@ ownership is unavailable and manual goal resume is required. `show` exposes
 `automatic_resume_guarded`. The current native API has no conditional goal mutation: the
 read/validate/resume sequence is not atomic against a simultaneous user edit. The guard
 preserves observed prior edits; an atomic compare-and-set would require a native protocol change.
+
+
+### Embedded Herdr supervisors
+
+When a wait belongs to a registered and enrolled Herdr supervisor, its stable wait ID is
+projected into that supervisor's native inbox. The embedded owner admits it at a safe boundary;
+the daemon records delivery only after a native admission receipt or recipient acknowledgment.
+If the owner is missing, inbox enrollment is unavailable, or admission is uncertain, the wait
+stays held for reconciliation. It is never replayed into a terminal or another Codex owner.
+A new v69-or-newer supervisor enrolls when it registers from its own terminal. Existing older
+owners must finish a safe handoff and resume on the verified runtime before enrollment.
+
+Packet-bound workers receive a goal derived from their claimed outcome and acceptance criteria.
+A turn ending does not complete the goal. Completion requires the bound owner's canonical packet
+completion, evidence, resolved operations and all delivery gates; the native independent reviewer
+also checks the goal. If that check cannot be established, automatic continuation is held until a
+fresh event or user input resolves the blocker. Existing paused or limited goals are preserved.

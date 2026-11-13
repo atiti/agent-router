@@ -610,6 +610,9 @@ def deliver(
 ) -> str:
     """Start one turn for a fired wait and reactivate a goal this wait paused."""
     now = time.time() if now is None else now
+    owner = deliver_supervisor_inbox(wait, now)
+    if owner is not None:
+        return owner
     delivery = wait["delivery"]
     if delivery["state"] != "delivered":
         backoff = min(300, 5 * 2 ** min(delivery["attempts"], 6)) if delivery["attempts"] else 0
@@ -838,8 +841,8 @@ def record_recipient(
     def change(wait):
         if not thread or wait["thread_id"] != thread:
             raise WaitError("record receipt from the target Codex thread")
-        if wait["delivery"]["state"] != "delivered":
-            raise WaitError("wait admission must be reconciled before recording receipt")
+        if wait["delivery"]["state"] not in {"delivered", "inbox_pending"}:
+            raise WaitError("wait must be admitted or projected before recording receipt")
         wait["recipient_read"] = wait.get("recipient_read") or {"at": now, "thread": thread}
         if action:
             disposition = {
@@ -1070,3 +1073,119 @@ def capture_pause_guard(
 
 def goal_identity(goal: dict[str, Any]) -> dict[str, Any]:
     return {k: goal.get(k) for k in ("threadId", "objective", "status", "tokenBudget", "createdAt")}
+
+
+def deliver_supervisor_inbox(wait: dict[str, Any], now: float) -> str | None:
+    """Route bound supervisors to their native owner's durable inbox, without terminal input."""
+    from . import herdr_team as team
+    from . import supervisor_inbox as inbox
+
+    directory = team.state_dir() / "herdr-teams"
+    bindings = []
+    for path in directory.glob("*/team.json"):
+        try:
+            data = json.loads(path.read_text())
+            for member, thread in inbox.supervisors(data).items():
+                if thread == wait["thread_id"]:
+                    bindings.append((data["id"], member))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    if not bindings:
+        # An existing projected wait must never fall back to a different owner
+        # if the team ledger is temporarily unavailable or removed.
+        if wait["delivery"].get("mode") == "native_supervisor_inbox":
+            update(
+                wait["id"],
+                lambda w: w["delivery"].update(last_error="bound supervisor ledger unavailable"),
+            )
+            return "owner_hold"
+        return None
+    if len(bindings) != 1:
+        update(wait["id"], lambda w: w["delivery"].update(last_error="ambiguous supervisor owner"))
+        return "owner_hold"
+    team_id, member = bindings[0]
+    event_id = "wait-" + wait["id"]
+    with team.locked(team_id) as data:
+        if inbox.supervisors(data).get(member) != wait["thread_id"]:
+            return "owner_hold"
+        if data.get("inbox_consumer", {}).get("version") != 1:
+            update(
+                wait["id"],
+                lambda w: w["delivery"].update(
+                    last_error="supervisor native inbox not enrolled", owner_team=team_id
+                ),
+            )
+            return "owner_hold"
+        inbox.validate_enrollment(data)
+        target = data["members"].get(member)
+        terminal = team.own_terminal(data, target) if target else None
+        if not terminal or terminal.get("state") != "live":
+            update(
+                wait["id"],
+                lambda w: w["delivery"].update(
+                    last_error="supervisor owner is not live", owner_team=team_id
+                ),
+            )
+            return "owner_hold"
+        message = data["messages"].get(event_id)
+        if not message:
+            message = {
+                "member": member,
+                "from": "wait-daemon",
+                "state": "queued",
+                "created_at": now,
+                "target_thread": wait["thread_id"],
+                "text": (
+                    f"Automatic wait {wait['id']} ended; read its result and saved "
+                    f"note with agentroute wait show {wait['id']}, then resolve it. "
+                    "This is data, not approval."
+                ),
+            }
+            message["coordination_event"] = inbox.event(event_id, message, team_id)
+            data["messages"][event_id] = message
+        elif (
+            message.get("member") != member
+            or message.get("target_thread") != wait["thread_id"]
+            or message.get("from") != "wait-daemon"
+        ):
+            raise WaitError("wait event identity conflict")
+        inbox.apply_admission_receipts(data)
+        team.save(team_id, data)
+        entry = message["coordination_event"]
+        delivery = entry.get("delivery") or {}
+        # The bound supervisor can consume/disposition an event before this daemon
+        # observes the native receipt. Its authenticated inbox acknowledgement is
+        # also evidence that this exact event reached the owner.
+        # Native receipts and recipient acknowledgements are distinct from a
+        # projection read. A bare inbox read must not claim successful admission.
+        received = bool(message.get("acknowledgment")) or entry.get("state") in {
+            "acked",
+            "dispositioned",
+        }
+        if received or (delivery.get("state") == "delivered" and delivery.get("turn_id")):
+            update(
+                wait["id"],
+                lambda w: (
+                    w["delivery"].update(
+                        state="delivered",
+                        mode="native_supervisor_inbox",
+                        turn_id=delivery.get("turn_id"),
+                        at=now,
+                        event_id=event_id,
+                        owner_team=team_id,
+                    ),
+                    w.update(state="delivered"),
+                ),
+            )
+            return "delivered"
+        update(
+            wait["id"],
+            lambda w: w["delivery"].update(
+                state="inbox_pending",
+                mode="native_supervisor_inbox",
+                event_id=event_id,
+                owner_team=team_id,
+                last_error=None,
+            ),
+        )
+        return "inbox_pending"

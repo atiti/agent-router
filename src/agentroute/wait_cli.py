@@ -325,7 +325,10 @@ def wait_show(wait_id: str) -> None:
     if not found:
         raise typer.BadParameter(f"no wait {wait_id}")
     current = os.environ.get("CODEX_THREAD_ID", "")
-    if current == found[0]["thread_id"] and found[0]["delivery"]["state"] == "delivered":
+    if current == found[0]["thread_id"] and found[0]["delivery"]["state"] in {
+        "delivered",
+        "inbox_pending",
+    }:
         found[0] = waits.record_recipient(wait_id, current)
     typer.echo(json.dumps(_public(found[0]), indent=2))
 

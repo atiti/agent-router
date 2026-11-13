@@ -685,3 +685,74 @@ def test_native_receipts_reject_insecure_and_unbound_files(team):
     path.chmod(0o644)
     with h.locked("demo") as data:
         assert inbox.apply_admission_receipts(data) == 0
+
+
+def test_fired_wait_uses_native_owner_inbox_and_receipt_once(team, monkeypatch, tmp_path):
+    from agentroute import waits
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    monkeypatch.setattr(h, "own_terminal", lambda *args: {"state": "live", "address": "t1"})
+    w = waits.register(THREAD, "timer", {}, timeout=1, now=1000)
+    waits.check_pending(now=1002)
+    client = Mock()
+    assert waits.deliver(waits.find(w["id"])[0], client, now=1002) == "inbox_pending"
+    entry = h.load("demo")["messages"]["wait-" + w["id"]]
+    assert entry["target_thread"] == THREAD
+    assert snapshot()["events"][0]["id"] == "wait-" + w["id"]
+    assert waits.deliver(waits.find(w["id"])[0], client, now=1003) == "inbox_pending"
+    assert len(h.load("demo")["messages"]) == 1
+    client.assert_not_called()
+    # Recipient may read its own result while native admission receipt is pending.
+    assert waits.record_recipient(w["id"], THREAD)["recipient_read"]
+    root = inbox.codex_home() / "supervisor-delivery-receipts" / THREAD
+    root.mkdir(parents=True, mode=0o700)
+    (root.parent).chmod(0o700)
+    receipt = root / "token123.json"
+    receipt.write_text(json.dumps({"version": 1, "thread_id": THREAD, "turn_id": "turn-1",
+                                   "admission_token": "token123",
+                                   "event_ids": ["wait-" + w["id"]]}))
+    receipt.chmod(0o600)
+    assert waits.deliver(waits.find(w["id"])[0], client, now=1004) == "delivered"
+    assert waits.find(w["id"])[0]["delivery"]["turn_id"] == "turn-1"
+    assert waits.find(w["id"])[0]["state"] == "delivered"
+
+
+def test_unenrolled_supervisor_never_falls_back_to_shared_or_terminal(team, monkeypatch, tmp_path):
+    from agentroute import waits
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    with h.locked("demo") as data:
+        data.pop("inbox_consumer")
+        h.save("demo", data)
+    w = waits.register(THREAD, "timer", {}, timeout=1, now=1000)
+    waits.check_pending(now=1002)
+    client = Mock()
+    assert waits.deliver(waits.find(w["id"])[0], client, now=1002) == "owner_hold"
+    assert "not enrolled" in waits.find(w["id"])[0]["delivery"]["last_error"]
+    client.assert_not_called()
+
+
+def test_wait_reconciles_disposition_without_native_receipt_race(team, monkeypatch, tmp_path):
+    from agentroute import waits
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    monkeypatch.setattr(h, "own_terminal", lambda *args: {"state": "live", "address": "t1"})
+    w = waits.register(THREAD, "timer", {}, timeout=1, now=1000)
+    waits.check_pending(now=1002)
+    assert waits.deliver(waits.find(w["id"])[0], Mock(), now=1002) == "inbox_pending"
+    with h.locked("demo") as data:
+        e = data["messages"]["wait-" + w["id"]]["coordination_event"]
+        e.update(state="dispositioned", actionable=False)
+        h.save("demo", data)
+    assert waits.deliver(waits.find(w["id"])[0], Mock(), now=1003) == "delivered"
+    assert waits.find(w["id"])[0]["delivery"]["turn_id"] is None
+
+
+def test_projected_wait_never_falls_back_when_owner_ledger_disappears(team, monkeypatch, tmp_path):
+    from agentroute import waits
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    monkeypatch.setattr(h, "own_terminal", lambda *args: {"state": "live", "address": "t1"})
+    w = waits.register(THREAD, "timer", {}, timeout=1, now=1000)
+    waits.check_pending(now=1002)
+    client = Mock()
+    assert waits.deliver(waits.find(w["id"])[0], client, now=1002) == "inbox_pending"
+    h.path_for("demo").unlink()
+    assert waits.deliver(waits.find(w["id"])[0], client, now=1003) == "owner_hold"
+    client.assert_not_called()

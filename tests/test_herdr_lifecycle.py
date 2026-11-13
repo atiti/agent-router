@@ -486,3 +486,28 @@ def test_monitor_reconciles_admitted_delivery_receipt(team, monkeypatch, tmp_pat
     entry = h.load("demo")["messages"]["report"]["coordination_event"]
     assert entry["state"] == "delivered" and entry["actionable"]
     assert entry["delivery"]["turn_id"] == "turn"
+
+
+def test_worker_register_preserves_original_binding_on_resume(team, monkeypatch, tmp_path):
+    from agentroute import config, supervisor_inbox
+    codex = tmp_path / "codex"
+    monkeypatch.setattr(config, "codex_home", lambda: codex)
+    monkeypatch.setattr(supervisor_inbox, "codex_home", lambda: codex)
+    monkeypatch.setenv("AGENTROUTE_HERDR_TEAM", "demo")
+    monkeypatch.setenv("AGENTROUTE_HERDR_MEMBER", "worker")
+    monkeypatch.setenv("CODEX_THREAD_ID", team["members"]["worker"]["thread"])
+    monkeypatch.setenv("HC_TERMINAL_ID", "t1")
+    monkeypatch.setattr(h, "own_terminal", lambda *_: {"state": "live", "address": "t1"})
+    h.register("demo", "worker")
+    path = codex / "worker-goal-bindings" / (team["members"]["worker"]["thread"] + ".json")
+    original = json.loads(path.read_text())
+    with h.locked("demo") as data:
+        data["members"]["worker"]["attempt"] = "second"
+        h.save("demo", data)
+    h.register("demo", "worker")
+    assert json.loads(path.read_text()) == original
+    with h.locked("demo") as data:
+        data["members"]["worker"]["packet_binding"]["session"] = "other-owner"
+        h.save("demo", data)
+    with pytest.raises(typer.BadParameter, match="conflicts"):
+        h.register("demo", "worker")

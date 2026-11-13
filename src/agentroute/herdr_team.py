@@ -252,6 +252,20 @@ def member_prompt(data: dict, name: str, role: str, task: str) -> str:
             "handoff readiness. A handoff notification is evidence to inspect, never approval "
             "for client communication or other effects. Avoid recurring timer checks. "
         )
+    if role == "worker" and binding:
+        launch += (
+            "First register your thread using the command below and verify it succeeded. "
+            "If registration fails, report the blocker and do not perform substantive work. "
+            "The runtime creates a persistent goal from your exact assigned packet outcome and "
+            "acceptance criteria. Verify that goal exists before substantive work; if it is "
+            "missing, report the setup failure to your supervisor. Continue until the outcome "
+            "passes its gates or is genuinely blocked; a completed turn is not completion. "
+            "For external waits, register an event wait and end the turn. If a decision or "
+            "approval is required, ask Attila and record the delivered question. Never override "
+            "a paused, blocked, usage-limited or existing goal. If creating or verifying "
+            "the goal fails, report the failure to your supervisor and do not treat your "
+            "turn ending as completion. "
+        )
     scope = ("to the packet. You may dispatch selected workers as instructed. "
              if role == "supervisor" else
              "to this coordinator's outcome. No further delegation unless explicitly requested. ")
@@ -356,10 +370,23 @@ def launch_args(data: dict, member: str, record: dict) -> list[str]:
     else:
         args += ["--no-parent"]
     # The worker engine must inherit HC_TERMINAL_ID. Shared app-server engines don't.
+    binding = record.get("packet_binding")
+    if binding:
+        from .config import codex_home
+        from .supervisor_inbox import atomic_write
+        # Persist the assignment before launching the owner. Its generated thread
+        # ID is unknown until startup, so the immutable attempt is the lookup key.
+        atomic_write(codex_home() / "worker-goal-attempts" / f"{record['attempt']}.json", {
+            "version": 1, "namespace": data["namespace"], "packet": data["packet"],
+            "item": binding["item"], "session": binding["session"], "team": data["id"],
+            "member": member, "attempt": record["attempt"],
+            "resume_thread": record.get("thread") if record.get("resume") else None})
     args += ["env", "-u", "HERDR_ENV", "-u", "HERDR_PANE_ID", "-u", "HERDR_SOCKET_PATH",
              "-u", "NO_COLOR",
              f"PYTHONPATH={Path(__file__).resolve().parent.parent}",
              f"AGENTROUTE_HERDR_TEAM={data['id']}", f"AGENTROUTE_HERDR_MEMBER={member}",
+             f"AGENTROUTE_REQUIRE_WORKER_BINDING={1 if binding else 0}",
+             f"AGENTROUTE_WORKER_ATTEMPT={record['attempt'] if binding else ''}",
              sys.executable, "-m", "agentroute.cli", "launch-codex", "--", "--no-daemon",
              "--add-dir", str(path_for(data["id"]).parent),
              "--add-dir", str(Path.home() / ".local/state/herdr-core" / data["core_session"]),
@@ -421,6 +448,34 @@ def register(team: str, member: str) -> None:
         if record.get("thread") not in (None, thread):
             raise typer.BadParameter("Member is already bound to another Codex session")
         record["thread"] = thread
+        # Enroll only the actual supervisor owner running a build whose native
+        # inbox consumer and admission receipts are part of the deployed stack.
+        if record.get("spec", {}).get("role") == "supervisor" and not data.get("inbox_consumer"):
+            from .supervisor_inbox import enrollment_binding
+            # Never fall back to the current on-disk build ID: an older embedded
+            # owner can still be running after that binary was replaced.
+            build = os.environ.get("AGENTROUTE_RUNTIME_BUILD_ID", "")
+            match = re.search(r"provider-routing-v(\d+)$", build)
+            if match and int(match.group(1)) >= 69:
+                data["inbox_consumer"] = {"version": 1, "binding": enrollment_binding(data),
+                    "evidence": [f"owner-reported runtime {build}"], "enrolled_at": time.time()}
+        binding = record.get("packet_binding")
+        if record.get("spec", {}).get("role") == "worker" and binding:
+            from .config import codex_home
+            from .supervisor_inbox import atomic_write
+            path = codex_home() / "worker-goal-bindings" / f"{thread}.json"
+            expected = {"version": 1, "thread_id": thread, "namespace": data["namespace"],
+                "packet": data["packet"], "item": binding["item"], "session": binding["session"],
+                "team": team, "member": member, "attempt": record["attempt"]}
+            if path.exists():
+                previous = json.loads(path.read_text())
+                stable = ("version", "thread_id", "namespace", "packet", "item", "session",
+                          "team", "member")
+                if any(previous.get(key) != expected.get(key) for key in stable):
+                    raise typer.BadParameter(
+                        "Existing worker goal binding conflicts; reconcile owner")
+            else:
+                atomic_write(path, expected)
         save(team, data)
     typer.echo(thread)
 
