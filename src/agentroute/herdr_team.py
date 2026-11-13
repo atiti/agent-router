@@ -242,6 +242,16 @@ def member_prompt(data: dict, name: str, role: str, task: str) -> str:
             "Each launch claims one ready session item for a dedicated worker "
             "and tiles that worker beside you. Operator and subagent items are never dispatched. "
         )
+    if role == "supervisor":
+        launch += (
+            "When only a worker or service-owner handoff is pending, park with "
+            "agentroute wait packet --namespace NAMESPACE --packet PACKET --item ITEM "
+            "--until released --step STEP --owner EXACT_WORKER_SESSION --timeout 8h, "
+            "or wait for a generation-keyed named event from its producer. "
+            "Use --until complete for full outcome completion. Uncertain operations prevent "
+            "handoff readiness. A handoff notification is evidence to inspect, never approval "
+            "for client communication or other effects. Avoid recurring timer checks. "
+        )
     scope = ("to the packet. You may dispatch selected workers as instructed. "
              if role == "supervisor" else
              "to this coordinator's outcome. No further delegation unless explicitly requested. ")

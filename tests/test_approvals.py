@@ -32,6 +32,8 @@ def test_install_is_idempotent_and_preserves_user_rules_and_extras(tmp_path):
     assert once.count(approvals.BEGIN) == 1
     assert ["python3", str(tool)] in approvals.allowed_patterns()
     assert ["gh", "pr", "checks"] in approvals.allowed_patterns()
+    for command in ("packet", "stats", "resolve"):
+        assert ["agentroute", "wait", command] in approvals.allowed_patterns()
     assert approvals.uninstall() and approvals.BEGIN not in path.read_text()
     assert ["git", "push"] in approvals.allowed_patterns()
 

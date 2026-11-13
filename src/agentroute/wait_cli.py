@@ -43,17 +43,40 @@ def _pause_goal(wait: dict[str, Any]) -> str:
             )
             status = goal.get("status")
             if status == "active":
-                client.request(
+                before = waits.goal_log_position(client, wait["thread_id"], goal)
+                result = client.request(
                     "thread/goal/set",
                     {"threadId": wait["thread_id"], "origin": "automatic", "status": "paused"},
                 )
-                waits.update(wait["id"], lambda w: w["goal"].update(paused_by_wait=True))
+                paused = result.get("goal") or {}
+                waits.update(
+                    wait["id"],
+                    lambda w: w["goal"].update(
+                        paused_by_wait=True,
+                        pause_snapshot=paused,
+                        mutation_guard=waits.capture_pause_guard(before, paused),
+                    ),
+                )
+                current = next(w for w in waits.load() if w["id"] == wait["id"])
+                if not current["goal"].get("mutation_guard"):
+                    return "paused; automatic resume ownership unavailable, resume goal manually"
                 return "paused until this wait ends"
             if status == "paused" and any(
-                w["goal"].get("paused_by_wait") and w["id"] != wait["id"]
+                waits.pause_owned(w, goal) and w["id"] != wait["id"]
                 for w in waits.pending_for(wait["thread_id"])
             ):
-                waits.update(wait["id"], lambda w: w["goal"].update(paused_by_wait=True))
+                waits.update(
+                    wait["id"],
+                    lambda w: w["goal"].update(
+                        paused_by_wait=True,
+                        pause_snapshot=goal,
+                        mutation_guard=next(
+                            w["goal"]["mutation_guard"]
+                            for w in waits.pending_for(wait["thread_id"])
+                            if waits.pause_owned(w, goal)
+                        ),
+                    ),
+                )
                 return "already paused by another wait"
             return f"unchanged ({status or 'no goal'})"
     except (OSError, SharedServerError) as error:
@@ -70,7 +93,7 @@ def _register(
 ) -> None:
     try:
         probe = {"kind": kind, "spec": spec, "cwd": os.getcwd()}
-        if kind in {"pr", "run", "file", "url"}:
+        if kind in {"pr", "run", "file", "url", "packet"}:
             # Observe once now: report a condition that already holds instead of parking,
             # and record the baseline so a change before the first poll is not missed.
             try:
@@ -93,6 +116,18 @@ def _register(
         )
     except waits.WaitError as error:
         raise typer.BadParameter(str(error)) from error
+    if wait["state"] != "pending":
+        typer.echo(
+            json.dumps(
+                {
+                    "id": wait["id"],
+                    "already_registered": True,
+                    "state": wait["state"],
+                    "next": "Inspect the existing receipt.",
+                }
+            )
+        )
+        return
     goal = _pause_goal(wait)
     waits.ensure_daemon()
     typer.echo(
@@ -176,14 +211,19 @@ def wait_timer(
 @wait_app.command("event")
 def wait_event(
     name: str = typer.Argument(..., help="Event name an outside process will fire."),
+    event_id: str = typer.Option(
+        "", help="Exact producer generation/event key for durable dedupe."
+    ),
     thread: str = THREAD,
-    timeout: str = TIMEOUT,
+    timeout: str = typer.Option("8h", "--timeout", help="Fallback deadline, up to seven days."),
     note: str = NOTE,
 ) -> None:
     """Wake when a script or app runs `agentroute wait fire NAME` or drops a trigger file."""
     if not waits.NAME_PATTERN.match(name):
         raise typer.BadParameter("event name: letters, digits, dot, dash or underscore, up to 64")
-    _register("event", {"name": name}, thread, timeout, note)
+    if event_id and not waits.NAME_PATTERN.fullmatch(event_id):
+        raise typer.BadParameter("invalid event ID")
+    _register("event", {"name": name, "event_id": event_id}, thread, timeout, note)
 
 
 @wait_app.command("url")
@@ -246,7 +286,11 @@ def _public(wait: dict[str, Any]) -> dict[str, Any]:
         else None,
         "last_check": wait.get("last_check"),
         "delivery": wait["delivery"],
+        "observations": wait.get("observations", {}),
+        "recipient_read": wait.get("recipient_read"),
+        "disposition": wait.get("disposition"),
         "goal_paused_by_wait": wait["goal"].get("paused_by_wait", False),
+        "automatic_resume_guarded": bool(wait["goal"].get("mutation_guard")),
     }
 
 
@@ -280,6 +324,9 @@ def wait_show(wait_id: str) -> None:
     found = [w for w in waits.load() if w["id"] == wait_id]
     if not found:
         raise typer.BadParameter(f"no wait {wait_id}")
+    current = os.environ.get("CODEX_THREAD_ID", "")
+    if current == found[0]["thread_id"] and found[0]["delivery"]["state"] == "delivered":
+        found[0] = waits.record_recipient(wait_id, current)
     typer.echo(json.dumps(_public(found[0]), indent=2))
 
 
@@ -294,7 +341,7 @@ def _resume_goal_if_idle(wait: dict[str, Any]) -> None:
             goal = (
                 client.request("thread/goal/get", {"threadId": wait["thread_id"]}).get("goal") or {}
             )
-            if goal.get("status") == "paused":
+            if waits.pause_owned(wait, goal):
                 client.request(
                     "thread/goal/set",
                     {"threadId": wait["thread_id"], "origin": "automatic", "status": "active"},
@@ -316,13 +363,18 @@ def wait_cancel(wait_id: str) -> None:
 
 def _payload(message: str, message_file: Path | None) -> str:
     if message_file is not None:
-        return message_file.read_text(errors="replace")[: waits.MAX_PAYLOAD]
+        with message_file.open(errors="replace") as stream:
+            return stream.read(waits.MAX_PAYLOAD)
     return message[: waits.MAX_PAYLOAD]
 
 
 @wait_app.command("fire")
 def wait_fire(
     reference: str = typer.Argument(..., help="Event name or wait ID."),
+    event_id: str = typer.Option(
+        "", help="Exact producer event key; safe to retry for seven days."
+    ),
+    target: str = typer.Option("", "--thread", help="Optional exact target for keyed events."),
     message: str = typer.Option("", "--message", help="Payload delivered as data via `wait show`."),
     message_file: Path | None = typer.Option(
         None, "--message-file", help="Read the payload from a file."
@@ -333,6 +385,17 @@ def wait_fire(
     A trigger for an event name nobody registered yet is kept for one day.
     """
     payload = _payload(message, message_file)
+    if event_id:
+        try:
+            receipt = waits.publish_event(reference, event_id, payload, target)
+        except waits.WaitError as error:
+            raise typer.BadParameter(str(error)) from error
+        waits.consume_events()
+        waits.ensure_daemon()
+        typer.echo(json.dumps({k: receipt[k] for k in ("name", "event_id", "duplicate")}))
+        return
+    if target:
+        raise typer.BadParameter("--thread requires --event-id")
     fired = waits.fire(reference, payload)
     if not fired and waits.NAME_PATTERN.match(reference) and not reference.startswith("w-"):
         directory = waits.triggers_dir()
@@ -399,3 +462,88 @@ def wake(
     waits.fire(wait["id"], _payload(message, message_file))
     waits.ensure_daemon()
     typer.echo(json.dumps({"id": wait["id"], "thread": target}))
+
+
+@wait_app.command("packet")
+def wait_packet(
+    namespace: str = typer.Option(...),
+    packet: str = typer.Option(...),
+    item: str = typer.Option(...),
+    until: str = typer.Option("complete"),
+    step: str = typer.Option(""),
+    owner: str = typer.Option(""),
+    thread: str = THREAD,
+    timeout: str = typer.Option("8h"),
+    note: str = NOTE,
+) -> None:
+    """Wait on exact canonical outcome completion, released step or execution-state change."""
+    import re
+
+    if not all(re.fullmatch(r"[a-z][a-z0-9-]{0,127}", x) for x in (namespace, packet, item)):
+        raise typer.BadParameter("explicit namespace, packet and item slugs required")
+    if until not in {"complete", "released", "changed"}:
+        raise typer.BadParameter("--until must be complete, released or changed")
+    if until == "released" and (not step or not owner):
+        raise typer.BadParameter("released requires exact --step and --owner")
+    _register(
+        "packet",
+        {
+            "namespace": namespace,
+            "packet": packet,
+            "item": item,
+            "until": until,
+            "step": step,
+            "owner": owner,
+        },
+        thread,
+        timeout,
+        note,
+    )
+
+
+@wait_app.command("resolve")
+def wait_resolve(
+    wait_id: str, action: str = typer.Option(...), reason: str = typer.Option("")
+) -> None:
+    """Record the recipient's next action; does not complete a work packet or grant approval."""
+    try:
+        wait = waits.record_recipient(
+            wait_id, os.environ.get("CODEX_THREAD_ID", ""), action=action, reason=reason
+        )
+    except waits.WaitError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(json.dumps(wait["disposition"]))
+
+
+@wait_app.command("stats")
+def wait_stats(thread: str = THREAD, all_threads: bool = typer.Option(False, "--all")) -> None:
+    """Report observed wait counts, errors and receipt coverage; no inferred token savings."""
+    from collections import Counter
+
+    items = waits.load()
+    current = thread or os.environ.get("CODEX_THREAD_ID", "")
+    if not all_threads:
+        current = _thread(current)
+        items = [w for w in items if w["thread_id"] == current]
+    typer.echo(
+        json.dumps(
+            {
+                "waits": len(items),
+                "states": dict(Counter(w["state"] for w in items)),
+                "kinds": dict(Counter(w["kind"] for w in items)),
+                "wake_reasons": dict(
+                    Counter((w.get("outcome") or {}).get("reason", "pending") for w in items)
+                ),
+                "admission_modes": dict(
+                    Counter(w["delivery"].get("mode", "legacy_or_pending") for w in items)
+                ),
+                "checks": sum(w.get("observations", {}).get("checks", 0) for w in items),
+                "errors": sum(w.get("observations", {}).get("errors", 0) for w in items),
+                "recipient_reads": sum(bool(w.get("recipient_read")) for w in items),
+                "dispositions": sum(bool(w.get("disposition")) for w in items),
+                "coverage": "Legacy counters unavailable. Receipts are recipient claims; "
+                "not proof of model consumption, useful work or token savings.",
+            },
+            indent=2,
+        )
+    )

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Expand waits with exact work-packet completion/released-step conditions, generation-keyed
+  outside events and eight-hour handoff deadlines. Add `wait stats` and `wait resolve` with
+  bounded probe/error history and separate admission/read/disposition records. Preserve later
+  user goal pauses and retain an unknown-admission hold when history cannot prove delivery.
+  Supervisors now receive guidance to park on actual worker/owner handoffs instead of timers.
+
 - Update the native runtime with bounded reviewer evidence, restart-safe review escalation, and batched supervisor delivery receipts.
 
 - Fix GitHub event waits missing completed runs when CI output exceeds 4 KB or emits warnings.

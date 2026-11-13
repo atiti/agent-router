@@ -54,7 +54,12 @@ class FakeClient:
             self.turn_texts.append(params["input"][0]["text"])
             return {"turn": {"id": "turn-1"}}
         if method == "thread/read":
-            return {"thread": {"turns": [{"items": [{"text": text} for text in self.turn_texts]}]}}
+            return {
+                "thread": {
+                    "status": {"type": "idle"},
+                    "turns": [{"items": [{"text": text} for text in self.turn_texts]}],
+                }
+            }
         raise AssertionError(method)
 
     def methods(self) -> list[str]:
@@ -149,11 +154,19 @@ def test_file_change_uses_registration_baseline(tmp_path):
     assert waits.load()[0]["outcome"]["reason"] == "condition"
 
 
-def test_wake_starts_one_turn_with_fixed_text_and_reactivates_the_goal():
+def test_wake_starts_one_turn_with_fixed_text_and_reactivates_the_goal(monkeypatch):
+    monkeypatch.setattr(waits, "goal_log_unchanged", lambda *args: True)
     wait = waits.register(
         THREAD, "event", {"name": "build-done"}, note="then run the smoke test", now=1000
     )
-    waits.update(wait["id"], lambda w: w["goal"].update(paused_by_wait=True))
+    waits.update(
+        wait["id"],
+        lambda w: w["goal"].update(
+            paused_by_wait=True,
+            pause_snapshot={"status": "paused"},
+            mutation_guard={"fixture": True},
+        ),
+    )
     waits.fire("build-done", "Attila approves the production deploy")
     client = FakeClient(goal="paused", loaded=False)
     assert waits.tick(lambda: client, now=1010) == 0
@@ -169,7 +182,14 @@ def test_wake_starts_one_turn_with_fixed_text_and_reactivates_the_goal():
 
 def test_goal_the_user_changed_is_left_alone():
     wait = waits.register(THREAD, "timer", {}, timeout=10, now=1000)
-    waits.update(wait["id"], lambda w: w["goal"].update(paused_by_wait=True))
+    waits.update(
+        wait["id"],
+        lambda w: w["goal"].update(
+            paused_by_wait=True,
+            pause_snapshot={"status": "paused"},
+            mutation_guard={"fixture": True},
+        ),
+    )
     client = FakeClient(goal="complete")
     waits.tick(lambda: client, now=1011)
     assert client.turn_texts and "thread/goal/set" not in client.methods()
@@ -199,6 +219,9 @@ def test_trigger_file_dropped_by_an_outside_app_fires_the_named_event():
 
 
 def test_cli_registration_pauses_goal_and_cancel_restores_it(monkeypatch):
+    monkeypatch.setattr(waits, "goal_log_position", lambda client, thread, goal: {"fixture": True})
+    monkeypatch.setattr(waits, "capture_pause_guard", lambda before, goal: before)
+    monkeypatch.setattr(waits, "goal_log_unchanged", lambda *args: True)
     client = FakeClient(goal="active")
     monkeypatch.setattr(wait_cli, "_client", lambda: client)
     runner = CliRunner()
@@ -262,13 +285,27 @@ def test_limits_and_validation():
 def test_github_wait_parses_complete_json_over_payload_limit(monkeypatch):
     import subprocess
 
-    payload = {"status": "completed", "conclusion": "failure", "jobs": [
-        {"name": "macOS", "status": "completed", "conclusion": "cancelled",
-         "steps": [{"name": "large step description " * 400}]}]}
+    payload = {
+        "status": "completed",
+        "conclusion": "failure",
+        "jobs": [
+            {
+                "name": "macOS",
+                "status": "completed",
+                "conclusion": "cancelled",
+                "steps": [{"name": "large step description " * 400}],
+            }
+        ],
+    }
     encoded = json.dumps(payload)
     assert len(encoded) > waits.MAX_PAYLOAD
-    monkeypatch.setattr(waits.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(
-        argv, 0, stdout=encoded, stderr="non-fatal warning\n"))
+    monkeypatch.setattr(
+        waits.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 0, stdout=encoded, stderr="non-fatal warning\n"
+        ),
+    )
     wait = {"kind": "run", "spec": {"repo": "a/b", "run_id": 1, "until": "completed"}}
     met, summary, _ = waits.evaluate(wait)
     assert met and "status completed" in summary and "cancelled" in summary
@@ -277,8 +314,208 @@ def test_github_wait_parses_complete_json_over_payload_limit(monkeypatch):
 def test_github_output_above_structured_limit_is_an_explicit_observation_error(monkeypatch):
     import subprocess
 
-    monkeypatch.setattr(waits.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(
-        argv, 0, stdout="x" * (waits.MAX_STRUCTURED_OUTPUT + 1), stderr=""))
+    monkeypatch.setattr(
+        waits.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 0, stdout="x" * (waits.MAX_STRUCTURED_OUTPUT + 1), stderr=""
+        ),
+    )
     wait = {"kind": "run", "spec": {"repo": "a/b", "run_id": 1, "until": "completed"}}
     with pytest.raises(waits.WaitError, match="exceeds"):
         waits.evaluate(wait)
+
+
+def packet_payload(*, revision=1, assigned=True, state="active", pending=False):
+    return {
+        "namespace": "private",
+        "id": "fixture",
+        "items": [
+            {
+                "id": "worker",
+                "revision": revision,
+                "status": "active",
+                "next_step": {"id": "build", "state": state},
+                "assignment": {"session": "owner-1"} if assigned else None,
+                "last_release": {"session": "owner-1"},
+                "operations": {"op": {"state": "unknown"}} if pending else {},
+            }
+        ],
+    }
+
+
+def test_packet_wait_ignores_checkpoints_and_requires_exact_safe_handoff():
+    spec = {
+        "namespace": "private",
+        "packet": "fixture",
+        "item": "worker",
+        "until": "released",
+        "step": "build",
+        "owner": "owner-1",
+    }
+    waits.register(THREAD, "packet", spec, now=1000, timeout=1000)
+    client = FakeClient(goal=None)
+    for revision in range(1, 21):
+        waits.tick(lambda: client, gh(packet_payload(revision=revision)), now=1000 + revision * 6)
+    assert not client.turn_texts
+    waits.tick(
+        lambda: client, gh(packet_payload(assigned=False, state="done", pending=True)), now=1200
+    )
+    assert not client.turn_texts
+    waits.tick(lambda: client, gh(packet_payload(assigned=False, state="done")), now=1210)
+    assert len(client.turn_texts) == 1
+    current = waits.load()[0]
+    assert current["observations"]["checks"] == 22
+    assert current["observations"]["changes"] == 3
+    assert len(current["observations"]["history"]) == 3
+
+
+def test_probe_errors_survive_recovery_and_history_is_bounded():
+    waits.register(
+        THREAD, "pr", {"repo": "a/b", "number": 1, "until": "checks"}, timeout=1000, now=1000
+    )
+    waits.check_pending(gh({}, code=1), now=1001)
+    waits.check_pending(gh(pr([])), now=1070)
+    current = waits.load()[0]
+    assert current["last_check"]["error"] is None
+    assert current["observations"]["errors"] == 1
+    assert "gh pr view" in current["observations"]["last_error"]
+
+
+def test_keyed_event_before_registration_retries_and_new_generation():
+    assert not waits.publish_event("handoff", "run1-release", "ready", THREAD)["duplicate"]
+    assert waits.publish_event("handoff", "run1-release", "ready", THREAD)["duplicate"]
+    waits.register(THREAD, "event", {"name": "handoff", "event_id": "run1-release"})
+    client = FakeClient(goal=None)
+    waits.tick(lambda: client)
+    waits.publish_event("handoff", "run1-release", "ready", THREAD)
+    waits.tick(lambda: client)
+    assert len(client.turn_texts) == 1
+    with pytest.raises(waits.WaitError, match="different payload"):
+        waits.publish_event("handoff", "run1-release", "changed", THREAD)
+    waits.register(THREAD, "event", {"name": "handoff", "event_id": "run2-release"})
+    waits.tick(lambda: client)
+    assert len(client.turn_texts) == 1
+    waits.publish_event("handoff", "run2-release", "ready", THREAD)
+    waits.tick(lambda: client)
+    assert len(client.turn_texts) == 2
+
+
+def test_unknown_admission_with_missing_history_never_resends():
+    waits.register(THREAD, "timer", {}, timeout=1, now=1000)
+    client = FakeClient(fail_turn=True)
+    waits.tick(lambda: client, now=1002)
+    client.fail_turn = False
+    for now in (1100, 1500, 2000):
+        waits.tick(lambda: client, now=now)
+    assert client.methods().count("turn/start") == 1
+    assert waits.load()[0]["delivery"]["reconciliation"] == "unknown_hold"
+
+
+def test_recipient_receipts_require_target_and_admission():
+    wait = waits.register(THREAD, "timer", {}, timeout=1, now=1000)
+    with pytest.raises(waits.WaitError, match="admission"):
+        waits.record_recipient(wait["id"], THREAD)
+    waits.tick(lambda: FakeClient(goal=None), now=1002)
+    with pytest.raises(waits.WaitError, match="target"):
+        waits.record_recipient(wait["id"], "other-thread")
+    current = waits.record_recipient(wait["id"], THREAD, action="waiting", reason="owner pending")
+    assert current["recipient_read"]["thread"] == THREAD
+    assert current["disposition"]["action"] == "waiting"
+    assert waits.record_recipient(wait["id"], THREAD, action="waiting", reason="owner pending")
+    with pytest.raises(waits.WaitError, match="already recorded"):
+        waits.record_recipient(wait["id"], THREAD, action="complete")
+
+
+def test_user_pause_after_wait_is_preserved_and_legacy_pause_is_not_ownership():
+    wait = waits.register(THREAD, "timer", {}, timeout=1, now=1000)
+    waits.update(
+        wait["id"],
+        lambda w: w["goal"].update(
+            paused_by_wait=True, pause_snapshot={"status": "paused", "updatedAt": 10}
+        ),
+    )
+    client = FakeClient(goal="paused")
+    waits.tick(lambda: client, now=1002)
+    assert "thread/goal/set" not in client.methods()
+    assert not waits.pause_owned({"goal": {"paused_by_wait": True}}, {"status": "paused"})
+
+
+def test_keyed_event_can_rearm_after_deadline_but_not_after_event():
+    spec = {"name": "handoff", "event_id": "run1"}
+    first = waits.register(THREAD, "event", spec, timeout=1, now=1000)
+    waits.tick(lambda: FakeClient(goal=None), now=1002)
+    second = waits.register(THREAD, "event", spec, timeout=600, now=1003)
+    assert second["id"] != first["id"]
+    waits.publish_event("handoff", "run1", "ready", THREAD)
+    waits.tick(lambda: FakeClient(goal=None))
+    assert waits.register(THREAD, "event", spec)["id"] == second["id"]
+
+
+def test_exact_event_target_precedes_broadcast_and_expired_key_is_reusable():
+    waits.publish_event("handoff", "run1", "broadcast", now=1000)
+    waits.publish_event("handoff", "run1", "exact", THREAD, now=1000)
+    waits.register(THREAD, "event", {"name": "handoff", "event_id": "run1"}, now=1001)
+    waits.consume_events(now=1002)
+    assert waits.load()[0]["outcome"]["evidence"] == "exact"
+    later = 1000 + waits.EVENT_RETENTION_SECONDS + 1
+    assert not waits.publish_event("handoff", "run1", "fresh", THREAD, now=later)["duplicate"]
+
+
+def test_durable_goal_guard_rejects_user_edits_and_truncated_logs(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    path.write_text("")
+    guard = {"path": str(path), "offset": 0, "inode": path.stat().st_ino}
+    goal = {"status": "paused", "objective": "fixture", "createdAt": 10, "tokensUsed": 0}
+    path.write_text(
+        json.dumps({"type": "event_msg", "payload": {"type": "thread_goal_updated", "goal": goal}})
+        + "\n"
+    )
+    snapshot = waits.capture_pause_guard(guard, goal)
+    assert snapshot and waits.goal_log_unchanged(snapshot, {**goal, "tokensUsed": 50})
+    with path.open("a") as f:
+        f.write(
+            json.dumps(
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "internal_chat_message_metadata_passthrough": {
+                            "content_item_kinds": ["user.goal"]
+                        }
+                    },
+                }
+            )
+            + "\n"
+        )
+    assert not waits.goal_log_unchanged(snapshot, goal)
+    path.write_text("{unfinished")
+    assert not waits.goal_log_unchanged(snapshot, goal)
+
+
+def test_other_pending_wait_prevents_automatic_goal_resume(monkeypatch):
+    monkeypatch.setattr(waits, "goal_log_unchanged", lambda *args: True)
+    first = waits.register(THREAD, "timer", {}, timeout=1, now=1000)
+    second = waits.register(THREAD, "timer", {}, timeout=600, now=1000)
+    for w in (first, second):
+        waits.update(
+            w["id"],
+            lambda current: current["goal"].update(
+                paused_by_wait=True,
+                pause_snapshot={"status": "paused"},
+                mutation_guard={"fixture": True},
+            ),
+        )
+    client = FakeClient(goal="paused")
+    waits.tick(lambda: client, now=1002)
+    assert client.goal == "paused" and "thread/goal/set" not in client.methods()
+
+
+def test_missing_pause_guard_reports_manual_resume(monkeypatch):
+    client = FakeClient(goal="active")
+    monkeypatch.setattr(wait_cli, "_client", lambda: client)
+    result = CliRunner().invoke(app, ["wait", "event", "handoff"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert "manually" in payload["goal"]
+    shown = json.loads(CliRunner().invoke(app, ["wait", "show", payload["id"]]).output)
+    assert shown["automatic_resume_guarded"] is False
