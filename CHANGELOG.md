@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update the native runtime with bounded reviewer evidence, restart-safe review escalation, and batched supervisor delivery receipts.
+
 - Fix GitHub event waits missing completed runs when CI output exceeds 4 KB or emits warnings.
 
 - Add event-driven waits. `agentroute wait pr|run|file|timer|event|url|command` parks a thread
