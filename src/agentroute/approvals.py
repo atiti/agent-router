@@ -37,7 +37,8 @@ AGENTROUTE_READ = [
     ["classifier-status"], ["gh-get"], ["packet-read"], ["approvals", "status"],
     ["approvals", "explain"],
     ["wait", "pr"], ["wait", "run"], ["wait", "file"], ["wait", "timer"], ["wait", "event"],
-    ["wait", "list"], ["wait", "show"], ["wait", "cancel"], ["herdr", "list"],
+    ["wait", "list"], ["wait", "show"], ["wait", "cancel"], ["wait", "packet"],
+    ["wait", "stats"], ["wait", "resolve"], ["herdr", "list"],
 ]  # fmt: skip
 # Team coordination stays inside the local ledger; launching or cleaning up workers is excluded.
 TEAM = ["status", "messages", "inbox", "inbox-ack", "ack", "send"]
