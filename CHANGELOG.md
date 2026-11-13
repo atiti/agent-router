@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Deliver fired waits to the exact enrolled Herdr supervisor's native inbox and reconcile native
+  admission receipts. Packet-bound workers receive a persistent outcome goal, with completion
+  held until canonical evidence and delivery gates are satisfied.
+
 - Expand waits with exact work-packet completion/released-step conditions, generation-keyed
   outside events and eight-hour handoff deadlines. Add `wait stats` and `wait resolve` with
   bounded probe/error history and separate admission/read/disposition records. Preserve later

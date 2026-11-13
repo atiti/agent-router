@@ -590,3 +590,21 @@ def test_dispatch_persists_selected_route_before_worker_launch(team, monkeypatch
     monkeypatch.setattr(h, "view", lambda *_: None)
     monkeypatch.setattr(h, "layout", lambda *_: None)
     h.dispatch_once("demo", tmp_path, 3, {"ready"}, "@azure @smart")
+
+
+def test_supervisor_register_auto_enrolls_only_verified_v69_owner(team, monkeypatch):
+    thread = "11111111-1111-1111-1111-111111111111"
+    team["members"]["worker"]["spec"]["role"] = "supervisor"
+    with h.locked("demo"):
+        h.save("demo", team)
+    monkeypatch.setenv("AGENTROUTE_HERDR_TEAM", "demo")
+    monkeypatch.setenv("AGENTROUTE_HERDR_MEMBER", "worker")
+    monkeypatch.setenv("CODEX_THREAD_ID", thread)
+    monkeypatch.setenv("HC_TERMINAL_ID", "t1")
+    monkeypatch.setattr(h, "own_terminal", lambda *a: {"address": "t1", "state": "live"})
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", "fixture-provider-routing-v68")
+    h.register("demo", "worker")
+    assert not h.load("demo").get("inbox_consumer")
+    monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", "fixture-provider-routing-v69")
+    h.register("demo", "worker")
+    assert h.load("demo")["inbox_consumer"]["version"] == 1

@@ -414,7 +414,7 @@ def test_unknown_admission_with_missing_history_never_resends():
 
 def test_recipient_receipts_require_target_and_admission():
     wait = waits.register(THREAD, "timer", {}, timeout=1, now=1000)
-    with pytest.raises(waits.WaitError, match="admission"):
+    with pytest.raises(waits.WaitError, match="admitted"):
         waits.record_recipient(wait["id"], THREAD)
     waits.tick(lambda: FakeClient(goal=None), now=1002)
     with pytest.raises(waits.WaitError, match="target"):
