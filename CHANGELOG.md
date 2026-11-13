@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Pin the merged Codex runtime with packet-bound persistent worker goals and a live wait-state
+  footer. A worker cannot complete its goal until its canonical outcome and delivery gates have
+  evidence; a resumed worker retains its original goal and ownership.
+
 - Deliver fired waits to the exact enrolled Herdr supervisor's native inbox and reconcile native
   admission receipts. Packet-bound workers receive a persistent outcome goal, with completion
   held until canonical evidence and delivery gates are satisfied.

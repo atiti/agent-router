@@ -41,7 +41,7 @@ from .providers import (
     refresh_launch_catalog,
 )
 
-EXPECTED_RUNTIME_REVISION = "provider-routing-v69"
+EXPECTED_RUNTIME_REVISION = "provider-routing-v70"
 
 
 @dataclass(frozen=True)
