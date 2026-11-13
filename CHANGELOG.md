@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Scope packet-bound worker goals to their owning thread, so delegated child agents do not
+  inherit or complete their parent's work-packet goal.
+
 - Pin the merged Codex runtime with packet-bound persistent worker goals and a live wait-state
   footer. A worker cannot complete its goal until its canonical outcome and delivery gates have
   evidence; a resumed worker retains its original goal and ownership.
