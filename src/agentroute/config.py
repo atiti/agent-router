@@ -541,8 +541,8 @@ def default_config() -> AppConfig:
     gpt_tiers = {
         "fast": ModelTarget(model="gpt-6-luna", reasoning_effort="xhigh"),
         "normal": ModelTarget(model="gpt-6-luna", reasoning_effort="xhigh"),
-        "smart": ModelTarget(model="gpt-6.1-sol", reasoning_effort="high"),
-        "max": ModelTarget(model="gpt-6-astra", reasoning_effort="xhigh"),
+        "smart": ModelTarget(model="gpt-6.2-sol", reasoning_effort="high"),
+        "max": ModelTarget(model="gpt-6.2-astra", reasoning_effort="xhigh"),
     }
     config = AppConfig(
         providers={
@@ -638,6 +638,11 @@ def default_config() -> AppConfig:
             context_window=1_048_576, pricing_model="deepseek-v4-pro",
         ),
     }
+    for model in ("gpt-6.2-sol", "gpt-6.2-astra"):
+        config.capabilities.models[model] = ModelCapabilities(
+            tool_calling="full", reasoning=True, vision=True,
+            context_window=872_000, pricing_model=model,
+        )
     config.capacity.profiles["default"] = SubscriptionProfileConfig(priority=0)
     for model in MODERN_CLAUDE_MODELS:
         config.capabilities.models.setdefault(model, ModelCapabilities(
@@ -649,7 +654,7 @@ def default_config() -> AppConfig:
 
 
 def _with_default_backends(config: AppConfig) -> AppConfig:
-    """Add backend defaults and migrate only the former bundled GPT SMART target."""
+    """Add backend defaults and migrate former bundled GPT SMART/MAX targets."""
     defaults = default_config()
     # The normal Codex credential is deliberately an implicit account.  Keep it
     # available for old installations instead of forcing users to move or copy
@@ -667,8 +672,15 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
             if configured.tool_compatibility is None:
                 configured.tool_compatibility = backend.tool_compatibility
     gpt_smart = config.backends["gpt"].tiers.get("smart")
-    if gpt_smart == ModelTarget(model="gpt-6-sol", reasoning_effort="high"):
+    if gpt_smart in (
+        ModelTarget(model="gpt-6-sol", reasoning_effort="high"),
+        ModelTarget(model="gpt-6.1-sol", reasoning_effort="high"),
+    ):
         config.backends["gpt"].tiers["smart"] = defaults.backends["gpt"].tiers["smart"]
+    if config.backends["gpt"].tiers.get("max") == ModelTarget(
+        model="gpt-6-astra", reasoning_effort="xhigh"
+    ):
+        config.backends["gpt"].tiers["max"] = defaults.backends["gpt"].tiers["max"]
     deepseek = config.backends.get("deepseek")
     if deepseek:
         legacy_models = {"deepseek-chat", "deepseek-reasoner"}

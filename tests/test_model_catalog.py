@@ -219,6 +219,7 @@ def test_backend_alias_uses_configured_context_while_gpt_uses_account_limit(
                     "supports_search_tool": False, "guardian": None}],
     }))
     config = default_config()
+    config.backends["gpt"].tiers["smart"].model = "gpt-6.1-sol"
     config.backends["azure"].enabled = True
     config.backends["azure"].tiers["smart"].model = "dev-gpt-6.1-sol"
     config.pricing.aliases["dev-gpt-6.1-sol"] = "gpt-6.1-sol"

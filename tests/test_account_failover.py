@@ -47,7 +47,7 @@ def status(name, usage):
     )
 
 
-@pytest.mark.parametrize("work_models,age", [(None, 0), (["wrong"], 0), (["gpt-6.1-sol"], 3)])
+@pytest.mark.parametrize("work_models,age", [(None, 0), (["wrong"], 0), (["gpt-6.2-sol"], 3)])
 def test_failover_skips_unknown_stale_or_incompatible_account(tmp_path, work_models, age):
     config = setup_accounts(tmp_path, personal_models=None, work_models=work_models, age=age)
     with (
@@ -79,14 +79,14 @@ def test_failover_uses_verified_per_account_override(tmp_path):
 @pytest.mark.parametrize(
     "usage,models,expected",
     [
-        (20, ["gpt-6.1-sol"], "personal"),
-        (80, ["gpt-6.1-sol"], "work"),
+        (20, ["gpt-6.2-sol"], "personal"),
+        (80, ["gpt-6.2-sol"], "work"),
         (20, ["wrong"], "work"),
         (20, None, "work"),
     ],
 )
 def test_recovery_requires_model_support_and_quota_margin(tmp_path, usage, models, expected):
-    config = setup_accounts(tmp_path, personal_models=models, work_models=["gpt-6.1-sol"])
+    config = setup_accounts(tmp_path, personal_models=models, work_models=["gpt-6.2-sol"])
     with patch(
         "agentroute.profiles.probe_profile",
         side_effect=lambda name, *a, **kw: status(name, usage if name == "personal" else 30),

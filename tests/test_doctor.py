@@ -188,7 +188,7 @@ def test_doctor_fails_when_configured_context_exceeds_codex_model_maximum(tmp_pa
     config = default_config()
     for name, backend in config.backends.items():
         backend.enabled = name == "gpt"
-    model = "gpt-6.1-sol"
+    model = "gpt-6.2-sol"
     config.capabilities.models[model].context_window = 1_050_000
     _context_catalog(
         tmp_path,

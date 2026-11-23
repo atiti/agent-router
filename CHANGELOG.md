@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Update the native Codex fork and matching Code Mode host to stable 0.171.0.
+- Use GPT-6.2 Sol for SMART and GPT-6.2 Astra for MAX. Preserve explicit custom
+  targets and reasoning settings during upgrades; expose both through the native model catalog.
+
 - Pin the merged Codex runtime with packet-bound persistent worker goals and a live wait-state
   footer. A worker cannot complete its goal until its canonical outcome and delivery gates have
   evidence; a resumed worker retains its original goal and ownership.
