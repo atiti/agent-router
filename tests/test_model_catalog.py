@@ -199,7 +199,7 @@ def test_sync_other_config_cannot_replace_live_routed_catalog(tmp_path, monkeypa
     (1, 500_000, 500_000), (25, 500_000, 272_000),
     (1, 2_000_000, 272_000), (1, True, 272_000),
 ])
-def test_backend_alias_uses_configured_context_while_gpt_uses_account_limit(
+def test_backend_alias_and_gpt_use_configured_usable_context(
     tmp_path, monkeypatch, age_hours, window, expected
 ):
     from datetime import datetime, timedelta, timezone
@@ -231,12 +231,12 @@ def test_backend_alias_uses_configured_context_while_gpt_uses_account_limit(
         target.model = target.model.removeprefix("dev-")
     path = refresh_launch_catalog(config)
     models = {m["slug"]: m for m in json.loads(path.read_text())["models"]}
-    assert models["gpt-6.1-sol"]["context_window"] == expected
+    assert models["gpt-6.1-sol"]["context_window"] == 872_000
+    assert models["gpt-6.1-sol"]["context_window"] >= expected
+    assert models["gpt-6.1-sol"]["max_context_window"] == 872_000
     assert models["gpt-6.1-sol"]["supports_search_tool"] is True
     assert models["gpt-6.1-sol"]["guardian"] == {"required": True}
-    assert models["gpt-6.1-sol"]["auto_compact_token_limit"] == (
-        200_000 if expected == 500_000 else 258_400
-    )
+    assert models["gpt-6.1-sol"]["auto_compact_token_limit"] is None
     assert models["dev-gpt-6.1-sol"]["auto_compact_token_limit"] is None
     assert models["dev-gpt-6.1-sol"]["context_window"] == 872_000
     assert models["dev-gpt-6.1-sol"]["max_context_window"] == 872_000
@@ -248,6 +248,30 @@ def test_backend_alias_uses_configured_context_while_gpt_uses_account_limit(
     path.write_text('{"models": []}')
     refresh_launch_catalog(config)
     assert json.loads(path.read_text())["models"]
+
+
+def test_gpt_62_catalog_uses_configured_usable_window(tmp_path, monkeypatch):
+    from agentroute.providers import refresh_launch_catalog
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr("agentroute.providers._installed_codex_catalog", lambda source: {
+        "models": [
+            {"slug": "gpt-6.2-sol", "context_window": 500_000,
+             "max_context_window": 872_000, "auto_compact_token_limit": 450_000,
+             "supports_search_tool": True},
+            {"slug": "gpt-6.2-astra", "context_window": 272_000,
+             "max_context_window": 872_000, "auto_compact_token_limit": 244_800,
+             "supports_search_tool": True},
+        ]
+    })
+    config = default_config()
+    path = refresh_launch_catalog(config)
+    models = {m["slug"]: m for m in json.loads(path.read_text())["models"]}
+    for slug in ("gpt-6.2-sol", "gpt-6.2-astra"):
+        assert models[slug]["context_window"] == 872_000
+        assert models[slug]["max_context_window"] == 872_000
+        assert models[slug]["auto_compact_token_limit"] is None
+        assert models[slug]["supports_search_tool"] is True
 
 
 def test_launch_preserves_custom_catalog(tmp_path, monkeypatch):
@@ -402,7 +426,8 @@ def test_new_account_model_can_back_routed_alias_without_bundled_descriptor(
         return
     path = refresh_launch_catalog(config)
     models = {m["slug"]: m for m in json.loads(path.read_text())["models"]}
-    assert models["gpt-6.1-terra"] == terra
+    raised = {**terra, "context_window": 872_000}
+    assert models["gpt-6.1-terra"] == raised
     assert models["dev-gpt-6.1-terra"] == {
         **terra, "slug": "dev-gpt-6.1-terra", "display_name": "dev-gpt-6.1-terra",
         "context_window": 1_050_000, "max_context_window": 1_050_000,
@@ -415,5 +440,5 @@ def test_new_account_model_can_back_routed_alias_without_bundled_descriptor(
     (tmp_path / "models_cache.json").unlink()
     assert refresh_launch_catalog(config) == path
     persisted = {m["slug"]: m for m in json.loads(path.read_text())["models"]}
-    assert persisted["gpt-6.1-terra"] == terra
+    assert persisted["gpt-6.1-terra"] == raised
     assert persisted["dev-gpt-6.1-terra"]["supports_search_tool"] is True
