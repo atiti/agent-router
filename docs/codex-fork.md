@@ -279,7 +279,7 @@ Progress review works for ordinary long-running prompts and explicit Goals. See
 
 The downstream runtime is based on upstream `rust-v0.171.0`
 (`ccf9be8cc458bd6b8336fe84d68d8893f2691a5e`) and pins
-`2b2c2e533832f900852b2adce4ba8d61eb9937a1`. The reviewed net port preserves
+`019e2ed910e45bcbe16885e7634889c04068ebfb`. The reviewed net port preserves
 the prior 0.167 fork features; its original branch history remains available.
 Mixed-provider histories use portable compaction. A foreign or unknown opaque
 checkpoint is blocked before transmission; recover an owned checkpoint using the

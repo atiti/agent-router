@@ -178,6 +178,27 @@ def _backend_model_targets(backend: ExecutionBackendConfig) -> list[ModelTarget]
     return targets
 
 
+def _raise_gpt_context_window(model: dict, configured: int) -> None:
+    """Raise a ChatGPT catalog window to the configured usable limit.
+
+    Codex compacts from ``context_window``, not ``max_context_window``. Account
+    catalogs often advertise a smaller default beneath a larger maximum. The
+    configured capability is the usable window, and it never exceeds that maximum.
+    A compaction cap below the raised window would keep compacting early, so it
+    is cleared and Codex applies its normal percentage of the usable window.
+    """
+    maximum = model.get("max_context_window")
+    window = configured
+    if isinstance(maximum, int) and maximum > 0:
+        window = min(configured, maximum)
+    current = model.get("context_window")
+    if not isinstance(current, int) or window > current:
+        model["context_window"] = window
+    limit = model.get("auto_compact_token_limit")
+    if isinstance(limit, int) and limit < model["context_window"]:
+        model["auto_compact_token_limit"] = None
+
+
 def _installed_codex_catalog(source: Path | None = None) -> dict | None:
     """Read the bundled catalog from the exact invoking runtime revision."""
     build_id = _runtime_build_id()
@@ -435,6 +456,12 @@ def _write_model_catalog(
                     )
                     # Account-specific compaction caps must not constrain another provider.
                     by_slug[slug]["auto_compact_token_limit"] = None
+                elif (
+                    backend_name == "gpt"
+                    and capabilities.context_window is not None
+                    and slug in by_slug
+                ):
+                    _raise_gpt_context_window(by_slug[slug], capabilities.context_window)
                 continue
             if capabilities.context_window is None:
                 continue
