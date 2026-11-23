@@ -157,7 +157,7 @@ def test_daybreak_security_model_follows_selected_chatgpt_profile(tmp_path):
 
     assert blue["hookSpecificOutput"]["model"] == "gpt-daybreak-blue-latest"
     assert "DAYBREAK BLUE MODEL" in blue["hookSpecificOutput"]["routeMessage"]
-    assert fallback["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
+    assert fallback["hookSpecificOutput"]["model"] == "gpt-6.2-sol"
     assert "DAYBREAK UNAVAILABLE" in fallback["hookSpecificOutput"]["routeMessage"]
     assert explicit["hookSpecificOutput"]["model"] == "gpt-6-luna"
     assert profile_has_daybreak_blue("default", config.capacity.profiles["default"])
@@ -446,7 +446,7 @@ def test_unmatched_gpt_account_keeps_global_model(tmp_path):
         account_id="unknown-account",
     )
 
-    assert output["hookSpecificOutput"]["model"] == "gpt-6-astra"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6.2-astra"
     assert "ACCOUNT ROUTE · default · account match" in output["hookSpecificOutput"][
         "routeMessage"
     ]
@@ -982,15 +982,15 @@ def test_enabled_mode_emits_native_override_and_keeps_session_history(tmp_path, 
     first = invoke(config, store, "@smart investigate")
     second = invoke(config, store, "go ahead")
 
-    assert first["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
+    assert first["hookSpecificOutput"]["model"] == "gpt-6.2-sol"
     assert first["hookSpecificOutput"]["reasoningEffort"] == "high"
     assert first["hookSpecificOutput"]["routeMessage"] == (
         "◆ ACCOUNT ROUTE · default · account match · model access unverified\n"
-        "◆ MODEL ROUTE · SMART → gpt-6.1-sol · high reasoning "
+        "◆ MODEL ROUTE · SMART → gpt-6.2-sol · high reasoning "
         "· backend gpt/openai · scope root · source MANUAL "
         f"· rule confidence 100% · rule score -0.5 · AgentRoute v{__version__}"
     )
-    assert second["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
+    assert second["hookSpecificOutput"]["model"] == "gpt-6.2-sol"
     assert len(store.history("same-thread")) == 2
 
 
@@ -1570,14 +1570,14 @@ def test_explicit_subagent_model_uses_its_uniquely_configured_backend(
         config,
         AuditStore(tmp_path / "audit.db"),
         "Investigate this implementation",
-        model="gpt-6-astra",
+        model="gpt-6.2-astra",
         model_provider="agentroute-azure",
         spawn_model_explicit=True,
         flat_agent_id="child-a",
     )
 
     assert output["hookSpecificOutput"]["modelProvider"] == "openai"
-    assert output["hookSpecificOutput"]["model"] == "gpt-6-astra"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6.2-astra"
 
 
 def test_explicit_subagent_model_can_cross_from_inherited_azure_to_gpt(
@@ -1593,14 +1593,14 @@ def test_explicit_subagent_model_can_cross_from_inherited_azure_to_gpt(
         config,
         AuditStore(tmp_path / "audit.db"),
         "Review the implementation",
-        model="gpt-6.1-sol",
+        model="gpt-6.2-sol",
         model_provider="agentroute-azure",
         spawn_model_explicit=True,
         flat_agent_id="child-gpt",
     )
 
     assert output["hookSpecificOutput"]["modelProvider"] == "openai"
-    assert output["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6.2-sol"
 
 
 @pytest.mark.parametrize("requested_backend", [None, "gpt"])
@@ -1833,7 +1833,7 @@ def test_opaque_subagent_followup_inherits_its_own_route(tmp_path):
         flat_agent_id="child-b",
     )
 
-    assert child_a_followup["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
+    assert child_a_followup["hookSpecificOutput"]["model"] == "gpt-6.2-sol"
     assert child_b_followup["hookSpecificOutput"]["model"] == "gpt-6-luna"
     child_rows = [row for row in store.history("same-thread") if row["agent_id"]]
     assert child_rows[0]["classification_source"] == "session_affinity"
@@ -1873,7 +1873,7 @@ def test_confirmation_uses_previous_assistant_task_definition(tmp_path):
     output = invoke(config, store, "ok do it", transcript_path=transcript)
     row = store.latest("same-thread")
 
-    assert output["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6.2-sol"
     assert "MAX→SMART SAFETY FALLBACK" in output["hookSpecificOutput"]["routeMessage"]
     assert row is not None
     assert row["task_context_used"] == 1
@@ -1890,7 +1890,7 @@ def test_credential_route_notice_is_visible(tmp_path):
         "service api key: abcdefghijklmnop1234",
     )
 
-    assert output["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6.2-sol"
     assert "CREDENTIAL RISK" in output["hookSpecificOutput"]["routeMessage"]
 
 
@@ -1908,7 +1908,7 @@ def test_hook_surfaces_llm_classifier_confidence_and_audits_hash(tmp_path, monke
     output = invoke(config, store, "Please handle this")
     row = store.latest("same-thread")
 
-    assert output["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6.2-sol"
     assert "classifier confidence 87%" in output["hookSpecificOutput"]["routeMessage"]
     assert "rule score -0.5" in output["hookSpecificOutput"]["routeMessage"]
     assert "implementation" in output["hookSpecificOutput"]["routeMessage"]
@@ -1954,7 +1954,7 @@ def test_jev_shadow_is_audited_but_cannot_change_a_live_route(tmp_path, monkeypa
     output = invoke(config, store, "Please handle this")
     receipt = json.loads(store.latest("same-thread")["selection_receipt"])
 
-    assert output["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6.2-sol"
     assert receipt["shadow_jev"]["status"] == "succeeded"
     assert receipt["shadow_jev"]["tier"] == "fast"
     assert receipt["shadow_jev"]["agreement"]["selected_tier"] is False
@@ -2034,7 +2034,7 @@ def test_explicit_confirmation_approves_agent_request(tmp_path):
     row = store.latest("same-thread")
 
     assert "AGENT REQUEST APPROVED" in output["hookSpecificOutput"]["routeMessage"]
-    assert output["hookSpecificOutput"]["model"] == "gpt-6.1-sol"
+    assert output["hookSpecificOutput"]["model"] == "gpt-6.2-sol"
     assert row is not None
     assert row["agent_requested_tier"] == "smart"
     assert len(row["agent_request_reason_hash"]) == 64

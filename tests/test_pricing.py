@@ -179,10 +179,8 @@ def test_provider_prefixed_model_uses_public_model_price():
     assert cost == pytest.approx(0.20)
 
 
-def test_gpt_6_1_sol_default_has_published_price_and_capabilities():
+def test_legacy_gpt_6_1_sol_retains_published_price_and_capabilities():
     config = default_config()
-    assert config.backends["gpt"].tiers["smart"].model == "gpt-6.1-sol"
-    assert config.backends["gpt"].tiers["smart"].reasoning_effort == "high"
     price = config.pricing.models["gpt-6.1-sol"]
     assert (
         price.input_per_million,
@@ -220,7 +218,7 @@ def test_existing_gpt_smart_default_migrates_without_overriding_custom_target():
     config.backends["gpt"].tiers["smart"] = ModelTarget(
         model="gpt-6-sol", reasoning_effort="high"
     )
-    assert _with_default_backends(config).backends["gpt"].tiers["smart"].model == "gpt-6.1-sol"
+    assert _with_default_backends(config).backends["gpt"].tiers["smart"].model == "gpt-6.2-sol"
 
     config.backends["gpt"].tiers["smart"] = ModelTarget(
         model="gpt-6-sol", reasoning_effort="xhigh"
@@ -387,3 +385,33 @@ def test_jev_classifier_cost_charges_input_only():
     cost = token_cost("jev-latest", {"input_tokens": 1000000, "output_tokens": 1000000},
                       config.pricing)
     assert cost == 0.042
+
+
+@pytest.mark.parametrize(
+    ("tier", "previous", "effort", "expected"),
+    [
+        ("smart", "gpt-6-sol", "high", "gpt-6.2-sol"),
+        ("smart", "gpt-6.1-sol", "high", "gpt-6.2-sol"),
+        ("max", "gpt-6-astra", "xhigh", "gpt-6.2-astra"),
+        ("smart", "gpt-6.1-sol", "xhigh", "gpt-6.1-sol"),
+        ("max", "gpt-6-astra", "high", "gpt-6-astra"),
+        ("smart", "custom-model", "high", "custom-model"),
+        ("max", "custom-model", "xhigh", "custom-model"),
+    ],
+)
+def test_gpt_6_2_migration_preserves_custom_model_and_effort(tier, previous, effort, expected):
+    config = default_config()
+    config.backends["gpt"].tiers[tier] = ModelTarget(
+        model=previous, reasoning_effort=effort
+    )
+    assert _with_default_backends(config).backends["gpt"].tiers[tier] == ModelTarget(
+        model=expected, reasoning_effort=effort
+    )
+
+
+def test_gpt_6_2_unpublished_price_remains_unknown():
+    config = default_config()
+    for model in ("gpt-6.2-sol", "gpt-6.2-astra"):
+        assert model not in config.pricing.models
+        assert model not in config.pricing.aliases
+        assert turn_cost({"input_tokens": 1000, "output_tokens": 10}, model, config.pricing) is None

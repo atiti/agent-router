@@ -274,3 +274,13 @@ pre-upgrade database backup to roll back. Test upgrades on disposable copies fir
 
 Progress review works for ordinary long-running prompts and explicit Goals. See
 [progress-review.md](progress-review.md) for activation and limitations.
+
+## Stable 0.171.0 port
+
+The downstream runtime is based on upstream `rust-v0.171.0`
+(`ccf9be8cc458bd6b8336fe84d68d8893f2691a5e`) and pins
+`2b2c2e533832f900852b2adce4ba8d61eb9937a1`. The reviewed net port preserves
+the prior 0.167 fork features; its original branch history remains available.
+Mixed-provider histories use portable compaction. A foreign or unknown opaque
+checkpoint is blocked before transmission; recover an owned checkpoint using the
+original provider and the explicit plaintext compaction procedure in the fork.
