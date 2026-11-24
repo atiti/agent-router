@@ -7,12 +7,53 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  draft:
+    outputs:
+      commit: ${{ steps.prepare.outputs.commit }}
+    if: github.repository == 'atiti/agent-router' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare draft release
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor HEAD origin/main
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -1)
+          test "v$version" = "$GITHUB_REF_NAME"
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft > release.json; then
+            jq -e '.isDraft' release.json
+          else
+            flags=()
+            if [[ "$GITHUB_REF_NAME" =~ rc[0-9]+$ ]]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag --generate-notes "${flags[@]}"
+          fi
+
   build:
+    needs: draft
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       CARGO_TARGET_DIR: ${{ github.workspace }}/.release-cargo-target
@@ -25,27 +66,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
-      - name: Restore Cargo downloads and compiled artifacts
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ${{ github.workspace }}/.release-cargo-target
-          key: release-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install.sh') }}-${{ github.sha }}
-          restore-keys: |
-            release-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install.sh') }}-
-            release-cargo-${{ runner.os }}-${{ runner.arch }}-
-      - name: Verify tag matches package version
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -1)
-          test "v$version" = "$GITHUB_REF_NAME"
       - name: Import required Apple Developer ID
         if: runner.os == 'macOS'
         env:
@@ -87,31 +114,38 @@ jobs:
       - uses: actions/attest@v4
         with:
           subject-path: dist/*.tar.gz
-      - uses: actions/upload-artifact@v7
-        with:
-          name: agentroute-${{ runner.os }}-${{ runner.arch }}
-          path: dist/*
-          if-no-files-found: error
-
-  publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: agentroute-*
-          path: dist
-          merge-multiple: true
-      - name: Publish immutable release assets
+      - name: Upload signed or attested payload to draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          release_flags=()
-          if [[ "${GITHUB_REF_NAME}" =~ rc[0-9]+$ ]]; then
-            release_flags+=(--prerelease)
-          fi
-          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 || \
-            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
-              "${release_flags[@]}" --verify-tag --generate-notes
-          gh release upload "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}"
+          set -euo pipefail
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' | grep -qx true
+          # Retries may replace staged assets while the release is still a draft.
+          gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  publish:
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      attestations: read
+    steps:
+      - name: Verify and publish completed draft
+        env:
+          RELEASE_COMMIT: ${{ needs.draft.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft,assets > release.json
+          jq -e '.isDraft and (.assets | length == 8)' release.json
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir dist
+          cd dist
+          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            archive="agentroute-$platform.tar.gz"
+            digest=$(sha256sum "$archive")
+            test "$digest" = "$(cat "$archive.sha256")"
+            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "$GITHUB_REF" --source-digest "$RELEASE_COMMIT"
+          done
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

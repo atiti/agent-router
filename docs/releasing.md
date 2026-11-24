@@ -26,9 +26,11 @@ see [Maintaining the Codex fork](codex-fork.md).
    matching version strings as a protocol guarantee.
 6. Update the AgentRoute version and changelog, commit, and tag `vX.Y.Z`.
 
-Pushing the tag builds Linux and macOS payloads for arm64 and x64, creates SHA-256 files, emits
-GitHub provenance attestations, and publishes release assets without allowing an existing asset to
-be overwritten. No scheduled workflow creates a release.
+Pushing a release tag on a commit already on `main` creates a draft GitHub Release. Each
+platform job uploads its archive and checksum directly to the draft. The publish job checks the
+four archives against their checksums and workflow attestations before publishing. A retry can
+replace files on the draft. Published releases are immutable. The workflow does not use Actions
+artifacts or the Actions cache for release builds.
 
 Consumers can verify an archive with `gh attestation verify ARCHIVE --repo atiti/agent-router` in
 addition to the checksum enforced by the installer.
