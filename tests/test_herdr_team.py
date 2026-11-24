@@ -612,7 +612,10 @@ def test_supervisor_register_auto_enrolls_only_verified_v69_owner(team, monkeypa
 
 
 @pytest.mark.parametrize("pending", [[], ["unknown-operation"]])
-def test_restore_only_resumes_confirmed_core_member_in_original_pane(team, monkeypatch, pending):
+@pytest.mark.parametrize("reason", ["stopped_by_restart", "server_stop"])
+def test_restore_only_resumes_confirmed_core_member_in_original_pane(
+    team, monkeypatch, pending, reason,
+):
     original = {"pane_id": "w1:p1", "terminal_id": "old", "workspace_id": "w1",
                 "tab_id": "w1:t1", "cwd": "/tmp"}
     restored = {**original, "terminal_id": "new", "label": "worker"}
@@ -627,7 +630,7 @@ def test_restore_only_resumes_confirmed_core_member_in_original_pane(team, monke
     monkeypatch.setattr(h.tui, "panes", lambda _: [restored])
     monkeypatch.setattr(h.tui, "wait_for_shell", lambda *args: True)
     monkeypatch.setattr(h, "own_terminal",
-                        lambda *_: {"state": "finished", "reason": "stopped_by_restart"})
+                        lambda *_: {"state": "finished", "reason": reason})
     monkeypatch.setattr(h, "packet_command", lambda *a: json.dumps({
         "assignment": {"session": "owner"}, "pending_operations": pending,
     }))

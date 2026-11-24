@@ -411,8 +411,8 @@ def resume_member_locked(team: str, data: dict, member: str, restart_only: bool 
     if not record.get("thread"):
         raise typer.BadParameter("No registered session; reconcile the previous launch first.")
     if restart_only:
-        if not terminal or terminal.get("reason") != "stopped_by_restart":
-            raise typer.BadParameter("Core did not record a restart for this member.")
+        if not terminal or terminal.get("reason") not in {"stopped_by_restart", "server_stop"}:
+            raise typer.BadParameter("Core did not record a server stop for this member.")
         if binding := record.get("packet_binding"):
             execution = json.loads(packet_command(
                 data, "execution", "--packet", data["packet"], "--item", binding["item"],
