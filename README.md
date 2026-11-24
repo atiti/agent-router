@@ -1288,7 +1288,7 @@ working, idle, and blocked (approval/user input) states from the shared owner to
 Herdr every two seconds. Shared writer guards remain in effect when a chat is
 already open elsewhere. Close a view before moving that chat from Zellij.
 Detach from Herdr with Ctrl+B then Q; the server and terminal processes persist.
-After a reboot, run `agentroute herdr restore --attach` (or `ar restore --attach`).
+After a reboot, run `ar r` to restore the chats and attach to Herdr.
 It starts the shared owner and Herdr, then reopens recorded Codex threads in their
 original panes. Omit `--attach` to restore from a script. The command leaves existing
 clients and occupied panes alone and reports missing panes. The restore records are
