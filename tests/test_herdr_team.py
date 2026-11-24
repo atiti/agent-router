@@ -608,3 +608,50 @@ def test_supervisor_register_auto_enrolls_only_verified_v69_owner(team, monkeypa
     monkeypatch.setenv("AGENTROUTE_RUNTIME_BUILD_ID", "fixture-provider-routing-v69")
     h.register("demo", "worker")
     assert h.load("demo")["inbox_consumer"]["version"] == 1
+
+
+
+@pytest.mark.parametrize("pending", [[], ["unknown-operation"]])
+@pytest.mark.parametrize("reason", ["stopped_by_restart", "server_stop"])
+def test_restore_only_resumes_confirmed_core_member_in_original_pane(
+    team, monkeypatch, pending, reason,
+):
+    original = {"pane_id": "w1:p1", "terminal_id": "old", "workspace_id": "w1",
+                "tab_id": "w1:t1", "cwd": "/tmp"}
+    restored = {**original, "terminal_id": "new", "label": "worker"}
+    with h.locked("demo") as data:
+        data["members"]["worker"].update(
+            spec={"role": "worker", "cwd": "/tmp", "task": "original prompt", "parent": None},
+            thread="11111111-1111-1111-1111-111111111111",
+            view={**original, "active": True},
+            packet_binding={"item": "worker", "session": "owner", "brief": "resume brief"},
+        )
+        h.save("demo", data)
+    monkeypatch.setattr(h.tui, "panes", lambda _: [restored])
+    monkeypatch.setattr(h.tui, "wait_for_shell", lambda *args: True)
+    monkeypatch.setattr(h, "own_terminal",
+                        lambda *_: {"state": "finished", "reason": reason})
+    monkeypatch.setattr(h, "packet_command", lambda *a: json.dumps({
+        "assignment": {"session": "owner"}, "pending_operations": pending,
+    }))
+    core = Mock(return_value={"address": "t2"})
+    monkeypatch.setattr(h, "core", core)
+    monkeypatch.setattr(h, "launch_args", lambda team, member, record: (
+        "run", "resume", record["thread"],
+    ))
+    command = Mock()
+    monkeypatch.setattr(h.tui, "command", command)
+    result = h.restore_team_views("agentroute")
+    assert len(result) == 1 and result[0]["pane"] == "w1:p1"
+    if pending:
+        assert "need reconciliation" in result[0]["status"]
+        core.assert_not_called()
+        command.assert_not_called()
+    else:
+        assert result[0]["status"] == "started"
+        assert core.call_args.args[1:] == ("run", "resume", h.load("demo")[
+            "members"]["worker"]["thread"])
+        assert h.load("demo")["members"]["worker"]["view"]["terminal_id"] == "new"
+        assert command.call_args.args[1:4] == ("pane", "run", "w1:p1")
+        assert h.restore_team_views("agentroute") == []
+        assert core.call_count == 1
