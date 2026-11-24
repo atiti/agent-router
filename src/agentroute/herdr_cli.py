@@ -293,9 +293,40 @@ def run_in_pane(argv: list[str], environment: dict[str, str]) -> int:
                 "--agent", "codex", "--state", "unknown")
     except chats.ERRORS:
         pass  # Missing Herdr status must never prevent an interactive launch.
+    # Explicit resume targets can be tracked without guessing from terminal titles.
+    thread = None
+    if "resume" in argv:
+        index = argv.index("resume")
+        if index + 1 < len(argv):
+            try:
+                thread = str(UUID(argv[index + 1]))
+            except ValueError:
+                pass
+    stopped = threading.Event()
+
+    def monitor() -> None:
+        while not stopped.is_set():
+            try:
+                with RpcClient(socket_path(), timeout=5) as client:
+                    current = client.request("thread/read", {"threadId": thread})["thread"]
+                state = {"RUNNING": "working", "APPROVAL": "blocked", "INPUT": "blocked",
+                         "READY": "idle"}.get(chats.status(current), "unknown")
+                command(session, "pane", "report-agent", pane, "--source", source,
+                        "--agent", "codex", "--state", state, "--agent-session-id", thread)
+            except chats.ERRORS:
+                pass
+            stopped.wait(2)
+
+    watcher = None
+    if thread and environment.get("AGENTROUTE_LOCAL_SERVER_SOCKET"):
+        watcher = threading.Thread(target=monitor, daemon=True)
+        watcher.start()
     try:
         return subprocess.run(argv, env=environment, check=False).returncode
     finally:
+        stopped.set()
+        if watcher:
+            watcher.join(timeout=12)
         try:
             command(session, "pane", "release-agent", pane, "--source", source,
                     "--agent", "codex")

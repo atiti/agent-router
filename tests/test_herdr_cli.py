@@ -66,3 +66,34 @@ def test_launcher_reports_and_releases_even_when_client_fails(monkeypatch):
     assert h.run_in_pane(['codex-bin'], {'HERDR_PANE_ID': 'w8:p2'}) == 7
     assert command.call_args_list[0].args[1:3] == ('pane', 'report-agent')
     assert command.call_args_list[-1].args[1:3] == ('pane', 'release-agent')
+
+
+def test_direct_resume_reports_shared_thread_state(monkeypatch):
+    thread = "01a20744-50ee-71a2-a6a3-3e26905fc41b"
+    reports = []
+    monkeypatch.setattr(h, "command", lambda session, *args: reports.append(args))
+    monkeypatch.setattr(h, "socket_path", lambda: "/tmp/test.sock")
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def request(self, method, payload):
+            assert method == "thread/read"
+            assert payload["threadId"] == thread
+            return {"thread": {"status": {"type": "active"}}}
+
+    monkeypatch.setattr(h, "RpcClient", Client)
+    monkeypatch.setattr(h.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    assert h.run_in_pane(
+        ["codex-bin", "resume", thread],
+        {"HERDR_PANE_ID": "w8:p2", "AGENTROUTE_LOCAL_SERVER_SOCKET": "/tmp/test.sock"},
+    ) == 0
+    assert any("--state" in row and "working" in row and thread in row for row in reports)
+    assert reports[-1][:2] == ("pane", "release-agent")
