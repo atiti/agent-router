@@ -307,12 +307,18 @@ def run_in_pane(argv: list[str], environment: dict[str, str]) -> int:
     def monitor() -> None:
         while not stopped.is_set():
             try:
+                pane_info = command(session, "pane", "get", pane)["pane"]
+                native_session = pane_info.get("agent_session", {})
+                current_thread = thread
+                if (native_session.get("source") == "herdr:codex"
+                        and native_session.get("kind") == "id"):
+                    current_thread = str(UUID(native_session["value"]))
                 with RpcClient(socket_path(), timeout=5) as client:
-                    current = client.request("thread/read", {"threadId": thread})["thread"]
+                    current = client.request("thread/read", {"threadId": current_thread})["thread"]
                 state = {"RUNNING": "working", "APPROVAL": "blocked", "INPUT": "blocked",
                          "READY": "idle"}.get(chats.status(current), "unknown")
                 command(session, "pane", "report-agent", pane, "--source", source,
-                        "--agent", "codex", "--state", state, "--agent-session-id", thread)
+                        "--agent", "codex", "--state", state, "--agent-session-id", current_thread)
             except chats.ERRORS:
                 pass
             stopped.wait(2)
