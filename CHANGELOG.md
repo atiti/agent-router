@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Port the native runtime to Codex 0.172 and validate its gRPC Code Mode host during installation.
+- Keep automatic compaction portable for routed histories that require provider-state isolation.
+
 ## 0.5.86 — 2026-11-24
 
 - Pin the Codex runtime that applies an explicit `compact_prompt` to a running resume. A manual

@@ -82,7 +82,7 @@ if [ "$PLATFORM" = darwin ]; then
             --wait
     fi
 fi
-python3 "$PROJECT_ROOT/src/agentroute/code_mode_smoke.py" "$PAYLOAD/codex-code-mode-host"
+"$BUILD_HOME/venv/bin/python" "$PROJECT_ROOT/src/agentroute/code_mode_smoke.py" "$PAYLOAD/codex-code-mode-host"
 
 VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$PROJECT_ROOT/pyproject.toml" | head -1)
 printf '%s\n' "$VERSION" >"$PAYLOAD/VERSION"

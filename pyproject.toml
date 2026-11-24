@@ -19,6 +19,8 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
+  "grpcio>=1.85.4,<2",
+  "protobuf>=7.35.1,<8",
     "tomli>=2,<3; python_version < '3.11'",
   "pillow>=10.4,<13",
   "pydantic>=2.14.1,<3",

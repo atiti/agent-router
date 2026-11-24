@@ -284,3 +284,7 @@ the prior 0.167 fork features; its original branch history remains available.
 Mixed-provider histories use portable compaction. A foreign or unknown opaque
 checkpoint is blocked before transmission; recover an owned checkpoint using the
 original provider and the explicit plaintext compaction procedure in the fork.
+
+## Stable 0.172.0 port
+
+The runtime descends from upstream `rust-v0.172.0` at `3d86e43b075adeba2193ec5c22ac92f55afd82e6`. Routed turns that require provider-state isolation use portable foreground compaction and avoid speculative opaque checkpoints. The matching Code Mode host uses gRPC, which the installer verifies by opening a session and executing JavaScript.
