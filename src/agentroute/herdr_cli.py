@@ -368,6 +368,12 @@ def restore_command(session: str = SESSION, attach: bool = False) -> None:
         raise typer.BadParameter(str(error)) from error
 
 
+@herdr_app.command("r")
+def restore_shortcut(session: str = SESSION) -> None:
+    """Restore saved chats and attach to Herdr."""
+    restore_command(session=session, attach=True)
+
+
 @herdr_app.command("install")
 def install_command(bin_dir: Path | None = typer.Option(None)) -> None:
     """Select Herdr for ar/focus. Existing Zellij sessions remain running."""

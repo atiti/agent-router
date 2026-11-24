@@ -206,3 +206,14 @@ def test_bare_chat_is_named_and_persisted_before_resume(monkeypatch, tmp_path):
         ("thread/start", {"cwd": str(tmp_path.resolve())}),
         ("thread/name/set", {"threadId": THREAD, "name": "New chat"}),
     ]
+
+
+
+def test_restore_shortcut_routes_to_restore_and_attaches(monkeypatch):
+    from typer.testing import CliRunner
+
+    restore = Mock()
+    monkeypatch.setattr(h, "restore_command", restore)
+    result = CliRunner().invoke(h.herdr_app, ["r", "--session", "test"])
+    assert result.exit_code == 0, result.output
+    restore.assert_called_once_with(session="test", attach=True)
