@@ -1288,7 +1288,20 @@ working, idle, and blocked (approval/user input) states from the shared owner to
 Herdr every two seconds. Shared writer guards remain in effect when a chat is
 already open elsewhere. Close a view before moving that chat from Zellij.
 Detach from Herdr with Ctrl+B then Q; the server and terminal processes persist.
-After a reboot, start the cockpit and use `ar open <chat>` to resume saved chats.
+After a reboot, run `agentroute herdr restore --attach` (or `ar restore --attach`).
+It starts the shared owner and Herdr, then reopens recorded Codex threads in their
+original panes. Omit `--attach` to restore from a script. The command leaves existing
+clients and occupied panes alone and reports missing panes. The restore records are
+local to the Herdr session and Codex home.
+
+AgentRoute records threads opened with `ar new`, `ar open`, bare `codex`, or
+`codex resume <thread-id>` in a Herdr pane. Unnamed new chats start with the title
+`New chat` so Codex saves their history before the client attaches. Other direct
+launches and in-client
+thread changes use the Herdr Codex integration's session report. An older live
+chat can be enrolled with `ar bridge` and its exact thread ID, pane ID and PID.
+This restores shared Codex chats and their saved state. Herdr Core packet workers
+have their own `ar team resume` workflow.
 To return the shortcuts to Zellij, run `agentroute zellij install`.
 
 ### Local packet supervisor and visible workers
@@ -1380,11 +1393,10 @@ complete a claim. `ar team status TEAM --role worker --state idle` filters views
 
 For an existing shared Codex terminal, `agentroute herdr bridge --thread UUID
 --pane PANE_ID --pid CODEX_PID --session SESSION` reports live shared-server status
-while that exact foreground Codex process remains present. New ordinary Herdr
-launches report Codex identity from the terminal-side launcher; their state remains
-unknown until thread-specific reporting is available. `ar open UUID` already
-provides thread-specific lifecycle reporting. A launcher status outage never
-prevents Codex from starting.
+while that exact foreground Codex process remains present. It also records this
+pane for `ar restore`. The terminal-side launcher reports the current thread's
+status and follows session identity reports from the Herdr Codex integration.
+A launcher status outage never prevents Codex from starting.
 
 Herdr pane identity is passed to shared Codex threads through per-thread shell
 environment overrides when a client launches from Herdr. Restart the client to

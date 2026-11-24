@@ -394,7 +394,13 @@ def launch_codex(binary: Path | None, user_args: Sequence[str], profile: str | N
         argv[1:1] = [*client_args, *herdr_session_args(environment)]
         environment["AGENTROUTE_LOCAL_SERVER_SOCKET"] = str(endpoint)
     if environment.get("HERDR_ENV") == "1" and environment.get("HERDR_PANE_ID"):
-        from .herdr_cli import run_in_pane
+        from .herdr_cli import run_in_pane, track_new_chat
 
+        # A bare interactive invocation has no CLI overrides to carry over.
+        # Establish exact identity even when Herdr's native SessionStart hook
+        # has not run yet. Explicit prompts, flags and session selectors keep
+        # Codex's normal startup and use its native identity report if available.
+        if not user_args and (shared_socket := environment.get("AGENTROUTE_LOCAL_SERVER_SOCKET")):
+            argv = track_new_chat(argv, Path(shared_socket))
         raise SystemExit(run_in_pane(argv, environment))
     os.execve(argv[0], argv, environment)
