@@ -71,7 +71,11 @@ def test_launcher_reports_and_releases_even_when_client_fails(monkeypatch):
 def test_direct_resume_reports_shared_thread_state(monkeypatch):
     thread = "01a20744-50ee-71a2-a6a3-3e26905fc41b"
     reports = []
-    monkeypatch.setattr(h, "command", lambda session, *args: reports.append(args))
+    def command(session, *args):
+        reports.append(args)
+        if args[:2] == ("pane", "get"):
+            return {"pane": {}}
+    monkeypatch.setattr(h, "command", command)
     monkeypatch.setattr(h, "socket_path", lambda: "/tmp/test.sock")
 
     class Client:
@@ -97,3 +101,34 @@ def test_direct_resume_reports_shared_thread_state(monkeypatch):
     ) == 0
     assert any("--state" in row and "working" in row and thread in row for row in reports)
     assert reports[-1][:2] == ("pane", "release-agent")
+
+
+def test_direct_resume_follows_native_session_identity(monkeypatch):
+    old = "01a20744-50ee-71a2-a6a3-3e26905fc41b"
+    new = "01a20db2-e37d-7ad3-8004-8cb3ee6bdd81"
+    reports = []
+
+    def command(session, *args):
+        reports.append(args)
+        if args[:2] == ("pane", "get"):
+            return {"pane": {"agent_session": {
+                "source": "herdr:codex", "kind": "id", "value": new,
+            }}}
+
+    class Client:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def request(self, method, payload):
+            assert payload["threadId"] == new
+            return {"thread": {"status": {"type": "active", "activeFlags": ["waitingOnUserInput"]}}}
+
+    monkeypatch.setattr(h, "command", command)
+    monkeypatch.setattr(h, "socket_path", lambda: "/tmp/test.sock")
+    monkeypatch.setattr(h, "RpcClient", Client)
+    monkeypatch.setattr(h.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    assert h.run_in_pane(
+        ["codex-bin", "resume", old],
+        {"HERDR_PANE_ID": "w8:p2", "AGENTROUTE_LOCAL_SERVER_SOCKET": "/tmp/test.sock"},
+    ) == 0
+    assert any("--state" in row and "blocked" in row and new in row for row in reports)
