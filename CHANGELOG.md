@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Pin the Codex runtime that applies an explicit `compact_prompt` to a running resume. A manual
+  `/compact` with a plaintext prompt now recovers an owned opaque checkpoint instead of
+  reinstalling an encrypted one, which stopped sessions with "history contains an opaque
+  checkpoint" errors and repeated compaction. Automatic compaction is unchanged.
+
 - Update the native Codex fork and matching Code Mode host to stable 0.171.0.
 - Use GPT-6.2 Sol for SMART and GPT-6.2 Astra for MAX. Preserve explicit custom
   targets and reasoning settings during upgrades; expose both through the native model catalog.
