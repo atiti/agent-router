@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.86 — 2026-11-24
 
 - Pin the Codex runtime that applies an explicit `compact_prompt` to a running resume. A manual
   `/compact` with a plaintext prompt now recovers an owned opaque checkpoint instead of
