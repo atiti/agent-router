@@ -395,42 +395,65 @@ def launch_args(data: dict, member: str, record: dict) -> list[str]:
     return args
 
 
+def resume_member_locked(team: str, data: dict, member: str, restart_only: bool = False) -> bool:
+    record = data["members"][member]
+    if record.get("cleanup", {}).get("state") == "archived":
+        raise typer.BadParameter("Archived member cannot resume; use history or a fresh "
+                                 "authorized worker/team")
+    member_constraints(data, record)
+    terminal = own_terminal(data, record)
+    if terminal and terminal["state"] == "live":
+        record.update(address=terminal["address"], launch="reconciled")
+        save(team, data)
+        return False
+    if terminal is None and record["launch"] in {"prepared", "unknown"}:
+        raise typer.BadParameter("Resume launch unresolved; inspect core before retry.")
+    if not record.get("thread"):
+        raise typer.BadParameter("No registered session; reconcile the previous launch first.")
+    if restart_only:
+        if not terminal or terminal.get("reason") != "stopped_by_restart":
+            raise typer.BadParameter("Core did not record a restart for this member.")
+        if binding := record.get("packet_binding"):
+            execution = json.loads(packet_command(
+                data, "execution", "--packet", data["packet"], "--item", binding["item"],
+            ))
+            assignment = execution.get("assignment") or {}
+            if (assignment.get("session") != binding["session"]
+                    or execution.get("pending_operations")):
+                raise typer.BadParameter(
+                    "Member ownership or pending operations need reconciliation."
+                )
+
+    data.setdefault("history", []).append({"member": member, **record})
+    old_view = record.get("view")
+    record = {k: v for k, v in record.items()
+              if k not in {"attempt", "address", "view", "health", "cleanup"}}
+    if restart_only:
+        record["view"] = old_view
+    record.update(attempt=str(uuid4()), resume=True, launch="prepared")
+    data["members"][member] = record
+    save(team, data)
+    try:
+        terminal = core(data, *launch_args(data, member, record))
+        record.update(address=terminal["address"], launch="started")
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        record["launch"] = "unknown"
+        raise
+    finally:
+        save(team, data)
+    return True
+
+
 @team_app.command("resume")
 def resume(team: str, member: str) -> None:
     """Reuse a live member, or explicitly resume its saved chat without replaying its task."""
     load(team)
     with locked(team) as data:
-        record = data["members"][member]
-        if record.get("cleanup", {}).get("state") == "archived":
-            raise typer.BadParameter("Archived member cannot resume; use history or a fresh "
-                                     "authorized worker/team")
-        member_constraints(data, record)
-        terminal = own_terminal(data, record)
-        if terminal and terminal["state"] == "live":
-            record.update(address=terminal["address"], launch="reconciled")
-            save(team, data)
-            typer.echo(terminal["address"])
-            return
-        if terminal is None and record["launch"] in {"prepared", "unknown"}:
-            raise typer.BadParameter("Resume launch unresolved; inspect core before retry.")
-        if not record.get("thread"):
-            raise typer.BadParameter("No registered session; reconcile the previous launch first.")
-        data.setdefault("history", []).append({"member": member, **record})
-        record = {k: v for k, v in record.items()
-                  if k not in {"attempt", "address", "view", "health", "cleanup"}}
-        record.update(attempt=str(uuid4()), resume=True, launch="prepared")
-        data["members"][member] = record
-        save(team, data)
-        try:
-            terminal = core(data, *launch_args(data, member, record))
-            record.update(address=terminal["address"], launch="started")
-        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
-            record["launch"] = "unknown"
-            raise
-        finally:
-            save(team, data)
-    view(team, member)
-    typer.echo(record["address"])
+        started = resume_member_locked(team, data, member)
+        address = data["members"][member]["address"]
+    if started:
+        view(team, member)
+    typer.echo(address)
 
 
 @team_app.command("register")
@@ -577,6 +600,55 @@ def messages(team: str) -> None:
     typer.echo(json.dumps(load(team)["messages"], indent=2))
 
 
+def launch_view_locked(team: str, data: dict, member: str, pane: dict) -> None:
+    record = data["members"][member]
+    record["view"] = {key: pane[key] for key in (
+        "pane_id", "terminal_id", "workspace_id", "tab_id", "cwd",
+    ) if key in pane}
+    save(team, data)
+    session = data["tui_session"]
+    tui.command(session, "pane", "rename", pane["pane_id"], member)
+    argv = [sys.executable, "-m", "agentroute.cli", "herdr", "team", "viewer", team, member]
+    tui.command(session, "pane", "run", pane["pane_id"], shlex.join(argv))
+
+
+def restore_team_views(session: str, starting: bool = False) -> list[dict[str, str]]:
+    """Restore prior Core views in place; only a confirmed restart can relaunch a member."""
+    results = []
+    current = {pane["pane_id"]: pane for pane in tui.panes(session)}
+    for path in sorted((state_dir() / "herdr-teams").glob("*/team.json")):
+        team = path.parent.name
+        with locked(team) as data:
+            if not data or data.get("tui_session") != session:
+                continue
+            for member, record in data["members"].items():
+                old = record.get("view") or {}
+                pane_id = old.get("pane_id")
+                if not old.get("active") or not pane_id:
+                    continue
+                pane = current.get(pane_id)
+                if not pane:
+                    status = "missing or moved"
+                elif pane["terminal_id"] == old.get("terminal_id"):
+                    continue
+                elif (pane.get("label") != member
+                      or pane.get("workspace_id") != old.get("workspace_id", data.get("workspace"))
+                      or any(k in old and old[k] != pane.get(k) for k in ("tab_id", "cwd"))):
+                    status = "missing or moved"
+                else:
+                    try:
+                        if not tui.wait_for_shell(session, pane_id, starting):
+                            status = "occupied"
+                        else:
+                            resume_member_locked(team, data, member, restart_only=True)
+                            launch_view_locked(team, data, member, pane)
+                            status = "started"
+                    except tui.chats.ERRORS + (typer.BadParameter, RuntimeError) as error:
+                        status = f"error: {error}"
+                results.append({"pane": pane_id, "thread": f"{team}/{member}", "status": status})
+    return results
+
+
 @team_app.command("view")
 def view(team: str, member: str) -> None:
     """Open or reuse an interactive worker pane in the TUI."""
@@ -609,11 +681,7 @@ def view(team: str, member: str) -> None:
                                   data["workspace"], "--cwd", record["spec"]["cwd"],
                                   "--label", member, "--no-focus")
             pane = created["root_pane"]
-        record["view"] = {"pane_id": pane["pane_id"], "terminal_id": pane["terminal_id"]}
-        save(team, data)
-        tui.command(data["tui_session"], "pane", "rename", pane["pane_id"], member)
-        argv = [sys.executable, "-m", "agentroute.cli", "herdr", "team", "viewer", team, member]
-        tui.command(data["tui_session"], "pane", "run", pane["pane_id"], shlex.join(argv))
+        launch_view_locked(team, data, member, pane)
     typer.echo(pane["pane_id"])
 
 

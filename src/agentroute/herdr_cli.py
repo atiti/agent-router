@@ -295,6 +295,19 @@ def start_command(session: str = SESSION, background: bool = False) -> None:
         raise typer.BadParameter(str(error)) from error
 
 
+def wait_for_shell(session: str, pane: str, starting: bool) -> bool:
+    for _ in range(25 if starting else 1):
+        info = command(session, "pane", "process-info", "--pane", pane)["process_info"]
+        processes = info["foreground_processes"]
+        if (info["shell_pid"] and info["foreground_process_group_id"] == info["shell_pid"]
+                and len(processes) == 1
+                and processes[0].get("name") in {"bash", "fish", "sh", "zsh"}):
+            return True
+        if starting:
+            time.sleep(.2)
+    return False
+
+
 def restore_pane(
     session: str, record: dict[str, str], pane: dict | None, used: set[str], starting: bool,
 ) -> str:
@@ -304,18 +317,8 @@ def restore_pane(
         return "missing or moved"
     if pane["terminal_id"] == record["terminal_id"] or thread in used:
         return "already present or original terminal still open"
-    for _ in range(25 if starting else 1):
-        info = command(session, "pane", "process-info", "--pane", pane_id)["process_info"]
-        processes = info["foreground_processes"]
-        if (info["shell_pid"] and info["foreground_process_group_id"] == info["shell_pid"]
-                and len(processes) == 1
-                and processes[0].get("name") in {"bash", "fish", "sh", "zsh"}):
-            break
-        if starting:
-            time.sleep(.2)
-    else:
+    if not wait_for_shell(session, pane_id, starting):
         return "occupied"
-
     launch_client(session, pane_id, thread)
     used.add(thread)
     for _ in range(50):
@@ -349,7 +352,10 @@ def restore_command(session: str = SESSION, attach: bool = False) -> None:
             raise SharedServerError("Shared attachment is disabled; run agentroute server enable.")
         _start()
         binary, started = start_herdr(session)
+        from .herdr_team import restore_team_views
+
         results = restore_panes(session, starting=started)
+        results.extend(restore_team_views(session, starting=started))
         for row in results:
             typer.echo(f'{row["pane"]}  {row["thread"]}  {row["status"]}')
         if not results:

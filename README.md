@@ -1300,8 +1300,10 @@ AgentRoute records threads opened with `ar new`, `ar open`, bare `codex`, or
 launches and in-client
 thread changes use the Herdr Codex integration's session report. An older live
 chat can be enrolled with `ar bridge` and its exact thread ID, pane ID and PID.
-This restores shared Codex chats and their saved state. Herdr Core packet workers
-have their own `ar team resume` workflow.
+The same command restores recorded Herdr Core views in their original panes.
+A stopped Core member resumes only if Core confirms a restart and its saved
+ownership can be verified. The command reports members that need reconciliation.
+It also reports shared or Core panes that have been moved or are occupied.
 To return the shortcuts to Zellij, run `agentroute zellij install`.
 
 ### Local packet supervisor and visible workers
