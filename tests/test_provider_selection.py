@@ -312,3 +312,38 @@ def test_subscription_api_equivalent_price_does_not_penalize_score(setup_policy)
     _, receipt = pick(config)
     assert all(row["cost_penalty"] == 0 for row in receipt["candidates"]
                if row["backend"] in {"gpt", "claude", "grok"})
+
+
+@pytest.mark.parametrize(
+    "exhausted,allowed,expected",
+    [
+        ({"grok"}, ["grok", "claude", "gpt"], "claude"),
+        ({"grok", "claude"}, ["grok", "claude", "gpt"], "gpt"),
+        ({"grok", "claude", "gpt"}, ["grok", "claude", "gpt"], None),
+        ({"grok"}, ["grok", "gpt"], "gpt"),
+    ],
+)
+def test_adaptive_capacity_revalidation_honors_admitted_fallback_chain(
+    setup_policy, monkeypatch, exhausted, allowed, expected,
+):
+    config, _ = setup_policy
+    config.capacity.enabled = True
+    config.routing.provider_selection.candidates = allowed
+    config.routing.provider_selection.task_preferences = {"implementation": ["grok"]}
+    config.routing.backend_by_tier = dict.fromkeys(("fast", "normal", "smart", "max"), "grok")
+    config.backends["grok"].fallback_backend = "claude"
+    config.backends["claude"].fallback_backend = "gpt"
+    config.backends["gpt"].fallback_backend = None
+    checked = []
+
+    def capacity(_config, name, **_kwargs):
+        checked.append(name)
+        return CapacityState(name, "exhausted" if name in exhausted else "healthy", "test")
+
+    monkeypatch.setattr("agentroute.router.backend_state", capacity)
+    d = Router(config).route(context())
+    assert d.capacity_blocked == (expected is None)
+    assert d.backend == (expected or "grok")
+    assert set(checked) <= set(allowed)
+    if expected:
+        assert d.capacity_status == "fallback"

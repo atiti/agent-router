@@ -759,14 +759,12 @@ class Router:
             else:
                 fallback_details: list[str] = []
                 selected_fallback: str | None = None
-                # An adaptive choice has already passed admission checks. If its
-                # capacity changes during revalidation, stop this turn; the next
-                # route can rank a fresh snapshot. Legacy chains must not escape
-                # its allowlist or revive a context/tool-ineligible provider.
-                fallback_candidates = (
-                    [] if self.config.routing.provider_selection.mode == "adaptive"
-                    and not provider_lock else fallback_chain(self.config, backend_name)
-                )
+                fallback_candidates = fallback_chain(self.config, backend_name)
+                if self.config.routing.provider_selection.mode == "adaptive" and not provider_lock:
+                    # Keep the original admission boundary when capacity changes after ranking.
+                    admitted = {row["backend"] for row in provider_selection["candidates"]
+                                if row.get("eligible")}
+                    fallback_candidates = [name for name in fallback_candidates if name in admitted]
                 for candidate in fallback_candidates:
                     candidate_backend = self.config.backends.get(candidate)
                     ready = bool(
@@ -809,7 +807,11 @@ class Router:
                 else:
                     capacity_blocked = True
                     capacity_status = "blocked"
-                    attempted = "; ".join(fallback_details) or "no fallback configured"
+                    attempted = "; ".join(fallback_details)
+                    if not attempted:
+                        attempted = ("no configured fallback passed admission"
+                                     if fallback_chain(self.config, backend_name)
+                                     else "no fallback configured")
                     capacity_detail = (
                         f"{backend_name} capacity unavailable ({capacity.detail}); "
                         f"{attempted}. No safe backend has capacity."
