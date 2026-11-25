@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Preserve unpaired tool outputs as labeled history when replaying Codex turns through Claude.
+- Add `agentroute dashboard`, a local read-only page that shows each agent's state, tool
+  calls, goal, tokens, waits and work packets as they change.
 
 ## 0.5.87 — 2026-11-25
 

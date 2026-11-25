@@ -960,6 +960,26 @@ def doctor_command(
         raise typer.Exit(1)
 
 
+@app.command("dashboard")
+def dashboard_command(
+    host: str = typer.Option("127.0.0.1", "--host", help="Address to listen on."),
+    port: int | None = typer.Option(
+        None, "--port", help="Port to listen on (default 8719); 0 picks a free one."
+    ),
+    no_open: bool = typer.Option(False, "--no-open", help="Do not open a browser window."),
+) -> None:
+    """Serve a live, read-only view of agents, tools, tokens, waits, goals and work packets."""
+    from .dashboard_server import DEFAULT_PORT, serve
+
+    chosen = DEFAULT_PORT if port is None else port
+    try:
+        serve(host, chosen, open_browser=not no_open)
+    except OSError as error:
+        console.print(f"[red]Dashboard could not listen on {host}:{chosen}: {error}[/red]")
+        console.print("Pick another port with --port, or --port 0 for any free one.")
+        raise typer.Exit(1) from error
+
+
 @app.command("hook")
 def hook_command(provider: str, event: str) -> None:
     """Run a provider hook protocol over stdin/stdout."""
