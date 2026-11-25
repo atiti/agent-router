@@ -8,6 +8,8 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from typer.testing import CliRunner
@@ -47,6 +49,7 @@ def state(tmp_path, monkeypatch):
     (home / "state" / "waits").mkdir(parents=True)
     monkeypatch.setenv("WORK_PACKETS_ROOT", str(tmp_path / "workspace"))
     monkeypatch.setattr(dashboard, "herdr_panes", lambda: {})
+    monkeypatch.setattr(dashboard, "owner_states", lambda: None)
 
     rollouts = {name: tmp_path / f"{name}.jsonl" for name in ("root", "worker", "waiter")}
     rollouts["root"].write_text(
@@ -155,7 +158,7 @@ def state(tmp_path, monkeypatch):
             {"id": "plan", "status": "done"},
         ]}))
     monkeypatch.setattr(time, "time", lambda: NOW)
-    return dashboard.Collector()
+    return dashboard.Collector(["Ana"])
 
 
 @pytest.mark.parametrize(("text", "hidden", "kept"), [
@@ -344,8 +347,13 @@ def test_snapshot_joins_threads_routes_goals_waits_and_packets(state):
     assert packet["items"][0]["criteria_met"] == 1 and packet["items"][0]["criteria_total"] == 2
     assert packet["items"][0]["gates"] == {"ci": "pending"}
     assert snapshot["summary"]["open_packet_items"] == 1
-    assert snapshot["sources"] == {"codex_threads": True, "codex_goals": True,
-                                   "routing_audit": True, "herdr": False, "work_packets": True}
+    assert snapshot["sources"] == {
+        "codex_threads": True, "codex_goals": True, "routing_audit": True, "herdr": False,
+        "shared_owner": False, "work_packets": True}
+    focus = snapshot["focus"]
+    assert focus["names"] == ["Ana"] and focus["counts"]["needs_you"] == 0
+    assert focus["claims"] == [{"namespace": "private", "claimed": 1, "limit": 20, "held": 0,
+                                "stale": 0, "ready": 0}]
 
 
 def test_agent_detail_lists_events_turns_and_wait_history(state):
@@ -420,10 +428,222 @@ def test_server_streams_the_snapshot_as_an_event(served):
 
 
 def test_dashboard_command_reports_a_port_it_cannot_use(monkeypatch):
-    def refuse(host, port, open_browser):
+    def refuse(host, port, open_browser, names=None):
         raise OSError(48, "Address already in use")
 
     monkeypatch.setattr(dashboard_server, "serve", refuse)
     result = CliRunner().invoke(app, ["dashboard", "--no-open"])
     assert result.exit_code == 1
     assert "8719" in result.output and "--port" in result.output
+
+
+def outcome(status="active", step=None, wait=None, later=None, blocker=None, **extra):
+    """A tracker outcome with the given current step state, its wait and a later hold."""
+    item = {"id": "x", "status": status, "blocker": blocker, **extra}
+    if step:
+        item["next_step"] = {"id": "s", "state": step, **({"wait": wait} if wait else {})}
+    if later:
+        item["outcome_wait"] = later
+    return item
+
+
+def wait(owner, reason="because", resume="when it is done", **extra):
+    return {"owner": owner, "reason": reason, "resume_when": resume, **extra}
+
+
+@pytest.mark.parametrize(("item", "kind", "blocking"), [
+    (outcome("blocked", "awaiting_user", wait("Ana", question_ref="chat:q1")), "you", True),
+    # Recorded as an outside wait, but the named owner is the reader.
+    (outcome("ready", "waiting_external", wait("ana and the Reports owner")), "you", True),
+    (outcome("ready", "waiting_external", wait("GitHub Actions")), "external", True),
+    (outcome("ready", "waiting_worker", wait("Ivan supervisor")), "worker", True),
+    (outcome("blocked", "coordination_required", wait("root coordinator")), "coordination", True),
+    # A name inside another word is not that person.
+    (outcome("ready", "waiting_external", wait("Banana supplier")), "external", True),
+    # Free text only: nobody is named, so nobody will be prompted.
+    (outcome("blocked", blocker="Router owner decision is pending"), "unowned", True),
+    # Work can continue now; the approval is needed before the outcome closes.
+    (outcome("active", "active", later={"state": "awaiting_user", **wait("Ana")}), "you", False),
+    (outcome("blocked", later={"state": "waiting_external", **wait("Provider")}), "external", True),
+])
+def test_item_hold_names_who_must_act_from_structured_fields(item, kind, blocking):
+    hold = dashboard.item_hold(item, ["Ana"])
+    assert (hold["kind"], hold["blocking"]) == (kind, blocking)
+
+
+@pytest.mark.parametrize("item", [
+    outcome("active", "active"),
+    outcome("ready", "ready"),
+    outcome("blocked", "ready", blocker="later approval"),  # A step is executable now.
+    outcome("done", "awaiting_user", wait("Ana")),
+    outcome("cancelled", blocker="abandoned"),
+])
+def test_item_hold_is_absent_when_work_can_proceed_or_is_finished(item):
+    assert dashboard.item_hold(item, ["Ana"]) is None
+
+
+def test_item_hold_carries_the_reason_and_the_condition_that_clears_it():
+    hold = dashboard.item_hold(outcome(
+        "blocked", "awaiting_user", blocker="older prose",
+        wait=wait("Ana", "Production upgrade is not approved; token=abc123secret",
+                  "Explicit approval of the window", question_ref="chat:q7")), ["Ana"])
+    assert hold["unblock"] == "Explicit approval of the window"
+    assert hold["question"] == "chat:q7"
+    assert "not approved" in hold["reason"] and "abc123secret" not in hold["reason"]
+    legacy = dashboard.item_hold(outcome("blocked", blocker="Decision pending"), [])
+    assert (legacy["reason"], legacy["unblock"], legacy["owner"]) == ("Decision pending", "", "")
+
+
+def packet_item(item_id, hold=None, session=None, status="active", priority="P1",
+                checkpoint_at=NOW - 60, review_at=None):
+    return {"id": item_id, "objective": f"Outcome {item_id}", "status": status,
+            "priority": priority, "next_action": "next", "session": session, "hold": hold,
+            "checkpoint_at": checkpoint_at, "review_at": review_at}
+
+
+def hold(kind, blocking=True, owner="", reason="r", unblock="u"):
+    return {"kind": kind, "blocking": blocking, "owner": owner, "reason": reason,
+            "unblock": unblock, "question": ""}
+
+
+def test_focus_separates_what_needs_the_reader_from_what_is_stuck_elsewhere():
+    old = NOW - 5 * 86400
+    packets = [
+        {"namespace": "markster", "id": "p1", "updated_at": NOW, "items": [
+            packet_item("approve", hold("you", owner="Ana"), priority="P2", checkpoint_at=old,
+                        review_at=NOW - 86400),
+            packet_item("urgent", hold("you"), priority="P0", session=ROOT),
+            packet_item("later", hold("you", blocking=False), priority="P0"),
+            packet_item("ci", hold("external", owner="GitHub Actions"), session="gone",
+                        checkpoint_at=old),
+            packet_item("peer", hold("worker", owner="Ivan")),
+            packet_item("prose", hold("unowned"), status="blocked"),
+            packet_item("finished", hold("you"), status="done"),
+            packet_item("free", status="ready"),
+            packet_item("moving", session=WORKER),
+        ]},
+        {"namespace": "private", "id": "p2", "updated_at": NOW, "items": [
+            packet_item(f"c{n}", session=f"s{n}") for n in range(dashboard.CLAIM_LIMIT)]},
+    ]
+    agents = [
+        {"id": ROOT, "title": "Deploy", "state": "needs_input",
+         "state_reason": "waiting for you to approve an action", "active_at": NOW - 30,
+         "pane": {"pane_id": "w1:p1", "workspace": "Ops"}, "goal": None, "task": None,
+         "activity": {"message": {"text": "Run the migration?"}}},
+        {"id": WORKER, "title": "Build", "state": "working", "state_reason": "turn in progress",
+         "active_at": NOW, "pane": None, "goal": None, "task": None, "activity": {}},
+        {"id": WAITER, "title": "Budget", "state": "blocked", "state_reason": "goal budget limited",
+         "active_at": NOW - 900, "pane": None, "goal": {"status": "budget_limited"},
+         "task": {"summary": "Halfway through the import"}, "activity": {}},
+    ]
+    failed = [{"id": "w-9", "thread_id": WAITER, "state": "undeliverable",
+               "description": "w-9 pr a/b#1", "deadline_at": NOW - 10, "created_at": NOW - 99}]
+    focus = dashboard.build_focus(packets, agents, failed, ["Ana"], NOW)
+
+    assert [(e["type"], e.get("item") or e["title"]) for e in focus["needs_you"]] == [
+        ("agent", "Deploy"), ("outcome", "urgent"), ("outcome", "approve"), ("outcome", "later")]
+    approve = focus["needs_you"][2]
+    assert approve["review_overdue"] and approve["agent"] is None
+    assert focus["needs_you"][1]["agent"] == ROOT
+    deploy = focus["needs_you"][0]
+    assert (deploy["pane"], deploy["detail"]) == ("w1:p1", "Run the migration?")
+    groups = {g["kind"]: g["items"] for g in focus["others"]}
+    assert [e["title"] for e in groups["coordination"]] == ["Budget", "w-9 pr a/b#1"]
+    assert "budget" in groups["coordination"][0]["unblock"]
+    assert [e["item"] for e in groups["worker"]] == ["peer"]
+    assert [e["item"] for e in groups["external"]] == ["ci"]
+    assert [e["item"] for e in focus["unowned"]] == ["prose"]
+    assert focus["counts"] == {"needs_you": 4, "unowned": 1, "others": 4, "blocking_you": 3}
+    assert focus["claims"] == [
+        {"namespace": "private", "claimed": 20, "limit": 20, "held": 0, "stale": 0, "ready": 0},
+        {"namespace": "markster", "claimed": 3, "limit": 20, "held": 2, "stale": 1, "ready": 1}]
+
+
+@pytest.mark.parametrize(("live", "turn", "expected"), [
+    ("approval", None, "needs_input"),
+    ("input", {"tools": 1}, "needs_input"),
+    ("running", None, "working"),          # The rollout has not caught up yet.
+    ("idle", {"tools": 3}, "idle"),        # The turn died with its process.
+    ("unknown", {"tools": 3}, "idle"),     # Not loaded by the owner, so nothing is running.
+    ("error", None, "blocked"),
+    (None, {"tools": 3}, "working"),       # Owner unreachable: judge from the rollout.
+])
+def test_agent_state_takes_the_shared_owner_as_the_authority(live, turn, expected):
+    state = dashboard.agent_state(agent(live=live, activity={"turn": turn, "last_turn": None}),
+                                  NOW)
+    assert state[0] == expected
+
+
+def test_owner_states_reads_each_loaded_thread(monkeypatch):
+    from agentroute import shared_server
+
+    statuses = {
+        "a": {"type": "active", "activeFlags": ["waitingOnApproval"]},
+        "b": {"type": "active", "activeFlags": ["waitingOnUserInput"]},
+        "c": {"type": "active", "activeFlags": []}, "d": {"type": "idle"},
+        "e": {"type": "systemError"}, "f": {"type": "notLoaded"}}
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def request(self, method, payload):
+            if method == "thread/loaded/list":
+                return {"data": list(statuses)}
+            return {"thread": {"status": statuses[payload["threadId"]]}}
+
+    monkeypatch.setattr(shared_server, "RpcClient", Client)
+    assert dashboard.owner_states() == {"a": "approval", "b": "input", "c": "running",
+                                        "d": "idle", "e": "error", "f": "unknown"}
+    monkeypatch.setattr(shared_server, "RpcClient", Mock(side_effect=OSError("no socket")))
+    assert dashboard.owner_states() is None
+
+
+def test_herdr_panes_reads_one_session_and_prefers_the_identity_herdr_holds(monkeypatch):
+    import hashlib
+
+    home = Path(os.environ["AGENTROUTE_HOME"])
+    monkeypatch.setenv("HERDR_SESSION", "work")
+
+    def record(session, pane, thread):
+        key = hashlib.sha256(session.encode()).hexdigest()[:16]
+        directory = home / "shared-server" / "abc" / "herdr-layout" / key
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{pane.replace(':', '-')}.json").write_text(
+            json.dumps({"pane_id": pane, "thread": thread}))
+
+    record("work", "w1:p1", ROOT)
+    record("work", "w2:p1", WORKER)
+    record("other", "w3:p1", WAITER)  # The same pane ID in another Herdr session.
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        result = {"agents": [
+            {"pane_id": "w1:p1", "workspace_id": "w1", "agent_status": "working"},
+            {"pane_id": "w2:p1", "workspace_id": "w1", "agent_status": "blocked",
+             "agent_session": {"source": "herdr:codex", "kind": "id", "value": REVIEW}},
+            {"pane_id": "w3:p1", "workspace_id": "w1", "agent_status": "idle"},
+        ]} if argv[3:5] == ["agent", "list"] else {
+            "workspaces": [{"workspace_id": "w1", "label": "Ops"}]}
+        return SimpleNamespace(stdout=json.dumps({"result": result}))
+
+    monkeypatch.setattr(dashboard.subprocess, "run", run)
+    panes = dashboard.herdr_panes()
+    assert all(argv[:3] == ["herdr", "--session", "work"] for argv in calls)
+    assert set(panes) == {ROOT, REVIEW}
+    assert panes[REVIEW] == {"pane_id": "w2:p1", "workspace": "Ops", "status": "blocked",
+                             "title": None, "focused": False}
+
+
+def test_names_person_matches_whole_names_only():
+    assert dashboard.names_person("Ana and the Reports owner", ["ana"])
+    assert dashboard.names_person("root coordinator / ANA", ["Ana"])
+    assert not dashboard.names_person("Banana supplier", ["Ana"])
+    assert not dashboard.names_person("GitHub Actions", [])

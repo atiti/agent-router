@@ -13,6 +13,12 @@ agentroute dashboard --port 0        # any free port
 The server runs until you stop it with Ctrl+C. The page updates every two seconds without a
 reload.
 
+The default **Focus** view puts live requests and recorded decisions for you first.
+Each held outcome shows the recorded reason, owner, and condition for resuming.
+Older blockers without a named owner appear under **Blocked with no owner**.
+The claims section shows whether a namespace has reached its worker limit.
+Use `agentroute dashboard --me NAME` to match a different name recorded in the tracker.
+
 ## What it shows
 
 The tiles at the top count agents by state. Anything that needs a person appears in a strip

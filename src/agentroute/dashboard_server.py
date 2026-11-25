@@ -21,7 +21,7 @@ from .dashboard import DEFAULT_WINDOW, Collector
 DEFAULT_PORT = 8719
 PUSH_SECONDS = 2.0
 LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"}
-SECTIONS = ("summary", "agents", "attention", "waits", "packets", "usage", "sources")
+SECTIONS = ("summary", "focus", "agents", "attention", "waits", "packets", "usage", "sources")
 
 
 def changed_sections(snapshot: dict[str, Any], sent: dict[str, str]) -> dict[str, Any]:
@@ -113,8 +113,8 @@ def make_server(host: str, port: int, collector: Collector | None = None) -> Thr
     return server
 
 
-def serve(host: str, port: int, open_browser: bool) -> str:
-    server = make_server(host, port)
+def serve(host: str, port: int, open_browser: bool, names: list[str] | None = None) -> str:
+    server = make_server(host, port, Collector(names))
     shown = "127.0.0.1" if host in {"0.0.0.0", ""} else f"[{host}]" if ":" in host else host
     url = f"http://{shown}:{server.server_address[1]}/"
     print(f"AgentRoute dashboard: {url}  (Ctrl+C stops it)", flush=True)

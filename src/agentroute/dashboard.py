@@ -8,6 +8,7 @@ the view.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -32,6 +33,14 @@ RECENT_EVENTS = 80
 STALLED_AFTER = 15 * 60
 SNAPSHOT_TTL = 1.5
 HERDR_TTL = 5.0
+OWNER_TTL = 4.0
+HERDR_SESSION = "agentroute"  # The session `ar` attaches to; HERDR_SESSION overrides it.
+CLAIM_LIMIT = 20  # The tracker refuses a new claim once a namespace holds this many.
+STALE_CLAIM = 3 * 24 * 3600
+# Who has to act for each waiting step state the work-packet tracker records.
+STEP_HOLDS = {"awaiting_user": "you", "waiting_external": "external",
+              "waiting_worker": "worker", "coordination_required": "coordination"}
+PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 STATES = ("needs_input", "working", "waiting", "stalled", "blocked", "idle", "done")
 
 _EVENT_LINE = re.compile(rb'"type":\s*"(event_msg|turn_context)"')
@@ -347,8 +356,61 @@ def packets_root() -> Path:
     return Path(os.environ.get("WORK_PACKETS_ROOT") or Path.home() / "workspace")
 
 
-def load_packets(cutoff: float) -> list[dict[str, Any]]:
+def default_names() -> list[str]:
+    """The reader's first name, from git, to recognise holds recorded as theirs."""
+    try:
+        name = subprocess.run(["git", "config", "--get", "user.name"], capture_output=True,
+                              text=True, timeout=3).stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return name[:1]
+
+
+def names_person(owner: str, names: list[str]) -> bool:
+    words = {word.casefold() for word in re.findall(r"[^\W\d_]+", owner)}
+    return any(name.casefold() in words for name in names)
+
+
+def _hold(kind: str, wait: dict[str, Any], fallback: str, names: list[str],
+          blocking: bool) -> dict[str, Any]:
+    owner = str(wait.get("owner") or "")
+    return {
+        "kind": "you" if names_person(owner, names) else kind,
+        "blocking": blocking,
+        "owner": redact(owner, 120),
+        "reason": redact(str(wait.get("reason") or fallback or ""), 420),
+        "unblock": redact(str(wait.get("resume_when") or ""), 420),
+        "question": redact(str(wait.get("question_ref") or ""), 160),
+    }
+
+
+def item_hold(item: dict[str, Any], names: list[str]) -> dict[str, Any] | None:
+    """Why an unfinished outcome cannot move, who has to act, and what clears it.
+
+    The answer comes only from fields the tracker validates: the current step's waiting
+    state, the hold on the outcome, and each one's named owner. An outcome that is blocked
+    with nothing but free text has no recorded owner, and is reported as exactly that.
+    """
+    status = item.get("status")
+    if status in {"done", "cancelled"}:
+        return None
+    step, later = item.get("next_step") or {}, item.get("outcome_wait") or {}
+    blocker = str(item.get("blocker") or "")
+    if step.get("state") in STEP_HOLDS:
+        return _hold(STEP_HOLDS[step["state"]], step.get("wait") or {}, blocker, names, True)
+    executable = step.get("state") in {"ready", "active"}
+    if later.get("state") in STEP_HOLDS:
+        # Work can continue on the current step; this hold applies before the outcome closes.
+        return _hold(STEP_HOLDS[later["state"]], later, blocker, names,
+                     blocking=status == "blocked" and not executable)
+    if status == "blocked" and not executable:
+        return _hold("unowned", {}, blocker, names, True)
+    return None
+
+
+def load_packets(cutoff: float, names: list[str] | None = None) -> list[dict[str, Any]]:
     """Packets with unfinished outcomes, or any change inside the window."""
+    names = names or []
     packets = []
     for path in sorted((packets_root() / "tasks" / "packets").glob("*/*.json")):
         try:
@@ -370,6 +432,9 @@ def load_packets(cutoff: float) -> list[dict[str, Any]]:
                 "next_action": redact(
                     str(item.get("next_action") or step.get("action") or ""), 220),
                 "session": (item.get("assignment") or {}).get("session"),
+                "assigned_at": _epoch((item.get("assignment") or {}).get("at")),
+                "hold": item_hold(item, names),
+                "review_at": _epoch(item.get("next_review")),
                 "checkpoint": redact(str(checkpoint.get("summary") or ""), 220),
                 "checkpoint_at": _epoch(checkpoint.get("at")),
                 "criteria_met": sum(bool(entry.get("evidence")) for entry in criteria),
@@ -391,9 +456,12 @@ def load_packets(cutoff: float) -> list[dict[str, Any]]:
 
 
 def herdr_panes() -> dict[str, dict[str, Any]]:
-    """Herdr panes keyed by thread, using the pane-to-thread records AgentRoute keeps."""
+    """Herdr panes keyed by the thread each one shows."""
+    session = os.environ.get("HERDR_SESSION") or HERDR_SESSION
+
     def call(*arguments: str) -> dict[str, Any]:
-        result = subprocess.run(["herdr", *arguments], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(["herdr", "--session", session, *arguments],
+                                capture_output=True, text=True, timeout=5)
         return json.loads(result.stdout).get("result") or {}
 
     try:
@@ -402,20 +470,23 @@ def herdr_panes() -> dict[str, dict[str, Any]]:
     except (OSError, ValueError, subprocess.SubprocessError):
         return {}
     labels = {workspace["workspace_id"]: workspace.get("label") for workspace in workspaces}
-    threads: dict[str, tuple[float, str]] = {}
-    pattern = "shared-server/*/herdr-layout/*/*.json"
-    for path in agentroute_home().glob(pattern):
+    # Pane IDs repeat across Herdr sessions, so only this session's records apply.
+    key = hashlib.sha256(session.encode()).hexdigest()[:16]
+    saved: dict[str, tuple[float, str]] = {}
+    for path in agentroute_home().glob(f"shared-server/*/herdr-layout/{key}/*.json"):
         try:
             record = json.loads(path.read_text())
             modified = path.stat().st_mtime
         except (OSError, ValueError):
             continue
         pane = record.get("pane_id")
-        if pane and record.get("thread") and modified >= threads.get(pane, (0, ""))[0]:
-            threads[pane] = (modified, record["thread"])
+        if pane and record.get("thread") and modified >= saved.get(pane, (0, ""))[0]:
+            saved[pane] = (modified, record["thread"])
     panes = {}
     for agent in agents:
-        thread = threads.get(agent.get("pane_id"), (0, ""))[1]
+        reported = agent.get("agent_session") or {}
+        thread = (reported.get("value") if reported.get("kind") == "id" else None) \
+            or saved.get(agent.get("pane_id"), (0, ""))[1]
         if thread:
             panes[thread] = {
                 "pane_id": agent.get("pane_id"),
@@ -427,12 +498,47 @@ def herdr_panes() -> dict[str, dict[str, Any]]:
     return panes
 
 
+def owner_states() -> dict[str, str] | None:
+    """Live state of every thread the shared Codex owner has loaded; None when unreachable.
+
+    This is the authority on whether a turn is running or waiting on a person. Rollout files
+    lag it, and they never record a turn that died with its process.
+    """
+    try:
+        from .shared_server import RpcClient, socket_path
+
+        states = {}
+        with RpcClient(socket_path(), name="agentroute_dashboard", timeout=3) as client:
+            for thread_id in client.request("thread/loaded/list", {}).get("data") or []:
+                status = client.request("thread/read", {"threadId": thread_id})["thread"].get(
+                    "status") or {}
+                flags = status.get("activeFlags") or []
+                states[thread_id] = (
+                    "approval" if "waitingOnApproval" in flags
+                    else "input" if "waitingOnUserInput" in flags
+                    else {"active": "running", "idle": "idle", "systemError": "error"}.get(
+                        status.get("type"), "unknown"))
+        return states
+    except Exception:  # noqa: BLE001
+        return None  # Not running, another runtime version, or a direct (unshared) setup.
+
+
 def agent_state(agent: dict[str, Any], now: float) -> tuple[str, str]:
     """One state per agent, ordered by how soon a person needs to look at it."""
     pane, goal, task = agent.get("pane") or {}, agent.get("goal") or {}, agent.get("task") or {}
-    turn = agent["activity"].get("turn")
+    turn, live = agent["activity"].get("turn"), agent.get("live")
+    if live == "approval":
+        return "needs_input", "waiting for you to approve an action"
+    if live == "input":
+        return "needs_input", "asked you a question"
     if pane.get("status") == "blocked":
         return "needs_input", "Herdr reports the pane is waiting for you"
+    if live == "error":
+        return "blocked", "the thread stopped on a system error"
+    if live in {"idle", "unknown"}:
+        turn = None  # The owner says no turn is running, whatever the rollout last recorded.
+    elif live == "running" and not turn:
+        turn = {"started_at": None, "tools": 0}
     if turn:
         quiet = now - (agent.get("active_at") or now)
         if quiet > STALLED_AFTER:
@@ -454,14 +560,108 @@ def agent_state(agent: dict[str, Any], now: float) -> tuple[str, str]:
     return "idle", "no turn running"
 
 
+def _focus_order(entry: dict[str, Any]) -> tuple:
+    return (not entry["blocking"], not entry.get("asking"),
+            PRIORITY_ORDER.get(entry.get("priority") or "", 9),
+            entry.get("since") or 0)
+
+
+def build_focus(packets: list[dict[str, Any]], agents: list[dict[str, Any]],
+                failed_waits: list[dict[str, Any]], names: list[str],
+                now: float) -> dict[str, Any]:
+    """The short list a person needs: what waits on them, and why everything else is stuck."""
+    by_id = {agent["id"]: agent for agent in agents}
+    needs_you, others, unowned = [], {}, []
+    claims: dict[str, dict[str, Any]] = {}
+    for packet in packets:
+        namespace = claims.setdefault(packet["namespace"], {
+            "namespace": packet["namespace"], "claimed": 0, "limit": CLAIM_LIMIT, "held": 0,
+            "stale": 0, "ready": 0})
+        for item in packet["items"]:
+            if item["status"] in {"done", "cancelled"}:
+                continue
+            hold, since = item["hold"], item["checkpoint_at"] or packet["updated_at"]
+            if item["session"]:
+                namespace["claimed"] += 1
+                namespace["held"] += bool(hold and hold["blocking"])
+                namespace["stale"] += now - since > STALE_CLAIM
+            elif item["status"] == "ready" and not hold:
+                namespace["ready"] += 1
+            if not hold:
+                continue
+            entry = {
+                **hold, "type": "outcome", "title": item["objective"] or item["id"],
+                "namespace": packet["namespace"], "packet": packet["id"], "item": item["id"],
+                "priority": item["priority"], "next_action": item["next_action"],
+                "since": since, "review_at": item["review_at"],
+                "review_overdue": bool(item["review_at"] and item["review_at"] < now),
+                "session": item["session"],
+                "agent": item["session"] if item["session"] in by_id else None,
+            }
+            if hold["kind"] == "you":
+                needs_you.append(entry)
+            elif hold["kind"] == "unowned":
+                unowned.append(entry)
+            elif hold["blocking"]:
+                others.setdefault(hold["kind"], []).append(entry)
+    for agent in agents:
+        goal = agent.get("goal") or {}
+        limited = goal.get("status") in {"usage_limited", "budget_limited"}
+        if agent["state"] not in {"needs_input", "stalled", "blocked"}:
+            continue
+        asking = agent["state"] == "needs_input"
+        entries = needs_you if asking else others.setdefault("coordination", [])
+        entries.append({
+            "kind": "you" if asking else "coordination", "asking": asking,
+            "blocking": True, "type": "agent", "agent": agent["id"],
+            "title": agent["title"] or "(untitled)", "priority": None, "owner": "",
+            "reason": agent["state_reason"],
+            "unblock": "Raise the goal's budget or wait for the usage limit to reset."
+            if limited else "Open the session and answer it."
+            if agent["state"] == "needs_input" else "Open the session and check on it.",
+            "since": agent.get("active_at"), "session": agent["id"],
+            "pane": (agent.get("pane") or {}).get("pane_id"),
+            "workspace": (agent.get("pane") or {}).get("workspace"),
+            "detail": redact(str((agent.get("task") or {}).get("summary")
+                                 or ((agent["activity"].get("message") or {}).get("text"))
+                                 or ""), 300),
+        })
+    for wait in failed_waits:
+        others.setdefault("coordination", []).append({
+            "kind": "coordination", "blocking": True, "type": "wait", "title": wait["description"],
+            "priority": None, "owner": "", "agent": wait["thread_id"]
+            if wait["thread_id"] in by_id else None, "session": wait["thread_id"],
+            "reason": "This wait is past its deadline and has not woken its session."
+            if wait["state"] == "pending" else "The wake could not be delivered to its session.",
+            "unblock": "Open the session; `agentroute wait show " + str(wait["id"])
+                       + "` has the details.",
+            "since": wait["deadline_at"] or wait["created_at"],
+        })
+    groups = [{"kind": kind, "items": sorted(others[kind], key=_focus_order)}
+              for kind in ("coordination", "worker", "external") if kind in others]
+    return {
+        "names": names,
+        "needs_you": sorted(needs_you, key=_focus_order),
+        "others": groups,
+        "unowned": sorted(unowned, key=_focus_order),
+        "claims": sorted((entry for entry in claims.values() if entry["claimed"]),
+                         key=lambda entry: -entry["claimed"]),
+        "counts": {"needs_you": len(needs_you), "unowned": len(unowned),
+                   "others": sum(len(group["items"]) for group in groups),
+                   "blocking_you": sum(entry["blocking"] for entry in needs_you)},
+    }
+
+
 class Collector:
     """Builds snapshots and caches the parts that are expensive to recompute."""
 
-    def __init__(self) -> None:
+    def __init__(self, names: list[str] | None = None) -> None:
+        self.names = default_names() if names is None else names
         self._lock = threading.Lock()
         self._tails: dict[str, RolloutTail] = {}
         self._snapshots: dict[int, tuple[float, dict[str, Any]]] = {}
         self._herdr: tuple[float, dict[str, dict[str, Any]]] = (0.0, {})
+        self._owner: tuple[float, dict[str, str] | None] = (0.0, None)
 
     def snapshot(self, window: int = DEFAULT_WINDOW) -> dict[str, Any]:
         window = max(300, min(int(window), MAX_WINDOW))
@@ -477,6 +677,11 @@ class Collector:
         if now - self._herdr[0] >= HERDR_TTL:
             self._herdr = (now, herdr_panes())
         return self._herdr[1]
+
+    def _live(self, now: float) -> dict[str, str] | None:
+        if now - self._owner[0] >= OWNER_TTL:
+            self._owner = (now, owner_states())
+        return self._owner[1]
 
     def _tail(self, rollout: str) -> RolloutTail:
         tail = self._tails.get(rollout)
@@ -509,7 +714,8 @@ class Collector:
                        (datetime.fromtimestamp(cutoff, timezone.utc).isoformat(),))
         usage, per_thread = summarize_routes(routes, cutoff, window)
         panes = self._panes(now)
-        packets = load_packets(cutoff)
+        live = self._live(now)
+        packets = load_packets(cutoff, self.names)
         assigned: dict[str, list[dict[str, Any]]] = {}
         for packet in packets:
             for item in packet["items"]:
@@ -580,6 +786,8 @@ class Collector:
                 "waits": [wait for wait in map(_wait_view, pending)
                           if wait["thread_id"] == thread_id],
                 "pane": panes.get(thread_id),
+                # Direct sessions and threads missing from the owner list use rollout evidence.
+                "live": (live or {}).get(thread_id),
                 "packets": assigned.get(thread_id, []),
                 "activity": activity,
                 "children": [],
@@ -632,12 +840,14 @@ class Collector:
                  if wait["state"] == "pending" or wait["created_at"] >= cutoff),
                 key=lambda wait: (wait["state"] != "pending", -wait["created_at"])),
             "packets": packets,
+            "focus": build_focus(packets, agents, overdue, self.names, now),
             "usage": usage,
             "sources": {
                 "codex_threads": state.exists(),
                 "codex_goals": (codex_home() / "goals_1.sqlite").exists(),
                 "routing_audit": (data_dir() / "audit.db").exists(),
                 "herdr": bool(panes),
+                "shared_owner": live is not None,
                 "work_packets": (packets_root() / "tasks" / "packets").is_dir(),
             },
         }
