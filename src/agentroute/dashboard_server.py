@@ -19,7 +19,7 @@ from importlib import resources
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from . import dashboard_actions
+from . import dashboard_actions, dashboard_decisions
 from .dashboard import DEFAULT_WINDOW, Collector
 
 DEFAULT_PORT = 8719
@@ -123,8 +123,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(dashboard_actions.lookup(fields["id"]))
             else:
                 key = dashboard_actions.packet_key(fields)
-                self._json({"receipts": dashboard_actions.history(key),
-                            "route": dashboard_actions.packet_route(key)})
+                receipts = dashboard_actions.history(key)
+                try:
+                    decision = dashboard_decisions.preview(key, self.collector.names)
+                    receipts += dashboard_decisions.history(key)
+                except (OSError, ValueError, KeyError):
+                    decision = {"eligible": False,
+                                "reason": "Decision history needs reconciliation. Use Herdr."}
+                self._json({"receipts": receipts, "route": dashboard_actions.packet_route(key),
+                            "decision": decision})
         except dashboard_actions.ActionError as error:
             self._json({"error": str(error)}, error.status)
 
@@ -156,6 +163,9 @@ class Handler(BaseHTTPRequestHandler):
             action = payload.get("action", "reply")
             if action == "reply":
                 self._json(dashboard_actions.submit(payload), HTTPStatus.ACCEPTED)
+            elif action == "decide":
+                decision = dashboard_decisions.submit(payload, self.collector.names)
+                self._json(decision, HTTPStatus.ACCEPTED)
             elif action == "open":
                 self._json(dashboard_actions.open_packet(payload))
             else:

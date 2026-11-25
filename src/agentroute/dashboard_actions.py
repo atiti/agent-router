@@ -77,6 +77,7 @@ def receipt(wait: dict, daemon_ready: bool | None = None) -> dict:
         "recipient_read": {"at": read["at"]} if read else None,
         "disposition": {"action": disposition["action"]} if disposition else None,
         "daemon_ready": daemon_ready,
+        **({"decision": "comment"} if wait["spec"].get("dashboard_decision_comment") else {}),
         "herdr": delivery.get("dashboard_herdr"),
         "herdr_issue": delivery.get("dashboard_herdr_issue"),
         "delivery_issue": (
@@ -183,7 +184,7 @@ def attach_receipt(wait: dict, key: tuple[str, str, str], target: dict) -> dict:
     return waits.update(wait["id"], lambda current: current["delivery"].update(fields))
 
 
-def submit(data: dict) -> dict:
+def submit(data: dict, *, decision_comment: bool = False) -> dict:
     key = packet_key(data)
     revision = data.get("revision")
     recipient_input = data.get("recipient")
@@ -198,7 +199,8 @@ def submit(data: dict) -> dict:
         raise ActionError(f"Write a reply of 1 to {MAX_MESSAGE} characters.")
     message = message.strip()
     fingerprint = hashlib.sha256(
-        json.dumps([key, revision, selected, message]).encode()
+        json.dumps([key, revision, selected, message] + (["comment"] if decision_comment else []))
+        .encode()
     ).hexdigest()
     for wait in waits.load():
         spec = wait["spec"]
@@ -230,7 +232,8 @@ def submit(data: dict) -> dict:
         wait = waits.register(
             target["thread"], "external",
             {"dashboard_request": request_id, "dashboard_fingerprint": fingerprint,
-             "dashboard_packet": list(key), "dashboard_kind": kind},
+             "dashboard_packet": list(key), "dashboard_kind": kind,
+             **({"dashboard_decision_comment": True} if decision_comment else {})},
             note=note, fired_payload=message, timeout=waits.MAX_TIMEOUT, created=created,
         )
     except waits.WaitError as error:

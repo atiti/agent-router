@@ -104,10 +104,10 @@ border-radius:9px;padding:9px 13px;margin-bottom:7px}
 .packet-action:hover,.reply-button:hover{border-color:var(--waiting)}
 .reply-button.primary{background:var(--text);color:var(--panel);font-weight:650}
 .reply-button:disabled{cursor:default;opacity:.45}
-#packet-reply{color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:14px;
+#packet-reply,#packet-decision{color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:14px;
 width:min(580px,calc(100vw - 24px));max-height:calc(100dvh - 36px);padding:20px;overflow:auto}
-#packet-reply::backdrop{background:rgba(0,0,0,.48)}
-#packet-reply h2{font-size:17px;margin:0 0 5px}
+#packet-reply::backdrop,#packet-decision::backdrop{background:rgba(0,0,0,.48)}
+#packet-reply h2,#packet-decision h2{font-size:17px;margin:0 0 5px}
 #packet-reply h3{font-size:13px;margin:18px 0 5px}
 #packet-reply form{display:grid;gap:12px;margin-top:14px}
 #packet-reply label{display:grid;gap:4px;font-weight:600}
@@ -121,7 +121,27 @@ background:var(--bg);min-height:110px;font-weight:400}
 #packet-reply .reply-actions{display:flex;justify-content:flex-end;gap:8px}
 #reply-history{padding:0;list-style:none;margin:0}
 #reply-history li{padding:7px 0;border-top:1px solid var(--line)}
-#reply-notice:empty{display:none}
+#reply-notice:empty,#decision-notice:empty{display:none}
+#packet-decision{width:min(650px,calc(100vw - 24px))}
+#packet-decision .meta{white-space:normal;overflow-wrap:anywhere}
+.decision-bar,.decision-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.decision-bar{justify-content:space-between;margin:0 0 9px}
+.decision-bar h2{margin:0}
+.decision-nav{margin-top:14px;justify-content:space-between}
+#decision-title{margin:0;font-size:16px;overflow-wrap:anywhere}
+#decision-details{margin:12px 0;padding:12px;background:var(--panel2);border:1px solid var(--line);border-radius:9px}
+#decision-details h3{font-size:13px;margin:0 0 4px}
+#decision-scope{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+#decision-details dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;margin:12px 0 0}
+#decision-details dt{color:var(--dim)}
+#decision-details dd{margin:0;overflow-wrap:anywhere}
+#decision-note-label{display:grid;gap:4px;margin:12px 0}
+#decision-message{width:100%;resize:vertical;min-height:65px;padding:8px;background:var(--bg);
+color:var(--text);border:1px solid var(--line);border-radius:8px}
+#decision-confirm{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0;padding:9px;
+border:1px solid var(--needs_input);border-radius:8px}
+#decision-notice,#decision-receipt{margin-top:9px}
+#decision-receipt{overflow-wrap:anywhere}
 .chip.late{color:var(--blocked);border-color:var(--blocked)}
 details.grp{margin-bottom:7px}
 details.grp>summary{cursor:pointer;padding:7px 12px;background:var(--panel);border:1px solid var(--line);
@@ -217,6 +237,55 @@ svg.chart{display:block;width:100%;height:220px}
   </form>
   <h3>Recent replies</h3>
   <ul id="reply-history"></ul>
+</dialog>
+<dialog id="packet-decision" aria-labelledby="decision-heading">
+  <div class="decision-bar">
+    <h2 id="decision-heading" tabindex="-1">Review packet decisions</h2>
+    <span id="decision-position" class="meta"></span>
+  </div>
+  <h3 id="decision-title"></h3>
+  <div id="decision-context" class="meta"></div>
+  <section id="decision-details" aria-labelledby="decision-scope-heading" hidden>
+    <h3 id="decision-scope-heading">What you're deciding</h3>
+    <p id="decision-scope"></p>
+    <dl>
+      <dt>Why it’s waiting</dt><dd id="decision-reason"></dd>
+      <dt>Resumes when</dt><dd id="decision-condition"></dd>
+      <dt>Requested from</dt><dd id="decision-owner"></dd>
+      <dt>Packet step</dt><dd id="decision-step"></dd>
+    </dl>
+  </section>
+  <p id="decision-unavailable" class="meta" role="status"></p>
+  <label id="decision-note-label" hidden>Decision note or comment
+    <textarea id="decision-message" maxlength="2000" rows="3" placeholder="Optional for Approve or Deny"></textarea>
+  </label>
+  <div class="decision-actions" id="decision-buttons" hidden>
+    <button type="button" class="reply-button primary" id="decision-approve">Approve</button>
+    <button type="button" class="reply-button" id="decision-deny">Deny</button>
+    <button type="button" class="reply-button" id="decision-comment">Comment</button>
+  </div>
+  <p id="decision-system-prompt" class="meta" hidden>
+    macOS asks you to confirm your identity for Approve or Deny. A comment sends a coordination reply.
+  </p>
+  <p id="decision-scope-issue" class="meta" hidden></p>
+  <div id="decision-confirm" hidden>
+    <span>Approve only the scope shown above?</span>
+    <button type="button" class="reply-button primary" id="decision-confirm-approve">Confirm approval</button>
+    <button type="button" class="reply-button" id="decision-cancel-approve">Cancel</button>
+  </div>
+  <div id="decision-notice" class="meta" role="status"></div>
+  <div id="decision-receipt" class="meta"></div>
+  <div class="decision-actions decision-nav">
+    <div class="decision-actions">
+      <button type="button" class="reply-button" id="decision-prev">Previous</button>
+      <button type="button" class="reply-button" id="decision-next">Next</button>
+    </div>
+    <div class="decision-actions">
+      <button type="button" class="reply-button" id="decision-retry" hidden>Retry this submission</button>
+      <button type="button" class="reply-button" id="decision-open">Open or reply</button>
+      <button type="button" class="reply-button" id="decision-close">Close</button>
+    </div>
+  </div>
 </dialog>
 <script>
 "use strict";
@@ -369,9 +438,12 @@ function sessionLabel(id){
   const name = agent?.title || agent?.nickname;
   return name ? `${name} · ${id.slice(0,8)}` : id;
 }
-function replyContext(namespace, packet, item){
+function packetOutcome(namespace, packet, item){
   const record = S.snap?.packets.find(p => p.namespace === namespace && p.id === packet);
-  const outcome = record?.items.find(i => i.id === item);
+  return record?.items.find(i => i.id === item);
+}
+function replyContext(namespace, packet, item){
+  const outcome = packetOutcome(namespace, packet, item);
   if(!outcome || !Number.isInteger(outcome.revision) ||
      ["done", "cancelled"].includes(outcome.status)) return null;
   return {namespace, packet, item, revision:outcome.revision, objective:outcome.objective,
@@ -452,7 +524,8 @@ function receiptStatus(receipt){
   if(receipt.delivery_issue) return receipt.delivery_issue;
   if(delivery.state === "inbox_pending") return "Waiting for supervisor inbox receipt";
   if(receipt.state === "delivered" || delivery.state === "delivered") {
-    return delivery.mode === "existing_or_queued" ? "Accepted by Codex" : "Delivered to session";
+    return ["existing_or_queued","operator_decision"].includes(delivery.mode) ?
+      "Accepted by Codex" : "Delivered to session";
   }
   if(receipt.daemon_ready === false) return "Saved · delivery service unavailable";
   return "Queued";
@@ -473,7 +546,7 @@ function showReplyReceipts(current){
   list.replaceChildren(...receipts.map(receipt => {
     const row = document.createElement("li");
     const status = document.createElement("strong");
-    status.textContent = receiptStatus(receipt);
+    status.textContent = [decisionLabel(receipt.decision), receiptStatus(receipt)].filter(Boolean).join(" · ");
     const details = document.createElement("div");
     details.className = "meta";
     details.textContent = [sessionLabel(receipt.recipient), stamp(receipt.created_at),
@@ -490,7 +563,7 @@ function showReplyReceipts(current){
   }
 }
 async function packetRequest(url, options = {}){
-  return fetch(url, {...options, cache:"no-store", redirect:"error", signal:AbortSignal.timeout(15000),
+  return fetch(url, {...options, cache:"no-store", redirect:"error", signal:options.signal ?? AbortSignal.timeout(15000),
     headers:{"X-AgentRoute-Token":packetActionToken,...options.headers}});
 }
 async function loadReplyHistory(current){
@@ -634,6 +707,236 @@ $("reply-template").addEventListener("change", () => {
 $("reply-open").addEventListener("click", openPacketHerdr);
 $("reply-form").addEventListener("submit", sendPacketReply);
 
+/* Packet decisions are bound to the revision and scope displayed by the server. */
+let reviewQueue = null;
+let decisionPolling = null;
+function decisionLabel(value){
+  const action = typeof value === "string" ? value : value?.action;
+  return {approve:"Approval recorded", deny:"Denial recorded", comment:"Comment recorded"}[action] || "";
+}
+function decisionEntries(){
+  return (S.snap?.focus?.needs_you || []).filter(e => e.type === "outcome" &&
+    Number.isInteger(e.revision) && holdMatches(e));
+}
+function queuePending(key, payload){
+  const storageKey = "decision:" + key;
+  if(arguments.length > 1) savePendingReply(storageKey, payload);
+  return pendingReply(storageKey);
+}
+function activeDecision(){
+  return reviewQueue?.entry;
+}
+function openDecisionQueue(button){
+  if(!packetActionToken || reviewQueue || reply) return;
+  const items = decisionEntries();
+  if(!items.length) return;
+  const requested = button?.dataset;
+  const index = requested ? items.findIndex(e =>
+    e.namespace === requested.namespace && e.packet === requested.packet &&
+    e.item === requested.item) : 0;
+  reviewQueue = {items, index:Math.max(0,index)};
+  $("packet-decision").showModal();
+  showDecisionEntry();
+  $("decision-heading").focus();
+  decisionPolling = setInterval(() => {
+    const entry = activeDecision();
+    if(entry) refreshDecision(entry);
+  }, 5000);
+}
+function showDecisionEntry(){
+  const {items,index} = reviewQueue;
+  const {namespace,packet,item,title} = items[index];
+  const key = [namespace,packet,item].join("/");
+  const entry = {namespace,packet,item,key, pending:queuePending(key), receipts:new Map()};
+  reviewQueue.entry = entry;
+  $("decision-position").textContent = `${index+1} of ${items.length}`;
+  $("decision-title").textContent = title;
+  $("decision-context").textContent = key;
+  $("decision-message").value = entry.pending?.message || "";
+  $("decision-notice").textContent = entry.pending ?
+    "The previous response is unconfirmed. Retry uses the original decision reference." : "";
+  renderDecision(entry);
+  refreshDecision(entry);
+}
+function decisionCurrent(entry){
+  const decision = entry.decision;
+  const item = packetOutcome(entry.namespace, entry.packet, entry.item);
+  return decision?.eligible === true && item?.revision === decision.revision &&
+    Number.isInteger(decision.revision) && typeof decision.scope === "string" &&
+    !!decision.scope.trim() && !!decision.slot && typeof decision.scope_digest === "string" &&
+    !!decision.scope_digest;
+}
+function decisionIdentity(decision){
+  return JSON.stringify([decision?.revision, decision?.slot, decision?.scope_digest]);
+}
+function renderDecision(entry){
+  if(activeDecision() !== entry) return;
+  const decision = entry.decision;
+  const current = decisionCurrent(entry);
+  const outcome = packetOutcome(entry.namespace, entry.packet, entry.item);
+  const latest = decision?.recorded ||
+    [...entry.receipts.values()].sort((a,b) => b.created_at-a.created_at)[0];
+  const {index,items} = reviewQueue;
+  const decided = !!decision?.recorded ||
+    (entry.recordedScope !== undefined && entry.recordedScope === decision?.scope_digest);
+  const canDecide = current && decision.can_decide === true;
+  const busy = entry.sending || !!entry.pending;
+  if(!canDecide || busy || decided || entry.confirm !== decisionIdentity(decision)) entry.confirm = null;
+  $("decision-details").hidden = !decision?.eligible;
+  $("decision-scope").textContent = decision?.proposal || decision?.scope || "";
+  $("decision-reason").textContent = decision?.reason || "";
+  $("decision-condition").textContent = decision?.resume_when || "";
+  $("decision-owner").textContent = decision?.owner || "";
+  $("decision-step").textContent = decision?.step ? `${decision.step} · revision ${decision.revision}` : "";
+  $("decision-unavailable").textContent = current ? "" : decision?.eligible ?
+    "This packet changed. Wait for the updated decision before submitting." :
+    (decision?.reason || (entry.failed ? "Could not load the decision. You can open the packet or skip it."
+                                : "Checking the recorded request…"));
+  $("decision-note-label").hidden = $("decision-buttons").hidden = !current && !entry.pending;
+  $("decision-system-prompt").hidden = !canDecide;
+  $("decision-scope-issue").hidden = !current || canDecide;
+  $("decision-scope-issue").textContent = decision?.decision_issue ||
+    "Open the session to review the complete proposal before approving or denying it.";
+  $("decision-message").disabled = !!busy || !current;
+  for(const action of ["approve","deny","comment"]){
+    $("decision-"+action).disabled = !!busy || !current || (action !== "comment" && (!canDecide || decided));
+  }
+  $("decision-confirm").hidden = !entry.confirm;
+  $("decision-open").disabled = !!entry.sending || !replyContext(entry.namespace,entry.packet,entry.item);
+  $("decision-retry").hidden = !entry.pending;
+  $("decision-retry").disabled = !!entry.sending;
+  $("decision-close").disabled = !!entry.sending;
+  $("decision-prev").disabled = !!entry.sending || index === 0;
+  $("decision-next").disabled = !!entry.sending || index === items.length-1;
+  $("decision-receipt").textContent = latest ? [
+    latest.delivery?.state === "unknown" ? "Delivery unconfirmed. Check the session before acting." :
+      [decisionLabel(latest.decision), receiptStatus(latest)].filter(Boolean).join(" · "),
+    !outcome ? "Packet state unavailable" :
+      outcome.status === "done" ? "Packet completed" :
+      outcome.status === "cancelled" ? "Packet cancelled" :
+      outcome.hold || outcome.status === "blocked" ? "Packet still waiting" : "No hold shown in the packet",
+  ].filter(Boolean).join(" · ") : "";
+}
+async function refreshDecision(entry){
+  if(entry.loading || entry.sending) return;
+  entry.loading = true;
+  try {
+    const {namespace,packet,item} = entry;
+    const response = await packetRequest(`${packetActionsUrl}?${new URLSearchParams({namespace,packet,item})}`);
+    if(!response.ok) throw new Error("Decision unavailable");
+    const {decision,receipts} = await response.json();
+    if(activeDecision() !== entry) return;
+    entry.failed = false;
+    entry.decision = decision || {eligible:false,reason:"No structured decision is available for this packet."};
+    for(const receipt of receipts || []){
+      if(receipt.decision) entry.receipts.set(receipt.id,receipt);
+    }
+  } catch {
+    entry.failed = true;
+    entry.decision = null;
+  } finally {
+    entry.loading = false;
+    renderDecision(entry);
+  }
+}
+function requestApproval(entry){
+  if(!entry || !decisionCurrent(entry) || entry.pending || entry.sending ||
+     $("decision-approve").disabled) return;
+  entry.confirm = decisionIdentity(entry.decision);
+  renderDecision(entry);
+  $("decision-cancel-approve").focus();
+}
+async function submitDecision(entry, action){
+  if(!entry || entry.sending) return;
+  if(!entry.pending){
+    if(!decisionCurrent(entry) || $("decision-"+action).disabled) return;
+    if(action === "approve" && entry.confirm !== decisionIdentity(entry.decision)) return;
+    const message = action === "comment" ? $("decision-message").value.trim() : "";
+    if(action === "comment" && !message){
+      $("decision-notice").textContent = "Write a comment before sending.";
+      $("decision-message").focus();
+      return;
+    }
+    const {namespace,packet,item,decision} = entry;
+    const {revision,slot,scope_digest} = decision;
+    entry.pending = {action:"decide",decision:action,namespace,packet,item,revision,
+      slot,scope_digest,request_id:crypto.randomUUID(),message};
+    queuePending(entry.key,entry.pending);
+  }
+  entry.sending = true;
+  $("decision-notice").textContent = entry.pending.decision === "comment" ?
+    "Sending comment…" : "Confirm your identity if macOS asks.";
+  renderDecision(entry);
+  try {
+    const response = await packetRequest(packetActionsUrl, {method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify(entry.pending),
+      signal:AbortSignal.timeout(120000)});
+    const receipt = await response.json();
+    if(response.ok && receipt.id){
+      if(receipt.daemon_ready === false){
+        $("decision-notice").textContent = "Decision saved. Retry to start delivery using the same reference.";
+      } else {
+        entry.receipts.set(receipt.id,receipt);
+        if(["approve","deny"].includes(entry.pending.decision)){
+          entry.recordedScope = entry.pending.scope_digest;
+        }
+        entry.pending = queuePending(entry.key,null);
+        $("decision-message").value = "";
+        $("decision-notice").textContent = receipt.delivery?.state === "unknown" ?
+          "Delivery unconfirmed. Check the session before acting." :
+          receipt.decision === "comment" ? "Comment saved. Next opens another request." :
+          "Decision recorded. Next opens another request.";
+      }
+    } else if(response.status >= 400 && response.status < 500 && response.status !== 408){
+      entry.pending = queuePending(entry.key,null);
+      $("decision-notice").textContent = receipt.error || "The decision was not accepted.";
+    } else {
+      throw new Error("Decision acknowledgement missing");
+    }
+  } catch {
+    $("decision-notice").textContent = "Response unconfirmed. Retry uses the same decision reference.";
+  } finally {
+    entry.sending = false;
+    renderDecision(entry);
+    refreshDecision(entry);
+  }
+}
+function moveDecision(offset){
+  if(!reviewQueue || activeDecision()?.sending) return;
+  const index = reviewQueue.index + offset;
+  if(index < 0 || index >= reviewQueue.items.length) return;
+  reviewQueue.index = index;
+  showDecisionEntry();
+}
+$("decision-approve").addEventListener("click", () => requestApproval(activeDecision()));
+$("decision-confirm-approve").addEventListener("click", () => submitDecision(activeDecision(),"approve"));
+$("decision-cancel-approve").addEventListener("click", () => {
+  const entry = activeDecision();
+  if(entry){ entry.confirm = null; renderDecision(entry); }
+});
+$("decision-deny").addEventListener("click", () => submitDecision(activeDecision(),"deny"));
+$("decision-comment").addEventListener("click", () => submitDecision(activeDecision(),"comment"));
+$("decision-retry").addEventListener("click", () => {
+  const entry = activeDecision();
+  if(entry?.pending) submitDecision(entry,entry.pending.decision);
+});
+$("decision-prev").addEventListener("click", () => moveDecision(-1));
+$("decision-next").addEventListener("click", () => moveDecision(1));
+$("decision-close").addEventListener("click", () => $("packet-decision").close());
+$("decision-open").addEventListener("click", () => {
+  const entry = activeDecision();
+  if(!entry || entry.sending) return;
+  $("packet-decision").close();
+  openPacketReply({dataset:entry});
+});
+$("packet-decision").addEventListener("cancel", event => {
+  if(activeDecision()?.sending) event.preventDefault();
+});
+$("packet-decision").addEventListener("close", () => {
+  clearInterval(decisionPolling);
+  reviewQueue = null;
+});
+
 /* Focus: what waits on the reader, and why everything else that is stuck is stuck. */
 function holdCard(e){
   const where = e.type==="outcome" ? `${esc(e.namespace)} / ${esc(e.packet)} / ${esc(e.item)}` :
@@ -651,6 +954,9 @@ function holdCard(e){
     ${e.unblock?`<div class="fix"><span>Unblocks when</span>${esc(e.unblock)}</div>`:
       e.next_action?`<div class="fix"><span>Recorded next action</span>${esc(e.next_action)}</div>`:""}
     ${holder||e.question?`<div class="meta">${holder}${holder&&e.question?" · ":""}${e.question?"Asked in "+esc(e.question):""}</div>`:""}
+    ${packetActionToken && e.type==="outcome" && e.kind==="you" && Number.isInteger(e.revision) ?
+      `<button type="button" class="packet-action" data-decide-packet data-namespace="${esc(e.namespace)}"
+        data-packet="${esc(e.packet)}" data-item="${esc(e.item)}">Review decision</button>` : ""}
     ${e.type==="outcome" ? packetAction(e.namespace,e.packet,{...e,id:e.item}) : ""}
   </div>`;
 }
@@ -677,7 +983,10 @@ function focusView(){
       <span class="none"><b>${unowned.length}</b>blocked with no owner</span>
       <span><b>${blockedOthers}</b>blocked on someone else</span>
       <span><b>${moving.length}</b>working</span><span><b>${parked.length}</b>waiting on CI, a timer or an event</span></div>
-    <h2>Needs you<b>${you.length}</b></h2>
+    <div class="decision-bar"><h2>Needs you<b>${you.length}</b></h2>
+      ${packetActionToken && decisionEntries().length ?
+        '<button type="button" class="reply-button primary" data-review-decisions>Review decisions</button>' : ""}
+    </div>
     <p class="lead">Sessions waiting for an answer or approval, and outcomes whose recorded owner is ${who}.</p>
     ${holdList(you, "f-you", 8) || `<div class="empty">Nothing is waiting on you.</div>`}
     <h2>Blocked with no owner<b>${unowned.length}</b></h2>
@@ -917,6 +1226,8 @@ function select(id){ S.selected = id; if(id){ $("drawer").innerHTML = ""; loadDe
 document.addEventListener("click", event => {
   const hit = name => event.target.closest(`[data-${name}]`);
   let el;
+  if(hit("review-decisions")) return openDecisionQueue();
+  if((el = hit("decide-packet"))) return openDecisionQueue(el);
   if((el = hit("reply-packet"))) return openPacketReply(el);
   if(hit("close")) return select(null);
   if((el = hit("tab"))){ S.tab = el.dataset.tab; S.focus = null; $("view").innerHTML = ""; history.replaceState(null,"","#"+S.tab); return render(); }
@@ -936,7 +1247,7 @@ document.addEventListener("change", event => {
 });
 $("filter").addEventListener("input", event => { S.filter = event.target.value.trim(); render(); });
 document.addEventListener("keydown", event => {
-  if(event.key==="Escape" && !$("packet-reply").open) select(null);
+  if(event.key==="Escape" && !$("packet-reply").open && !$("packet-decision").open) select(null);
 });
 document.addEventListener("wheel", event => { const svg = event.target.closest?.("#map"); if(!svg) return; event.preventDefault();
   const box = svg.getBoundingClientRect(), mx = event.clientX-box.left, my = event.clientY-box.top;
