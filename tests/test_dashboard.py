@@ -506,6 +506,79 @@ def hold(kind, blocking=True, owner="", reason="r", unblock="u"):
             "unblock": unblock, "question": ""}
 
 
+@pytest.mark.parametrize(
+    "revision,slot,accepted,verified,pending_other_question,expected_kind",
+    [
+        (3, "step", True, True, False, "coordination"),
+        (3, "step", True, True, True, "you"),
+        (2, "step", True, True, False, "you"),
+        (3, "outcome", True, True, False, "you"),
+        (3, "step", False, False, False, "you"),
+        (3, "step", True, False, False, "you"),
+    ],
+)
+def test_action_feedback_preserves_unanswered_questions(
+    monkeypatch, revision, slot, accepted, verified, pending_other_question, expected_kind,
+):
+    from agentroute import dashboard_decisions
+
+    item = packet_item("review", {**hold("you"), "decision_slot": "step"}, status="blocked")
+    item.update(revision=3, step_state="awaiting_user", checkpoint="Check route")
+    if pending_other_question:
+        item["later_hold"] = {**hold("you", reason="Release approval"), "decision_slot": "outcome"}
+    key = ("private", "p", "review")
+    packets = [{"namespace": key[0], "id": key[1], "items": [item], "updated_at": NOW}]
+    record = {"id": "receipt", "decision": "approve", "slot": slot, "revision": revision,
+              "created_at": NOW - 200, "turn_id": "turn" if accepted else None}
+    reader = Mock(return_value=[record])
+    verify = Mock(side_effect=None if verified else ValueError("Binding changed"))
+    monkeypatch.setattr(dashboard_decisions, "recorded", reader)
+    monkeypatch.setattr(dashboard_decisions, "verify_receipt", verify)
+    reply = {"spec": {"dashboard_packet": list(key)}, "state": "delivered",
+             "created_at": NOW - 100, "recipient_read": NOW - 80,
+             "disposition": {"action": "blocked", "reason": "Review changed source"}}
+
+    reply_row, approval_row = dashboard.annotate_actions(packets, [reply], NOW - 1000)
+    focus = dashboard.build_focus(packets, [], [], ["Ana"], NOW)
+
+    reader.assert_called_once_with(key)
+    if accepted and revision == 3 and slot == "step":
+        verify.assert_called_once_with(key, "receipt", None)
+    else:
+        verify.assert_not_called()
+    assert item["hold"]["kind"] == expected_kind
+    assert bool(focus["needs_you"]) == (expected_kind == "you")
+    if pending_other_question:
+        row, = focus["needs_you"]
+        assert row["reason"] == "Release approval"
+        assert row["decision_in_session"]
+    assert reply_row["delivery"] == "Agent response · blocked"
+    assert reply_row["detail"] == "Review changed source"
+    assert approval_row["delivery"] == (
+        "Accepted by Codex" if accepted else "Delivery unconfirmed"
+    )
+    assert all(row["status"] == "blocked" for row in (reply_row, approval_row))
+
+
+def test_recent_accepted_decision_shows_current_step_progress(monkeypatch):
+    from agentroute import dashboard_decisions
+
+    item = packet_item("import", status="ready")
+    item.update(revision=18, step_state="done", checkpoint="Verified 78 contacts")
+    packets = [{"namespace": "markster", "id": "summit", "items": [item]}]
+    monkeypatch.setattr(dashboard_decisions, "recorded", lambda key: [
+        {"id": "approval", "decision": "approve", "created_at": NOW - 100,
+         "revision": 17, "turn_id": "turn"},
+        {"id": "earlier", "decision": "deny", "created_at": NOW - 2000},
+    ])
+
+    row, = dashboard.annotate_actions(packets, [], NOW - 1000)
+
+    assert row["delivery"] == "Accepted by Codex"
+    assert (row["status"], row["step_state"]) == ("ready", "done")
+    assert row["checkpoint"] == "Verified 78 contacts"
+
+
 def test_focus_separates_what_needs_the_reader_from_what_is_stuck_elsewhere():
     old = NOW - 5 * 86400
     packets = [
