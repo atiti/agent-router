@@ -1263,6 +1263,14 @@ agentroute wake --name "Ivan work packet" --message "nightly sync finished"   # 
 
 See [event-driven waits](docs/event-waits.md) for every condition, outside triggers and limits.
 
+## Live dashboard
+
+`agentroute dashboard` serves a local page showing every agent's state (working, waiting,
+blocked, needs you, done), its current tool call, goal, tokens and context use, with pending
+waits, work packets, a map of what agents touch and token use by model. It reads existing
+Codex, AgentRoute, Herdr and work-packet state and changes none of it. See
+[live dashboard](docs/dashboard.md).
+
 ## Routine approvals
 
 `agentroute approvals install` adds allow rules for routine read-only commands so they stop
