@@ -506,12 +506,14 @@ def wait_packet(
 
 @wait_app.command("resolve")
 def wait_resolve(
-    wait_id: str, action: str = typer.Option(...), reason: str = typer.Option("")
+    wait_id: str, action: str = typer.Option(...), reason: str = typer.Option(""),
+    triage_revision: int | None = typer.Option(None, "--triage-revision", min=1),
 ) -> None:
     """Record the recipient's next action; does not complete a work packet or grant approval."""
     try:
         wait = waits.record_recipient(
-            wait_id, os.environ.get("CODEX_THREAD_ID", ""), action=action, reason=reason
+            wait_id, os.environ.get("CODEX_THREAD_ID", ""), action=action, reason=reason,
+            triage_revision=triage_revision,
         )
     except waits.WaitError as error:
         raise typer.BadParameter(str(error)) from error

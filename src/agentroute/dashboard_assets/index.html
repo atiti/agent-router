@@ -717,6 +717,7 @@ async function sendPacketReply(event){
       return;
     }
     current.pending = {namespace,packet,item,revision,message,request_id:crypto.randomUUID(),
+      ...($("reply-template").value === "triage" ? {workflow:"owner_triage"} : {}),
       ...(current.route.thread ? {recipient:current.route.thread} : {})};
     savePendingReply(key,current.pending);
   }
@@ -1196,7 +1197,8 @@ function focusCard(e, reading=false){
     (e.session ? "Assigned session" : "Owner to be identified");
   const where = focusText(agent?.pane?.workspace || e.workspace ||
     agent?.cwd?.split("/").filter(Boolean).at(-1) || e.namespace);
-  const status = e.kind === "moving" ? STATES[agent?.state] : FOCUS_LANES[e.kind]?.[0];
+  const status = e.triage_handoff ? "Waiting for owner to accept" :
+    e.kind === "moving" ? STATES[agent?.state] : FOCUS_LANES[e.kind]?.[0];
   const criteria = packet?.criteria_total ? `${packet.criteria_met} of ${packet.criteria_total} checks have evidence` : "";
   const due = e.review_overdue ? `Review overdue · ${ago(e.review_at)}` : e.review_at ? `Review ${stamp(e.review_at)}` : "";
   const signals = [due, packet?.checkpoint_at && `Updated ${ago(packet.checkpoint_at)}`,
