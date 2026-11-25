@@ -315,6 +315,7 @@ def test_monitor_health_supersession_and_cooldown_keep_latest_actionable(team, m
     from agentroute import herdr_lifecycle as lifecycle
     data = h.load("demo")
     data["members"]["supervisor"] = data["members"].pop("boss")
+    data["monitor"] = {"live_review_recipients": ["supervisor"]}
     inbox.path_for(THREAD).unlink()
     with h.locked("demo"):
         h.save("demo", data)
@@ -756,3 +757,26 @@ def test_projected_wait_never_falls_back_when_owner_ledger_disappears(team, monk
     h.path_for("demo").unlink()
     assert waits.deliver(waits.find(w["id"])[0], client, now=1003) == "owner_hold"
     client.assert_not_called()
+
+
+def test_undated_worker_wait_notifies_only_a_live_supervisor_once(team):
+    wait = {"reason": "Waiting on worker", "owner": "original",
+            "resume_when": "Owner supplies acceptance evidence"}
+    items = {"handoff": {"id": "handoff", "status": "ready", "revision": 7,
+                         "next_step": {"state": "waiting_worker", "wait": wait}}}
+    with h.locked("demo") as data:
+        inbox.sync_due_reviews(data, items, 1, set())
+        assert not data["messages"]
+        inbox.sync_due_reviews(data, items, 2, {"boss"})
+        key, message = next(iter(data["messages"].items()))
+        assert message["member"] == "boss"
+        assert message["coordination_event"]["kind"] == "deadline_diagnostic"
+        assert "no scheduled review" in message["text"]
+        assert "no retry or takeover authority" in message["text"]
+        assert items["handoff"]["next_step"]["state"] == "waiting_worker"
+        items["handoff"]["revision"] += 1
+        inbox.sync_due_reviews(data, items, 3, {"boss"})
+        assert list(data["messages"]) == [key]
+        items["handoff"]["next_review"] = "2099-01-01T00:00:00Z"
+        inbox.sync_due_reviews(data, items, 4, {"boss"})
+        assert message["coordination_event"]["disposition"]["action"] == "superseded"
