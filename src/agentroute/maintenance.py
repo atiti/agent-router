@@ -182,8 +182,12 @@ def packet_rows():
 
 def reconcile_packets(teams: list[dict], now: float, monitors: list[dict] | None = None) -> dict:
     monitored = {row.get("team") for row in (monitors or []) if row["state"] == "running"}
-    supervised_packets = {(team["namespace"], team["packet"]) for team in teams
-                          if team["id"] in monitored}
+    supervised_packets = {
+        (team["namespace"], team["packet"])
+        for team in teams
+        if team["id"] in monitored and (team.get("inbox_consumer") or {}).get("version") == 1
+        and (team.get("monitor") or {}).get("live_review_recipients")
+    }
     managed = {record.get("thread") for team in teams
                for record in (team.get("members") or {}).values()}
     managed.update(thread for team in teams for thread in supervisors(team).values())

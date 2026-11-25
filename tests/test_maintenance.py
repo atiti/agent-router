@@ -110,3 +110,21 @@ def test_unassigned_wait_keeps_its_review_condition():
     assert m.classify(row, time.time()) == ("wait_without_review", None)
     row["next_step"] = {}
     assert m.classify(row, time.time()) == ("blocker_needs_owner", "reviewer")
+
+
+def test_monitor_lock_alone_does_not_count_as_supervisor_coverage(monkeypatch):
+    row = item(time.time())
+    monkeypatch.setattr(m, "packet_rows", lambda: iter([(KEY, {"items": [row]}, row)]))
+    monkeypatch.setattr(m, "_rows", lambda *args: [{"id": THREAD}])
+    monkeypatch.setattr(waits, "load", lambda: [])
+    team = {"id": "fixture-team", "namespace": KEY[0], "packet": KEY[1],
+            "inbox_consumer": {"version": 1}, "members": {},
+            "monitor": {"live_review_recipients": []}}
+    monitors = [{"team": team["id"], "state": "running"}]
+    entry, = m.reconcile_packets([team], time.time(), monitors)["items"]
+    assert not entry["monitored"]
+    assert entry["state"] == "needs_idle_admission"
+    team["monitor"]["live_review_recipients"].append("supervisor")
+    entry, = m.reconcile_packets([team], time.time(), monitors)["items"]
+    assert entry["monitored"]
+    assert entry["state"] == "supervisor_followup"
