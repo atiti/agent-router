@@ -1291,9 +1291,9 @@ starts it without attaching. Existing Zellij sessions keep running.
 - `ar focus <chat>` focuses an existing view without starting a client.
 - `ar group set markster /path/to/repo` uses the existing project namespace rules.
 
-Each namespace has a Herdr workspace and each chat a tab. The client reports
-working, idle, and blocked (approval/user input) states from the shared owner to
-Herdr every two seconds. Shared writer guards remain in effect when a chat is
+Each namespace has a Herdr workspace and each chat a tab. The launcher identifies
+the wrapped Codex process to Herdr, which detects working, idle, and blocked from
+the pane. Existing views adopt the new behavior the next time they are opened. Shared writer guards remain in effect when a chat is
 already open elsewhere. Close a view before moving that chat from Zellij.
 Detach from Herdr with Ctrl+B then Q; the server and terminal processes persist.
 After a reboot, run `ar r` to restore the chats and attach to Herdr.
@@ -1404,8 +1404,7 @@ complete a claim. `ar team status TEAM --role worker --state idle` filters views
 For an existing shared Codex terminal, `agentroute herdr bridge --thread UUID
 --pane PANE_ID --pid CODEX_PID --session SESSION` reports live shared-server status
 while that exact foreground Codex process remains present. It also records this
-pane for `ar restore`. The terminal-side launcher reports the current thread's
-status and follows session identity reports from the Herdr Codex integration.
+pane for `ar restore`. The terminal launcher follows explicit session identity reports from the Herdr Codex integration.
 A launcher status outage never prevents Codex from starting.
 
 Herdr pane identity is passed to shared Codex threads through per-thread shell

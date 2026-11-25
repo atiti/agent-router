@@ -59,85 +59,14 @@ def test_install_refuses_unrelated_focus_before_replacing_ar(tmp_path, monkeypat
     assert (tmp_path / "ar").read_text().endswith("old")
 
 
-def test_launcher_reports_and_releases_even_when_client_fails(monkeypatch):
+def test_launcher_exposes_codex_to_herdr_without_claiming_screen_state(monkeypatch):
     command = Mock()
-    monkeypatch.setattr(h, 'command', command)
-    monkeypatch.setattr(h.subprocess, 'run', Mock(return_value=SimpleNamespace(returncode=7)))
-    assert h.run_in_pane(['codex-bin'], {'HERDR_PANE_ID': 'w8:p2'}) == 7
-    assert command.call_args_list[0].args[1:3] == ('pane', 'report-agent')
-    assert command.call_args_list[-1].args[1:3] == ('pane', 'release-agent')
-
-
-def test_direct_resume_reports_shared_thread_state(monkeypatch):
-    thread = "01a20744-50ee-71a2-a6a3-3e26905fc41b"
-    reports = []
-    def command(session, *args):
-        reports.append(args)
-        if args[:2] == ("pane", "get"):
-            return {"pane": {}}
+    run = Mock(return_value=SimpleNamespace(returncode=7))
     monkeypatch.setattr(h, "command", command)
-    monkeypatch.setattr(h, "socket_path", lambda: "/tmp/test.sock")
-
-    class Client:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def request(self, method, payload):
-            assert method == "thread/read"
-            assert payload["threadId"] == thread
-            return {"thread": {"status": {"type": "active"}}}
-
-    monkeypatch.setattr(h, "RpcClient", Client)
-    monkeypatch.setattr(h.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
-    assert h.run_in_pane(
-        ["codex-bin", "resume", thread],
-        {"HERDR_PANE_ID": "w8:p2", "AGENTROUTE_LOCAL_SERVER_SOCKET": "/tmp/test.sock"},
-    ) == 0
-    assert any("--state" in row and "working" in row and thread in row for row in reports)
-    assert reports[-1][:2] == ("pane", "release-agent")
-
-
-def test_direct_resume_follows_native_session_identity(monkeypatch, tmp_path):
-    old = "01a20744-50ee-71a2-a6a3-3e26905fc41b"
-    new = "01a20db2-e37d-7ad3-8004-8cb3ee6bdd81"
-    reports = []
-    pane = {"pane_id": "w8:p2", "workspace_id": "w8", "tab_id": "w8:t1",
-            "terminal_id": "term-active", "cwd": "/work"}
-
-    def command(session, *args):
-        reports.append(args)
-        if args[:2] == ("pane", "get"):
-            return {"pane": {**pane, "agent_session": {
-                "source": "herdr:codex", "kind": "id",
-                "value": old if len(reports) == 1 else new,
-            }}}
-
-    class Client:
-        def __init__(self, *args, **kwargs): pass
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
-        def request(self, method, payload):
-            assert payload["threadId"] == new
-            return {"thread": {"status": {"type": "active", "activeFlags": ["waitingOnUserInput"]}}}
-
-    monkeypatch.setattr(h, "command", command)
-    monkeypatch.setattr(h, "socket_path", lambda: "/tmp/test.sock")
-    monkeypatch.setattr(h, "RpcClient", Client)
-    monkeypatch.setattr(h, "state_dir", lambda: tmp_path)
-    monkeypatch.setattr(h.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=-1))
-    assert h.run_in_pane(
-        ["codex-bin", "resume", old],
-        {"HERDR_PANE_ID": "w8:p2", "AGENTROUTE_LOCAL_SERVER_SOCKET": "/tmp/test.sock"},
-    ) == -1
-    assert any("--state" in row and "blocked" in row and new in row for row in reports)
-    assert list(h.saved_panes(h.SESSION)) == [{**pane, "thread": new}]
-
+    monkeypatch.setattr(h.subprocess, "run", run)
+    assert h.run_in_pane(["codex-bin"], {"HERDR_PANE_ID": "w8:p2"}) == 7
+    assert run.call_args.kwargs["env"]["HERDR_AGENT"] == "codex"
+    command.assert_not_called()
 
 
 def test_restore_reuses_positions_and_skips_occupied_or_live_threads(tmp_path, monkeypatch):
