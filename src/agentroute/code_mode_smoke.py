@@ -6,11 +6,11 @@ import argparse
 import json
 import os
 import select
+import socket
 import struct
 import subprocess
 import sys
 import time
-import socket
 from pathlib import Path
 from typing import BinaryIO
 
@@ -163,6 +163,7 @@ def smoke_code_mode_host(binary: Path, *, timeout: float = 15.0) -> None:
 def smoke_grpc_host(binary: Path, *, timeout: float = 15.0) -> None:
     """Open an upstream gRPC session and verify a JavaScript result."""
     import grpc
+
     from agentroute.code_mode_proto import v1_pb2 as proto
 
     with socket.socket() as reservation:

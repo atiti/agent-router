@@ -11,9 +11,6 @@ from agentroute.code_mode_smoke import SmokeError, smoke_code_mode_host
 
 
 def test_grpc_smoke_executes_and_rejects_missing_marker(tmp_path: Path):
-    import concurrent.futures
-    import grpc
-    from agentroute.code_mode_proto import v1_pb2 as proto
     from agentroute.code_mode_smoke import smoke_grpc_host
 
     host = tmp_path / "grpc_host.py"
@@ -25,14 +22,20 @@ address = sys.argv[2].removeprefix("grpc://")
 def open_session(request, context):
     yield p.SessionEvent(opened=p.SessionOpened(session_id="test-session"))
 def execute(request, context):
-    yield p.ExecuteEvent(started=p.ExecutionStarted(execution_id=request.execution_id, cell_id="cell"))
+    started = p.ExecutionStarted(execution_id=request.execution_id, cell_id="cell")
+    yield p.ExecuteEvent(started=started)
     result = p.ExecutionOutcome(cell_id="cell", completed=p.ExecutionCompleted())
     result.content_items.add().text.text = "AGENTROUTE_CODE_MODE_OK"
     yield p.ExecuteEvent(outcome=result)
 server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=2))
-server.add_generic_rpc_handlers((grpc.method_handlers_generic_handler("codex.code_mode.v1.CodeModeHost", {
-    "OpenSession": grpc.unary_stream_rpc_method_handler(open_session, request_deserializer=p.OpenSessionRequest.FromString, response_serializer=p.SessionEvent.SerializeToString),
-    "Execute": grpc.unary_stream_rpc_method_handler(execute, request_deserializer=p.ExecuteRequest.FromString, response_serializer=p.ExecuteEvent.SerializeToString),
+server.add_generic_rpc_handlers((grpc.method_handlers_generic_handler(
+    "codex.code_mode.v1.CodeModeHost", {
+    "OpenSession": grpc.unary_stream_rpc_method_handler(
+        open_session, request_deserializer=p.OpenSessionRequest.FromString,
+        response_serializer=p.SessionEvent.SerializeToString),
+    "Execute": grpc.unary_stream_rpc_method_handler(
+        execute, request_deserializer=p.ExecuteRequest.FromString,
+        response_serializer=p.ExecuteEvent.SerializeToString),
 }),))
 server.add_insecure_port(address)
 server.start()
