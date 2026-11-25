@@ -5,10 +5,7 @@
 - Preserve unpaired tool outputs as labeled history when replaying Codex turns through Claude.
 - Add `agentroute dashboard`, a local read-only page that shows each agent's state, tool
   calls, goal, tokens, waits and work packets as they change.
-- Let Herdr read each Codex pane's status from the screen. The launcher used to report the
-  state of the thread a view was started with; that went stale when the view moved to another
-  chat, and a single bad response ended reporting for the rest of the session, leaving panes
-  idle, unknown or missing from the agent list. `ar relaunch` restarts older views.
+- Identify wrapped Codex processes to Herdr and let Herdr detect their live state.
 
 ## 0.5.87 — 2026-11-25
 

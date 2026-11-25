@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import shlex
-import signal
 import subprocess
 import sys
 import threading
@@ -19,26 +18,13 @@ import typer
 from . import zellij_cli as chats
 from .config import agentroute_home, load_config, save_config
 from .server_cli import _start
-from .shared_server import (
-    RpcClient,
-    SharedServerError,
-    ensure_server,
-    socket_path,
-    state_dir,
-)
+from .shared_server import RpcClient, SharedServerError, socket_path, state_dir
 
 herdr_app = typer.Typer(no_args_is_help=True, help="Manage shared chats in Herdr TUI.")
 herdr_app.command("list")(chats.list_command)
 herdr_app.add_typer(chats.group_app, name="group")
 SESSION = "agentroute"
-# Herdr stores a pane's chat identity only from its own Codex integration. That hook runs in
-# the shared owner, which serves every pane and so cannot name one; the launcher in the pane
-# sends the same report instead.
-SESSION_SOURCE = "herdr:codex"
-# Codex cuts the thread part of its terminal title to this many characters.
-TITLE_THREAD_CHARS = 48
-FOLLOW_SECONDS = 3.0
-RECHECK_SECONDS = 60.0
+SOURCE = "agentroute"
 
 
 def command(session: str | None, *args: str) -> dict:
@@ -105,127 +91,6 @@ def native_thread(pane: dict) -> str | None:
         except (ValueError, KeyError, TypeError, AttributeError):
             pass
     return None
-
-
-def thread_label(thread: dict) -> str | None:
-    """A named thread as Codex writes it in the terminal title; None for an unnamed one."""
-    name = str(thread.get("name") or "").strip()
-    if not name:
-        return None
-    if len(name) <= TITLE_THREAD_CHARS:
-        return name
-    # Codex counts grapheme clusters. A name with combined characters near the cut will not
-    # compare equal here, which leaves that view unidentified rather than misidentified.
-    return name[:TITLE_THREAD_CHARS - 3] + "..."
-
-
-def title_thread(title: str) -> str | None:
-    """The thread part of a Codex terminal title in its default layout, `name | project`.
-
-    An unnamed chat shows only the project, so a title in one part names no thread.
-    """
-    label, separator, _project = title.rpartition(" | ")
-    return label if separator and label else None
-
-
-def shown_thread(client: RpcClient, pane: dict, known: str | None) -> tuple[str | None, bool]:
-    """The chat a pane's Codex view shows, and whether the terminal title proves it.
-
-    A view can move to another chat (/new, /resume, a fork) without telling anyone. The title
-    is the only thing it publishes about itself, and it carries a name, not an identifier. So
-    the answer is certain only when exactly one thread the shared owner has loaded bears the
-    name in the title. In every other case the earlier identity is returned as unconfirmed,
-    or None when the title shows the view has left it for a chat that cannot be told apart.
-    """
-    shown = title_thread(pane.get("terminal_title_stripped") or "")
-    threads = {}
-    for thread_id in client.request("thread/loaded/list", {}).get("data") or []:
-        try:
-            threads[thread_id] = client.request("thread/read", {"threadId": thread_id})["thread"]
-        except (SharedServerError, KeyError, TypeError):
-            continue
-    if shown is None:
-        # Nothing drawn yet, a custom layout, or an unnamed chat. A named chat would show
-        # its name, so a view that was on one has moved somewhere this cannot follow.
-        moved = known in threads and thread_label(threads[known]) is not None \
-            and bool(pane.get("terminal_title_stripped"))
-        return (None if moved else known), False
-    matches = [thread_id for thread_id, thread in threads.items()
-               if thread_label(thread) == shown]
-    if len(matches) == 1:
-        return matches[0], True
-    if known in matches:
-        return known, False  # Another loaded chat has the same name; nothing separates them.
-    return None, False
-
-
-def report_session(session: str, pane: str, thread: str) -> None:
-    """Tell Herdr which chat a pane shows, and how to reopen it after a Herdr restart."""
-    command(session, "pane", "report-agent-session", pane, "--source", SESSION_SOURCE,
-            "--agent", "codex", "--agent-session-id", thread, "--",
-            "agentroute", "herdr", "client", "--thread", thread, "--session", session)
-
-
-class PaneFollower:
-    """Keeps a pane's saved chat identity equal to the chat its Codex view shows."""
-
-    def __init__(self, session: str, pane: str, thread: str | None):
-        self.session = session
-        self.pane = pane
-        self.thread = thread
-        self.terminal: str | None = None
-        self.binding: tuple[str, str] | None = None
-        self.binding_path: Path | None = None
-        self._checked: tuple[str, str, str | None] | None = None
-        self._checked_at = 0.0
-
-    def pane_info(self) -> dict | None:
-        try:
-            info = command(self.session, "pane", "get", self.pane).get("pane") or {}
-        except SharedServerError:
-            info = {}
-        if not info or (self.terminal and info.get("terminal_id") != self.terminal):
-            # Moving a pane changes its ID; its terminal ID stays the same.
-            if not self.terminal:
-                return None
-            info = next((p for p in panes(self.session)
-                         if p.get("terminal_id") == self.terminal), None)
-        return info
-
-    def step(self) -> None:
-        info = self.pane_info()
-        if not info or not info.get("terminal_id"):
-            return
-        self.terminal, self.pane = info["terminal_id"], info["pane_id"]
-        seen = (self.pane, info.get("terminal_title_stripped") or "", native_thread(info))
-        if seen == self._checked and time.monotonic() - self._checked_at < RECHECK_SECONDS:
-            return
-        with RpcClient(socket_path(), timeout=5) as client:
-            thread, certain = shown_thread(client, info, self.thread)
-        self._checked, self._checked_at = seen, time.monotonic()
-        if self.binding is None and self.thread and not certain:
-            thread = self.thread  # The launch command is exact when the view starts.
-        elif not certain:
-            return  # Only an identity the title proves may replace what is recorded.
-        self.thread = thread
-        if self.binding != (self.pane, thread):
-            path = remember_pane(self.session, info, thread)
-            if self.binding_path and self.binding_path != path:
-                self.binding_path.unlink(missing_ok=True)
-            self.binding_path, self.binding = path, (self.pane, thread)
-        if native_thread(info) != thread:
-            report_session(self.session, self.pane, thread)
-            self._checked = (seen[0], seen[1], thread)
-
-    def run(self, stopped: threading.Event) -> None:
-        while not stopped.is_set():
-            try:
-                self.step()
-            except Exception:  # noqa: BLE001
-                # This thread lives as long as the chat. One bad response from Herdr or the
-                # shared owner must not end identity tracking for the rest of the session.
-                pass
-            stopped.wait(FOLLOW_SECONDS)
 
 
 def registry_path(session: str, thread: str) -> Path:
@@ -353,6 +218,11 @@ def new_command(directory: Path = typer.Option(Path.cwd(), "--dir", exists=True,
         raise typer.BadParameter(str(error)) from error
 
 
+def report_session(session: str, pane: str, thread: str) -> None:
+    command(session, "pane", "report-agent-session", pane, "--source", "herdr:codex",
+            "--agent", "codex", "--agent-session-id", thread)
+
+
 @herdr_app.command("client", hidden=True)
 def client_command(thread: str = typer.Option(...), session: str = SESSION) -> None:
     thread = str(UUID(thread))
@@ -364,11 +234,6 @@ def client_command(thread: str = typer.Option(...), session: str = SESSION) -> N
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     target.write_text(json.dumps({"pid": os.getpid(), "terminal_id": identity["terminal_id"]}))
     target.chmod(0o600)
-    try:
-        # Resume through AgentRoute so routing and shared-owner writer guards survive restarts.
-        report_session(session, pane, thread)
-    except chats.ERRORS:
-        pass  # The launcher repeats this once the pane is recognised as Codex.
     try:
         result = subprocess.run([sys.executable, "-m", "agentroute.cli", "launch-codex",
                                  "--", "resume", thread], check=False,
@@ -523,145 +388,120 @@ def install_command(bin_dir: Path | None = typer.Option(None)) -> None:
     typer.echo(f"Installed Herdr ar/focus commands in {directory}")
 
 
-def codex_view(session: str, pane: str) -> dict | None:
-    """The Codex client in a pane's foreground, only if it is attached to this shared owner.
-
-    A Codex started with --no-daemon or pointed at another server owns its chat: stopping it
-    would end that chat, so it is never treated as a view.
-    """
-    info = command(session, "pane", "process-info", "--pane", pane)["process_info"]
-    endpoint = f"unix://{socket_path()}"
-    for process in info.get("foreground_processes", []):
-        argv = process.get("argv") or []
-        if process.get("name") == "codex-bin" and "--remote" in argv[:-1] \
-                and argv[argv.index("--remote") + 1] == endpoint:
-            return process
-    return None
-
-
-def relaunch_check(session: str, pane_id: str, thread: str | None,
-                   force: bool) -> tuple[dict, dict, str] | str:
-    """Everything that must hold to restart a view: its pane, process and chat, or a reason."""
+@herdr_app.command("bridge")
+def bridge(thread: str = typer.Option(...), pane: str = typer.Option(...),
+           pid: int = typer.Option(..., min=1), session: str = SESSION) -> None:
+    """Report an existing shared client; verify its foreground PID on every poll."""
+    thread = str(UUID(thread))
+    identity = command(session, "pane", "get", pane)["pane"]
+    terminal = identity["terminal_id"]
+    source = f"agentroute-bridge-{pid}"
+    binding = None
     try:
-        pane = command(session, "pane", "get", pane_id)["pane"]
-    except SharedServerError:
-        return "error: pane not found"
-    view = codex_view(session, pane_id)
-    if not view:
-        return "no view of this shared owner"
-    # Only the command that started the view, or the operator, can say which chat it is.
-    thread = thread or launch_thread(view.get("argv") or [])
-    if not thread:
-        return "skipped: the view was started without a chat ID; pass --thread to name it"
-    with RpcClient(socket_path(), timeout=5) as client:
-        shown, certain = shown_thread(client, pane, thread)
-        if shown != thread or not certain:
-            return "skipped: the title does not single out this chat"
-        state = chats.status(client.request("thread/read", {"threadId": thread})["thread"])
-    if state != "READY" and not (state == "RUNNING" and force):
-        return f"skipped: chat is {state.lower()}"
-    return pane, view, thread
+        while True:
+            live = next((p for p in panes(session) if p["terminal_id"] == terminal), None)
+            if not live:
+                break
+            pane = live["pane_id"]
+            info = command(session, "pane", "process-info", "--pane", pane)["process_info"]
+            processes = info.get("foreground_processes", [])
+            if not any(p["pid"] == pid and p.get("name") == "codex-bin" for p in processes):
+                break
+            thread = native_thread(live) or thread
+            with RpcClient(socket_path(), timeout=5) as client:
+                current = client.request("thread/read", {"threadId": thread})["thread"]
+            if binding != (pane, thread):
+                remember_pane(session, live, thread)
+                binding = (pane, thread)
+            command(session, "pane", "report-agent", pane, "--source", source,
+                    "--agent", "codex", "--state", herdr_state(current),
+                    "--agent-session-id", thread)
+            time.sleep(2)
+    finally:
+        command(session, "pane", "release-agent", pane, "--source", source, "--agent", "codex")
 
 
-def relaunch_pane(session: str, pane_id: str, thread: str | None, force: bool) -> str:
-    """Restart one pane's Codex view on the installed launcher; the chat itself is untouched."""
-    first = relaunch_check(session, pane_id, thread, force)
-    if isinstance(first, str):
-        return first
-    # The user may have switched chats, or the process may have changed, while earlier panes
-    # were handled. Decide again on fresh facts and act only if nothing moved.
-    again = relaunch_check(session, pane_id, first[2], force)
-    if isinstance(again, str):
-        return again
-    pane, view, thread = again
-    if (pane["terminal_id"], pane.get("terminal_title_stripped"), view["pid"]) != (
-            first[0]["terminal_id"], first[0].get("terminal_title_stripped"), first[1]["pid"]):
-        return "skipped: the view changed while it was being checked"
-    os.kill(view["pid"], signal.SIGTERM)
-    if not wait_for_shell(session, pane_id, starting=True):
-        return f"error: view stopped but the pane did not return to a shell; chat {thread}"
-    if command(session, "pane", "get", pane_id)["pane"]["terminal_id"] != pane["terminal_id"]:
-        return f"error: the pane was replaced after its view stopped; reopen chat {thread}"
-    launch_client(session, pane_id, thread)
-    for _ in range(100):
-        if thread_panes(panes(session), session).get(thread, {}).get("pane_id") == pane_id:
-            return f"relaunched {thread}"
-        time.sleep(.1)
-    return f"error: the new view did not register; inspect the pane, chat {thread}"
+def herdr_state(thread: dict) -> str:
+    return {
+        "RUNNING": "working", "APPROVAL": "blocked", "INPUT": "blocked",
+        "READY": "idle", "ERROR": "blocked",
+    }.get(chats.status(thread), "unknown")
 
 
-@herdr_app.command("relaunch")
-def relaunch_command(
-    pane: str = typer.Option("", help="One pane ID; default is every pane with a view."),
-    thread: str = typer.Option("", help="With --pane: the chat a view started without an ID "
-                                        "is showing."),
-    force: bool = typer.Option(False, help="Also restart views whose chat has a turn running."),
-    session: str = SESSION,
-) -> None:
-    """Restart Codex views so they run the installed launcher. Chats keep running.
-
-    A view is a window onto a chat held by the shared owner, so its chat continues while the
-    view restarts. A view is restarted only when its start command or --thread names the
-    chat, the terminal title singles that chat out, and the chat is idle (or, with --force,
-    running). Views waiting on an approval or an answer are always left alone.
-    """
+def run_in_pane(argv: list[str], environment: dict[str, str]) -> int:
+    """Track the visible shared thread for this terminal and save it for reboot recovery."""
+    pane = environment["HERDR_PANE_ID"]
+    session = environment.get("HERDR_SESSION") or SESSION
+    shared = environment.get("AGENTROUTE_LOCAL_SERVER_SOCKET")
+    initial = {}
     try:
-        if thread and not pane:
-            raise SharedServerError("--thread names the chat in one pane; pass --pane too")
-        config = load_config()
-        if not config.shared_server.enabled:
-            raise SharedServerError("Shared attachment is disabled; views cannot be reopened.")
-        # A stopped view can only come back if the installed launcher may attach to the
-        # running owner. Find that out before anything is stopped.
-        ensure_server(agentroute_home() / "bin" / "codex-bin", config)
-        targets = [pane] if pane else [p["pane_id"] for p in panes(session)]
-        failed = False
-        for target in targets:
-            try:
-                status = relaunch_pane(session, target, str(UUID(thread)) if thread else None,
-                                       force)
-            except chats.ERRORS + (KeyError,) as error:
-                status = f"error: {error}"
-            failed = failed or status.startswith("error")
-            if pane or status != "no view of this shared owner":
-                typer.echo(f"{target}  {status}")
-        if failed:
-            raise typer.Exit(1)
-    except chats.ERRORS as error:
-        raise typer.BadParameter(str(error)) from error
-
-
-def launch_thread(argv: list[str]) -> str | None:
+        if shared:
+            initial = command(session, "pane", "get", pane).get("pane", {})
+    except chats.ERRORS:
+        pass
+    thread = None
     if "resume" in argv:
         index = argv.index("resume")
         if index + 1 < len(argv):
             try:
-                return str(UUID(argv[index + 1]))
+                thread = str(UUID(argv[index + 1]))
             except ValueError:
                 pass
-    return None
-
-
-def run_in_pane(argv: list[str], environment: dict[str, str]) -> int:
-    """Run Codex in this pane, recognisable to Herdr, and keep its chat identity current."""
-    pane = environment["HERDR_PANE_ID"]
-    session = environment.get("HERDR_SESSION") or SESSION
-    # Herdr cannot recognise Codex behind this launcher. The hint makes it label the pane and
-    # read working, blocked and idle from the screen. That is right for whichever chat the
-    # view shows and cannot go stale, so AgentRoute reports no state of its own.
-    environment = {**environment, "HERDR_AGENT": "codex"}
     stopped = threading.Event()
-    follower = watcher = result = None
-    if environment.get("AGENTROUTE_LOCAL_SERVER_SOCKET"):
-        follower = PaneFollower(session, pane, launch_thread(argv))
-        watcher = threading.Thread(target=follower.run, args=(stopped,), daemon=True)
+    binding_path = None
+
+    def monitor() -> None:
+        nonlocal pane, binding_path
+        terminal = initial.get("terminal_id")
+        previous_native = native_thread(initial)
+        current_thread = thread
+        binding = None
+        report_pending = bool(thread)
+        while not stopped.is_set():
+            try:
+                try:
+                    pane_info = command(session, "pane", "get", pane)["pane"]
+                except SharedServerError:
+                    pane_info = {}
+                if terminal and pane_info.get("terminal_id") != terminal:
+                    pane_info = next(
+                        (p for p in panes(session) if p["terminal_id"] == terminal), None
+                    )
+                    if pane_info is None:
+                        return
+                terminal = pane_info.get("terminal_id")
+                pane = pane_info.get("pane_id", pane)
+                reported_thread = native_thread(pane_info)
+                if reported_thread and reported_thread != previous_native:
+                    current_thread = reported_thread
+                    previous_native = reported_thread
+                    report_pending = False
+                if current_thread:
+                    if terminal and binding != (pane, current_thread):
+                        path = remember_pane(session, pane_info, current_thread)
+                        if binding_path and binding_path != path:
+                            binding_path.unlink(missing_ok=True)
+                        binding_path = path
+                        binding = (pane, current_thread)
+                    if report_pending and pane_info.get("agent") == "codex":
+                        report_session(session, pane, current_thread)
+                        report_pending = False
+            except chats.ERRORS + (KeyError, TypeError, AttributeError):
+                pass
+            stopped.wait(2)
+
+    watcher = None
+    result = None
+    if shared:
+        watcher = threading.Thread(target=monitor, daemon=True)
         watcher.start()
     try:
-        result = subprocess.run(argv, env=environment, check=False).returncode
+        result = subprocess.run(argv, env={**environment, "HERDR_AGENT": "codex"},
+                                check=False).returncode
         return result
     finally:
         stopped.set()
         if watcher:
             watcher.join(timeout=12)
-        if result == 0 and follower and follower.binding_path:
-            follower.binding_path.unlink(missing_ok=True)
+        if result == 0 and binding_path:
+            binding_path.unlink(missing_ok=True)
