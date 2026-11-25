@@ -79,6 +79,20 @@ Reopen the reply dialog to see recent delivery receipts. **Delivered** means the
 or supervisor inbox accepted the wake. **Read by agent** means the recipient loaded the record.
 The receipt shows the Herdr pane when it was verified. An agent response records its next action. Check the packet itself for evidence that work moved.
 
+## Review decisions
+
+In Focus, **Review decisions** steps through work packet questions addressed to you. Review the
+recorded proposal and revision, then choose **Approve**, **Deny**, or **Comment**. Approve and
+Deny require a macOS owner confirmation that displays the exact proposal. The confirmed choice
+goes to the packet conversation as a user decision. The packet owner still verifies the scope
+and records the outcome. Use Comment for a coordination message.
+
+If a packet only links to a question, review the original in Herdr or record explicit proposal
+text in the packet's waiting step (`wait.proposal`) before approving. Older dated questions
+with full inline proposals also work. For live Codex tool permissions or Herdr Core owners,
+use the native session. If delivery is unconfirmed, inspect the session before taking further
+action. A retry with the same reference cannot send another turn.
+
 ## Where the data comes from
 
 The server reads state other components already write. Replies add a record to the local wait
