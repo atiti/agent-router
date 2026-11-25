@@ -616,17 +616,20 @@ def test_herdr_panes_reads_one_session_and_prefers_the_identity_herdr_holds(monk
         directory = home / "shared-server" / "abc" / "herdr-layout" / key
         directory.mkdir(parents=True, exist_ok=True)
         (directory / f"{pane.replace(':', '-')}.json").write_text(
-            json.dumps({"pane_id": pane, "thread": thread}))
+            json.dumps({"pane_id": pane, "thread": thread, "terminal_id": "term-" + pane}))
 
     record("work", "w1:p1", ROOT)
     record("work", "w2:p1", WORKER)
+    record("work", "w4:p1", WAITER)
     record("other", "w3:p1", WAITER)  # The same pane ID in another Herdr session.
     calls = []
 
     def run(argv, **kwargs):
         calls.append(argv)
         result = {"agents": [
-            {"pane_id": "w1:p1", "workspace_id": "w1", "agent_status": "working"},
+            {"pane_id": "w1:p1", "terminal_id": "term-w1:p1", "workspace_id": "w1",
+             "agent_status": "working"},
+            {"pane_id": "w4:p1", "terminal_id": "replacement", "workspace_id": "w1"},
             {"pane_id": "w2:p1", "workspace_id": "w1", "agent_status": "blocked",
              "agent_session": {"source": "herdr:codex", "kind": "id", "value": REVIEW}},
             {"pane_id": "w3:p1", "workspace_id": "w1", "agent_status": "idle"},

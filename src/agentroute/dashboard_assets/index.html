@@ -251,7 +251,7 @@ function holdCard(e){
   const where = e.type==="outcome" ? `${esc(e.namespace)} / ${esc(e.packet)} / ${esc(e.item)}` :
     e.type==="agent" ? (e.pane ? `${esc(e.workspace||"")} ${esc(e.pane)}` : "session") : "wait";
   const holder = e.type!=="outcome" ? "" : e.agent ? `Held by ${agentLink(e.agent)}` :
-    e.session ? `Held by session <code>${esc(e.session.slice(0,28))}</code>, which is not running` : "No session holds this";
+    e.session ? `Held by session <code>${esc(e.session.slice(0,28))}</code>, which is outside this view` : "No session holds this";
   return `<div class="hold ${e.agent?"link":""}" style="--c:var(--${HOLD[e.kind]||"idle"})" ${e.agent?`data-agent="${esc(e.agent)}"`:""}>
     <div class="hd"><b>${esc(e.title)}</b>${e.priority?`<span class="chip">${esc(e.priority)}</span>`:""}
       ${e.blocking?"":`<span class="chip" title="Work continues for now; this has to be cleared before the outcome can close">not blocking yet</span>`}

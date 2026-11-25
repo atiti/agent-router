@@ -472,21 +472,24 @@ def herdr_panes() -> dict[str, dict[str, Any]]:
     labels = {workspace["workspace_id"]: workspace.get("label") for workspace in workspaces}
     # Pane IDs repeat across Herdr sessions, so only this session's records apply.
     key = hashlib.sha256(session.encode()).hexdigest()[:16]
-    saved: dict[str, tuple[float, str]] = {}
+    saved: dict[tuple[str, str], tuple[float, str]] = {}
     for path in agentroute_home().glob(f"shared-server/*/herdr-layout/{key}/*.json"):
         try:
             record = json.loads(path.read_text())
             modified = path.stat().st_mtime
         except (OSError, ValueError):
             continue
-        pane = record.get("pane_id")
-        if pane and record.get("thread") and modified >= saved.get(pane, (0, ""))[0]:
-            saved[pane] = (modified, record["thread"])
+        pane, terminal = record.get("pane_id"), record.get("terminal_id")
+        if pane and terminal and record.get("thread"):
+            identity = (pane, terminal)
+            if modified >= saved.get(identity, (0, ""))[0]:
+                saved[identity] = (modified, record["thread"])
     panes = {}
     for agent in agents:
         reported = agent.get("agent_session") or {}
+        identity = (agent.get("pane_id"), agent.get("terminal_id"))
         thread = (reported.get("value") if reported.get("kind") == "id" else None) \
-            or saved.get(agent.get("pane_id"), (0, ""))[1]
+            or saved.get(identity, (0, ""))[1]
         if thread:
             panes[thread] = {
                 "pane_id": agent.get("pane_id"),
