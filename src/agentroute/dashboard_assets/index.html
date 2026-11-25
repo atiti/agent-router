@@ -81,24 +81,67 @@ a{color:var(--waiting);cursor:pointer;text-decoration:none}
 .gates i.failed,.gates i.blocked{background:var(--blocked);border-color:var(--blocked)}
 .gates i.pending,.gates i.waived{background:var(--needs_input);border-color:var(--needs_input)}
 .tools{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
-.focus{max-width:1040px;margin:0 auto}
-.headline{font-size:15px;line-height:1.7;margin:4px 0 6px}
-.headline b{font-size:22px;font-weight:650;margin-right:3px}
-.headline span{margin-right:18px;white-space:nowrap}
-.headline .you b{color:var(--needs_input)}.headline .none b{color:var(--blocked)}
-.focus h2{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);margin:22px 0 4px;font-weight:650}
-.focus h2 b{color:var(--text);margin-left:4px}
-.focus .lead{color:var(--dim);margin:0 0 8px;max-width:760px}
-.hold{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--c,var(--line));
-border-radius:9px;padding:9px 13px;margin-bottom:7px}
-.hold.link{cursor:pointer}
-.hold .hd{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
-.hold .hd b{font-weight:600}
-.hold .hd .meta{margin-left:auto;white-space:nowrap}
-.hold .why{margin-top:3px}
-.hold .fix{margin-top:4px;padding:5px 9px;background:var(--panel2);border-radius:6px}
-.hold .fix span{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.4px;margin-right:6px}
-.hold .meta{margin-top:3px}
+.focus{max-width:1200px;margin:0 auto}
+.focus-heading,.focus-section-head,.focus-review-head{display:flex;justify-content:space-between;
+align-items:center;gap:14px;flex-wrap:wrap}
+.focus-heading{margin:10px 0 18px}
+.focus-heading h2{font-size:28px;letter-spacing:-.7px;line-height:1.1;margin:0}
+.focus-maintenance,.focus-section-head p,#focus-review-position{color:var(--dim);font-size:12px}
+.focus-lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));
+gap:8px;margin:0 0 24px}
+.focus-lane{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:8px;
+border:1px solid var(--line);background:var(--panel);color:var(--dim);text-align:left;
+border-radius:10px;padding:10px 12px;cursor:pointer}
+.focus-lane b,.focus-section-head h2 span{font-variant-numeric:tabular-nums}
+.focus-lane b{font-weight:650;color:var(--text)}
+.focus-lane[aria-pressed="true"]{color:var(--text);border-color:var(--focus-tone);
+background:color-mix(in srgb,var(--focus-tone) 9%,var(--panel))}
+.focus-lane:hover{color:var(--text);border-color:var(--focus-tone)}
+.focus-section-head{margin-bottom:14px}
+.focus-section-head h2{font-size:18px;margin:0}
+.focus-section-head h2 span{font-size:13px;color:var(--dim);margin-left:5px}
+.focus-section-head p{margin:3px 0 0}
+.focus-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,370px),1fr));gap:12px}
+.focus-card{display:flex;flex-direction:column;min-width:0;background:var(--panel);
+border:1px solid var(--line);border-top:2px solid var(--focus-tone);border-radius:12px;padding:16px;
+overflow-wrap:anywhere}
+.focus-card-context{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;color:var(--dim);font-size:11.5px}
+.focus-status{display:inline-flex;align-items:center;gap:6px;font-weight:650;color:var(--text)}
+.focus-status i{height:7px;width:7px;border-radius:50%;background:var(--focus-tone)}
+.focus-card h3{font-size:16px;font-weight:650;letter-spacing:-.12px;line-height:1.35;margin:7px 0 0}
+.focus-facts{display:grid;gap:10px;margin:13px 0}
+.focus-facts div{display:grid;grid-template-columns:minmax(74px,108px) minmax(0,1fr);
+align-items:baseline;gap:3px 10px}
+.focus-facts dt{font-size:11.5px;color:var(--dim);font-weight:600}
+.focus-facts dd{margin:0}
+.focus-facts small{display:block;color:var(--dim);font-size:11.5px;margin-top:3px}
+.focus-facts .focus-next{border-radius:7px;padding:8px;margin:0 -8px;background:var(--panel2)}
+.focus-signals{display:flex;flex-wrap:wrap;gap:4px 10px;color:var(--dim);font-size:11px;
+margin-bottom:9px}
+.focus-card-actions,.focus-review-nav{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.focus-card>.focus-card-actions{margin-top:auto}
+.focus-read{margin-left:auto}
+.focus-lane:focus-visible,.focus-card-actions button:focus-visible,#focus-review button:focus-visible{
+outline:2px solid var(--waiting);outline-offset:2px}
+#focus-review{color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:14px;
+width:min(660px,calc(100vw - 24px));max-height:calc(100dvh - 36px);padding:18px;overflow:auto}
+#focus-review::backdrop{background:rgba(0,0,0,.48)}
+.focus-review-head{flex-wrap:nowrap;align-items:start;margin-bottom:10px}
+.focus-review-head h2{margin:3px 0 0;font-size:20px;overflow-wrap:anywhere}
+.focus-review-nav{justify-content:space-between;margin-top:12px}
+.focus-log{margin-top:25px}
+.focus-log>summary span{color:var(--dim)}
+.focus-log ul{margin:0;padding:0;list-style:none}
+.focus-log li{display:grid;grid-template-columns:1fr minmax(120px,30%);gap:10px;
+padding:10px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.focus-log li span{display:block;color:var(--dim);font-size:12px}
+@media(max-width:540px){
+  body:has(.focus) #tabs{max-width:100%;overflow-x:auto}
+  body:has(.focus) #tabs button{white-space:nowrap}
+  .focus-card{padding:13px}
+  .focus-facts div{grid-template-columns:1fr}
+  .focus-log li{grid-template-columns:1fr}
+}
 .packet-action,.reply-button{border:1px solid var(--line);background:var(--panel2);border-radius:7px;padding:5px 10px;cursor:pointer}
 .packet-action{margin-top:7px;text-align:left}
 .packet-action:hover,.reply-button:hover{border-color:var(--waiting)}
@@ -205,6 +248,17 @@ svg.chart{display:block;width:100%;height:220px}
 <section id="attention"></section>
 <main id="view"></main>
 <aside id="drawer" hidden></aside>
+<dialog id="focus-review" aria-labelledby="focus-review-title">
+  <div class="focus-review-head">
+    <div><div id="focus-review-position"></div><h2 id="focus-review-title" tabindex="-1"></h2></div>
+    <button type="button" class="reply-button" id="focus-review-close">Close</button>
+  </div>
+  <div id="focus-review-body"></div>
+  <div class="focus-review-nav">
+    <button type="button" class="reply-button" id="focus-prev">Previous</button>
+    <button type="button" class="reply-button" id="focus-next">Next</button>
+  </div>
+</dialog>
 <dialog id="packet-reply" aria-labelledby="reply-heading">
   <h2 id="reply-heading">Reply to work packet</h2>
   <div id="reply-context" class="meta"></div>
@@ -222,6 +276,9 @@ svg.chart{display:block;width:100%;height:220px}
         <option value="continue">Continue work</option>
         <option value="hold">Hold work</option>
         <option value="details">Ask for details</option>
+        <option value="triage">Identify an owner</option>
+        <option value="coordination">Check a handoff</option>
+        <option value="dependency">Check an outside dependency</option>
         <option value="custom">Write my own</option>
       </select>
     </label>
@@ -295,14 +352,11 @@ const STATES = {needs_input:"Asking you", working:"Working", waiting:"Waiting", 
 const TABS = {focus:"Focus", board:"Board", map:"Map", waits:"Waits", packets:"Work packets", usage:"Usage"};
 const HOLD = {you:"needs_input", unowned:"blocked", external:"waiting", worker:"waiting", coordination:"stalled"};
 const HOLD_LABEL = {external:"outside party", worker:"another agent", coordination:"needs coordination"};
-const HOLD_GROUP = {coordination:["Needs coordination between owners", "A supervisor needs to investigate or settle a handoff."],
-  worker:["Waiting on another agent", "Another session owns the next result."],
-  external:["Waiting on an outside party", "CI, a provider, a customer or a person outside these sessions."]};
 const KIND_COLOR = {dir:"#8b96a3", github:"#58a6ff", pr:"#a78bfa", host:"#f0883e", service:"#f5a524",
   web:"#2ea58f", mcp:"#db61a2", file:"#6e7681", agent:"#3fb950", packet:"#e3b341"};
 const PALETTE = ["#58a6ff","#3fb950","#f5a524","#a78bfa","#f85149","#2ea58f","#db61a2","#e3b341","#8b96a3"];
 const S = {snap:null, tab:Object.hasOwn(TABS, location.hash.slice(1).split("/")[0]) ? location.hash.slice(1).split("/")[0] : "focus", filter:"", window:86400,
-  selected:null, hidden:new Set(), expanded:new Set(), showDone:false, source:null, last:0,
+  focusLane:"you", selected:null, hidden:new Set(), expanded:new Set(), showDone:false, source:null, last:0,
   positions:new Map(), view:{x:0,y:0,k:1}, viewTouched:false, focus:null, mapKey:"", detailAt:0};
 
 const $ = id => document.getElementById(id);
@@ -367,9 +421,22 @@ function render(changed){
       <b>${esc(item.title)}</b><em>${esc(item.reason)}</em></div>`).join("");
   $("tiles").hidden = $("attention").hidden = S.tab==="focus";
   if(S.tab==="map"){ if(!changed || changed.includes("agents")) renderMap(); return; }
-  const need = {focus:["focus","agents"], board:["agents"], waits:["waits","agents"], packets:["packets","agents"], usage:["usage","agents","summary"]}[S.tab];
-  if(!changed || need.some(name => changed.includes(name)))
-    $("view").innerHTML = ({focus:focusView, board:boardView, waits:waitsView, packets:packetsView, usage:usageView}[S.tab])();
+  const need = {focus:["focus","agents","packets"], board:["agents"], waits:["waits","agents"], packets:["packets","agents"], usage:["usage","agents","summary"]}[S.tab];
+  const view = $("view");
+  if(!changed || need.some(name => changed.includes(name))){
+    const focused = S.tab==="focus" && view.contains(document.activeElement) ? document.activeElement : null;
+    const cardKey = focused?.closest("[data-focus-card]")?.dataset.focusCard;
+    const action = focused && [...focused.attributes].find(a => a.name.startsWith("data-"));
+    view.innerHTML = ({focus:focusView, board:boardView, waits:waitsView, packets:packetsView, usage:usageView}[S.tab])();
+    if(action){
+      const scope = cardKey ? [...view.querySelectorAll("[data-focus-card]")]
+        .find(card => card.dataset.focusCard === cardKey) : view;
+      const replacement = [...(scope?.querySelectorAll(`[${action.name}]`) || [])]
+        .find(el => el.getAttribute(action.name) === action.value);
+      (replacement || view.querySelector('[aria-pressed="true"]'))?.focus({preventScroll:true});
+    }
+    if(focusReview && !$("focus-review-body").contains(document.activeElement)) renderFocusReview();
+  }
 }
 
 const packetActionsUrl = "/api/packet-actions";
@@ -379,6 +446,9 @@ const replyTemplates = {
   continue: "Please review this packet and continue any next step that is ready and already authorized. If it is still blocked, report the decision or evidence needed to proceed.",
   hold: "Please keep this packet on hold, preserve its current ownership, and wait for my next instruction. Tell me if anything has already started that requires attention.",
   details: "Please explain what is blocking this packet, what you have verified, and the specific decision or evidence you need to continue.",
+  triage: "Please review this blocker, find the responsible owner or recommend who should take it, and record the first step they can take.",
+  coordination: "Please check who owns the next step, confirm whether they picked it up, and record a concrete next action or the decision you need.",
+  dependency: "Please check the recorded outside dependency and whether its result is available. If it is still pending, record who is following up and when they will check again.",
   custom: "",
 };
 let packetActionToken = "";
@@ -437,7 +507,7 @@ function packetAction(namespace, packet, item){
 function sessionLabel(id){
   const agent = agentById(id);
   const name = agent?.title || agent?.nickname;
-  return name ? `${name} · ${id.slice(0,8)}` : id;
+  return focusText(name) || "the assigned session";
 }
 function packetOutcome(namespace, packet, item){
   const record = S.snap?.packets.find(p => p.namespace === namespace && p.id === packet);
@@ -467,7 +537,7 @@ function showReplyRoute(current){
     title = "Packet review session";
     const next = route.thread ? "This packet’s review session will reopen in Herdr." :
       "A dedicated Herdr conversation will be created for this packet.";
-    hint = (route.assignment ? `Recorded assignment: ${route.assignment}. ` : "") + next;
+    hint = next;
   } else {
     title = current.routeError ? "Session route unavailable" : "Finding the packet’s session…";
     hint = current.routeError || "";
@@ -504,9 +574,10 @@ function openPacketReply(button){
   const pending = pendingReply(context.key);
   const draft = replyDrafts.get(context.key);
   reply = {...context, pending, route:null, receipts:new Map()};
-  $("reply-context").textContent = `${context.objective} · ${context.key}`;
-  $("reply-template").value = pending ? "custom" : draft?.template || "continue";
-  $("reply-message").value = pending?.message ?? draft?.message ?? replyTemplates.continue;
+  $("reply-context").textContent = focusText(context.objective);
+  const template = draft?.template || button.dataset.replyTemplate || "continue";
+  $("reply-template").value = pending ? "custom" : template;
+  $("reply-message").value = pending?.message ?? draft?.message ?? replyTemplates[template];
   showReplyRoute(reply);
   $("reply-notice").textContent = pending ?
     "Delivery is unconfirmed. Retry sends the original reply with the same reference." : "";
@@ -717,7 +788,7 @@ function decisionLabel(value){
 }
 function decisionEntries(){
   return (S.snap?.focus?.needs_you || []).filter(e => e.type === "outcome" &&
-    !e.decision_in_session && Number.isInteger(e.revision) && holdMatches(e));
+    !e.decision_in_session && Number.isInteger(e.revision) && focusMatches(e));
 }
 function queuePending(key, payload){
   const storageKey = "decision:" + key;
@@ -818,7 +889,7 @@ function showDecisionEntry(){
   reviewQueue.entry = entry;
   $("decision-position").textContent = `${index+1} of ${items.length}`;
   $("decision-title").textContent = title;
-  $("decision-context").textContent = key;
+  $("decision-context").textContent = entry.namespace;
   $("decision-message").value = entry.pending?.message || "";
   $("decision-notice").textContent = entry.pending ?
     "The previous response is unconfirmed. Retry uses the original decision reference." : "";
@@ -1022,96 +1093,221 @@ $("packet-decision").addEventListener("close", () => {
   reviewQueue = null;
 });
 
-/* Focus: what waits on the reader, and why everything else that is stuck is stuck. */
-function holdCard(e){
-  const where = e.type==="outcome" ? `${esc(e.namespace)} / ${esc(e.packet)} / ${esc(e.item)}` :
-    e.type==="agent" ? (e.pane ? `${esc(e.workspace||"")} ${esc(e.pane)}` : "session") : "wait";
-  const holder = e.type!=="outcome" ? "" : e.agent ? `Held by ${agentLink(e.agent)}` :
-    e.session ? `Held by session <code>${esc(e.session.slice(0,28))}</code>, which is outside this view` : "No session holds this";
-  return `<div class="hold ${e.agent?"link":""}" style="--c:var(--${HOLD[e.kind]||"idle"})" ${e.agent?`data-agent="${esc(e.agent)}"`:""}>
-    <div class="hd"><b>${esc(e.title)}</b>${e.priority?`<span class="chip">${esc(e.priority)}</span>`:""}
-      ${e.blocking?"":`<span class="chip" title="Work continues for now; this has to be cleared before the outcome can close">not blocking yet</span>`}
-      ${e.review_overdue?`<span class="chip late">review due ${ago(e.review_at)}</span>`:""}
-      <span class="meta">${where} · ${e.type==="agent"?"quiet":"held"} ${span(Date.now()/1000-e.since)}</span></div>
-    ${e.owner&&e.kind!=="you"?`<div class="meta">Waiting on <b>${esc(e.owner)}</b></div>`:""}
-    ${e.supervision?`<div class="meta">${esc(e.supervision)}</div>`:""}
-    ${e.reason?`<div class="why">${esc(e.reason)}</div>`:""}
-    ${e.detail?`<div class="meta">${esc(e.detail)}</div>`:""}
-    ${e.unblock?`<div class="fix"><span>Unblocks when</span>${esc(e.unblock)}</div>`:
-      e.next_action?`<div class="fix"><span>Recorded next action</span>${esc(e.next_action)}</div>`:""}
-    ${holder||e.question?`<div class="meta">${holder}${holder&&e.question?" · ":""}${e.question?"Asked in "+esc(e.question):""}</div>`:""}
-    ${e.decision_in_session ? '<div class="meta">Open the session to answer this separate outcome question.</div>' : ""}
-    ${packetActionToken && e.type==="outcome" && e.kind==="you" && !e.decision_in_session && Number.isInteger(e.revision) ?
-      `<button type="button" class="packet-action" data-decide-packet data-namespace="${esc(e.namespace)}"
-        data-packet="${esc(e.packet)}" data-item="${esc(e.item)}">Review decision</button>` : ""}
-    ${e.type==="outcome" ? packetAction(e.namespace,e.packet,{...e,id:e.item}) : ""}
-  </div>`;
+/* Focus is a live inbox. Detail navigation keeps a stable order while the cards update. */
+const FOCUS_LANES = {
+  you: ["Needs you", "Answer a question or review a decision."],
+  unowned: ["Needs an owner", "Ask for triage to identify who can take the next step."],
+  coordination: ["Needs coordination", "Check the handoff and ask for a clear owner and next step."],
+  worker: ["Waiting on an agent", "Ask the responsible agent for an update if you need to move this along."],
+  external: ["Waiting outside", "Check whether the result has arrived or ask who will follow up."],
+  moving: ["In progress", "Active sessions and sessions waiting for a scheduled event."],
+};
+
+function focusText(value){
+  return String(value || "").replace(
+    /https?:\/\/\S+|\b[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}\b|\b[\da-f]{20,}\b/gi,
+    " "
+  ).replace(/\(\s*\)|\[\s*\]/g, "").replace(/\s+([.,;])/g, "$1").replace(/\s+/g, " ").trim();
 }
-function holdMatches(e){ return !S.filter || S.filter.toLowerCase().split(/\s+/).every(word =>
-  [e.title,e.namespace,e.packet,e.item,e.owner,e.reason,e.unblock,e.next_action,e.priority].join(" ").toLowerCase().includes(word)); }
-function holdList(entries, key, limit){
-  const shown = S.expanded.has(key) ? entries : entries.slice(0, limit);
-  return shown.map(holdCard).join("") + (entries.length>shown.length ?
-    `<button class="more" data-expand="${key}">Show ${entries.length-shown.length} more</button>` : "");
+function focusKey(e){
+  return e.type === "outcome" ? [e.namespace,e.packet,e.item].join("/") :
+    [e.type,e.agent || e.session,e.type === "wait" ? e.title : ""].join("/");
+}
+function focusMatches(e){
+  if(!S.filter) return true;
+  const agent = agentById(e.agent);
+  const packet = e.type === "outcome" && packetOutcome(e.namespace,e.packet,e.item);
+  const hay = [e.title,e.namespace,e.packet,e.item,e.owner,e.reason,e.unblock,e.next_action,
+    packet?.checkpoint,agent?.title,agent?.cwd,e.priority].join(" ").toLowerCase();
+  return S.filter.toLowerCase().split(/\s+/).every(word => hay.includes(word));
+}
+function focusLanes(){
+  const f = S.snap.focus;
+  const lanes = {you:f.needs_you, unowned:f.unowned,
+    coordination:[], worker:[], external:[], moving:[]};
+  for(const group of f.others) lanes[group.kind] = group.items;
+  const held = new Set(Object.values(lanes).flat().map(focusKey));
+  const covered = new Set();
+  for(const packet of S.snap.packets || []){
+    for(const item of packet.items){
+      if(item.status !== "active" || !item.session) continue;
+      const agent = agentById(item.session);
+      if(agent?.state !== "working") continue;
+      const entry = {
+        type:"outcome", kind:"moving", title:item.objective || "Active work packet",
+        namespace:packet.namespace, packet:packet.id, item:item.id, blocking:true,
+        agent:agent.id, session:item.session, next_action:item.next_action, since:item.checkpoint_at,
+      };
+      if(held.has(focusKey(entry))) continue;
+      lanes.moving.push(entry);
+      covered.add(agent.id);
+    }
+  }
+  lanes.moving.push(...S.snap.agents.filter(a => !covered.has(a.id) &&
+    ["working", "waiting"].includes(a.state)).map(a => ({
+      type:"agent", agent:a.id, title:a.title || a.nickname || "Untitled session", kind:"moving",
+      reason:a.state==="waiting" ? a.state_reason : "", unblock:a.state==="waiting" ?
+        "The session can resume when its scheduled event arrives." : "",
+      detail:a.task?.summary || a.activity.last_event?.label || a.state_reason, since:a.active_at,
+    })));
+  lanes.moving.sort((a,b) => (b.since || 0)-(a.since || 0));
+  return Object.fromEntries(Object.entries(lanes).map(([lane,entries]) => [
+    lane, entries.filter(focusMatches).sort((a,b) => Number(!!b.review_overdue)-Number(!!a.review_overdue))
+  ]));
+}
+function focusTarget(e, extra=""){
+  return `data-namespace="${esc(e.namespace)}" data-packet="${esc(e.packet)}"
+    data-item="${esc(e.item)}" ${extra}`;
+}
+function focusActions(e, packet){
+  const agent = agentById(e.agent);
+  if(e.type !== "outcome"){
+    if(!agent) return "";
+    return `<button type="button" class="reply-button" data-agent="${esc(agent.id)}">${
+      e.asking ? "Inspect request" : "View session"}</button>`;
+  }
+  if(!packetActionToken || !Number.isInteger(packet?.revision) ||
+     ["done","cancelled"].includes(packet.status)) return "";
+  const decision = e.kind === "you" && e.decision_slot && !e.decision_in_session;
+  const [label, template] = {
+    you:["Reply with input","custom"], unowned:["Request triage","triage"],
+    coordination:["Ask for follow-up","coordination"], worker:["Ask for an update","details"],
+    external:["Check dependency","dependency"],
+  }[e.kind] || ["Open or reply","details"];
+  return `${decision ?
+    `<button type="button" class="reply-button primary" ${focusTarget(e,"data-decide-packet")}>Review decision</button>` : ""}
+    <button type="button" class="reply-button ${decision ? "" : "primary"}"
+      ${focusTarget(e,`data-reply-packet data-reply-template="${template}"`)}>${label}</button>`;
+}
+function focusCard(e, reading=false){
+  const outcome = e.type === "outcome";
+  const packet = outcome ? packetOutcome(e.namespace,e.packet,e.item) : null;
+  const agent = agentById(e.agent);
+  const title = focusText(e.title) || "Session follow-up";
+  const blocker = focusText(e.reason) || (e.kind === "moving" ? "No blocker reported" : "No blocker recorded");
+  const checkpoint = focusText(packet?.checkpoint || e.detail);
+  const progress = checkpoint || (outcome ? "No progress update recorded" : "No recent progress update");
+  const condition = focusText(e.unblock);
+  const recorded = focusText(e.next_action);
+  const next = condition || recorded || (e.kind === "unowned" ? "Identify an owner and a concrete next step." :
+    e.kind === "moving" ? "Continue the current work." : "Confirm the next step with the owner.");
+  const responsible = e.kind === "you" ? "You" : focusText(e.owner) ||
+    focusText(agent?.title || agent?.nickname) ||
+    (e.session ? "Assigned session" : "Owner to be identified");
+  const where = focusText(agent?.pane?.workspace || e.workspace ||
+    agent?.cwd?.split("/").filter(Boolean).at(-1) || e.namespace);
+  const status = e.kind === "moving" ? STATES[agent?.state] : FOCUS_LANES[e.kind]?.[0];
+  const criteria = packet?.criteria_total ? `${packet.criteria_met} of ${packet.criteria_total} checks have evidence` : "";
+  const due = e.review_overdue ? `Review overdue · ${ago(e.review_at)}` : e.review_at ? `Review ${stamp(e.review_at)}` : "";
+  const signals = [due, packet?.checkpoint_at && `Updated ${ago(packet.checkpoint_at)}`,
+    e.supervision && focusText(e.supervision), !e.blocking && outcome && "Work can continue meanwhile"]
+    .filter(Boolean);
+  if(e.decision_in_session) signals.push("Answer the separate outcome question in its conversation");
+  return `<article class="focus-card" data-focus-card="${esc(focusKey(e))}" style="--focus-tone:var(--${HOLD[e.kind] || agent?.state || "idle"})">
+    <div class="focus-card-head">
+      <div class="focus-card-context"><span class="focus-status"><i></i>${esc(status)}</span>
+        ${where ? `<span>${esc(where)}</span>` : ""}</div>
+      ${reading ? "" : `<h3>${esc(title)}</h3>`}
+    </div>
+    <dl class="focus-facts">
+      <div><dt>Progress</dt><dd>${esc(progress)}
+        ${criteria ? `<small>${esc(criteria)}</small>` : ""}</dd></div>
+      <div><dt>What’s missing</dt><dd>${esc(blocker)}</dd></div>
+      <div class="focus-next"><dt>What’s next</dt><dd>${esc(next)}
+        ${reading && condition && recorded && recorded !== condition ? `<small>${esc(recorded)}</small>` : ""}</dd></div>
+      <div><dt>Responsible</dt><dd>${esc(responsible)}</dd></div>
+    </dl>
+    ${signals.length ? `<div class="focus-signals">${signals.map(signal => `<span>${esc(signal)}</span>`).join("")}</div>` : ""}
+    <div class="focus-card-actions">
+      ${focusActions(e,packet)}
+      ${reading ? "" : `<button type="button" class="reply-button focus-read" data-focus-item="${esc(focusKey(e))}"
+        aria-label="Details for ${esc(title)}">Details</button>`}
+    </div>
+  </article>`;
 }
 function recentAction(row){
-  const state = row.status === "done" ? "Outcome completed" : "Outcome " + row.status;
-  const step = row.step_state === "done" && row.status !== "done" ? " · Current step finished" : "";
-  const checkpoint = row.checkpoint_at && row.checkpoint_at >= row.at ? row.checkpoint : "";
-  return `<div class="hold"><div class="hd"><b>${esc(row.title)}</b>
-    <span class="meta">${ago(row.at)} · revision ${esc(row.revision)}</span></div>
-    <div>${esc(row.action)} · ${esc(row.delivery)} · ${esc(state + step)}</div>
-    ${row.detail || checkpoint ? `<div class="meta">${esc(row.detail || checkpoint)}</div>` : ""}
-    ${packetAction(row.namespace,row.packet,{...row,id:row.item})}</div>`;
+  const state = row.status === "done" ? "Outcome completed" :
+    row.step_state === "done" ? "Step finished" : "Outcome " + row.status;
+  const checkpoint = row.checkpoint_at >= row.at ? row.checkpoint : "";
+  return `<li><div><b>${esc(focusText(row.title))}</b>
+    <span>${esc(focusText(row.detail || checkpoint))}</span></div>
+    <div><b>${esc(row.action)} · ${esc(row.delivery)}</b><span>${esc(state)} · ${ago(row.at)}</span>
+      ${packetAction(row.namespace,row.packet,{...row,id:row.item})}</div></li>`;
 }
 function focusView(){
-  const f = S.snap.focus, agents = visibleAgents();
-  const you = f.needs_you.filter(holdMatches), unowned = f.unowned.filter(holdMatches);
-  const groups = f.others.map(g => ({...g, items:g.items.filter(holdMatches)})).filter(g => g.items.length);
-  const recent = (f.recent_actions || []).filter(holdMatches);
-  const shownActions = S.expanded.has("f-recent") ? recent : recent.slice(0, 5);
-  const blockedOthers = groups.reduce((n,g) => n+g.items.length, 0);
-  const moving = agents.filter(a => a.state==="working").sort((x,y) => y.active_at-x.active_at);
-  const parked = agents.filter(a => a.state==="waiting").sort((x,y) => y.active_at-x.active_at);
-  const line = a => `<div class="line" style="--c:var(--${a.state})" data-agent="${a.id}"><i></i><b>${esc(a.title||"(untitled)")}</b>
-    <span>${a.state==="working" ? esc((a.activity.last_event?.detail || a.activity.last_event?.label || a.state_reason)) : esc(a.state_reason)}</span>
-    <span style="flex:none">${ago(a.active_at)}</span></div>`;
-  const who = f.names.length ? esc(f.names.join(", ")) : "nobody (start with --me NAME)";
+  const f = S.snap.focus, lanes = focusLanes();
+  const entries = lanes[S.focusLane];
+  const [label,hint] = FOCUS_LANES[S.focusLane];
+  const recent = (f.recent_actions || []).filter(focusMatches);
+  const labels = Object.entries(FOCUS_LANES).map(([kind,[name]]) => `
+    <button type="button" class="focus-lane" data-focus-lane="${kind}"
+      style="--focus-tone:var(--${HOLD[kind] || "working"})" aria-pressed="${S.focusLane===kind}">
+      <span>${name}</span><b>${lanes[kind].length}</b>
+    </button>`).join("");
   return `<div class="focus">
-    <div class="headline"><span class="you"><b>${you.length}</b>need you</span>
-      <span class="none"><b>${unowned.length}</b>blocked with no owner</span>
-      <span><b>${blockedOthers}</b>blocked on someone else</span>
-      <span><b>${moving.length}</b>working</span><span><b>${parked.length}</b>waiting on CI, a timer or an event</span></div>
-    <p class="lead">Maintenance ${f.maintenance ?
-      (f.maintenance.fresh ? "checked " : "overdue · last checked ") + ago(f.maintenance.checked_at) :
-      "has no recent startup report"}</p>
-    ${recent.length ? `<h2>Recent dashboard actions<b>${recent.length}</b></h2>
-      ${shownActions.map(recentAction).join("")}
-      ${recent.length>shownActions.length ?
-        `<button class="more" data-expand="f-recent">Show ${recent.length-shownActions.length} more</button>` : ""}` : ""}
-    <div class="decision-bar"><h2>Needs you<b>${you.length}</b></h2>
-      ${packetActionToken && decisionEntries().length ?
-        '<button type="button" class="reply-button primary" data-review-decisions>Review decisions</button>' : ""}
+    <div class="focus-heading"><h2>Focus</h2>
+      ${f.maintenance?.fresh ? "" : '<span class="focus-maintenance">Maintenance update overdue</span>'}
     </div>
-    <p class="lead">Sessions waiting for an answer or approval, and outcomes whose recorded owner is ${who}.</p>
-    ${holdList(you, "f-you", 8) || `<div class="empty">Nothing is waiting on you.</div>`}
-    <h2>Blocked with no owner<b>${unowned.length}</b></h2>
-    <p class="lead">Marked blocked with a written reason only. Nobody is named to clear these and no condition is recorded, so nothing will ever prompt anyone. Check the source and assign an owner before asking for a decision.</p>
-    ${holdList(unowned, "f-none", 5) || `<div class="empty">Every blocked outcome names an owner.</div>`}
-    <h2>Blocked on someone else<b>${blockedOthers}</b></h2>
-    ${groups.map(g => `<details class="grp" ${S.expanded.has("g-"+g.kind)?"open":""} data-group="${g.kind}">
-      <summary><b>${HOLD_GROUP[g.kind][0]}</b><span class="meta">${g.items.length} outcome${g.items.length>1?"s":""} · ${
-        g.items.filter(e=>e.review_overdue).length} past their review date · ${HOLD_GROUP[g.kind][1]}</span></summary>
-      <div>${g.items.map(holdCard).join("")}</div></details>`).join("") || `<div class="empty">Nothing is blocked on anyone else.</div>`}
-    <h2>In motion<b>${moving.length+parked.length}</b></h2>
-    ${[...moving, ...parked].map(line).join("") || `<div class="empty">No session is working or waiting.</div>`}
-    <h2>Claims</h2>
-    <p class="lead">Each namespace allows ${f.claims[0]?.limit ?? 20} claimed outcomes. A claim stays until its session completes or releases it, even when the work is held or the session is gone.</p>
-    ${f.claims.map(c => `<div class="claim"><b>${esc(c.namespace)}</b>
-      <span class="bar ${c.claimed>=c.limit?"full":""}"><i style="width:${Math.min(100,100*c.claimed/c.limit)}%"></i></span>
-      <span>${c.claimed} of ${c.limit} claimed${c.claimed>=c.limit?" · <b>full: nothing new can be claimed</b>":""} · ${c.held} held · ${c.stale} with no checkpoint in 3 days · ${c.ready} ready and unclaimed</span></div>`).join("")}
+    <div class="focus-lanes" role="group" aria-label="Filter by what needs attention">${labels}</div>
+    <section aria-labelledby="focus-section">
+      <div class="focus-section-head">
+        <div><h2 id="focus-section">${label} <span>${entries.length}</span></h2><p>${hint}</p></div>
+        <div class="focus-card-actions">
+          ${S.focusLane==="you" && packetActionToken && decisionEntries().length ?
+            '<button type="button" class="reply-button primary" data-review-decisions>Review decisions</button>' : ""}
+          ${entries.length ? `<button type="button" class="reply-button" data-focus-item="${esc(focusKey(entries[0]))}">Review items</button>` : ""}
+        </div>
+      </div>
+      ${entries.length ? `<div class="focus-grid">${entries.map(e => focusCard(e)).join("")}</div>` :
+        `<div class="empty">${S.filter ? "No results match your filter." : S.focusLane==="you" ?
+          "Nothing needs your input." : "No items here."}</div>`}
+    </section>
+    ${recent.length ? `<details class="grp focus-log" data-group="focus-activity" ${S.expanded.has("g-focus-activity") ? "open" : ""}>
+      <summary><b>Recent dashboard activity</b><span>${recent.length}</span></summary>
+      <ul>${recent.map(recentAction).join("")}</ul>
+    </details>` : ""}
   </div>`;
 }
+let focusReview = null;
+function openFocusReview(key){
+  const keys = focusLanes()[S.focusLane].map(focusKey);
+  const index = keys.indexOf(key);
+  if(index < 0) return;
+  focusReview = {keys,index,lane:S.focusLane,opener:key};
+  renderFocusReview();
+  $("focus-review").showModal();
+  $("focus-review-title").focus();
+}
+function renderFocusReview(){
+  if(!focusReview) return;
+  const {keys,index,lane} = focusReview;
+  const entry = focusLanes()[lane].find(e => focusKey(e) === keys[index]);
+  $("focus-review-title").textContent = entry ? focusText(entry.title) || "Session follow-up" : "Item updated";
+  $("focus-review-position").textContent = `${index+1} of ${keys.length}`;
+  const body = $("focus-review-body");
+  body.innerHTML = entry ? focusCard(entry,true) :
+    '<p class="empty">This item has moved out of this list. Continue to the next item or return to Focus.</p>';
+  $("focus-prev").disabled = index === 0;
+  $("focus-next").disabled = index === keys.length-1;
+}
+for(const [id,direction] of [["focus-prev",-1],["focus-next",1]]){
+  $(id).addEventListener("click", () => {
+    if(!focusReview || $(id).disabled) return;
+    focusReview.index += direction;
+    renderFocusReview();
+    if($(id).disabled) $("focus-review-title").focus();
+  });
+}
+$("focus-review-close").addEventListener("click", () => $("focus-review").close());
+$("focus-review").addEventListener("close", () => {
+  const opener = focusReview?.opener;
+  focusReview = null;
+  if(!$("packet-reply").open && !$("packet-decision").open && opener){
+    const button = [...$("view").querySelectorAll("[data-focus-item]")]
+      .find(el => el.dataset.focusItem === opener);
+    (button || $("view").querySelector('[aria-pressed="true"]'))?.focus();
+  }
+});
 
 function nowLine(a){
   const act = a.activity;
@@ -1334,6 +1530,13 @@ document.addEventListener("click", event => {
   const hit = name => event.target.closest(`[data-${name}]`);
   let el;
   if(hit("review-decisions")) return openDecisionQueue();
+  if((el = hit("focus-lane"))){
+    S.focusLane = el.dataset.focusLane;
+    render();
+    $("view").querySelector('[aria-pressed="true"]')?.focus();
+    return;
+  }
+  if((el = hit("focus-item"))) return openFocusReview(el.dataset.focusItem);
   if((el = hit("decide-packet"))) return openDecisionQueue(el);
   if((el = hit("reply-packet"))) return openPacketReply(el);
   if(hit("close")) return select(null);
@@ -1345,7 +1548,10 @@ document.addEventListener("click", event => {
     S.expanded.has(key) ? S.expanded.delete(key) : S.expanded.add(key); return; }
   if((el = hit("node")) && S.tab==="map"){ S.focus = S.focus===el.dataset.node ? null : el.dataset.node; renderMap();
     if(el.dataset.agent) select(el.dataset.agent); return; }
-  if((el = hit("agent")) && agentById(el.dataset.agent)) return select(el.dataset.agent);
+  if((el = hit("agent")) && agentById(el.dataset.agent)){
+    $("focus-review").close();
+    return select(el.dataset.agent);
+  }
   if(event.target.id==="map"){ S.focus = null; renderMap(); }
 });
 document.addEventListener("change", event => {
@@ -1354,7 +1560,7 @@ document.addEventListener("change", event => {
 });
 $("filter").addEventListener("input", event => { S.filter = event.target.value.trim(); render(); });
 document.addEventListener("keydown", event => {
-  if(event.key==="Escape" && !$("packet-reply").open && !$("packet-decision").open) select(null);
+  if(event.key==="Escape" && !$("packet-reply").open && !$("packet-decision").open && !$("focus-review").open) select(null);
 });
 document.addEventListener("wheel", event => { const svg = event.target.closest?.("#map"); if(!svg) return; event.preventDefault();
   const box = svg.getBoundingClientRect(), mx = event.clientX-box.left, my = event.clientY-box.top;
