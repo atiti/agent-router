@@ -971,7 +971,7 @@ def dashboard_command(
         None, "--me", help="A name that marks a recorded hold as yours; repeat for several. "
                            "Default: the first word of your git user.name."),
 ) -> None:
-    """Serve a live, read-only view of agents, tools, tokens, waits, goals and work packets."""
+    """Serve a live view of agents, waits, goals and work packets with local packet replies."""
     from .dashboard_server import DEFAULT_PORT, serve
 
     chosen = DEFAULT_PORT if port is None else port

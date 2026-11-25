@@ -425,6 +425,7 @@ def load_packets(cutoff: float, names: list[str] | None = None) -> list[dict[str
             gates = item.get("gates") or {}
             items.append({
                 "id": item.get("id"),
+                "revision": item.get("revision"),
                 "objective": redact(str(item.get("objective") or ""), 220),
                 "status": item.get("status"),
                 "priority": item.get("priority"),
@@ -595,7 +596,8 @@ def build_focus(packets: list[dict[str, Any]], agents: list[dict[str, Any]],
             entry = {
                 **hold, "type": "outcome", "title": item["objective"] or item["id"],
                 "namespace": packet["namespace"], "packet": packet["id"], "item": item["id"],
-                "priority": item["priority"], "next_action": item["next_action"],
+                "revision": item.get("revision"), "priority": item["priority"],
+                "next_action": item["next_action"],
                 "since": since, "review_at": item["review_at"],
                 "review_overdue": bool(item["review_at"] and item["review_at"] < now),
                 "session": item["session"],
