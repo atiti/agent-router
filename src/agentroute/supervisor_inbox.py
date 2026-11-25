@@ -422,6 +422,36 @@ def sync_due_reviews(data: dict, items: dict[str, dict], now: float,
                 "evidence": [f"Canonical packet observed at {now}"]})
 
 
+def owner_followup_due(data: dict, item: dict, now: float) -> str | None:
+    """Identify a quiet assigned step without turning a stale claim into a free slot."""
+    from .maintenance import QUIET_SECONDS, stamp
+
+    assignment = item.get("assignment") or {}
+    step = item.get("next_step") or {}
+    if (item["id"] == data.get("item") or not assignment.get("session")
+            or item.get("status") in {"queued", "done", "cancelled"}
+            or step.get("state") not in {"ready", "active"}):
+        return None
+    if (review := item.get("next_review")) is not None:
+        deadline = stamp(review)
+        if deadline is None or deadline > now:
+            return None
+    checkpoint = item.get("checkpoint") or {}
+    updated = (checkpoint.get("at") if checkpoint.get("session") == assignment["session"]
+               else assignment.get("at"))
+    last_update = stamp(updated)
+    if last_update is None or now - last_update < QUIET_SECONDS:
+        return None
+    for member in data["members"].values():
+        binding = member.get("packet_binding") or {}
+        observation = member.get("terminal_observation") or {}
+        if (binding.get("item") == item["id"] and binding.get("session") == assignment["session"]
+                and observation.get("at") == now and observation.get("terminal_state") == "live"
+                and observation.get("reported_state") in {"running", "working", "live", "busy"}):
+            return None
+    return updated
+
+
 def sync_packet_steps(data: dict, items: dict[str, dict], now: float,
                       live_review_recipients: set[str] | None = None) -> None:
     """Project canonical executable steps, never prose/status guesses or dispatch authority."""
@@ -432,6 +462,9 @@ def sync_packet_steps(data: dict, items: dict[str, dict], now: float,
     selected = {row["id"] for row in candidates if row.get("packet") == data["packet"]}
     selected.update(item_id for item_id, item in items.items()
                     if (item.get("next_step") or {}).get("state") == "coordination_required")
+    followups = {item_id: since for item_id, item in items.items()
+                 if (since := owner_followup_due(data, item, now))}
+    selected.update(followups)
     current = set()
     candidate_items = []
     previous_readiness = data.get("packet_readiness", {})
@@ -447,25 +480,34 @@ def sync_packet_steps(data: dict, items: dict[str, dict], now: float,
                 or execution.get("namespace") != data["namespace"]
                 or execution.get("packet") != data["packet"] or execution.get("item") != item_id):
             raise ValueError("Canonical execution identity/version mismatch")
-        # A supervisor's assigned active outcome is not its own pending child.
-        # Assigned workers remain with their owners unless they explicitly need coordination.
+        followup = bool(
+            item_id in followups and execution.get("assignment") == items[item_id].get("assignment")
+            and execution.get("revision") == items[item_id].get("revision")
+            and not execution.get("pending_operations")
+            and not execution.get("coordination_required")
+        )
         if not execution.get("actionable") or not (
                 execution.get("claimable") and not execution.get("assignment")
-                or execution.get("coordination_required")):
+                or execution.get("coordination_required") or followup):
             continue
-        candidate_items.append(item_id)
-        if item_id not in prior_candidates:
-            epochs[item_id] = epochs.get(item_id, 0) + 1
+        if not followup:
+            candidate_items.append(item_id)
+            if item_id not in prior_candidates:
+                epochs[item_id] = epochs.get(item_id, 0) + 1
         step = execution.get("next_step") or {}
         action = (step.get("action")
                   or items.get(item_id, {}).get("next_action", "Inspect execution"))
         identity = {"item": item_id, "epoch": epochs.get(item_id, 0),
                     "next_step": step, "action": action,
                     "assignment": execution.get("assignment")}
+        if followup:
+            identity.update(epoch=None, checkpoint=followups[item_id],
+                            review=items[item_id].get("next_review"))
         digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
         for target in targets:
             target_digest = hashlib.sha256(target.encode()).hexdigest()[:8]
-            key = f"packet-step-{digest}-{target_digest}"
+            prefix = "owner-followup" if followup else "packet-step"
+            key = f"{prefix}-{digest}-{target_digest}"
             current.add(key)
             if key not in data["messages"] and (
                 live_review_recipients is None or target in live_review_recipients
@@ -476,15 +518,26 @@ def sync_packet_steps(data: dict, items: dict[str, dict], now: float,
                                    f"executable step: {action}. Inspect work_packets execution "
                                    "and record the owner/next-action disposition. Readiness grants "
                                    "no authority; preserve existing claims and operation holds."}
+                if followup:
+                    message["text"] = (
+                        f"Assigned work on {data['packet']}/{item_id} is due for follow-up. "
+                        f"Owner: {execution['assignment']['session']}. Current step: {action}. "
+                        "Check the owner's activity and latest checkpoint. If idle and still "
+                        "eligible, ask that owner to continue and verify pickup. If the binding "
+                        "is unclear or the owner cannot be reached, record the evidence and "
+                        "next action. Preserve custody and authorization."
+                    )
                 message["coordination_event"] = event(key, message, data["id"])
-                message["coordination_event"]["kind"] = "packet_step"
+                message["coordination_event"]["kind"] = (
+                    "owner_followup" if followup else "packet_step"
+                )
                 data["messages"][key] = message
     sync_due_reviews(data, items, now, live_review_recipients)
     data["packet_readiness"] = {"observed_at": now, "candidates": candidate_items,
                                 "epochs": epochs}
     for key, message in data["messages"].items():
         entry = message.get("coordination_event")
-        if (entry and entry["kind"] == "packet_step" and key not in current
+        if (entry and entry["kind"] in {"packet_step", "owner_followup"} and key not in current
                 and entry["state"] != "dispositioned"):
             entry.update(state="dispositioned", actionable=False, disposition={
                 "action": "superseded", "reason": "Fresh canonical execution changed eligibility",
