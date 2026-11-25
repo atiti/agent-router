@@ -769,20 +769,42 @@ def _normalize_tool_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]
             grouped.append({"role": message["role"], "content": list(message["content"])})
 
     for index, message in enumerate(grouped):
-        if message["role"] != "assistant":
+        if message["role"] != "user":
             continue
+        previous = grouped[index - 1] if index else None
+        calls = previous["content"] if previous and previous["role"] == "assistant" else []
         use_ids = list(
             dict.fromkeys(
                 str(block["id"])
-                for block in message["content"]
+                for block in calls
                 if block.get("type") == "tool_use" and block.get("id")
             )
         )
-        if not use_ids or index + 1 >= len(grouped):
-            continue  # the trailing assistant repair handles the final turn
-        following = grouped[index + 1]
-        results = [block for block in following["content"] if block.get("type") == "tool_result"]
-        found = {str(block.get("tool_use_id")) for block in results}
+        expected = set(use_ids)
+        found: set[str] = set()
+        results = []
+        other = []
+        unpaired = 0
+        for block in message["content"]:
+            if block.get("type") != "tool_result":
+                other.append(block)
+                continue
+            use_id = str(block.get("tool_use_id") or "")
+            if use_id in expected and use_id not in found:
+                results.append(block)
+                found.add(use_id)
+                continue
+            # Keep the evidence without inventing a corresponding tool invocation.
+            unpaired += 1
+            content = block["content"]
+            label = "Historical tool output without a matching call in this turn:"
+            if isinstance(content, list):
+                other.append({"type": "text", "text": label})
+                other.extend(content)
+            else:
+                other.append({"type": "text", "text": f"{label}\n{content}"})
+        if unpaired:
+            log(f"preserved {unpaired} unpaired tool result(s) as history content")
         missing = [use_id for use_id in use_ids if use_id not in found]
         if missing:
             results[:0] = [
@@ -795,13 +817,7 @@ def _normalize_tool_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]
                 for use_id in missing
             ]
             log(f"repaired {len(missing)} missing tool result(s) in replayed history")
-        if results:
-            non_results = [
-                block for block in following["content"] if block.get("type") != "tool_result"
-            ]
-            if following["content"] != results + non_results:
-                following["content"] = results + non_results
-                log("moved tool result(s) before other user content in replayed history")
+        message["content"] = results + other
     return grouped
 
 
@@ -989,7 +1005,7 @@ def translate_request(
             )
 
         elif item_type in ("function_call_output", "custom_tool_call_output"):
-            call_id = str(item.get("call_id") or item.get("id") or "call")
+            call_id = str(item.get("call_id") or item.get("id") or "")
             push(
                 {
                     "role": "user",

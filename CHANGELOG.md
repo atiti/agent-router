@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Preserve unpaired tool outputs as labeled history when replaying Codex turns through Claude.
+
 ## 0.5.87 — 2026-11-25
 
 - Port the native runtime to Codex 0.172 and validate its gRPC Code Mode host during installation.
