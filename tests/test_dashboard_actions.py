@@ -26,6 +26,11 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(waits, "waits_dir", lambda: tmp_path / "waits")
     launch = Mock()
     preflight = Mock()
+    monkeypatch.setattr(actions.routes, "state_dir", lambda: tmp_path / "shared")
+    monkeypatch.setattr(actions.routes, "codex_home", lambda: tmp_path / "codex")
+    monkeypatch.setattr(actions.routes, "show_in_herdr", Mock(return_value={
+        "pane": "w1:p1", "session": "test", "recipient": OWNER, "kind": "owner",
+    }))
     monkeypatch.setattr(waits, "ensure_daemon", launch)
     monkeypatch.setattr(actions, "preflight", preflight)
     item = {"id": KEY[2], "revision": 2, "status": "blocked", "assignment": {"session": OWNER}}
@@ -46,6 +51,7 @@ def test_packet_reply_fires_once_and_tracks_receipts(setup):
     assert first["state"] == "fired"
     assert first["recipient"] == OWNER
     assert first["kind"] == "owner"
+    assert first["herdr"]["pane"] == "w1:p1"
     [queued] = waits.load()
     assert queued["outcome"]["evidence"] == MESSAGE
     assert MESSAGE not in waits.wake_text(queued)
@@ -76,7 +82,7 @@ def test_stale_packet_or_wrong_recipient_refuses_delivery(setup):
     request, item, save, launch, preflight = setup
     with pytest.raises(actions.ActionError, match="changed"):
         actions.submit({**request, "revision": 1})
-    with pytest.raises(actions.ActionError, match="assigned session"):
+    with pytest.raises(actions.ActionError, match="recorded packet conversation"):
         actions.submit({**request, "recipient": TRIAGE})
 
     def changed_owner(target):
@@ -91,17 +97,67 @@ def test_stale_packet_or_wrong_recipient_refuses_delivery(setup):
 
 
 @pytest.mark.parametrize("assignment", [None, {"session": "legacy-worker-name"}])
-def test_explicit_triage_preserves_assignment(setup, assignment):
+def test_packet_review_reuses_dedicated_thread_and_preserves_assignment(
+    setup, assignment, monkeypatch,
+):
     request, item, save, _, preflight = setup
     item["assignment"] = assignment
     save()
-    with pytest.raises(actions.ActionError, match="Choose a session"):
-        actions.submit({**request, "recipient": None})
-    result = actions.submit({**request, "recipient": TRIAGE})
+    assert actions.packet_route(KEY)["thread"] is None
+    client = Mock()
+    client.__enter__ = Mock(return_value=client)
+    client.__exit__ = Mock()
+    client.request.side_effect = [{"thread": {"id": TRIAGE}}, {}]
+    monkeypatch.setattr(actions.routes, "RpcClient", lambda *a, **kw: client)
+
+    with pytest.raises(actions.ActionError, match="recorded packet conversation"):
+        actions.submit({**request, "recipient": TRIAGE})
+    result = actions.submit({**request, "recipient": None})
     assert result["kind"] == "triage"
+    assert result["recipient"] == TRIAGE
+    assert actions.packet_route(KEY)["thread"] == TRIAGE
     preflight.assert_called_once_with(TRIAGE)
+    actions.open_packet({**request, "recipient": TRIAGE})
+    assert client.request.call_count == 2
     assert actions.read_item(KEY)["assignment"] == assignment
     assert "Preserve any existing claim" in waits.load()[0]["note"]
+
+
+def test_legacy_binding_uses_exact_claim_and_only_one_known_thread(setup):
+    request, item, save, _, _ = setup
+    item["assignment"] = {"session": "old-label", "at": "2026-11-11"}
+    save()
+    file = actions.routes.record_path(KEY, "owners")
+    actions.routes.atomic_write(file, {"packet": list(KEY), "assignment": item["assignment"],
+                                     "thread": OWNER, "evidence": "original claim receipt"})
+    assert actions.packet_route(KEY)["thread"] == OWNER
+    assert actions.submit(request)["kind"] == "owner"
+    item["assignment"]["at"] = "2026-11-12"
+    save()
+    assert actions.packet_route(KEY)["thread"] is None
+
+
+def test_failed_herdr_view_preserves_reply_and_retry_receipt(setup):
+    request, _, _, _, _ = setup
+    opener = actions.routes.show_in_herdr
+    opener.side_effect = OSError("Herdr socket closed")
+    first = actions.submit(request)
+    assert first["herdr_issue"]
+    assert first["state"] == "fired"
+    assert actions.submit(request)["id"] == first["id"]
+    opener.assert_called_once()
+
+
+def test_core_member_uses_herdr_open_and_never_shared_wake(setup, monkeypatch):
+    request, _, _, launch, preflight = setup
+    monkeypatch.setattr(actions.routes, "core_member", lambda target: ("team", "worker", "test"))
+    assert actions.packet_route(KEY)["reply_issue"]
+    with pytest.raises(actions.ActionError, match="Herdr Core"):
+        actions.submit(request)
+    assert actions.open_packet(request)["pane"] == "w1:p1"
+    preflight.assert_not_called()
+    assert waits.load() == []
+    launch.assert_not_called()
 
 
 def test_daemon_start_failure_preserves_definite_queue_receipt(setup):

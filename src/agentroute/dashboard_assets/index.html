@@ -115,6 +115,9 @@ width:min(580px,calc(100vw - 24px));max-height:calc(100dvh - 36px);padding:20px;
 #packet-reply textarea{resize:vertical;border:1px solid var(--line);border-radius:8px;padding:9px;
 background:var(--bg);min-height:110px;font-weight:400}
 #packet-reply .meta{white-space:normal;overflow-wrap:anywhere}
+#packet-reply .reply-route{display:flex;align-items:start;justify-content:space-between;gap:12px}
+#reply-owner{font-weight:600;overflow-wrap:anywhere}
+#reply-open{flex:none}
 #packet-reply .reply-actions{display:flex;justify-content:flex-end;gap:8px}
 #reply-history{padding:0;list-style:none;margin:0}
 #reply-history li{padding:7px 0;border-top:1px solid var(--line)}
@@ -186,11 +189,14 @@ svg.chart{display:block;width:100%;height:220px}
   <h2 id="reply-heading">Reply to work packet</h2>
   <div id="reply-context" class="meta"></div>
   <form id="reply-form">
-    <div id="reply-owner"></div>
-    <label id="reply-triage" hidden>Session to review this packet
-      <select id="reply-recipient" aria-describedby="reply-target-hint"></select>
-    </label>
-    <div id="reply-target-hint" class="meta"></div>
+    <div class="reply-route">
+      <div>
+        <div id="reply-owner"></div>
+        <div id="reply-target-hint" class="meta"></div>
+      </div>
+      <button type="button" class="reply-button" id="reply-open"
+              aria-describedby="reply-target-hint" disabled>Open in Herdr</button>
+    </div>
     <label>Template
       <select id="reply-template">
         <option value="continue">Continue work</option>
@@ -309,6 +315,7 @@ let packetActionToken = "";
 let reply = null;
 let replyPolling = null;
 const uncertainSends = new Map();
+const replyDrafts = new Map();
 const pendingStorageKey = key => "agentroute:pending-reply:" + key;
 function pendingReply(key){
   if(uncertainSends.has(key)) return uncertainSends.get(key);
@@ -355,7 +362,7 @@ function packetAction(namespace, packet, item){
      ["done", "cancelled"].includes(item.status)) return "";
   return `<button type="button" class="packet-action" data-reply-packet
     data-namespace="${esc(namespace)}" data-packet="${esc(packet)}" data-item="${esc(item.id)}"
-    >${threadId(item.session) ? "Reply to owner" : "Ask a session to review"}</button>`;
+    >Open or reply</button>`;
 }
 function sessionLabel(id){
   const agent = agentById(id);
@@ -370,36 +377,64 @@ function replyContext(namespace, packet, item){
   return {namespace, packet, item, revision:outcome.revision, objective:outcome.objective,
     assignment:outcome.session, key:[namespace,packet,item].join("/")};
 }
+function replyIsCurrent(current){
+  const latest = replyContext(current.namespace,current.packet,current.item);
+  return latest && latest.revision === current.revision && latest.assignment === current.assignment;
+}
+function showReplyRoute(current){
+  const {route,pending} = current;
+  let title, hint;
+  if(pending?.recipient){
+    title = "Retry to " + sessionLabel(pending.recipient);
+    hint = "This retry keeps the recipient and reference of your previous submission.";
+  } else if(route?.kind === "owner"){
+    title = "To " + sessionLabel(route.thread);
+    hint = route.reply_issue || "Open the owner’s conversation in Herdr.";
+  } else if(route?.kind === "review"){
+    title = "Packet review session";
+    const next = route.thread ? "This packet’s review session will reopen in Herdr." :
+      "A dedicated Herdr conversation will be created for this packet.";
+    hint = (route.assignment ? `Recorded assignment: ${route.assignment}. ` : "") + next;
+  } else {
+    title = current.routeError ? "Session route unavailable" : "Finding the packet’s session…";
+    hint = current.routeError || "";
+  }
+  $("reply-owner").textContent = title;
+  $("reply-target-hint").textContent = hint;
+}
 function setReplyControls(current){
   const waiting = Boolean(current.pending);
-  $("reply-template").disabled = $("reply-message").disabled =
-    $("reply-recipient").disabled = waiting;
-  $("reply-send").disabled = current.sending || !threadId($("reply-recipient").value);
-  $("reply-close").disabled = current.sending;
+  const busy = current.sending || current.opening;
+  const stale = !replyIsCurrent(current);
+  $("reply-template").disabled = $("reply-message").disabled = waiting || busy;
+  $("reply-send").disabled = busy || (!waiting && (!current.route || current.route.reply_issue || stale));
+  $("reply-open").disabled = busy || waiting || stale || !current.route;
+  $("reply-close").disabled = busy;
+  $("reply-open").textContent = current.opening ? "Opening…" : "Open in Herdr";
   $("reply-send").textContent = current.sending ? "Sending…" :
     waiting ? "Retry same reply" : "Send reply";
+}
+function rememberReplyDraft(){
+  if(!reply || reply.pending) return;
+  const message = $("reply-message").value;
+  // Reopening restores a typed draft without interfering with a persisted send retry.
+  if(message){
+    replyDrafts.set(reply.key,{message, template:$("reply-template").value});
+  } else {
+    replyDrafts.delete(reply.key);
+  }
 }
 function openPacketReply(button){
   const {namespace,packet,item} = button.dataset;
   const context = replyContext(namespace, packet, item);
   if(!context) return;
   const pending = pendingReply(context.key);
-  reply = {...context, pending, sending:false, receipts:new Map()};
-  const recipient = pending?.recipient || (threadId(context.assignment) ? context.assignment : "");
-  const direct = !!pending || threadId(context.assignment);
+  const draft = replyDrafts.get(context.key);
+  reply = {...context, pending, route:null, receipts:new Map()};
   $("reply-context").textContent = `${context.objective} · ${context.key}`;
-  $("reply-owner").textContent = direct ? `${pending ? "Pending reply to" : "To"} ${sessionLabel(recipient)}` : "";
-  $("reply-triage").hidden = direct;
-  $("reply-target-hint").textContent = direct ? "" :
-    context.assignment ? `Recorded owner: ${context.assignment}. Choose a session to review the packet and coordinate with that owner.` :
-    "This packet has no assigned session. Choose a session to review it and identify what can proceed.";
-  const options = (S.snap?.agents || []).filter(a => threadId(a.id)).map(a => a.id);
-  if(recipient && !options.includes(recipient)) options.unshift(recipient);
-  $("reply-recipient").replaceChildren(new Option("Choose a session", ""),
-    ...[...new Set(options)].map(id => new Option(sessionLabel(id),id)));
-  $("reply-recipient").value = recipient;
-  $("reply-template").value = pending ? "custom" : "continue";
-  $("reply-message").value = pending?.message ?? replyTemplates.continue;
+  $("reply-template").value = pending ? "custom" : draft?.template || "continue";
+  $("reply-message").value = pending?.message ?? draft?.message ?? replyTemplates.continue;
+  showReplyRoute(reply);
   $("reply-notice").textContent = pending ?
     "Delivery is unconfirmed. Retry sends the original reply with the same reference." : "";
   $("reply-history").replaceChildren(Object.assign(document.createElement("li"),{textContent:"Loading…",className:"meta"}));
@@ -422,6 +457,16 @@ function receiptStatus(receipt){
   if(receipt.daemon_ready === false) return "Saved · delivery service unavailable";
   return "Queued";
 }
+function herdrStatus(result){
+  const pane = result.pane || result.herdr?.pane;
+  const session = result.session || result.herdr?.session;
+  const issue = result.herdr_issue || result.herdr?.issue;
+  if(pane) return `Herdr · ${session ? session + " / " : ""}${pane}`;
+  return issue ? `Herdr · ${issue}` : "";
+}
+function replyStatus(result){
+  return [receiptStatus(result), herdrStatus(result), result.id].filter(Boolean).join(" · ");
+}
 function showReplyReceipts(current){
   const list = $("reply-history");
   const receipts = [...current.receipts.values()].sort((a,b) => b.created_at-a.created_at);
@@ -431,7 +476,8 @@ function showReplyReceipts(current){
     status.textContent = receiptStatus(receipt);
     const details = document.createElement("div");
     details.className = "meta";
-    details.textContent = `${sessionLabel(receipt.recipient)} · ${stamp(receipt.created_at)} · ${receipt.id}`;
+    details.textContent = [sessionLabel(receipt.recipient), stamp(receipt.created_at),
+      receipt.id, herdrStatus(receipt)].filter(Boolean).join(" · ");
     row.append(status, details);
     return row;
   }));
@@ -455,37 +501,78 @@ async function loadReplyHistory(current){
     const {namespace,packet,item} = current;
     const query = new URLSearchParams({namespace,packet,item});
     const response = await packetRequest(`${packetActionsUrl}?${query}`);
-    if(!response.ok) throw new Error("History unavailable");
-    const {receipts} = await response.json();
+    const {receipts,route} = await response.json();
     if(reply !== current || generation !== current.generation) return;
-    if(!Array.isArray(receipts)) throw new Error("History unavailable");
+    if(!response.ok || !Array.isArray(receipts)) throw new Error("Reply history is unavailable.");
     current.historyError = false;
+    if(route && !route.error &&
+        (route.kind === "review" || (route.kind === "owner" && threadId(route.thread)))){
+      current.route = route;
+      current.routeError = "";
+    } else {
+      current.route = null;
+      current.routeError = route?.error || "The dashboard could not resolve a session for this outcome.";
+    }
     for(const receipt of receipts) current.receipts.set(receipt.id,receipt);
   } catch {
     current.historyError = true;
+    current.route = null;
+    current.routeError = "Could not check the packet’s session. The dashboard will retry.";
   } finally {
     current.loading = false;
-    if(reply === current) showReplyReceipts(current);
+    if(reply === current){
+      showReplyRoute(current);
+      setReplyControls(current);
+      showReplyReceipts(current);
+    }
+  }
+}
+async function openPacketHerdr(){
+  const current = reply;
+  if(!current || current.sending || current.opening || current.pending || !current.route) return;
+  if(!replyIsCurrent(current)){
+    $("reply-notice").textContent = "The packet changed. Reopen this reply from the updated packet.";
+    return;
+  }
+  const {namespace,packet,item,revision} = current;
+  current.opening = true;
+  setReplyControls(current);
+  $("reply-notice").textContent = "Opening the session in Herdr…";
+  try {
+    const response = await packetRequest(packetActionsUrl, {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"open",namespace,packet,item,revision,
+        ...(current.route.thread ? {recipient:current.route.thread} : {})})});
+    const result = await response.json();
+    $("reply-notice").textContent = response.ok && result.pane ?
+      `Opened ${sessionLabel(result.recipient) || "session"} · ${herdrStatus(result)}` :
+      result.error || herdrStatus(result) || "Herdr did not confirm that the session opened.";
+  } catch {
+    $("reply-notice").textContent = "Herdr did not confirm that the session opened.";
+  } finally {
+    current.opening = false;
+    setReplyControls(current);
+    loadReplyHistory(current);
   }
 }
 async function sendPacketReply(event){
   event.preventDefault();
   const current = reply;
-  if(!current || current.sending) return;
+  if(!current || current.sending || current.opening) return;
   if(!current.pending){
-    const {namespace,packet,item,revision,assignment,key} = current;
-    const latest = replyContext(namespace,packet,item);
-    if(!latest || latest.revision !== revision || latest.assignment !== assignment){
+    if(!current.route || current.route.reply_issue) return;
+    const {namespace,packet,item,revision,key} = current;
+    if(!replyIsCurrent(current)){
       $("reply-notice").textContent = "The packet changed. Reopen this reply from the updated packet.";
       return;
     }
-    const recipient = threadId(assignment) ? assignment : $("reply-recipient").value;
     const message = $("reply-message").value.trim();
-    if(!threadId(recipient) || !message){
-      $("reply-notice").textContent = "Choose a session and enter a message.";
+    if(!message){
+      $("reply-notice").textContent = "Enter a message.";
       return;
     }
-    current.pending = {namespace,packet,item,revision,recipient,message,request_id:crypto.randomUUID()};
+    current.pending = {namespace,packet,item,revision,message,request_id:crypto.randomUUID(),
+      ...(current.route.thread ? {recipient:current.route.thread} : {})};
     savePendingReply(key,current.pending);
   }
   current.sending = true;
@@ -504,7 +591,8 @@ async function sendPacketReply(event){
       current.receipts.set(receipt.id,receipt);
       savePendingReply(current.key,null);
       current.pending = null;
-      notice = `${receiptStatus(receipt)} · ${receipt.id}`;
+      replyDrafts.delete(current.key);
+      notice = replyStatus(receipt);
       if(reply === current){
         $("reply-template").value = "custom";
         $("reply-message").value = "";
@@ -531,16 +619,19 @@ async function sendPacketReply(event){
   }
 }
 $("reply-close").addEventListener("click", () => $("packet-reply").close());
-$("packet-reply").addEventListener("cancel", event => { if(reply?.sending) event.preventDefault(); });
+$("packet-reply").addEventListener("cancel", event => {
+  if(reply?.sending || reply?.opening) event.preventDefault();
+});
 $("packet-reply").addEventListener("close", () => {
   clearInterval(replyPolling);
+  rememberReplyDraft();
   reply = null;
 });
 $("reply-template").addEventListener("change", () => {
   $("reply-message").value = replyTemplates[$("reply-template").value];
   $("reply-message").focus();
 });
-$("reply-recipient").addEventListener("change", () => { if(reply) setReplyControls(reply); });
+$("reply-open").addEventListener("click", openPacketHerdr);
 $("reply-form").addEventListener("submit", sendPacketReply);
 
 /* Focus: what waits on the reader, and why everything else that is stuck is stuck. */

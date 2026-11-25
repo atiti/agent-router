@@ -61,9 +61,15 @@ Progress and approval reviewers are counted in one tile, since there are hundred
 
 Use the tab opened by `agentroute dashboard` or the reply link printed with `--no-open`.
 Open **Reply** on an outcome in Focus or Work packets. Pick a template (Continue, Hold, or
-Ask for details) and edit the message, or write your own. The current assigned Codex session
-receives the reply. For an unassigned outcome or an older assignment with no Codex thread ID,
-choose a session to review it. The recorded assignment stays in place.
+Ask for details) and edit the message, or write your own. The dashboard uses the packet's assigned Codex thread or a verified binding for an older
+worker label. **Open in Herdr** focuses its existing pane or reopens the same conversation
+if its view was closed. Sending a reply also tries to show the recipient in Herdr.
+
+If there is no verified session, the dashboard opens and reuses a dedicated review conversation
+for that outcome. The review conversation can assess what can move next and preserves any
+existing claim. Conflicting known bindings need reconciliation before the dashboard can route
+a reply. For a Herdr Core worker, use **Open in Herdr** and reply in its terminal. Its owner
+is separate from the shared server used for browser replies.
 
 The reply queues a wake for the selected session through AgentRoute. The session can recheck
 the blocker and continue permitted work using the packet tracker. Keep any required approvals
@@ -71,7 +77,7 @@ in their normal approval flow. Replies alone do not clear a hold or transfer own
 
 Reopen the reply dialog to see recent delivery receipts. **Delivered** means the shared server
 or supervisor inbox accepted the wake. **Read by agent** means the recipient loaded the record.
-An agent response records its next action. Check the packet itself for evidence that work moved.
+The receipt shows the Herdr pane when it was verified. An agent response records its next action. Check the packet itself for evidence that work moved.
 
 ## Where the data comes from
 
