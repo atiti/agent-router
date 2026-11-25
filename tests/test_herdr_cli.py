@@ -69,6 +69,7 @@ class Owner:
 
     def __init__(self, *threads: dict):
         self.threads = {thread["id"]: thread for thread in threads}
+        self.unloaded: dict[str, dict] = {}
         self.calls = 0
 
     def __call__(self, *args, **kwargs):
@@ -85,9 +86,10 @@ class Owner:
         if method == "thread/loaded/list":
             return {"data": list(self.threads)}
         assert method == "thread/read"
-        if payload["threadId"] not in self.threads:
+        known = {**self.unloaded, **self.threads}
+        if payload["threadId"] not in known:
             raise SharedServerError("thread not found")
-        return {"thread": self.threads[payload["threadId"]]}
+        return {"thread": known[payload["threadId"]]}
 
 
 def chat(thread_id: str, name: str | None, cwd: str = "/work", status: str = "idle", flags=()):
@@ -107,37 +109,48 @@ def test_launcher_marks_the_pane_for_herdr_and_reports_no_state(monkeypatch):
     command.assert_not_called()
 
 
-def test_title_label_follows_codex_truncation():
+def test_thread_label_and_title_follow_the_default_codex_layout():
     long = "Markster production recovery and NAS backup verification"
-    assert h.title_label({"id": THREAD, "name": long}) == \
-        "Markster production recovery and NAS backup v..."
-    assert h.title_label({"id": THREAD, "name": "x" * 48}) == "x" * 48
-    assert h.title_label({"id": THREAD, "name": "  "}) == THREAD
-    assert h.title_shows("Fix login | markster-core", {"id": THREAD, "name": "Fix login"})
-    assert h.title_shows("Fix login", {"id": THREAD, "name": "Fix login"})
-    assert h.title_shows("A | B | repo", {"id": THREAD, "name": "A | B"})
-    assert not h.title_shows("Fix login flow | repo", {"id": THREAD, "name": "Fix login"})
-    assert not h.title_shows("anything | repo", {"id": "", "name": None})
+    assert h.thread_label({"name": long}) == "Markster production recovery and NAS backup v..."
+    assert h.thread_label({"name": "x" * 48}) == "x" * 48
+    assert h.thread_label({"id": THREAD, "name": "  "}) is None
+    assert h.title_thread("Fix login | markster-core") == "Fix login"
+    assert h.title_thread("A | B | repo") == "A | B"
+    # An unnamed chat shows only its project, which must never be read as a chat's name.
+    assert h.title_thread("markster-core") is None
+    assert h.title_thread("") is None
 
 
-@pytest.mark.parametrize(("title", "threads", "cwd", "expected"), [
-    ("Deploy | repo", [chat(THREAD, "Deploy"), chat(OTHER, "Review")], "/work", THREAD),
-    ("Review | repo", [chat(THREAD, "Deploy"), chat(OTHER, "Review")], "/work", OTHER),
-    (f"{OTHER} | repo", [chat(THREAD, "Deploy"), chat(OTHER, None)], "/work", OTHER),
-    # Renamed moments ago, or a title layout without the thread: keep the launch thread.
-    ("Something else | repo", [chat(THREAD, "Deploy"), chat(OTHER, "Review")], "/work", THREAD),
-    ("", [chat(THREAD, "Deploy"), chat(OTHER, "Review")], "/work", THREAD),
-    # Two other chats share the label; the directory settles it, or nothing does.
-    ("New chat | repo", [chat(THREAD, "Deploy"), chat(OTHER, "New chat", "/a"),
-                         chat("33333333-3333-3333-3333-333333333333", "New chat", "/b")],
-     "/b", "33333333-3333-3333-3333-333333333333"),
+THIRD = "33333333-3333-3333-3333-333333333333"
+
+
+@pytest.mark.parametrize(("title", "threads", "expected"), [
+    ("Deploy | repo", [chat(THREAD, "Deploy"), chat(OTHER, "Review")], (THREAD, True)),
+    ("Review | repo", [chat(THREAD, "Deploy"), chat(OTHER, "Review")], (OTHER, True)),
+    # Two loaded chats share the name: the earlier identity stands, unproven.
+    ("Review | repo", [chat(THREAD, "Review"), chat(OTHER, "Review")], (THREAD, False)),
+    # ...and a view that moved onto one of two namesakes cannot be identified at all.
     ("New chat | repo", [chat(THREAD, "Deploy"), chat(OTHER, "New chat"),
-                         chat("33333333-3333-3333-3333-333333333333", "New chat")],
-     "/work", None),
+                         chat(THIRD, "New chat")], (None, False)),
+    # A chat named like the project is not what a one-part title shows.
+    ("repo", [chat(THREAD, "Deploy"), chat(OTHER, "repo")], (None, False)),
+    ("repo", [chat(THREAD, None), chat(OTHER, "repo")], (THREAD, False)),
+    ("", [chat(THREAD, "Deploy")], (THREAD, False)),
+    ("Unknown name | repo", [chat(THREAD, "Deploy")], (None, False)),
 ])
-def test_shown_thread_reads_identity_from_the_title(title, threads, cwd, expected):
-    pane = {**PANE, "cwd": cwd, "terminal_title_stripped": title}
+def test_shown_thread_is_certain_only_for_one_loaded_chat_of_that_name(
+        title, threads, expected):
+    pane = {**PANE, "terminal_title_stripped": title}
     assert h.shown_thread(Owner(*threads), pane, THREAD) == expected
+
+
+def test_shown_thread_ignores_a_chat_the_owner_no_longer_has_loaded():
+    # The view left chat A, which was then unloaded; chat B has the same name. Reading A by
+    # ID still works, so only the loaded list can show that the view is on B.
+    owner = Owner(chat(OTHER, "Review"))
+    owner.unloaded = {THREAD: chat(THREAD, "Review")}
+    pane = {**PANE, "terminal_title_stripped": "Review | repo"}
+    assert h.shown_thread(owner, pane, THREAD) == (OTHER, True)
 
 
 def follower(monkeypatch, tmp_path, owner, pane_states):
@@ -195,12 +208,26 @@ def test_follower_records_the_shown_chat_and_follows_navigation(monkeypatch, tmp
     assert not any(args[1] in {"report-agent", "release-agent"} for args in commands)
 
 
-def test_follower_keeps_the_last_identity_when_two_chats_fit(monkeypatch, tmp_path):
-    owner = Owner(chat(THREAD, "Deploy"), chat(OTHER, "New chat"),
-                  chat("33333333-3333-3333-3333-333333333333", "New chat"))
+def test_follower_never_replaces_an_identity_on_an_unproven_match(monkeypatch, tmp_path):
+    # The view is on chat B, as an exact report says. Chat A, which it was started with, has
+    # the same name. The start command must not be written back over the report.
+    owner = Owner(chat(THREAD, "Review"), chat(OTHER, "Review"))
+    first = {**PANE, "terminal_title_stripped": "Deploy | repo"}
+    exact = {**PANE, "terminal_title_stripped": "Review | repo",
+             "agent_session": {"source": "herdr:codex", "kind": "id", "value": OTHER}}
+    follow, commands = follower(monkeypatch, tmp_path, owner, [first, exact])
+    follow.step()
+    assert session_reports(commands) == [THREAD]  # Exact at launch, before the title is read.
+    follow.step()
+    assert session_reports(commands) == [THREAD]
+    assert list(h.saved_panes("work")) == [{**PANE, "thread": THREAD}]
+
+
+def test_follower_keeps_its_record_when_the_view_moves_out_of_sight(monkeypatch, tmp_path):
+    owner = Owner(chat(THREAD, "Deploy"), chat(OTHER, None))
     shown = {**PANE, "terminal_title_stripped": "Deploy | repo"}
-    unclear = {**shown, "terminal_title_stripped": "New chat | repo"}
-    follow, commands = follower(monkeypatch, tmp_path, owner, [shown, unclear])
+    unnamed = {**shown, "terminal_title_stripped": "repo"}
+    follow, commands = follower(monkeypatch, tmp_path, owner, [shown, unnamed])
     follow.step()
     follow.step()
     assert session_reports(commands) == [THREAD]
@@ -250,39 +277,129 @@ def test_shared_owner_does_not_inherit_a_pane_address(monkeypatch, tmp_path):
     assert environment["PATH"] == "/bin"
 
 
-@pytest.mark.parametrize(("title", "thread", "force", "expected", "relaunched"), [
-    ("Deploy | repo", chat(THREAD, "Deploy"), False, f"relaunched {THREAD}", True),
-    ("Deploy | repo", chat(THREAD, "Deploy", status="active"), False,
-     "skipped: chat is running", False),
-    ("Deploy | repo", chat(THREAD, "Deploy", status="active"), True,
-     f"relaunched {THREAD}", True),
-    ("Deploy | repo", chat(THREAD, "Deploy", status="active", flags=["waitingOnApproval"]),
-     True, "skipped: chat is approval", False),
-    ("Other title | repo", chat(THREAD, "Deploy"), True,
-     "skipped: cannot tell which chat this view shows", False),
-])
-def test_relaunch_restarts_only_identified_views_that_are_safe_to_restart(
-        monkeypatch, tmp_path, title, thread, force, expected, relaunched):
-    pane = {**PANE, "terminal_title_stripped": title}
+def relaunch_setup(monkeypatch, tmp_path, owner, pane, argv, registers=True):
+    """Herdr and the owner as `relaunch_pane` sees them; returns the kill and launch mocks."""
+    state = {"pane": pane}
+
+    def command(session, *args):
+        if args[:2] == ("pane", "get"):
+            if state["pane"] is None:
+                raise SharedServerError("pane_not_found")
+            return {"pane": state["pane"]}
+        if args[:2] == ("pane", "process-info"):
+            return {"process_info": {"foreground_processes": [
+                {"pid": 4242, "name": "codex-bin", "argv": argv},
+                {"pid": 4241, "name": "python3.12", "argv": ["python", "agentroute"]}]}}
+        raise AssertionError(args)
+
+    monkeypatch.setattr(h, "command", command)
+    monkeypatch.setattr(h, "RpcClient", owner)
+    monkeypatch.setattr(h, "socket_path", lambda: "/run/owner.sock")
     monkeypatch.setattr(h, "state_dir", lambda: tmp_path)
-    h.remember_pane("work", pane, THREAD)
-    monkeypatch.setattr(h, "RpcClient", Owner(thread))
-    monkeypatch.setattr(h, "socket_path", lambda: "/tmp/test.sock")
-    monkeypatch.setattr(h, "codex_view", lambda *_: {"pid": 4242, "name": "codex-bin"})
     monkeypatch.setattr(h, "wait_for_shell", lambda *_, **__: True)
+    monkeypatch.setattr(h, "panes", lambda _: [pane])
+    monkeypatch.setattr(h, "thread_panes", lambda *_: {THREAD: pane} if registers else {})
+    monkeypatch.setattr(h.time, "sleep", lambda _: None)
     kill, launch = Mock(), Mock()
     monkeypatch.setattr(h.os, "kill", kill)
     monkeypatch.setattr(h, "launch_client", launch)
-    assert h.relaunch_pane("work", pane, force) == expected
+    return kill, launch, state
+
+
+VIEW = ["codex-bin", "--remote", "unix:///run/owner.sock", "--cd", "/work", "resume", THREAD]
+SHOWN = {**PANE, "terminal_title_stripped": "Deploy | repo"}
+
+
+@pytest.mark.parametrize(("argv", "threads", "force", "expected"), [
+    (VIEW, [chat(THREAD, "Deploy")], False, f"relaunched {THREAD}"),
+    (VIEW, [chat(THREAD, "Deploy", status="active")], True, f"relaunched {THREAD}"),
+    (VIEW, [chat(THREAD, "Deploy", status="active")], False, "skipped: chat is running"),
+    (VIEW, [chat(THREAD, "Deploy", status="active", flags=["waitingOnApproval"])], True,
+     "skipped: chat is approval"),
+    (VIEW, [chat(THREAD, "Deploy", status="active", flags=["waitingOnUserInput"])], True,
+     "skipped: chat is input"),
+    (VIEW, [chat(THREAD, "Deploy", status="systemError")], True, "skipped: chat is error"),
+    # A Codex that owns its chat, or is attached somewhere else, is not ours to stop.
+    (["codex-bin", "--no-daemon", "resume", THREAD], [chat(THREAD, "Deploy")], True,
+     "no view of this shared owner"),
+    (["codex-bin", "--remote", "unix:///elsewhere.sock", "resume", THREAD],
+     [chat(THREAD, "Deploy")], True, "no view of this shared owner"),
+    # Started bare: nothing says which chat it is, whatever the title resembles.
+    (VIEW[:5], [chat(THREAD, "Deploy")], True,
+     "skipped: the view was started without a chat ID; pass --thread to name it"),
+    # The view has moved to a chat with another name, or to a namesake waiting on approval.
+    (VIEW, [chat(THREAD, "Other"), chat(OTHER, "Deploy")], True,
+     "skipped: the title does not single out this chat"),
+    (VIEW, [chat(THREAD, "Deploy"),
+            chat(OTHER, "Deploy", status="active", flags=["waitingOnApproval"])], True,
+     "skipped: the title does not single out this chat"),
+])
+def test_relaunch_stops_a_view_only_when_its_chat_is_proven_and_safe(
+        monkeypatch, tmp_path, argv, threads, force, expected):
+    kill, launch, _ = relaunch_setup(monkeypatch, tmp_path, Owner(*threads), SHOWN, argv)
+    assert h.relaunch_pane("work", "w8:p2", None, force) == expected
+    relaunched = expected.startswith("relaunched")
     assert kill.called == launch.called == relaunched
     if relaunched:
         kill.assert_called_once_with(4242, h.signal.SIGTERM)
         launch.assert_called_once_with("work", "w8:p2", THREAD)
 
 
-def test_relaunch_leaves_panes_without_a_codex_view(monkeypatch):
-    monkeypatch.setattr(h, "codex_view", lambda *_: None)
-    assert h.relaunch_pane("work", PANE, True) == "no Codex view"
+def test_relaunch_accepts_an_operator_named_chat_for_a_view_started_bare(monkeypatch, tmp_path):
+    kill, launch, _ = relaunch_setup(
+        monkeypatch, tmp_path, Owner(chat(THREAD, "Deploy")), SHOWN, VIEW[:5])
+    assert h.relaunch_pane("work", "w8:p2", THREAD, False) == f"relaunched {THREAD}"
+    assert h.relaunch_pane("work", "w8:p2", OTHER, False) == \
+        "skipped: the title does not single out this chat"
+
+
+def test_relaunch_rechecks_before_stopping_and_reports_a_view_that_does_not_return(
+        monkeypatch, tmp_path):
+    owner = Owner(chat(THREAD, "Deploy"), chat(OTHER, "Review"))
+    kill, launch, state = relaunch_setup(monkeypatch, tmp_path, owner, SHOWN, VIEW)
+    checks = iter([None, "switched"])
+    original = h.shown_thread
+
+    def switching(client, pane, known):
+        if next(checks):
+            pane = {**pane, "terminal_title_stripped": "Review | repo"}
+        return original(client, pane, known)
+
+    monkeypatch.setattr(h, "shown_thread", switching)
+    assert h.relaunch_pane("work", "w8:p2", None, True) == \
+        "skipped: the title does not single out this chat"
+    kill.assert_not_called()
+
+    monkeypatch.setattr(h, "shown_thread", original)
+    kill, launch, state = relaunch_setup(monkeypatch, tmp_path, Owner(chat(THREAD, "Deploy")),
+                                         SHOWN, VIEW, registers=False)
+    assert h.relaunch_pane("work", "w8:p2", None, False).startswith(
+        "error: the new view did not register")
+    state["pane"] = None
+    assert h.relaunch_pane("work", "w8:p2", None, False) == "error: pane not found"
+
+
+def test_relaunch_command_refuses_before_stopping_anything_and_fails_loudly(monkeypatch):
+    from typer.testing import CliRunner
+
+    from agentroute.cli import app
+
+    relaunched = Mock(return_value="error: the new view did not register; inspect the pane")
+    monkeypatch.setattr(h, "relaunch_pane", relaunched)
+    monkeypatch.setattr(h, "panes", lambda _: [PANE])
+    monkeypatch.setattr(h, "load_config", lambda: SimpleNamespace(
+        shared_server=SimpleNamespace(enabled=True)))
+    monkeypatch.setattr(h, "ensure_server", Mock(side_effect=SharedServerError(
+        "shared server runtime/settings differ from this launch")))
+    result = CliRunner().invoke(app, ["herdr", "relaunch"])
+    assert result.exit_code != 0 and "differ from this launch" in result.output
+    relaunched.assert_not_called()  # The new view could not attach, so no old one is stopped.
+
+    monkeypatch.setattr(h, "ensure_server", Mock())
+    result = CliRunner().invoke(app, ["herdr", "relaunch"])
+    assert result.exit_code == 1 and "did not register" in result.output
+    result = CliRunner().invoke(app, ["herdr", "relaunch", "--thread", THREAD])
+    assert result.exit_code != 0 and "--pane" in result.output
 
 
 

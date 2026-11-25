@@ -19,7 +19,13 @@ import typer
 from . import zellij_cli as chats
 from .config import agentroute_home, load_config, save_config
 from .server_cli import _start
-from .shared_server import RpcClient, SharedServerError, socket_path, state_dir
+from .shared_server import (
+    RpcClient,
+    SharedServerError,
+    ensure_server,
+    socket_path,
+    state_dir,
+)
 
 herdr_app = typer.Typer(no_args_is_help=True, help="Manage shared chats in Herdr TUI.")
 herdr_app.command("list")(chats.list_command)
@@ -101,49 +107,56 @@ def native_thread(pane: dict) -> str | None:
     return None
 
 
-def title_label(thread: dict) -> str:
-    """How Codex names a thread in its terminal title: its name, or its ID when unnamed."""
-    label = str(thread.get("name") or "").strip() or str(thread.get("id") or "")
-    if len(label) <= TITLE_THREAD_CHARS:
-        return label
-    return label[:TITLE_THREAD_CHARS - 3] + "..."
+def thread_label(thread: dict) -> str | None:
+    """A named thread as Codex writes it in the terminal title; None for an unnamed one."""
+    name = str(thread.get("name") or "").strip()
+    if not name:
+        return None
+    if len(name) <= TITLE_THREAD_CHARS:
+        return name
+    # Codex counts grapheme clusters. A name with combined characters near the cut will not
+    # compare equal here, which leaves that view unidentified rather than misidentified.
+    return name[:TITLE_THREAD_CHARS - 3] + "..."
 
 
-def title_shows(title: str, thread: dict) -> bool:
-    label = title_label(thread)
-    return bool(label) and (label in title.split(" | ") or title.startswith(f"{label} | "))
+def title_thread(title: str) -> str | None:
+    """The thread part of a Codex terminal title in its default layout, `name | project`.
 
-
-def shown_thread(client: RpcClient, pane: dict, started: str | None) -> str | None:
-    """The chat a pane's Codex is showing, or None when two chats fit equally well.
-
-    A view can move to another chat (/new, /resume, a fork) without telling anyone, so the
-    thread it was started with is only the first candidate. The terminal title is the one
-    thing the view publishes about itself: it carries the thread's name, or its ID when the
-    thread is unnamed. Two chats with the same name in the same directory cannot be told
-    apart this way, so a view that moves between them keeps its earlier identity.
+    An unnamed chat shows only the project, so a title in one part names no thread.
     """
-    title = pane.get("terminal_title_stripped") or ""
+    label, separator, _project = title.rpartition(" | ")
+    return label if separator and label else None
 
-    def read(thread_id: str) -> dict | None:
+
+def shown_thread(client: RpcClient, pane: dict, known: str | None) -> tuple[str | None, bool]:
+    """The chat a pane's Codex view shows, and whether the terminal title proves it.
+
+    A view can move to another chat (/new, /resume, a fork) without telling anyone. The title
+    is the only thing it publishes about itself, and it carries a name, not an identifier. So
+    the answer is certain only when exactly one thread the shared owner has loaded bears the
+    name in the title. In every other case the earlier identity is returned as unconfirmed,
+    or None when the title shows the view has left it for a chat that cannot be told apart.
+    """
+    shown = title_thread(pane.get("terminal_title_stripped") or "")
+    threads = {}
+    for thread_id in client.request("thread/loaded/list", {}).get("data") or []:
         try:
-            return client.request("thread/read", {"threadId": thread_id})["thread"]
+            threads[thread_id] = client.request("thread/read", {"threadId": thread_id})["thread"]
         except (SharedServerError, KeyError, TypeError):
-            return None
-
-    current = read(started) if started and title else None
-    if not title or (current and title_shows(title, current)):
-        return started
-    loaded = client.request("thread/loaded/list", {}).get("data") or []
-    matches = [thread for thread in map(read, loaded) if thread and title_shows(title, thread)]
-    if not matches:
-        # No loaded chat is named in the title: it is still being drawn, or the user's
-        # title layout leaves the thread out. The launch command is the best evidence.
-        return started
-    if len(matches) > 1:
-        directory = pane.get("foreground_cwd") or pane.get("cwd")
-        matches = [thread for thread in matches if thread.get("cwd") == directory]
-    return str(UUID(matches[0]["id"])) if len(matches) == 1 else None
+            continue
+    if shown is None:
+        # Nothing drawn yet, a custom layout, or an unnamed chat. A named chat would show
+        # its name, so a view that was on one has moved somewhere this cannot follow.
+        moved = known in threads and thread_label(threads[known]) is not None \
+            and bool(pane.get("terminal_title_stripped"))
+        return (None if moved else known), False
+    matches = [thread_id for thread_id, thread in threads.items()
+               if thread_label(thread) == shown]
+    if len(matches) == 1:
+        return matches[0], True
+    if known in matches:
+        return known, False  # Another loaded chat has the same name; nothing separates them.
+    return None, False
 
 
 def report_session(session: str, pane: str, thread: str) -> None:
@@ -188,10 +201,12 @@ class PaneFollower:
         if seen == self._checked and time.monotonic() - self._checked_at < RECHECK_SECONDS:
             return
         with RpcClient(socket_path(), timeout=5) as client:
-            thread = shown_thread(client, info, self.thread)
+            thread, certain = shown_thread(client, info, self.thread)
         self._checked, self._checked_at = seen, time.monotonic()
-        if thread is None:
-            return  # Unknown: leave the last verified identity rather than record a guess.
+        if self.binding is None and self.thread and not certain:
+            thread = self.thread  # The launch command is exact when the view starts.
+        elif not certain:
+            return  # Only an identity the title proves may replace what is recorded.
         self.thread = thread
         if self.binding != (self.pane, thread):
             path = remember_pane(self.session, info, thread)
@@ -509,57 +524,109 @@ def install_command(bin_dir: Path | None = typer.Option(None)) -> None:
 
 
 def codex_view(session: str, pane: str) -> dict | None:
-    """The Codex client process in the foreground of a pane, if there is one."""
+    """The Codex client in a pane's foreground, only if it is attached to this shared owner.
+
+    A Codex started with --no-daemon or pointed at another server owns its chat: stopping it
+    would end that chat, so it is never treated as a view.
+    """
     info = command(session, "pane", "process-info", "--pane", pane)["process_info"]
-    return next((process for process in info.get("foreground_processes", [])
-                 if process.get("name") == "codex-bin"), None)
+    endpoint = f"unix://{socket_path()}"
+    for process in info.get("foreground_processes", []):
+        argv = process.get("argv") or []
+        if process.get("name") == "codex-bin" and "--remote" in argv[:-1] \
+                and argv[argv.index("--remote") + 1] == endpoint:
+            return process
+    return None
 
 
-def relaunch_pane(session: str, pane: dict, force: bool) -> str:
-    """Restart one pane's Codex view on the installed launcher; the chat itself is untouched."""
-    view = codex_view(session, pane["pane_id"])
+def relaunch_check(session: str, pane_id: str, thread: str | None,
+                   force: bool) -> tuple[dict, dict, str] | str:
+    """Everything that must hold to restart a view: its pane, process and chat, or a reason."""
+    try:
+        pane = command(session, "pane", "get", pane_id)["pane"]
+    except SharedServerError:
+        return "error: pane not found"
+    view = codex_view(session, pane_id)
     if not view:
-        return "no Codex view"
-    saved = next((record["thread"] for record in saved_panes(session)
-                  if record["terminal_id"] == pane["terminal_id"]), None)
+        return "no view of this shared owner"
+    # Only the command that started the view, or the operator, can say which chat it is.
+    thread = thread or launch_thread(view.get("argv") or [])
+    if not thread:
+        return "skipped: the view was started without a chat ID; pass --thread to name it"
     with RpcClient(socket_path(), timeout=5) as client:
-        thread = shown_thread(client, pane, native_thread(pane) or saved)
-        current = client.request("thread/read", {"threadId": thread})["thread"] if thread else {}
-    # Reopening the wrong chat would be worse than leaving an old view, so the title has to
-    # name this chat outright; the follower's fallback to the launch thread is not enough.
-    if not title_shows(pane.get("terminal_title_stripped") or "", current):
-        return "skipped: cannot tell which chat this view shows"
-    state = chats.status(current)
-    if state in {"APPROVAL", "INPUT"} or (state == "RUNNING" and not force):
+        shown, certain = shown_thread(client, pane, thread)
+        if shown != thread or not certain:
+            return "skipped: the title does not single out this chat"
+        state = chats.status(client.request("thread/read", {"threadId": thread})["thread"])
+    if state != "READY" and not (state == "RUNNING" and force):
         return f"skipped: chat is {state.lower()}"
+    return pane, view, thread
+
+
+def relaunch_pane(session: str, pane_id: str, thread: str | None, force: bool) -> str:
+    """Restart one pane's Codex view on the installed launcher; the chat itself is untouched."""
+    first = relaunch_check(session, pane_id, thread, force)
+    if isinstance(first, str):
+        return first
+    # The user may have switched chats, or the process may have changed, while earlier panes
+    # were handled. Decide again on fresh facts and act only if nothing moved.
+    again = relaunch_check(session, pane_id, first[2], force)
+    if isinstance(again, str):
+        return again
+    pane, view, thread = again
+    if (pane["terminal_id"], pane.get("terminal_title_stripped"), view["pid"]) != (
+            first[0]["terminal_id"], first[0].get("terminal_title_stripped"), first[1]["pid"]):
+        return "skipped: the view changed while it was being checked"
     os.kill(view["pid"], signal.SIGTERM)
-    if not wait_for_shell(session, pane["pane_id"], starting=True):
+    if not wait_for_shell(session, pane_id, starting=True):
         return f"error: view stopped but the pane did not return to a shell; chat {thread}"
-    launch_client(session, pane["pane_id"], thread)
-    return f"relaunched {thread}"
+    if command(session, "pane", "get", pane_id)["pane"]["terminal_id"] != pane["terminal_id"]:
+        return f"error: the pane was replaced after its view stopped; reopen chat {thread}"
+    launch_client(session, pane_id, thread)
+    for _ in range(100):
+        if thread_panes(panes(session), session).get(thread, {}).get("pane_id") == pane_id:
+            return f"relaunched {thread}"
+        time.sleep(.1)
+    return f"error: the new view did not register; inspect the pane, chat {thread}"
 
 
 @herdr_app.command("relaunch")
 def relaunch_command(
-    pane: str = typer.Option("", help="One pane ID; default is every pane with a Codex view."),
+    pane: str = typer.Option("", help="One pane ID; default is every pane with a view."),
+    thread: str = typer.Option("", help="With --pane: the chat a view started without an ID "
+                                        "is showing."),
     force: bool = typer.Option(False, help="Also restart views whose chat has a turn running."),
     session: str = SESSION,
 ) -> None:
     """Restart Codex views so they run the installed launcher. Chats keep running.
 
-    A view is only a window onto a chat held by the shared owner, so a turn in progress
-    continues while its view restarts. Views waiting on an approval or an answer are left
-    alone, as are views whose chat cannot be identified from the terminal title.
+    A view is a window onto a chat held by the shared owner, so its chat continues while the
+    view restarts. A view is restarted only when its start command or --thread names the
+    chat, the terminal title singles that chat out, and the chat is idle (or, with --force,
+    running). Views waiting on an approval or an answer are always left alone.
     """
     try:
-        targets = [p for p in panes(session) if not pane or p["pane_id"] == pane]
+        if thread and not pane:
+            raise SharedServerError("--thread names the chat in one pane; pass --pane too")
+        config = load_config()
+        if not config.shared_server.enabled:
+            raise SharedServerError("Shared attachment is disabled; views cannot be reopened.")
+        # A stopped view can only come back if the installed launcher may attach to the
+        # running owner. Find that out before anything is stopped.
+        ensure_server(agentroute_home() / "bin" / "codex-bin", config)
+        targets = [pane] if pane else [p["pane_id"] for p in panes(session)]
+        failed = False
         for target in targets:
             try:
-                status = relaunch_pane(session, target, force)
+                status = relaunch_pane(session, target, str(UUID(thread)) if thread else None,
+                                       force)
             except chats.ERRORS + (KeyError,) as error:
                 status = f"error: {error}"
-            if status != "no Codex view" or pane:
-                typer.echo(f'{target["pane_id"]}  {status}')
+            failed = failed or status.startswith("error")
+            if pane or status != "no view of this shared owner":
+                typer.echo(f"{target}  {status}")
+        if failed:
+            raise typer.Exit(1)
     except chats.ERRORS as error:
         raise typer.BadParameter(str(error)) from error
 
