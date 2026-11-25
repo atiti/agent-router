@@ -86,9 +86,45 @@ def test_existing_delivered_decision_is_reported_instead_of_requested_again(monk
     monkeypatch.setattr(m, "packet_rows", lambda: iter([(KEY, {}, row)]))
     monkeypatch.setattr(m, "_rows", lambda *args: [])
     monkeypatch.setattr(waits, "load", lambda: [])
-    monkeypatch.setattr(m.decisions, "recorded", lambda key: [{"id": "receipt"}])
-    verify = Mock(return_value={"state": "delivered"})
+    monkeypatch.setattr(m.decisions, "recorded", lambda key: [
+        {"id": "old", "slot": "step", "revision": 6, "turn_id": "old"},
+        {"id": "receipt", "slot": "step", "revision": 7, "turn_id": "turn"},
+    ])
+    verify = Mock(return_value={"id": "receipt", "state": "delivered"})
     monkeypatch.setattr(m.decisions, "verify_receipt", verify)
     report = m.reconcile_packets([], time.time())
     assert report["counts"] == {"decision_delivered": 1}
     verify.assert_called_once_with(KEY, "receipt", None)
+    row["outcome_wait"] = {"state": "awaiting_user", "owner": "Operator",
+                           "question_ref": "distinct-question"}
+    report = m.reconcile_packets([], time.time())
+    assert report["counts"] == {"awaiting_user": 1}
+    entry, = report["items"]
+    assert entry["feedback"]["step"]["state"] == "decision_delivered"
+    assert entry["feedback"]["outcome"]["state"] == "answer_needed"
+    assert entry["owner"] == THREAD and entry["binding"] == "unverified"
+
+
+def test_unassigned_wait_keeps_its_review_condition():
+    row = {"status": "blocked", "next_step": {"state": "waiting_worker"}}
+    assert m.classify(row, time.time()) == ("wait_without_review", None)
+    row["next_step"] = {}
+    assert m.classify(row, time.time()) == ("blocker_needs_owner", "reviewer")
+
+
+def test_monitor_lock_alone_does_not_count_as_supervisor_coverage(monkeypatch):
+    row = item(time.time())
+    monkeypatch.setattr(m, "packet_rows", lambda: iter([(KEY, {"items": [row]}, row)]))
+    monkeypatch.setattr(m, "_rows", lambda *args: [{"id": THREAD}])
+    monkeypatch.setattr(waits, "load", lambda: [])
+    team = {"id": "fixture-team", "namespace": KEY[0], "packet": KEY[1],
+            "inbox_consumer": {"version": 1}, "members": {},
+            "monitor": {"live_review_recipients": []}}
+    monitors = [{"team": team["id"], "state": "running"}]
+    entry, = m.reconcile_packets([team], time.time(), monitors)["items"]
+    assert not entry["monitored"]
+    assert entry["state"] == "needs_idle_admission"
+    team["monitor"]["live_review_recipients"].append("supervisor")
+    entry, = m.reconcile_packets([team], time.time(), monitors)["items"]
+    assert entry["monitored"]
+    assert entry["state"] == "supervisor_followup"

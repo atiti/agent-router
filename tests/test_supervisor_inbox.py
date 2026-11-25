@@ -450,6 +450,41 @@ def test_execution_ready_preparation_and_assigned_coordination_feed_stop_guard(t
     assert not any(child["state"] == "queued" for child in snapshot()["live_children"])
 
 
+def test_due_owned_step_wakes_supervisor_without_creating_an_unclaimed_child(team, monkeypatch):
+    assignment = {"session": "existing-worker", "at": "2026-11-25T10:00:00Z"}
+    owned = {"id": "owned", "revision": 7, "status": "active", "assignment": assignment,
+             "next_step": {"id": "verify", "state": "active", "action": "Verify deployment"}}
+    items = {"owned": owned}
+    now = 1795608000  # 12:00 UTC
+    pending = []
+
+    def packet_command(data, action, *args):
+        if action == "next":
+            return "[]"
+        return json.dumps({"protocol_version": 1, "namespace": "markster", "packet": "packet",
+                           "item": "owned", "revision": 7, "actionable": True,
+                           "claimable": False, "assignment": assignment,
+                           "pending_operations": pending, "next_step": owned["next_step"]})
+
+    monkeypatch.setattr(h, "packet_command", packet_command)
+
+    def tick(at):
+        with h.locked("demo") as data:
+            inbox.sync_packet_steps(data, items, at, {"boss"})
+            h.save("demo", data)
+
+    tick(now)
+    row, = snapshot()["events"]
+    assert row["kind"] == "owner_followup"
+    assert "existing-worker" in row["message"] and "verify pickup" in row["message"]
+    assert not any(child["state"] == "queued" for child in snapshot()["live_children"])
+    tick(now + 60)
+    assert [entry["id"] for entry in snapshot()["events"]] == [row["id"]]
+    pending.append("deploy-unknown")
+    tick(now + 120)
+    assert not snapshot()["events"]
+
+
 def test_ledger_directory_fsync_precedes_native_publish(team, monkeypatch):
     order = []
     original = inbox.atomic_write

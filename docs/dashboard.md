@@ -99,6 +99,18 @@ For worker handoffs, Focus shows current supervision and the review receipt when
 available. The team monitor forwards due reviews and flags an undated worker handoff once.
 The supervisor checks the existing worker and records an event or next review date.
 
+The native inbox also shows an assigned executable step that has gone 30 minutes without
+an owner checkpoint. The team supervisor verifies the worker's current activity and resumes
+eligible work with that owner. The follow-up keeps the existing claim and is deduplicated
+until the step, review date, or owner checkpoint changes.
+
+Run `agentroute maintenance run` for a current inventory of unfinished outcomes, recorded
+owners, conversation bindings, supervisor monitoring, and outstanding feedback. It reports
+the step and outcome questions separately. To ask for feedback, record a delivered question,
+its decision maker, and what answer will let the work resume. Use **Reply** for factual input
+and **Review decisions** for a scoped approval. The packet owner records the answer and next
+step. Ordinary conversations outside an enrolled team still need operator follow-up.
+
 ## Where the data comes from
 
 The server reads state other components already write. Replies add a record to the local wait

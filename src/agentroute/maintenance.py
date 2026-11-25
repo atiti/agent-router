@@ -134,24 +134,29 @@ def classify(item: dict, now: float) -> tuple[str, str | None]:
     step = item.get("next_step") or {}
     state = step.get("state")
     outcome = item.get("outcome_wait") or {}
-    if (state == "awaiting_user" or outcome.get("state") == "awaiting_user"):
+    if state == "awaiting_user" or (
+        outcome.get("state") == "awaiting_user" and state not in {"ready", "active"}
+    ):
         return "awaiting_user", None
     if any(op.get("state") in {"prepared", "unknown"}
            for op in (item.get("operations") or {}).values()):
         return "unresolved_operation", "verifier"
     if (item.get("goal_review") or {}).get("advances_goal") is False:
         return "requires_replan", "reviewer"
-    if not item.get("assignment"):
-        return "no_assignment", None
     raw_date = item.get("next_review")
     review = stamp(raw_date)
     if raw_date is not None and review is None:
         return "invalid_review_date", "verifier"
     if review is not None and review > now:
         return "scheduled", None
-    if state in WAIT_STATES or (item.get("status") == "blocked"):
+    if state in WAIT_STATES or (outcome.get("state") in WAIT_STATES
+                                and state not in {"ready", "active"}):
         return ("review_due", "verifier") if review is not None else ("wait_without_review", None)
-    if state not in {"ready", "active"} or item.get("status") != "active" or outcome:
+    if item.get("status") == "blocked" and state not in {"ready", "active"}:
+        return "blocker_needs_owner", "reviewer"
+    if not item.get("assignment"):
+        return "no_assignment", None
+    if state not in {"ready", "active"} or item.get("status") not in {"active", "blocked"}:
         return "no_executable_step", None
     since = stamp((item.get("checkpoint") or {}).get("at")
                   or (item.get("assignment") or {}).get("at"))
@@ -175,7 +180,14 @@ def packet_rows():
             continue
 
 
-def reconcile_packets(teams: list[dict], now: float) -> dict:
+def reconcile_packets(teams: list[dict], now: float, monitors: list[dict] | None = None) -> dict:
+    monitored = {row.get("team") for row in (monitors or []) if row["state"] == "running"}
+    supervised_packets = {
+        (team["namespace"], team["packet"])
+        for team in teams
+        if team["id"] in monitored and (team.get("inbox_consumer") or {}).get("version") == 1
+        and (team.get("monitor") or {}).get("live_review_recipients")
+    }
     managed = {record.get("thread") for team in teams
                for record in (team.get("members") or {}).values()}
     managed.update(thread for team in teams for thread in supervisors(team).values())
@@ -188,43 +200,71 @@ def reconcile_packets(teams: list[dict], now: float) -> dict:
     details = []
     for key, packet, item in packet_rows():
         reason, role = classify(item, now)
-        thread = None
-        if reason == "awaiting_user":
+        owner = (item.get("assignment") or {}).get("session")
+        step = item.get("next_step") or {}
+        outcome = item.get("outcome_wait") or {}
+        required = {slot: wait for slot, wait in (("step", step.get("wait") or {}),
+                                                   ("outcome", outcome))
+                    if (step.get("state") if slot == "step" else outcome.get("state"))
+                    == "awaiting_user"}
+        feedback = {slot: {"owner": wait.get("owner"), "question_ref": wait.get("question_ref"),
+                           "resume_when": wait.get("resume_when"), "state": "answer_needed"}
+                    for slot, wait in required.items()}
+        if feedback:
             try:
-                for receipt in decisions.recorded(key)[:4]:
+                for receipt in decisions.recorded(key):
+                    slot = receipt.get("slot")
+                    if slot not in feedback or feedback[slot]["state"] == "decision_delivered":
+                        continue
+                    if (receipt.get("revision") != item.get("revision")
+                            or not receipt.get("turn_id")):
+                        continue
                     try:
-                        decisions.verify_receipt(key, receipt["id"], None)
+                        verified = decisions.verify_receipt(key, receipt["id"], None)
                     except actions.ActionError:
                         continue
+                    feedback[slot].update(state="decision_delivered", decision_id=verified["id"])
+                if reason == "awaiting_user" and all(
+                    entry["state"] == "decision_delivered" for entry in feedback.values()
+                ):
                     reason = "decision_delivered"
-                    break
-            except (OSError, ValueError, KeyError):
+            except (OSError, ValueError, KeyError, TypeError):
                 reason = "decision_receipt_unreadable"
-        if reason in {"work_due", "review_due"}:
+
+        thread = None
+        binding = "unassigned"
+        if owner:
             try:
                 route = routes.route(key, item)
                 thread = route["thread"] if route["kind"] == "owner" else None
-                if not thread or thread not in local:
-                    reason = "no_verified_conversation"
-                elif thread in managed:
-                    reason = "team_supervised"
-                elif thread in pending:
-                    reason = "already_has_wait"
-                elif reason == "work_due" and (
-                    set(item.get("dependencies", [])) -
-                    {x["id"] for x in packet["items"] if x.get("status") == "done"}
-                ):
-                    reason = "dependencies_pending"
-                else:
-                    # turn/start can steer a concurrently active turn. Report ordinary
-                    # due work until the runtime supports atomic idle-only admission.
-                    reason = "needs_idle_admission"
+                binding = "verified" if thread and (thread in local or thread in managed) else (
+                    "unverified"
+                )
             except routes.HERDR_ERRORS:
+                binding = "check_failed"
+        monitored_packet = key[:2] in supervised_packets
+        if reason in {"work_due", "review_due"}:
+            if reason == "work_due" and (
+                set(item.get("dependencies", [])) -
+                {x["id"] for x in packet["items"] if x.get("status") == "done"}
+            ):
+                reason = "dependencies_pending"
+            elif monitored_packet:
+                reason = "supervisor_followup"
+            elif binding == "check_failed":
                 reason = "owner_check_failed"
+            elif binding != "verified":
+                reason = "no_verified_conversation"
+            elif thread in pending:
+                reason = "already_has_wait"
+            else:
+                # Plain conversations need atomic idle-only admission before automatic wake.
+                reason = "needs_idle_admission"
         counts[reason] += 1
-        if reason not in {"recent_or_unverified", "no_executable_step"}:
-            details.append({"packet": "/".join(key), "state": reason, "thread": thread,
-                            "suggested_role": role})
+        details.append({"packet": "/".join(key), "state": reason, "thread": thread,
+                        "revision": item.get("revision"), "owner": owner, "binding": binding,
+                        "monitored": monitored_packet, "suggested_role": role,
+                        "feedback": feedback})
     return {"counts": dict(counts), "items": details}
 
 
@@ -234,9 +274,9 @@ def run_once(apply: bool = False) -> dict:
         if not acquired:
             return {"state": "already_running"}
         teams = read_teams()
-        report = {"checked_at": now, "apply": apply,
-                  "monitors": reconcile_monitors(teams, apply),
-                  "packets": reconcile_packets(teams, now)}
+        monitors = reconcile_monitors(teams, apply)
+        report = {"checked_at": now, "apply": apply, "monitors": monitors,
+                  "packets": reconcile_packets(teams, now, monitors)}
         pending = sum(w["state"] in {"pending", "fired"} for w in waits.load())
         started = waits.ensure_daemon() if apply and pending else False
         report["waits"] = {"pending_or_fired": pending, "start_requested": started,
