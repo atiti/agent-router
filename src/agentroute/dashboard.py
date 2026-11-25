@@ -17,7 +17,7 @@ import sqlite3
 import subprocess
 import threading
 import time
-from collections import Counter, deque
+from collections import Counter, defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -398,12 +398,18 @@ def item_hold(item: dict[str, Any], names: list[str]) -> dict[str, Any] | None:
     step, later = item.get("next_step") or {}, item.get("outcome_wait") or {}
     blocker = str(item.get("blocker") or "")
     if step.get("state") in STEP_HOLDS:
-        return _hold(STEP_HOLDS[step["state"]], step.get("wait") or {}, blocker, names, True)
+        hold = _hold(STEP_HOLDS[step["state"]], step.get("wait") or {}, blocker, names, True)
+        if step["state"] == "awaiting_user":
+            hold["decision_slot"] = "step"
+        return hold
     executable = step.get("state") in {"ready", "active"}
     if later.get("state") in STEP_HOLDS:
         # Work can continue on the current step; this hold applies before the outcome closes.
-        return _hold(STEP_HOLDS[later["state"]], later, blocker, names,
+        hold = _hold(STEP_HOLDS[later["state"]], later, blocker, names,
                      blocking=status == "blocked" and not executable)
+        if later["state"] == "awaiting_user":
+            hold["decision_slot"] = "outcome"
+        return hold
     if status == "blocked" and not executable:
         return _hold("unowned", {}, blocker, names, True)
     return None
@@ -424,6 +430,10 @@ def load_packets(cutoff: float, names: list[str] | None = None) -> list[dict[str
             checkpoint = item.get("checkpoint") or {}
             step = item.get("next_step") or {}
             gates = item.get("gates") or {}
+            hold = item_hold(item, names)
+            later_hold = (item_hold({**item, "next_step": None}, names)
+                          if hold and hold.get("decision_slot") == "step"
+                          and item.get("outcome_wait") else None)
             items.append({
                 "id": item.get("id"),
                 "revision": item.get("revision"),
@@ -435,7 +445,8 @@ def load_packets(cutoff: float, names: list[str] | None = None) -> list[dict[str
                     str(item.get("next_action") or step.get("action") or ""), 220),
                 "session": (item.get("assignment") or {}).get("session"),
                 "assigned_at": _epoch((item.get("assignment") or {}).get("at")),
-                "hold": item_hold(item, names),
+                "hold": hold,
+                "later_hold": later_hold,
                 "review_at": _epoch(item.get("next_review")),
                 "checkpoint": redact(str(checkpoint.get("summary") or ""), 220),
                 "checkpoint_at": _epoch(checkpoint.get("at")),
@@ -569,6 +580,80 @@ def _focus_order(entry: dict[str, Any]) -> tuple:
     return (not entry["blocking"], not entry.get("asking"),
             PRIORITY_ORDER.get(entry.get("priority") or "", 9),
             entry.get("since") or 0)
+
+
+def annotate_actions(packets: list[dict], waits: list[dict], cutoff: float) -> list[dict]:
+    """Show recent receipt progress and reconcile display holds against exact decisions."""
+    from . import dashboard_decisions as decisions
+
+    activity = []
+    by_packet = defaultdict(list)
+    for wait in waits:
+        key = wait.get("spec", {}).get("dashboard_packet")
+        if key and wait["created_at"] >= cutoff:
+            by_packet[tuple(key)].append(wait)
+    for packet in packets:
+        for item in packet["items"]:
+            key = (packet["namespace"], packet["id"], item["id"])
+            hold = item["hold"] or {}
+            later_hold = item.pop("later_hold", None)
+            common = {"namespace": key[0], "packet": key[1], "item": key[2],
+                      "title": item["objective"] or key[2], "status": item["status"],
+                      "step_state": item["step_state"], "revision": item["revision"],
+                      "checkpoint": item["checkpoint"], "checkpoint_at": item["checkpoint_at"]}
+            try:
+                records = decisions.recorded(key)
+            except (ValueError, OSError, KeyError, TypeError):
+                records = []
+            for record in records:
+                delivered = bool(record.get("turn_id"))
+                label = {"approve": "Approval", "deny": "Denial"}.get(record.get("decision"))
+                if not label:
+                    continue
+                decision = {**common, "action": label, "at": record["created_at"],
+                            "delivery": "Accepted by Codex" if delivered else
+                            "Delivery unconfirmed", "agent": record.get("recipient")}
+                if record["created_at"] >= cutoff:
+                    activity.append(decision)
+                if (item.get("decision_feedback") or hold.get("kind") != "you"
+                        or not hold.get("decision_slot") or not delivered
+                        or record.get("slot") != hold["decision_slot"]
+                        or record.get("revision") != item["revision"]):
+                    continue
+                try:
+                    decisions.verify_receipt(key, record["id"], None)
+                except (ValueError, OSError, KeyError):
+                    continue
+                item["decision_feedback"] = f"{label} accepted by Codex"
+                item["hold"] = later_hold or {
+                    **hold, "kind": "coordination", "owner": "Receiving session",
+                    "reason": item["decision_feedback"] + ".",
+                    "unblock": "Receiving session must record its next action "
+                               "or an updated proposal.",
+                }
+                if later_hold and later_hold["kind"] == "you":
+                    # A separate outcome question remains. The existing decision dialog still
+                    # resolves the current step's scope while that step is in the tracker.
+                    later_hold["decision_in_session"] = True
+            for wait in by_packet[key]:
+                disposition = wait.get("disposition") or {}
+                if disposition:
+                    delivery = "Agent response · " + str(disposition.get("action", "recorded"))
+                elif wait.get("recipient_read"):
+                    delivery = "Read by agent"
+                elif wait["state"] == "delivered":
+                    delivery = "Accepted by Codex"
+                elif wait["state"] == "undeliverable":
+                    delivery = "Delivery failed"
+                elif (wait.get("delivery") or {}).get("state") == "unknown":
+                    delivery = "Delivery unconfirmed"
+                else:
+                    delivery = wait["state"].replace("_", " ").capitalize()
+                action = "Comment" if wait["spec"].get("dashboard_decision_comment") else "Reply"
+                activity.append({**common, "action": action, "at": wait["created_at"],
+                                 "delivery": delivery, "agent": wait.get("thread_id"),
+                                 "detail": redact(str(disposition.get("reason") or ""), 360)})
+    return sorted(activity, key=lambda row: row["at"], reverse=True)[:20]
 
 
 def annotate_supervision(focus: dict[str, Any], now: float) -> None:
@@ -874,7 +959,9 @@ class Collector:
                        "state": "wait", "reason": f"wait {wait['state']} past its deadline"
                        if wait["state"] == "pending" else "wake could not be delivered"}
                       for wait in overdue]
+        recent_actions = annotate_actions(packets, all_waits, cutoff)
         focus = build_focus(packets, agents, overdue, self.names, now)
+        focus["recent_actions"] = recent_actions
         annotate_supervision(focus, now)
         from .shared_server import state_dir
 

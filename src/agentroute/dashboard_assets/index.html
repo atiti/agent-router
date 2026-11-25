@@ -717,7 +717,7 @@ function decisionLabel(value){
 }
 function decisionEntries(){
   return (S.snap?.focus?.needs_you || []).filter(e => e.type === "outcome" &&
-    Number.isInteger(e.revision) && holdMatches(e));
+    !e.decision_in_session && Number.isInteger(e.revision) && holdMatches(e));
 }
 function queuePending(key, payload){
   const storageKey = "decision:" + key;
@@ -768,7 +768,8 @@ async function openDecisionQueue(button){
   const requested = button?.dataset;
   const index = requested ?
     candidates.findIndex(e => decisionKey(e) === decisionKey(requested)) : 0;
-  const queue = {items:candidates, index:Math.max(0,index), approvalsOnly:!requested,
+  if(index < 0) return; // The snapshot changed after this row was displayed.
+  const queue = {items:candidates, index, approvalsOnly:!requested,
     handled:new Set(), recorded:0, unsupported:0, failed:0};
   reviewQueue = queue;
   decisionQueueNote(queue);
@@ -1039,7 +1040,8 @@ function holdCard(e){
     ${e.unblock?`<div class="fix"><span>Unblocks when</span>${esc(e.unblock)}</div>`:
       e.next_action?`<div class="fix"><span>Recorded next action</span>${esc(e.next_action)}</div>`:""}
     ${holder||e.question?`<div class="meta">${holder}${holder&&e.question?" · ":""}${e.question?"Asked in "+esc(e.question):""}</div>`:""}
-    ${packetActionToken && e.type==="outcome" && e.kind==="you" && Number.isInteger(e.revision) ?
+    ${e.decision_in_session ? '<div class="meta">Open the session to answer this separate outcome question.</div>' : ""}
+    ${packetActionToken && e.type==="outcome" && e.kind==="you" && !e.decision_in_session && Number.isInteger(e.revision) ?
       `<button type="button" class="packet-action" data-decide-packet data-namespace="${esc(e.namespace)}"
         data-packet="${esc(e.packet)}" data-item="${esc(e.item)}">Review decision</button>` : ""}
     ${e.type==="outcome" ? packetAction(e.namespace,e.packet,{...e,id:e.item}) : ""}
@@ -1052,10 +1054,22 @@ function holdList(entries, key, limit){
   return shown.map(holdCard).join("") + (entries.length>shown.length ?
     `<button class="more" data-expand="${key}">Show ${entries.length-shown.length} more</button>` : "");
 }
+function recentAction(row){
+  const state = row.status === "done" ? "Outcome completed" : "Outcome " + row.status;
+  const step = row.step_state === "done" && row.status !== "done" ? " · Current step finished" : "";
+  const checkpoint = row.checkpoint_at && row.checkpoint_at >= row.at ? row.checkpoint : "";
+  return `<div class="hold"><div class="hd"><b>${esc(row.title)}</b>
+    <span class="meta">${ago(row.at)} · revision ${esc(row.revision)}</span></div>
+    <div>${esc(row.action)} · ${esc(row.delivery)} · ${esc(state + step)}</div>
+    ${row.detail || checkpoint ? `<div class="meta">${esc(row.detail || checkpoint)}</div>` : ""}
+    ${packetAction(row.namespace,row.packet,{...row,id:row.item})}</div>`;
+}
 function focusView(){
   const f = S.snap.focus, agents = visibleAgents();
   const you = f.needs_you.filter(holdMatches), unowned = f.unowned.filter(holdMatches);
   const groups = f.others.map(g => ({...g, items:g.items.filter(holdMatches)})).filter(g => g.items.length);
+  const recent = (f.recent_actions || []).filter(holdMatches);
+  const shownActions = S.expanded.has("f-recent") ? recent : recent.slice(0, 5);
   const blockedOthers = groups.reduce((n,g) => n+g.items.length, 0);
   const moving = agents.filter(a => a.state==="working").sort((x,y) => y.active_at-x.active_at);
   const parked = agents.filter(a => a.state==="waiting").sort((x,y) => y.active_at-x.active_at);
@@ -1071,6 +1085,10 @@ function focusView(){
     <p class="lead">Maintenance ${f.maintenance ?
       (f.maintenance.fresh ? "checked " : "overdue · last checked ") + ago(f.maintenance.checked_at) :
       "has no recent startup report"}</p>
+    ${recent.length ? `<h2>Recent dashboard actions<b>${recent.length}</b></h2>
+      ${shownActions.map(recentAction).join("")}
+      ${recent.length>shownActions.length ?
+        `<button class="more" data-expand="f-recent">Show ${recent.length-shownActions.length} more</button>` : ""}` : ""}
     <div class="decision-bar"><h2>Needs you<b>${you.length}</b></h2>
       ${packetActionToken && decisionEntries().length ?
         '<button type="button" class="reply-button primary" data-review-decisions>Review decisions</button>' : ""}
@@ -1166,8 +1184,9 @@ function packetsView(){
       <span class="meta" style="flex:1">${esc(p.objective)}</span><span class="meta">${ago(p.updated_at)}</span></header>
       ${items.map(i => `<div class="item">
         <div><span class="chip s" style="--c:var(--${color[i.status]||"idle"})">${esc(i.status)}</span>
-          <div class="meta">${esc(i.priority||"")}${i.step_state&&i.step_state!==i.status?" · "+esc(i.step_state.replace(/_/g," ")):""}</div></div>
+          <div class="meta">${esc(i.priority||"")}${i.step_state&&i.step_state!==i.status?" · "+esc((i.decision_feedback && i.step_state==="awaiting_user" ? "decision accepted" : i.step_state.replace(/_/g," "))):""}</div></div>
         <div><b>${esc(i.id)}</b><div>${esc(i.objective)}</div>
+          ${i.decision_feedback ? `<div class="meta">${esc(i.decision_feedback)}</div>` : ""}
           ${packetAction(p.namespace,p.id,i)}</div>
         <div>${i.hold&&i.hold.blocking?`<div><span class="chip s" style="--c:var(--${HOLD[i.hold.kind]})">${
           i.hold.kind==="you"?"needs you":i.hold.kind==="unowned"?"no owner":"held: "+esc(i.hold.owner||HOLD_LABEL[i.hold.kind])}</span></div>`:""}
