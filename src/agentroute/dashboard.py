@@ -607,8 +607,8 @@ def annotate_supervision(focus: dict[str, Any], now: float) -> None:
             stamp = message.get("created_at", 0)
             if stamp >= receipts.get(identity, (0, ""))[0]:
                 state = ("Reviewed by supervisor" if event.get("state") == "dispositioned" else
-                         "Delivered to supervisor" if
-                         (event.get("delivery") or {}).get("state") == "delivered" else
+                         "Delivered to supervisor" if event.get("state") == "delivered"
+                         or (event.get("delivery") or {}).get("state") == "delivered" else
                          "Queued for supervisor")
                 receipts[identity] = stamp, state
     for group in focus["others"]:

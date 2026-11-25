@@ -650,3 +650,24 @@ def test_names_person_matches_whole_names_only():
     assert dashboard.names_person("root coordinator / ANA", ["Ana"])
     assert not dashboard.names_person("Banana supplier", ["Ana"])
     assert not dashboard.names_person("GitHub Actions", [])
+
+
+def test_supervisor_acknowledgement_is_visible_even_when_transport_is_pending(
+    monkeypatch, tmp_path,
+):
+    from agentroute import shared_server
+
+    monkeypatch.setattr(shared_server, "state_dir", lambda: tmp_path)
+    team = tmp_path / "herdr-teams" / "demo" / "team.json"
+    team.parent.mkdir(parents=True)
+    team.write_text(json.dumps({
+        "namespace": "private", "packet": "demo",
+        "monitor": {"checked_at": 100, "live_review_recipients": ["owner"]},
+        "messages": {"one": {"member": "owner", "created_at": 90,
+                             "review": {"item": "handoff", "revision": 2},
+                             "coordination_event": {"state": "delivered",
+                                                    "delivery": {"state": "pending"}}}},
+    }))
+    row = {"namespace": "private", "packet": "demo", "item": "handoff", "revision": 2}
+    dashboard.annotate_supervision({"others": [{"kind": "worker", "items": [row]}]}, 101)
+    assert row["supervision"] == "Delivered to supervisor"
