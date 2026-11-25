@@ -13,10 +13,19 @@ agentroute dashboard --port 0        # any free port
 The server runs until you stop it with Ctrl+C. The page updates every two seconds without a
 reload.
 
-The default **Focus** view puts live requests and recorded decisions for you first.
-Each held outcome shows the recorded reason, owner, and condition for resuming.
-Older blockers without a named owner appear under **Blocked with no owner**.
-The claims section shows whether a namespace has reached its worker limit.
+The default **Focus** view opens on **Needs you**. Use the counts across the top to see
+items that need an owner or a handoff, wait on an agent or outside result, or are in progress.
+Each card shows the latest recorded progress, what is missing, what happens next, and who
+is responsible. Overdue reviews are listed first. Use **Review items** or a card’s **Details**
+button to step through the current list, and **Review decisions** to work through proposals.
+
+The action on each card opens the relevant review or prefills a reply you can edit.
+**Request triage** asks an agent to identify an owner. **Ask for follow-up** checks a handoff.
+**Ask for an update** goes through the packet’s reply route. **Ask for a dependency check** asks the
+recipient to verify the outside result and record who will follow up. Focus shows the actual
+recorded blocker and next step when they are available. Use **Recent dashboard activity**
+to see what was delivered and how the packet stands.
+
 Use `agentroute dashboard --me NAME` to match a different name recorded in the tracker.
 
 ## What it shows
