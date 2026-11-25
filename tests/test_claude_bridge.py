@@ -199,6 +199,41 @@ def test_interrupted_parallel_tool_calls_receive_missing_results_before_next_tur
     assert next(block for block in results if block["tool_use_id"] == "b")["is_error"] is True
 
 
+def test_replayed_orphan_and_duplicate_outputs_preserve_evidence():
+    payload, _, _ = translate_request(
+        {
+            "model": DEFAULT_MODEL,
+            "input": [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "resume"}]},
+                {"type": "function_call_output", "output": "unidentified output"},
+                {"type": "function_call", "call_id": "a", "name": "one", "arguments": "{}"},
+                {"type": "function_call", "call_id": "b", "name": "two", "arguments": "{}"},
+                {"type": "custom_tool_call_output", "call_id": "older", "output": "old output"},
+                {"type": "function_call_output", "call_id": "a", "output": "valid output"},
+                {"type": "function_call_output", "call_id": "a", "output": "late duplicate"},
+                {"type": "function_call_output", "output": "another unidentified output"},
+            ],
+        },
+    )
+
+    first, assistant, following = payload["messages"]
+    assert assistant["role"] == "assistant"
+    assert all(block["type"] == "text" for block in first["content"])
+    assert "unidentified output" in first["content"][-1]["text"]
+    results = following["content"][:2]
+    assert {block["tool_use_id"] for block in results} == {"a", "b"}
+    assert next(block for block in results if block["tool_use_id"] == "a")["content"] == (
+        "valid output"
+    )
+    assert next(block for block in results if block["tool_use_id"] == "b")["is_error"]
+    evidence = following["content"][2:]
+    assert all(block["type"] == "text" for block in evidence)
+    assert all(value in str(evidence) for value in (
+        "old output", "late duplicate", "another unidentified output",
+    ))
+
+
 def test_custom_tool_becomes_string_parameter_and_is_tracked():
     tools, freeform, renames = collect_tools(
         [
@@ -766,6 +801,7 @@ def test_tool_result_stays_text_when_no_image_is_present():
         {
             "model": DEFAULT_MODEL,
             "input": [
+                {"type": "function_call", "call_id": "toolu_1", "name": "read"},
                 {
                     "type": "function_call_output",
                     "call_id": "toolu_1",
