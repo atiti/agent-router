@@ -57,10 +57,26 @@ selector changes the window from one hour to seven days.
 Supervisor workers appear as their own cards under the name the supervisor gave them.
 Progress and approval reviewers are counted in one tile, since there are hundreds a day.
 
+## Reply to a work packet
+
+Use the tab opened by `agentroute dashboard` or the reply link printed with `--no-open`.
+Open **Reply** on an outcome in Focus or Work packets. Pick a template (Continue, Hold, or
+Ask for details) and edit the message, or write your own. The current assigned Codex session
+receives the reply. For an unassigned outcome or an older assignment with no Codex thread ID,
+choose a session to review it. The recorded assignment stays in place.
+
+The reply queues a wake for the selected session through AgentRoute. The session can recheck
+the blocker and continue permitted work using the packet tracker. Keep any required approvals
+in their normal approval flow. Replies alone do not clear a hold or transfer ownership.
+
+Reopen the reply dialog to see recent delivery receipts. **Delivered** means the shared server
+or supervisor inbox accepted the wake. **Read by agent** means the recipient loaded the record.
+An agent response records its next action. Check the packet itself for evidence that work moved.
+
 ## Where the data comes from
 
-Nothing is collected separately. The server reads state other components already write, and
-never changes it:
+The server reads state other components already write. Replies add a record to the local wait
+registry. Packet state is updated by its owner through the tracker:
 
 | Source | Used for |
 | --- | --- |
@@ -85,3 +101,6 @@ name or the address given with `--host`, so a web page on another origin cannot 
 no login. Commands are shown as the agent ran them, with values that look like credentials
 masked; treat the page like your terminal scrollback. To view it from another device, forward
 the port over SSH rather than listening on a network address.
+
+The reply link is private to the running dashboard and authorizes local replies. A plain
+dashboard URL or a network bind serves the read-only views.

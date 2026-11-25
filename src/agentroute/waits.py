@@ -166,7 +166,10 @@ def register(
     interval: int | None = None,
     cwd: str | None = None,
     now: float | None = None,
+    fired_payload: str | None = None,
 ) -> dict[str, Any]:
+    if fired_payload is not None and (kind != "external" or len(fired_payload) > MAX_PAYLOAD):
+        raise WaitError("fired payload requires an external wake within the payload limit")
     if kind not in KINDS:
         raise WaitError(f"unknown wait kind {kind!r}")
     if not re.fullmatch(r"[0-9a-fA-F-]{8,64}", thread_id):
@@ -195,7 +198,19 @@ def register(
         "recipient_read": None,
         "disposition": None,
     }
+    if fired_payload is not None:
+        wait["state"] = "fired"
+        wait["outcome"] = {"reason": "external", "evidence": fired_payload, "at": now}
     with mutate() as waits:
+        request_id = spec.get("dashboard_request") if fired_payload is not None else None
+        if request_id:
+            previous = next(
+                (w for w in waits if w["spec"].get("dashboard_request") == request_id), None
+            )
+            if previous:
+                if previous["spec"] != spec or previous["thread_id"] != thread_id:
+                    raise WaitError("request ID already used for a different packet action")
+                return previous
         if kind == "event" and spec.get("event_id"):
             previous = next(
                 (
@@ -214,7 +229,13 @@ def register(
                 )
             ):
                 return previous
-        if len(pending_for(thread_id, waits)) >= MAX_PENDING_PER_THREAD:
+        in_flight = sum(
+            w["thread_id"] == thread_id and w["state"] == "fired"
+            and bool(w["spec"].get("dashboard_request")) for w in waits
+        )
+        if request_id and in_flight >= MAX_PENDING_PER_THREAD:
+            raise WaitError("too many packet replies are still awaiting delivery to this session")
+        if fired_payload is None and len(pending_for(thread_id, waits)) >= MAX_PENDING_PER_THREAD:
             raise WaitError(f"thread already has {MAX_PENDING_PER_THREAD} pending waits")
         waits.append(wait)
     return wait

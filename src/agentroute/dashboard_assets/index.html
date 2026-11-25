@@ -15,7 +15,7 @@
 [hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--text);
 font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
-button,input,select{font:inherit;color:inherit}
+button,input,select,textarea{font:inherit;color:inherit}
 header{display:flex;gap:14px;align-items:center;padding:10px 18px;border-bottom:1px solid var(--line);
 position:sticky;top:0;background:var(--bg);z-index:5;flex-wrap:wrap}
 h1{font-size:15px;margin:0;letter-spacing:.2px}
@@ -99,6 +99,26 @@ border-radius:9px;padding:9px 13px;margin-bottom:7px}
 .hold .fix{margin-top:4px;padding:5px 9px;background:var(--panel2);border-radius:6px}
 .hold .fix span{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.4px;margin-right:6px}
 .hold .meta{margin-top:3px}
+.packet-action,.reply-button{border:1px solid var(--line);background:var(--panel2);border-radius:7px;padding:5px 10px;cursor:pointer}
+.packet-action{margin-top:7px;text-align:left}
+.packet-action:hover,.reply-button:hover{border-color:var(--waiting)}
+.reply-button.primary{background:var(--text);color:var(--panel);font-weight:650}
+.reply-button:disabled{cursor:default;opacity:.45}
+#packet-reply{color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:14px;
+width:min(580px,calc(100vw - 24px));max-height:calc(100dvh - 36px);padding:20px;overflow:auto}
+#packet-reply::backdrop{background:rgba(0,0,0,.48)}
+#packet-reply h2{font-size:17px;margin:0 0 5px}
+#packet-reply h3{font-size:13px;margin:18px 0 5px}
+#packet-reply form{display:grid;gap:12px;margin-top:14px}
+#packet-reply label{display:grid;gap:4px;font-weight:600}
+#packet-reply select,#packet-reply textarea{width:100%;min-width:0}
+#packet-reply textarea{resize:vertical;border:1px solid var(--line);border-radius:8px;padding:9px;
+background:var(--bg);min-height:110px;font-weight:400}
+#packet-reply .meta{white-space:normal;overflow-wrap:anywhere}
+#packet-reply .reply-actions{display:flex;justify-content:flex-end;gap:8px}
+#reply-history{padding:0;list-style:none;margin:0}
+#reply-history li{padding:7px 0;border-top:1px solid var(--line)}
+#reply-notice:empty{display:none}
 .chip.late{color:var(--blocked);border-color:var(--blocked)}
 details.grp{margin-bottom:7px}
 details.grp>summary{cursor:pointer;padding:7px 12px;background:var(--panel);border:1px solid var(--line);
@@ -162,6 +182,36 @@ svg.chart{display:block;width:100%;height:220px}
 <section id="attention"></section>
 <main id="view"></main>
 <aside id="drawer" hidden></aside>
+<dialog id="packet-reply" aria-labelledby="reply-heading">
+  <h2 id="reply-heading">Reply to work packet</h2>
+  <div id="reply-context" class="meta"></div>
+  <form id="reply-form">
+    <div id="reply-owner"></div>
+    <label id="reply-triage" hidden>Session to review this packet
+      <select id="reply-recipient" aria-describedby="reply-target-hint"></select>
+    </label>
+    <div id="reply-target-hint" class="meta"></div>
+    <label>Template
+      <select id="reply-template">
+        <option value="continue">Continue work</option>
+        <option value="hold">Hold work</option>
+        <option value="details">Ask for details</option>
+        <option value="custom">Write my own</option>
+      </select>
+    </label>
+    <label>Message
+      <textarea id="reply-message" required maxlength="2000" rows="5"></textarea>
+    </label>
+    <p class="meta" style="margin:0">Your reply asks an agent to act on this packet. Existing claims and approvals stay in place.</p>
+    <div id="reply-notice" role="status" class="meta"></div>
+    <div class="reply-actions">
+      <button type="button" class="reply-button" id="reply-close">Close</button>
+      <button type="submit" class="reply-button primary" id="reply-send">Send reply</button>
+    </div>
+  </form>
+  <h3>Recent replies</h3>
+  <ul id="reply-history"></ul>
+</dialog>
 <script>
 "use strict";
 const STATES = {needs_input:"Asking you", working:"Working", waiting:"Waiting", stalled:"Stalled",
@@ -246,6 +296,253 @@ function render(changed){
     $("view").innerHTML = ({focus:focusView, board:boardView, waits:waitsView, packets:packetsView, usage:usageView}[S.tab])();
 }
 
+const packetActionsUrl = "/api/packet-actions";
+const threadId = value => typeof value === "string" &&
+  /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+const replyTemplates = {
+  continue: "Please review this packet and continue any next step that is ready and already authorized. If it is still blocked, report the decision or evidence needed to proceed.",
+  hold: "Please keep this packet on hold, preserve its current ownership, and wait for my next instruction. Tell me if anything has already started that requires attention.",
+  details: "Please explain what is blocking this packet, what you have verified, and the specific decision or evidence you need to continue.",
+  custom: "",
+};
+let packetActionToken = "";
+let reply = null;
+let replyPolling = null;
+const uncertainSends = new Map();
+const pendingStorageKey = key => "agentroute:pending-reply:" + key;
+function pendingReply(key){
+  if(uncertainSends.has(key)) return uncertainSends.get(key);
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(pendingStorageKey(key)));
+    return saved && Date.now()-saved.at < 86400000 ? saved.body : null;
+  } catch {
+    return null;
+  }
+}
+function savePendingReply(key, body){
+  if(body) uncertainSends.set(key,body);
+  else uncertainSends.delete(key);
+  try {
+    if(body) sessionStorage.setItem(pendingStorageKey(key),JSON.stringify({at:Date.now(),body}));
+    else sessionStorage.removeItem(pendingStorageKey(key));
+  } catch {
+    // The current page still retains the retry reference when storage is disabled.
+  }
+}
+
+async function enablePacketActions(){
+  if(!globalThis.crypto?.randomUUID) return;
+  const access = /^#access=([A-Za-z0-9_-]{43})$/.exec(location.hash);
+  if(access) history.replaceState(null, "", "#focus");
+  try {
+    const token = access ? access[1] : sessionStorage.getItem("agentroute-packet-access");
+    if(!token) return;
+    const response = await fetch(packetActionsUrl, {cache:"no-store", redirect:"error",
+      headers:{"X-AgentRoute-Token":token}});
+    if(!response.ok) {
+      sessionStorage.removeItem("agentroute-packet-access");
+      return;
+    }
+    packetActionToken = token;
+    try { sessionStorage.setItem("agentroute-packet-access",token); } catch {}
+    render();
+  } catch {
+    // The dashboard still works when packet actions are unavailable.
+  }
+}
+function packetAction(namespace, packet, item){
+  if(!packetActionToken || !item || !Number.isInteger(item.revision) ||
+     ["done", "cancelled"].includes(item.status)) return "";
+  return `<button type="button" class="packet-action" data-reply-packet
+    data-namespace="${esc(namespace)}" data-packet="${esc(packet)}" data-item="${esc(item.id)}"
+    >${threadId(item.session) ? "Reply to owner" : "Ask a session to review"}</button>`;
+}
+function sessionLabel(id){
+  const agent = agentById(id);
+  const name = agent?.title || agent?.nickname;
+  return name ? `${name} · ${id.slice(0,8)}` : id;
+}
+function replyContext(namespace, packet, item){
+  const record = S.snap?.packets.find(p => p.namespace === namespace && p.id === packet);
+  const outcome = record?.items.find(i => i.id === item);
+  if(!outcome || !Number.isInteger(outcome.revision) ||
+     ["done", "cancelled"].includes(outcome.status)) return null;
+  return {namespace, packet, item, revision:outcome.revision, objective:outcome.objective,
+    assignment:outcome.session, key:[namespace,packet,item].join("/")};
+}
+function setReplyControls(current){
+  const waiting = Boolean(current.pending);
+  $("reply-template").disabled = $("reply-message").disabled =
+    $("reply-recipient").disabled = waiting;
+  $("reply-send").disabled = current.sending || !threadId($("reply-recipient").value);
+  $("reply-close").disabled = current.sending;
+  $("reply-send").textContent = current.sending ? "Sending…" :
+    waiting ? "Retry same reply" : "Send reply";
+}
+function openPacketReply(button){
+  const {namespace,packet,item} = button.dataset;
+  const context = replyContext(namespace, packet, item);
+  if(!context) return;
+  const pending = pendingReply(context.key);
+  reply = {...context, pending, sending:false, receipts:new Map()};
+  const recipient = pending?.recipient || (threadId(context.assignment) ? context.assignment : "");
+  const direct = !!pending || threadId(context.assignment);
+  $("reply-context").textContent = `${context.objective} · ${context.key}`;
+  $("reply-owner").textContent = direct ? `${pending ? "Pending reply to" : "To"} ${sessionLabel(recipient)}` : "";
+  $("reply-triage").hidden = direct;
+  $("reply-target-hint").textContent = direct ? "" :
+    context.assignment ? `Recorded owner: ${context.assignment}. Choose a session to review the packet and coordinate with that owner.` :
+    "This packet has no assigned session. Choose a session to review it and identify what can proceed.";
+  const options = (S.snap?.agents || []).filter(a => threadId(a.id)).map(a => a.id);
+  if(recipient && !options.includes(recipient)) options.unshift(recipient);
+  $("reply-recipient").replaceChildren(new Option("Choose a session", ""),
+    ...[...new Set(options)].map(id => new Option(sessionLabel(id),id)));
+  $("reply-recipient").value = recipient;
+  $("reply-template").value = pending ? "custom" : "continue";
+  $("reply-message").value = pending?.message ?? replyTemplates.continue;
+  $("reply-notice").textContent = pending ?
+    "Delivery is unconfirmed. Retry sends the original reply with the same reference." : "";
+  $("reply-history").replaceChildren(Object.assign(document.createElement("li"),{textContent:"Loading…",className:"meta"}));
+  setReplyControls(reply);
+  $("packet-reply").showModal();
+  loadReplyHistory(reply);
+  replyPolling = setInterval(() => { if(reply) loadReplyHistory(reply); }, 5000);
+}
+function receiptStatus(receipt){
+  const delivery = receipt.delivery || {};
+  if(receipt.disposition) return `Agent response: ${receipt.disposition.action || "recorded"}`;
+  if(receipt.recipient_read) return "Read by session";
+  if(receipt.state === "undeliverable" || delivery.state === "failed") return "Delivery failed";
+  if(delivery.state === "unknown") return "Delivery being verified";
+  if(receipt.delivery_issue) return receipt.delivery_issue;
+  if(delivery.state === "inbox_pending") return "Waiting for supervisor inbox receipt";
+  if(receipt.state === "delivered" || delivery.state === "delivered") {
+    return delivery.mode === "existing_or_queued" ? "Accepted by Codex" : "Delivered to session";
+  }
+  if(receipt.daemon_ready === false) return "Saved · delivery service unavailable";
+  return "Queued";
+}
+function showReplyReceipts(current){
+  const list = $("reply-history");
+  const receipts = [...current.receipts.values()].sort((a,b) => b.created_at-a.created_at);
+  list.replaceChildren(...receipts.map(receipt => {
+    const row = document.createElement("li");
+    const status = document.createElement("strong");
+    status.textContent = receiptStatus(receipt);
+    const details = document.createElement("div");
+    details.className = "meta";
+    details.textContent = `${sessionLabel(receipt.recipient)} · ${stamp(receipt.created_at)} · ${receipt.id}`;
+    row.append(status, details);
+    return row;
+  }));
+  if(!receipts.length){
+    const empty = document.createElement("li");
+    empty.className = "meta";
+    empty.textContent = current.loading ? "Loading…" :
+      current.historyError ? "Reply history is unavailable." : "No replies yet.";
+    list.append(empty);
+  }
+}
+async function packetRequest(url, options = {}){
+  return fetch(url, {...options, cache:"no-store", redirect:"error", signal:AbortSignal.timeout(15000),
+    headers:{"X-AgentRoute-Token":packetActionToken,...options.headers}});
+}
+async function loadReplyHistory(current){
+  if(current.loading) return;
+  const generation = current.generation;
+  current.loading = true;
+  try {
+    const {namespace,packet,item} = current;
+    const query = new URLSearchParams({namespace,packet,item});
+    const response = await packetRequest(`${packetActionsUrl}?${query}`);
+    if(!response.ok) throw new Error("History unavailable");
+    const {receipts} = await response.json();
+    if(reply !== current || generation !== current.generation) return;
+    if(!Array.isArray(receipts)) throw new Error("History unavailable");
+    current.historyError = false;
+    for(const receipt of receipts) current.receipts.set(receipt.id,receipt);
+  } catch {
+    current.historyError = true;
+  } finally {
+    current.loading = false;
+    if(reply === current) showReplyReceipts(current);
+  }
+}
+async function sendPacketReply(event){
+  event.preventDefault();
+  const current = reply;
+  if(!current || current.sending) return;
+  if(!current.pending){
+    const {namespace,packet,item,revision,assignment,key} = current;
+    const latest = replyContext(namespace,packet,item);
+    if(!latest || latest.revision !== revision || latest.assignment !== assignment){
+      $("reply-notice").textContent = "The packet changed. Reopen this reply from the updated packet.";
+      return;
+    }
+    const recipient = threadId(assignment) ? assignment : $("reply-recipient").value;
+    const message = $("reply-message").value.trim();
+    if(!threadId(recipient) || !message){
+      $("reply-notice").textContent = "Choose a session and enter a message.";
+      return;
+    }
+    current.pending = {namespace,packet,item,revision,recipient,message,request_id:crypto.randomUUID()};
+    savePendingReply(key,current.pending);
+  }
+  current.sending = true;
+  current.generation = (current.generation || 0) + 1;
+  $("reply-notice").textContent = "Sending reply…";
+  setReplyControls(current);
+  let notice;
+  try {
+    const response = await packetRequest(packetActionsUrl, {method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify(current.pending)});
+    const receipt = await response.json();
+    if(response.ok && receipt.id && receipt.daemon_ready === false){
+      current.receipts.set(receipt.id,receipt);
+      notice = "Reply saved. Retry to start delivery without sending a duplicate.";
+    } else if(response.ok && receipt.id){
+      current.receipts.set(receipt.id,receipt);
+      savePendingReply(current.key,null);
+      current.pending = null;
+      notice = `${receiptStatus(receipt)} · ${receipt.id}`;
+      if(reply === current){
+        $("reply-template").value = "custom";
+        $("reply-message").value = "";
+      }
+    } else if(response.status >= 400 && response.status < 500 && response.status !== 408){
+      const attemptedMessage = current.pending.message;
+      savePendingReply(current.key,null);
+      current.pending = null;
+      notice = receipt.error || "The reply could not be sent.";
+      if(reply === current) $("reply-message").value = attemptedMessage;
+    } else {
+      throw new Error("Delivery unconfirmed");
+    }
+  } catch {
+    notice = "Delivery is unconfirmed. Retry to check or send the same reply without duplicating it.";
+  } finally {
+    current.sending = false;
+    if(reply === current){
+      $("reply-notice").textContent = notice;
+      setReplyControls(current);
+      showReplyReceipts(current);
+      loadReplyHistory(current);
+    }
+  }
+}
+$("reply-close").addEventListener("click", () => $("packet-reply").close());
+$("packet-reply").addEventListener("cancel", event => { if(reply?.sending) event.preventDefault(); });
+$("packet-reply").addEventListener("close", () => {
+  clearInterval(replyPolling);
+  reply = null;
+});
+$("reply-template").addEventListener("change", () => {
+  $("reply-message").value = replyTemplates[$("reply-template").value];
+  $("reply-message").focus();
+});
+$("reply-recipient").addEventListener("change", () => { if(reply) setReplyControls(reply); });
+$("reply-form").addEventListener("submit", sendPacketReply);
+
 /* Focus: what waits on the reader, and why everything else that is stuck is stuck. */
 function holdCard(e){
   const where = e.type==="outcome" ? `${esc(e.namespace)} / ${esc(e.packet)} / ${esc(e.item)}` :
@@ -263,6 +560,7 @@ function holdCard(e){
     ${e.unblock?`<div class="fix"><span>Unblocks when</span>${esc(e.unblock)}</div>`:
       e.next_action?`<div class="fix"><span>Recorded next action</span>${esc(e.next_action)}</div>`:""}
     ${holder||e.question?`<div class="meta">${holder}${holder&&e.question?" · ":""}${e.question?"Asked in "+esc(e.question):""}</div>`:""}
+    ${e.type==="outcome" ? packetAction(e.namespace,e.packet,{...e,id:e.item}) : ""}
   </div>`;
 }
 function holdMatches(e){ return !S.filter || S.filter.toLowerCase().split(/\s+/).every(word =>
@@ -381,7 +679,8 @@ function packetsView(){
       ${items.map(i => `<div class="item">
         <div><span class="chip s" style="--c:var(--${color[i.status]||"idle"})">${esc(i.status)}</span>
           <div class="meta">${esc(i.priority||"")}${i.step_state&&i.step_state!==i.status?" · "+esc(i.step_state.replace(/_/g," ")):""}</div></div>
-        <div><b>${esc(i.id)}</b><div>${esc(i.objective)}</div></div>
+        <div><b>${esc(i.id)}</b><div>${esc(i.objective)}</div>
+          ${packetAction(p.namespace,p.id,i)}</div>
         <div>${i.hold&&i.hold.blocking?`<div><span class="chip s" style="--c:var(--${HOLD[i.hold.kind]})">${
           i.hold.kind==="you"?"needs you":i.hold.kind==="unowned"?"no owner":"held: "+esc(i.hold.owner||HOLD_LABEL[i.hold.kind])}</span></div>`:""}
           <span class="meta">Next</span> ${esc(i.next_action)}${i.checkpoint?`<div class="meta" title="${esc(i.checkpoint)}">checkpoint ${ago(i.checkpoint_at)}</div>`:""}</div>
@@ -527,6 +826,7 @@ function select(id){ S.selected = id; if(id){ $("drawer").innerHTML = ""; loadDe
 document.addEventListener("click", event => {
   const hit = name => event.target.closest(`[data-${name}]`);
   let el;
+  if((el = hit("reply-packet"))) return openPacketReply(el);
   if(hit("close")) return select(null);
   if((el = hit("tab"))){ S.tab = el.dataset.tab; S.focus = null; $("view").innerHTML = ""; history.replaceState(null,"","#"+S.tab); return render(); }
   if((el = hit("state"))){ const key = el.dataset.state; S.hidden.has(key) ? S.hidden.delete(key) : S.hidden.add(key);
@@ -544,7 +844,9 @@ document.addEventListener("change", event => {
   if(event.target.id==="window"){ S.window = +event.target.value; S.snap = null; S.mapKey = ""; connect(); if(S.selected) loadDetail(); }
 });
 $("filter").addEventListener("input", event => { S.filter = event.target.value.trim(); render(); });
-document.addEventListener("keydown", event => { if(event.key==="Escape") select(null); });
+document.addEventListener("keydown", event => {
+  if(event.key==="Escape" && !$("packet-reply").open) select(null);
+});
 document.addEventListener("wheel", event => { const svg = event.target.closest?.("#map"); if(!svg) return; event.preventDefault();
   const box = svg.getBoundingClientRect(), mx = event.clientX-box.left, my = event.clientY-box.top;
   const k = Math.min(5, Math.max(.3, S.view.k*Math.exp(-event.deltaY*.0015)));
@@ -558,6 +860,7 @@ document.addEventListener("mouseup", () => { drag = null; });
 const opened = location.hash.slice(1).split("/")[1];
 if(!TABS[S.tab]) S.tab = "board";
 connect();
+enablePacketActions();
 if(opened){ S.selected = opened; loadDetail(); }
 </script>
 </body>
