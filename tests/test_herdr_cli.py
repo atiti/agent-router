@@ -399,7 +399,8 @@ def test_relaunch_command_refuses_before_stopping_anything_and_fails_loudly(monk
     result = CliRunner().invoke(app, ["herdr", "relaunch"])
     assert result.exit_code == 1 and "did not register" in result.output
     result = CliRunner().invoke(app, ["herdr", "relaunch", "--thread", THREAD])
-    assert result.exit_code != 0 and "--pane" in result.output
+    assert result.exit_code == 2
+    relaunched.assert_called_once()
 
 
 

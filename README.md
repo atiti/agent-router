@@ -1421,11 +1421,8 @@ complete a claim. `ar team status TEAM --role worker --state idle` filters views
 
 The shared owner does not inherit a Herdr pane address from the terminal that
 starts it, so hooks it runs cannot report one chat's identity to another pane.
-An owner started by an earlier version keeps the address it inherited until it
-next starts; `ps eww -p "$(jq -r .pid ~/.agentroute/shared-server/*/owner.json)"`
-shows `HERDR_PANE_ID` if it has one. That owner is replaced by `agentroute server
-stop` followed by any launch, which ends every chat's running turn, so do it when
-sessions are idle. A launcher identity outage never prevents Codex from starting.
+An owner started by an earlier version keeps its inherited pane address until
+it next starts. Schedule an owner restart after its turns finish. A launcher identity outage never prevents Codex from starting.
 
 Herdr pane identity is passed to shared Codex threads through per-thread shell
 environment overrides when a client launches from Herdr. Restart the client to
