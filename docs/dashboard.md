@@ -21,7 +21,7 @@ button to step through the current list, and **Review decisions** to work throug
 
 The action on each card opens the relevant review or prefills a reply you can edit.
 **Request triage** asks an agent to identify an owner. **Ask for follow-up** checks a handoff.
-**Ask for an update** goes through the packet’s reply route. **Check dependency** asks the
+**Ask for an update** goes through the packet’s reply route. **Ask for a dependency check** asks the
 recipient to verify the outside result and record who will follow up. Focus shows the actual
 recorded blocker and next step when they are available. Use **Recent dashboard activity**
 to see what was delivered and how the packet stands.
