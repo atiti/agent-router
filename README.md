@@ -1291,10 +1291,11 @@ starts it without attaching. Existing Zellij sessions keep running.
 - `ar focus <chat>` focuses an existing view without starting a client.
 - `ar group set markster /path/to/repo` uses the existing project namespace rules.
 
-Each namespace has a Herdr workspace and each chat a tab. The client reports
-working, idle, and blocked (approval/user input) states from the shared owner to
-Herdr every two seconds. Shared writer guards remain in effect when a chat is
-already open elsewhere. Close a view before moving that chat from Zellij.
+Each namespace has a Herdr workspace and each chat a tab. The launcher marks its
+pane as Codex, so Herdr lists it as an agent and reads working, idle and blocked
+from the screen, the same way it does for an unwrapped Codex. That status follows
+whatever chat the view shows. AgentRoute reports only which chat that is. Shared
+writer guards remain in effect when a chat is already open elsewhere. Close a view before moving that chat from Zellij.
 Detach from Herdr with Ctrl+B then Q; the server and terminal processes persist.
 After a reboot, run `ar r` to restore the chats and attach to Herdr.
 It starts the shared owner and Herdr, then reopens recorded Codex threads in their
@@ -1304,10 +1305,16 @@ local to the Herdr session and Codex home.
 
 AgentRoute records threads opened with `ar new`, `ar open`, bare `codex`, or
 `codex resume <thread-id>` in a Herdr pane. Unnamed new chats start with the title
-`New chat` so Codex saves their history before the client attaches. Other direct
-launches and in-client
-thread changes use the Herdr Codex integration's session report. An older live
-chat can be enrolled with `ar bridge` and its exact thread ID, pane ID and PID.
+`New chat` so Codex saves their history before the client attaches. When a view
+moves to another chat (`/new`, `/resume`, a fork), the launcher reads the new
+identity from the terminal title, which carries the thread's name or its ID, and
+updates the saved pane record. Two chats with the same name in the same directory
+cannot be told apart this way; a view that moves between them keeps its earlier
+record. A view started by an older AgentRoute keeps the old behaviour until it is
+restarted: `ar relaunch` restarts idle views on the installed launcher, and
+`ar relaunch --force` includes views whose chat has a turn running. The chats
+themselves live in the shared owner and are not interrupted. Views waiting on an
+approval or an answer, and views whose chat cannot be identified, are left alone.
 The same command restores recorded Herdr Core views in their original panes.
 A stopped Core member resumes only if Core confirms a restart and its saved
 ownership can be verified. The command reports members that need reconciliation.
@@ -1401,12 +1408,9 @@ canonical claim and `hc` attempt label before recovery. Status alone does not
 complete a claim. `ar team status TEAM --role worker --state idle` filters views;
 `ar team attach TEAM MEMBER` opens deliberate interaction.
 
-For an existing shared Codex terminal, `agentroute herdr bridge --thread UUID
---pane PANE_ID --pid CODEX_PID --session SESSION` reports live shared-server status
-while that exact foreground Codex process remains present. It also records this
-pane for `ar restore`. The terminal-side launcher reports the current thread's
-status and follows session identity reports from the Herdr Codex integration.
-A launcher status outage never prevents Codex from starting.
+The shared owner never inherits a Herdr pane address from the terminal that
+started it, so hooks it runs cannot report one chat's identity to another pane.
+A launcher identity outage never prevents Codex from starting.
 
 Herdr pane identity is passed to shared Codex threads through per-thread shell
 environment overrides when a client launches from Herdr. Restart the client to

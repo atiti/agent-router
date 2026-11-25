@@ -143,7 +143,9 @@ def server_environment(environment: Mapping[str, str] | None = None) -> dict[str
     # The owner serves many terminal views. A pane address inherited from its
     # first launcher must never become the focus target for every chat's hooks.
     for name in ("ZELLIJ", "ZELLIJ_PANE_ID", "ZELLIJ_SESSION_NAME",
-                 "OVERWATCHR_TTY", "OVERWATCHR_TITLE"):
+                 "OVERWATCHR_TTY", "OVERWATCHR_TITLE",
+                 "HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID",
+                 "HERDR_SESSION", "HERDR_SOCKET_PATH", "HERDR_AGENT"):
         result.pop(name, None)
     credentials = credentials_path()
     if credentials.exists():

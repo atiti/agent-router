@@ -59,84 +59,230 @@ def test_install_refuses_unrelated_focus_before_replacing_ar(tmp_path, monkeypat
     assert (tmp_path / "ar").read_text().endswith("old")
 
 
-def test_launcher_reports_and_releases_even_when_client_fails(monkeypatch):
+OTHER = "22222222-2222-2222-2222-222222222222"
+PANE = {"pane_id": "w8:p2", "workspace_id": "w8", "tab_id": "w8:t1",
+        "terminal_id": "term-a", "cwd": "/work"}
+
+
+class Owner:
+    """A shared owner holding the given threads; every one of them counts as loaded."""
+
+    def __init__(self, *threads: dict):
+        self.threads = {thread["id"]: thread for thread in threads}
+        self.calls = 0
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def request(self, method, payload):
+        self.calls += 1
+        if method == "thread/loaded/list":
+            return {"data": list(self.threads)}
+        assert method == "thread/read"
+        if payload["threadId"] not in self.threads:
+            raise SharedServerError("thread not found")
+        return {"thread": self.threads[payload["threadId"]]}
+
+
+def chat(thread_id: str, name: str | None, cwd: str = "/work", status: str = "idle", flags=()):
+    return {"id": thread_id, "name": name, "cwd": cwd,
+            "status": {"type": status, "activeFlags": list(flags)}}
+
+
+def test_launcher_marks_the_pane_for_herdr_and_reports_no_state(monkeypatch):
     command = Mock()
-    monkeypatch.setattr(h, 'command', command)
-    monkeypatch.setattr(h.subprocess, 'run', Mock(return_value=SimpleNamespace(returncode=7)))
-    assert h.run_in_pane(['codex-bin'], {'HERDR_PANE_ID': 'w8:p2'}) == 7
-    assert command.call_args_list[0].args[1:3] == ('pane', 'report-agent')
-    assert command.call_args_list[-1].args[1:3] == ('pane', 'release-agent')
-
-
-def test_direct_resume_reports_shared_thread_state(monkeypatch):
-    thread = "01a20744-50ee-71a2-a6a3-3e26905fc41b"
-    reports = []
-    def command(session, *args):
-        reports.append(args)
-        if args[:2] == ("pane", "get"):
-            return {"pane": {}}
+    run = Mock(return_value=SimpleNamespace(returncode=7))
     monkeypatch.setattr(h, "command", command)
-    monkeypatch.setattr(h, "socket_path", lambda: "/tmp/test.sock")
-
-    class Client:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def request(self, method, payload):
-            assert method == "thread/read"
-            assert payload["threadId"] == thread
-            return {"thread": {"status": {"type": "active"}}}
-
-    monkeypatch.setattr(h, "RpcClient", Client)
-    monkeypatch.setattr(h.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
-    assert h.run_in_pane(
-        ["codex-bin", "resume", thread],
-        {"HERDR_PANE_ID": "w8:p2", "AGENTROUTE_LOCAL_SERVER_SOCKET": "/tmp/test.sock"},
-    ) == 0
-    assert any("--state" in row and "working" in row and thread in row for row in reports)
-    assert reports[-1][:2] == ("pane", "release-agent")
+    monkeypatch.setattr(h.subprocess, "run", run)
+    assert h.run_in_pane(["codex-bin"], {"HERDR_PANE_ID": "w8:p2"}) == 7
+    assert run.call_args.kwargs["env"]["HERDR_AGENT"] == "codex"
+    # Herdr reads working, blocked and idle from the screen; a reported state would override
+    # that and go stale when the view moves to another chat.
+    command.assert_not_called()
 
 
-def test_direct_resume_follows_native_session_identity(monkeypatch, tmp_path):
-    old = "01a20744-50ee-71a2-a6a3-3e26905fc41b"
-    new = "01a20db2-e37d-7ad3-8004-8cb3ee6bdd81"
-    reports = []
-    pane = {"pane_id": "w8:p2", "workspace_id": "w8", "tab_id": "w8:t1",
-            "terminal_id": "term-active", "cwd": "/work"}
+def test_title_label_follows_codex_truncation():
+    long = "Markster production recovery and NAS backup verification"
+    assert h.title_label({"id": THREAD, "name": long}) == \
+        "Markster production recovery and NAS backup v..."
+    assert h.title_label({"id": THREAD, "name": "x" * 48}) == "x" * 48
+    assert h.title_label({"id": THREAD, "name": "  "}) == THREAD
+    assert h.title_shows("Fix login | markster-core", {"id": THREAD, "name": "Fix login"})
+    assert h.title_shows("Fix login", {"id": THREAD, "name": "Fix login"})
+    assert h.title_shows("A | B | repo", {"id": THREAD, "name": "A | B"})
+    assert not h.title_shows("Fix login flow | repo", {"id": THREAD, "name": "Fix login"})
+    assert not h.title_shows("anything | repo", {"id": "", "name": None})
+
+
+@pytest.mark.parametrize(("title", "threads", "cwd", "expected"), [
+    ("Deploy | repo", [chat(THREAD, "Deploy"), chat(OTHER, "Review")], "/work", THREAD),
+    ("Review | repo", [chat(THREAD, "Deploy"), chat(OTHER, "Review")], "/work", OTHER),
+    (f"{OTHER} | repo", [chat(THREAD, "Deploy"), chat(OTHER, None)], "/work", OTHER),
+    # Renamed moments ago, or a title layout without the thread: keep the launch thread.
+    ("Something else | repo", [chat(THREAD, "Deploy"), chat(OTHER, "Review")], "/work", THREAD),
+    ("", [chat(THREAD, "Deploy"), chat(OTHER, "Review")], "/work", THREAD),
+    # Two other chats share the label; the directory settles it, or nothing does.
+    ("New chat | repo", [chat(THREAD, "Deploy"), chat(OTHER, "New chat", "/a"),
+                         chat("33333333-3333-3333-3333-333333333333", "New chat", "/b")],
+     "/b", "33333333-3333-3333-3333-333333333333"),
+    ("New chat | repo", [chat(THREAD, "Deploy"), chat(OTHER, "New chat"),
+                         chat("33333333-3333-3333-3333-333333333333", "New chat")],
+     "/work", None),
+])
+def test_shown_thread_reads_identity_from_the_title(title, threads, cwd, expected):
+    pane = {**PANE, "cwd": cwd, "terminal_title_stripped": title}
+    assert h.shown_thread(Owner(*threads), pane, THREAD) == expected
+
+
+def follower(monkeypatch, tmp_path, owner, pane_states):
+    """A follower whose Herdr answers with each pane state in turn, then repeats the last."""
+    commands = []
+    states = iter(pane_states)
+    last = {}
 
     def command(session, *args):
-        reports.append(args)
+        commands.append(args)
         if args[:2] == ("pane", "get"):
-            return {"pane": {**pane, "agent_session": {
-                "source": "herdr:codex", "kind": "id",
-                "value": old if len(reports) == 1 else new,
-            }}}
-
-    class Client:
-        def __init__(self, *args, **kwargs): pass
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
-        def request(self, method, payload):
-            assert payload["threadId"] == new
-            return {"thread": {"status": {"type": "active", "activeFlags": ["waitingOnUserInput"]}}}
+            last.update(pane=next(states, last.get("pane")))
+            if last["pane"] is None:
+                raise SharedServerError("pane_not_found")
+            return {"pane": last["pane"]}
+        return {}
 
     monkeypatch.setattr(h, "command", command)
+    monkeypatch.setattr(h, "RpcClient", owner)
     monkeypatch.setattr(h, "socket_path", lambda: "/tmp/test.sock")
-    monkeypatch.setattr(h, "RpcClient", Client)
     monkeypatch.setattr(h, "state_dir", lambda: tmp_path)
-    monkeypatch.setattr(h.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=-1))
-    assert h.run_in_pane(
-        ["codex-bin", "resume", old],
-        {"HERDR_PANE_ID": "w8:p2", "AGENTROUTE_LOCAL_SERVER_SOCKET": "/tmp/test.sock"},
-    ) == -1
-    assert any("--state" in row and "blocked" in row and new in row for row in reports)
-    assert list(h.saved_panes(h.SESSION)) == [{**pane, "thread": new}]
+    return h.PaneFollower("work", "w8:p2", THREAD), commands
+
+
+def session_reports(commands):
+    return [args[args.index("--agent-session-id") + 1] for args in commands
+            if args[:2] == ("pane", "report-agent-session")]
+
+
+def test_follower_records_the_shown_chat_and_follows_navigation(monkeypatch, tmp_path):
+    owner = Owner(chat(THREAD, "Deploy"), chat(OTHER, "Review"))
+    first = {**PANE, "terminal_title_stripped": "Deploy | repo"}
+    reported = {**first, "agent_session": {"source": "herdr:codex", "kind": "id",
+                                           "value": THREAD}}
+    moved = {**reported, "terminal_title_stripped": "Review | repo"}
+    follow, commands = follower(monkeypatch, tmp_path, owner, [first, reported, reported, moved])
+
+    follow.step()
+    assert session_reports(commands) == [THREAD]
+    report = next(args for args in commands if args[1] == "report-agent-session")
+    assert report[report.index("--source") + 1] == "herdr:codex"
+    assert report[report.index("--") + 1:] == (
+        "agentroute", "herdr", "client", "--thread", THREAD, "--session", "work")
+    assert list(h.saved_panes("work")) == [{**PANE, "thread": THREAD}]
+
+    calls = owner.calls
+    follow.step()
+    follow.step()
+    assert owner.calls == calls  # Nothing changed, so the shared owner is not asked again.
+    assert session_reports(commands) == [THREAD]
+
+    follow.step()
+    assert session_reports(commands) == [THREAD, OTHER]
+    assert list(h.saved_panes("work")) == [{**PANE, "thread": OTHER}]
+    assert not any(args[1] in {"report-agent", "release-agent"} for args in commands)
+
+
+def test_follower_keeps_the_last_identity_when_two_chats_fit(monkeypatch, tmp_path):
+    owner = Owner(chat(THREAD, "Deploy"), chat(OTHER, "New chat"),
+                  chat("33333333-3333-3333-3333-333333333333", "New chat"))
+    shown = {**PANE, "terminal_title_stripped": "Deploy | repo"}
+    unclear = {**shown, "terminal_title_stripped": "New chat | repo"}
+    follow, commands = follower(monkeypatch, tmp_path, owner, [shown, unclear])
+    follow.step()
+    follow.step()
+    assert session_reports(commands) == [THREAD]
+    assert list(h.saved_panes("work")) == [{**PANE, "thread": THREAD}]
+
+
+def test_follower_finds_a_moved_pane_by_its_terminal(monkeypatch, tmp_path):
+    owner = Owner(chat(THREAD, "Deploy"))
+    shown = {**PANE, "terminal_title_stripped": "Deploy | repo"}
+    moved = {**shown, "pane_id": "w9:p1", "workspace_id": "w9", "tab_id": "w9:t1"}
+    follow, commands = follower(monkeypatch, tmp_path, owner, [shown, None])
+    monkeypatch.setattr(h, "panes", lambda _: [moved])
+    follow.step()
+    follow.step()
+    assert follow.pane == "w9:p1"
+    assert [record["pane_id"] for record in h.saved_panes("work")] == ["w9:p1"]
+
+
+def test_follower_survives_any_failure_and_stops_when_asked(monkeypatch):
+    follow = h.PaneFollower("work", "w8:p2", THREAD)
+    stopped = h.threading.Event()
+    steps = []
+
+    def step():
+        steps.append(len(steps))
+        if len(steps) == 1:
+            raise KeyError("pane")  # A malformed answer once ended tracking for the session.
+        if len(steps) == 3:
+            stopped.set()
+
+    monkeypatch.setattr(follow, "step", step)
+    monkeypatch.setattr(h, "FOLLOW_SECONDS", 0)
+    follow.run(stopped)
+    assert steps == [0, 1, 2]
+
+
+def test_shared_owner_does_not_inherit_a_pane_address(monkeypatch, tmp_path):
+    from agentroute import shared_server
+
+    monkeypatch.setattr(shared_server, "agentroute_home", lambda: tmp_path)
+    environment = shared_server.server_environment({
+        "PATH": "/bin", "HERDR_ENV": "1", "HERDR_PANE_ID": "w2:p1", "HERDR_TAB_ID": "w2:t1",
+        "HERDR_WORKSPACE_ID": "w2", "HERDR_SESSION": "agentroute", "HERDR_AGENT": "codex",
+        "HERDR_SOCKET_PATH": "/tmp/herdr.sock", "HERDR_BIN_PATH": "/usr/local/bin/herdr"})
+    # The owner serves every pane. Hooks it runs must not report to the first launcher's.
+    assert {name for name in environment if name.startswith("HERDR_")} == {"HERDR_BIN_PATH"}
+    assert environment["PATH"] == "/bin"
+
+
+@pytest.mark.parametrize(("title", "thread", "force", "expected", "relaunched"), [
+    ("Deploy | repo", chat(THREAD, "Deploy"), False, f"relaunched {THREAD}", True),
+    ("Deploy | repo", chat(THREAD, "Deploy", status="active"), False,
+     "skipped: chat is running", False),
+    ("Deploy | repo", chat(THREAD, "Deploy", status="active"), True,
+     f"relaunched {THREAD}", True),
+    ("Deploy | repo", chat(THREAD, "Deploy", status="active", flags=["waitingOnApproval"]),
+     True, "skipped: chat is approval", False),
+    ("Other title | repo", chat(THREAD, "Deploy"), True,
+     "skipped: cannot tell which chat this view shows", False),
+])
+def test_relaunch_restarts_only_identified_views_that_are_safe_to_restart(
+        monkeypatch, tmp_path, title, thread, force, expected, relaunched):
+    pane = {**PANE, "terminal_title_stripped": title}
+    monkeypatch.setattr(h, "state_dir", lambda: tmp_path)
+    h.remember_pane("work", pane, THREAD)
+    monkeypatch.setattr(h, "RpcClient", Owner(thread))
+    monkeypatch.setattr(h, "socket_path", lambda: "/tmp/test.sock")
+    monkeypatch.setattr(h, "codex_view", lambda *_: {"pid": 4242, "name": "codex-bin"})
+    monkeypatch.setattr(h, "wait_for_shell", lambda *_, **__: True)
+    kill, launch = Mock(), Mock()
+    monkeypatch.setattr(h.os, "kill", kill)
+    monkeypatch.setattr(h, "launch_client", launch)
+    assert h.relaunch_pane("work", pane, force) == expected
+    assert kill.called == launch.called == relaunched
+    if relaunched:
+        kill.assert_called_once_with(4242, h.signal.SIGTERM)
+        launch.assert_called_once_with("work", "w8:p2", THREAD)
+
+
+def test_relaunch_leaves_panes_without_a_codex_view(monkeypatch):
+    monkeypatch.setattr(h, "codex_view", lambda *_: None)
+    assert h.relaunch_pane("work", PANE, True) == "no Codex view"
 
 
 
