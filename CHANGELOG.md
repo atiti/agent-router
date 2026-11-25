@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.87 — 2026-11-25
 
 - Port the native runtime to Codex 0.172 and validate its gRPC Code Mode host during installation.
 - Keep automatic compaction portable for routed histories that require provider-state isolation.
