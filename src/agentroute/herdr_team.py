@@ -157,12 +157,12 @@ def init(team: str, namespace: str = typer.Option(...), packet: str = typer.Opti
         if constraints_file.stat().st_size > 32768:
             raise typer.BadParameter("Execution constraints file exceeds 32768 bytes")
         constraints = execution_constraints(json.loads(constraints_file.read_text()))
-    tracker = Path.home() / "workspace/tools/scripts/work_packets.py"
-    result = subprocess.run(["python3", str(tracker), "--namespace", namespace, "brief",
-                             "--packet", packet, "--item", item],
-                            capture_output=True, text=True, timeout=30)
-    if result.returncode:
-        raise typer.BadParameter(result.stderr.strip() or result.stdout.strip())
+    try:
+        brief = packet_command(
+            {"namespace": namespace}, "brief", "--packet", packet, "--item", item
+        )
+    except RuntimeError as error:
+        raise typer.BadParameter(str(error)) from error
     with locked(team) as existing:
         if existing:
             binding = tuple(existing[k] for k in ("namespace", "packet", "item", "tui_session"))
@@ -179,7 +179,7 @@ def init(team: str, namespace: str = typer.Option(...), packet: str = typer.Opti
         else:
             digest = hashlib.sha256(str(path_for(team)).encode()).hexdigest()[:8]
             save(team, {"version": 1, "id": team, "namespace": namespace, "packet": packet,
-                        "item": item, "brief": result.stdout, "core_session": f"ar{digest}",
+                        "item": item, "brief": brief, "core_session": f"ar{digest}",
                         "tui_session": session, "members": {}, "messages": {},
                         **({"execution_constraints": constraints}
                            if constraints is not None else {})})
@@ -810,7 +810,7 @@ def layout(team: str) -> None:
 def packet_command(data: dict, action: str, *args: str, request: dict | None = None):
     import tempfile
 
-    argv = ["python3", str(Path.home() / "workspace/tools/scripts/work_packets.py"),
+    argv = [sys.executable, str(Path.home() / "workspace/tools/scripts/work_packets.py"),
             "--namespace", data["namespace"], action, *args]
     with tempfile.TemporaryDirectory() as directory:
         if request is not None:
