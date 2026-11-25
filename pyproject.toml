@@ -19,6 +19,8 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
+  "grpcio>=1.85.4,<2",
+  "protobuf>=7.35.1,<8",
     "tomli>=2,<3; python_version < '3.11'",
   "pillow>=10.4,<13",
   "pydantic>=2.14.1,<3",
@@ -53,3 +55,6 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["B008"] # Typer uses Option calls as its declarative parameter API.
+
+[tool.ruff.lint.per-file-ignores]
+"src/agentroute/code_mode_proto/v1_pb2.py" = ["E", "F", "I", "UP", "B"]

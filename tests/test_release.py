@@ -77,6 +77,8 @@ def test_release_catalog_install_and_rollback_preserve_user_skills(
     )
     prebuilt = tmp_path / "prebuilt"
     (prebuilt / "bin").mkdir(parents=True)
+    (prebuilt / "venv/bin").mkdir(parents=True)
+    (prebuilt / "venv/bin/python").symlink_to(sys.executable)
     for name in ("codex-bin", "codex-code-mode-host"):
         executable(prebuilt / "bin" / name, "exit 0\n")
     build_id = "a" * 40 + "-provider-routing-v64"
