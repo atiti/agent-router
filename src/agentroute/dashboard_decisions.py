@@ -12,10 +12,13 @@ import sys
 import time
 import unicodedata
 from contextlib import contextmanager
+from pathlib import Path
 
 from . import dashboard_actions as actions
 from . import dashboard_packet_routes as routes
 from . import waits
+from .config import codex_home
+from .dashboard import _rows
 from .shared_server import RpcClient, socket_path, state_dir
 from .supervisor_inbox import atomic_write, supervisors
 
@@ -48,7 +51,7 @@ def confirm_operator(key: tuple[str, str, str], scope: dict, choice: str) -> Non
                                   "Use the session for this decision.", 409)
     reason = (
         f"AgentRoute · {choice.capitalize()} packet revision {scope['revision']} "
-        f"({scope['scope_digest'][:12]}). {scope['proposal']}"
+        f"({scope['scope_digest'][:12]}). {' '.join(scope['proposal'].split())}"
     )
     folder = state_dir()
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -101,18 +104,72 @@ def history(key: tuple[str, str, str]) -> list[dict]:
     return [show_receipt(r) for r in recorded(key)[:12]]
 
 
-def explicit_proposal(wait: dict) -> str:
-    proposal = wait.get("proposal")
+def referenced_proposal(reference: str) -> tuple[str, str | None]:
+    """Read the final answer of the exact completed Codex turn referenced by the tracker."""
+    if not reference.startswith("codex:"):
+        return "", None
+    parts = reference.removeprefix("codex:").split("/")
+    if len(parts) != 2:
+        return "", None
+    thread, turn = (routes.thread_id(part) for part in parts)
+    if not thread or not turn:
+        return "", None
+    home = codex_home()
+    rows = _rows(home / "state_5.sqlite",
+                 "SELECT rollout_path FROM threads WHERE id = ? AND archived = 0", (thread,))
+    if len(rows) != 1:
+        return "", None
+    try:
+        file = Path(rows[0]["rollout_path"]).resolve()
+        if not file.is_relative_to((home / "sessions").resolve()) or not file.is_file():
+            return "", None
+        # Bound the lookup. The first record identifies the session; only exact turn
+        # completion events can supply text. Tool output and neighboring turns cannot.
+        with file.open("rb") as stream:
+            first = json.loads(stream.readline(256 * 1024))
+            if first.get("type") != "session_meta" or first.get("payload", {}).get("id") != thread:
+                return "", None
+            answers = set()
+            while line := stream.readline(32 * 1024 * 1024):
+                if stream.tell() > 32 * 1024 * 1024:
+                    return "", None
+                if b'"task_complete"' not in line or turn.encode() not in line:
+                    continue
+                entry = json.loads(line)
+                event = entry.get("payload") or {}
+                if (entry.get("type") == "event_msg" and event.get("type") == "task_complete"
+                        and event.get("turn_id") == turn):
+                    message = event.get("last_agent_message")
+                    if isinstance(message, str):
+                        answers.add(message)
+            if len(answers) != 1:
+                return "", None
+            answer = next(iter(answers))
+            # A legacy reference gives us a turn, not a span. Require one
+            # clearly delimited question so the rest of the answer cannot expand it.
+            questions = [part.strip() for part in re.split(r"\n\s*\n", answer) if "?" in part]
+            if len(questions) != 1 or questions[0].count("?") != 1:
+                return "", None
+            question = questions[0]
+            if not question.endswith("?"):
+                return "", None
+            return question, thread
+    except (OSError, ValueError, TypeError, AttributeError):
+        return "", None
+
+
+def explicit_proposal(wait: dict) -> tuple[str, str | None]:
+    proposal, thread = wait.get("proposal"), None
     if proposal is None:
         # The tracker previously recorded some proposals inline after a dated receipt.
         # A receipt ID or a bare description of the blocker cannot stand in for a proposal.
         match = re.fullmatch(r"\d{4}-\d{2}-\d{2} request: (.+)", wait["question_ref"])
-        proposal = match[1] if match else ""
+        proposal, thread = (match[1], None) if match else referenced_proposal(wait["question_ref"])
     if not isinstance(proposal, str) or not proposal.strip() or len(proposal) > 420:
-        return ""
-    if any(unicodedata.category(char).startswith("C") for char in proposal):
-        return ""
-    return proposal.strip()
+        return "", None
+    if any(unicodedata.category(char).startswith("C") and char != "\n" for char in proposal):
+        return "", None
+    return proposal.strip(), thread
 
 
 def request_scope(key: tuple[str, str, str], item: dict, slot: object = None) -> dict:
@@ -134,12 +191,15 @@ def request_scope(key: tuple[str, str, str], item: dict, slot: object = None) ->
         action = step.get("action") or item.get("next_action") or ""
         if not isinstance(action, str) or len(action) > 4000:
             continue
+        proposal, source_thread = explicit_proposal(wait)
         scope = {
             "eligible": True, "revision": item["revision"], "slot": name,
             "scope": wait["question_ref"], "step": action, "reason": wait["reason"],
             "owner": wait["owner"], "resume_when": wait["resume_when"],
-            "proposal": explicit_proposal(wait),
+            "proposal": proposal,
         }
+        if source_thread:
+            scope["source_thread"] = source_thread
         scope["scope_digest"] = digest([key, scope, item.get("assignment")])
         return scope
     return {"eligible": False, "reason": "No explicit work packet question is recorded here. "
@@ -185,13 +245,19 @@ def native_owner(target: str) -> bool:
     return False
 
 
+def decision_route(key: tuple[str, str, str], item: dict, scope: dict) -> dict:
+    if not item.get("assignment") and (thread := scope.get("source_thread")):
+        return {"kind": "question", "thread": thread, "assignment": None}
+    return routes.route(key, item)
+
+
 def decision_issue(key: tuple[str, str, str], item: dict, scope: dict) -> str | None:
     if not scope["proposal"]:
         return "This question needs a written proposal before it can be approved here."
     if sys.platform != "darwin":
         return "Browser decisions require macOS owner confirmation. Use the session instead."
     try:
-        target = routes.route(key, item)["thread"]
+        target = decision_route(key, item, scope)["thread"]
         if target and native_owner(target):
             return "Answer in Herdr for this managed session."
     except routes.HERDR_ERRORS:
@@ -255,13 +321,15 @@ def submit(data: dict, names: list[str]) -> dict:
         issue = decision_issue(key, item, scope)
         if issue:
             raise actions.ActionError(issue, 409)
-        current = routes.route(key, item)
+        current = decision_route(key, item, scope)
         confirm_operator(key, scope, choice)
-        if actions.check_current(key, revision) != item or routes.route(key, item) != current:
+        if (actions.check_current(key, revision) != item or request_scope(key, item, slot) != scope
+                or decision_route(key, item, scope) != current):
             raise actions.ActionError("The packet or session changed. Review it again.", 409)
         try:
-            route = routes.ensure_thread(key, item, actions.packets_root())
-            target = route["thread"]
+            target = current["thread"]
+            if not target:
+                target = routes.ensure_thread(key, item, actions.packets_root())["thread"]
             if native_owner(target):
                 raise actions.ActionError("Answer in Herdr for this managed session.", 409)
             return deliver(key, scope, target, choice, request_id, fingerprint, item)
@@ -287,7 +355,8 @@ def deliver(key, scope, target, choice, request_id, fingerprint, item) -> dict:
             raise actions.ActionError("This session is busy. Finish its current turn or respond "
                                       "to its live prompt in Herdr, then try again.", 409)
         if (actions.check_current(key, scope["revision"]) != item
-                or routes.route(key, item)["thread"] != target or native_owner(target)):
+                or request_scope(key, item, scope["slot"]) != scope
+                or decision_route(key, item, scope)["thread"] != target or native_owner(target)):
             raise actions.ActionError("The packet or session changed. Review it again.", 409)
         record = {
             "id": request_id, "decision": choice, "fingerprint": fingerprint,

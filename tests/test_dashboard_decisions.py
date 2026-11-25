@@ -128,3 +128,83 @@ def test_managed_session_and_non_user_step_cannot_prompt(decision_setup, monkeyp
     assert not decisions.preview(KEY, ["Attila"])["eligible"]
     confirm.assert_not_called()
     client.request.assert_not_called()
+
+
+def record_reference(monkeypatch, tmp_path, records):
+    import json
+    import sqlite3
+
+    folder = tmp_path / "sessions"
+    folder.mkdir()
+    rollout = folder / "fixture.jsonl"
+    rollout.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+    with sqlite3.connect(tmp_path / "state_5.sqlite") as db:
+        db.execute("CREATE TABLE threads(id, rollout_path, archived)")
+        db.execute("INSERT INTO threads VALUES(?,?,0)", (OWNER, str(rollout)))
+    monkeypatch.setattr(decisions, "codex_home", lambda: tmp_path)
+    return rollout
+
+
+def completed_turn(turn, text):
+    return {"type": "event_msg", "payload": {
+        "type": "task_complete", "turn_id": turn, "last_agent_message": text,
+    }}
+
+
+def test_reference_proposal_delivers_to_the_original_unassigned_thread(
+    decision_setup, monkeypatch, tmp_path,
+):
+    item, payload, confirm, client = decision_setup
+    turn = str(uuid4())
+    original = "Both jobs have stopped.\n\nMay I create contacts for the held rows?"
+    record_reference(monkeypatch, tmp_path, [
+        {"type": "session_meta", "payload": {"id": OWNER}},
+        completed_turn(str(uuid4()), "Another turn's proposal"),
+        completed_turn(turn, original),
+    ])
+    item["assignment"] = None
+    item["next_step"]["wait"]["question_ref"] = f"codex:{OWNER}/{turn}"
+    preview = decisions.preview(KEY, ["Attila"])
+    assert preview["proposal"] == "May I create contacts for the held rows?"
+    assert preview["source_thread"] == OWNER and preview["can_decide"]
+    result = decisions.submit({**payload, "scope_digest": preview["scope_digest"]}, ["Attila"])
+    assert result["recipient"] == OWNER and result["state"] == "delivered"
+    assert item["assignment"] is None
+    assert confirm.call_args.args[1]["proposal"] == preview["proposal"]
+    method, sent = client.request.call_args.args
+    assert method == "turn/start" and sent["threadId"] == OWNER
+    assert "May I create contacts for the held rows?" in sent["input"][0]["text"]
+
+
+def test_reference_rejects_unfinished_conflicting_or_wrong_thread(decision_setup,
+                                                                  monkeypatch, tmp_path):
+    item, _, _, _ = decision_setup
+    turn = str(uuid4())
+    item["next_step"]["wait"]["question_ref"] = f"codex:{OWNER}/{turn}"
+    rollout = record_reference(monkeypatch, tmp_path, [
+        {"type": "session_meta", "payload": {"id": OWNER}},
+        completed_turn(str(uuid4()), PROPOSAL),
+    ])
+    assert not decisions.preview(KEY, ["Attila"])["can_decide"]
+    import json
+    with rollout.open("a") as out:
+        out.write(json.dumps(completed_turn(turn, PROPOSAL)) + "\n")
+        out.write(json.dumps(completed_turn(turn, "Conflicting proposal")) + "\n")
+    assert not decisions.preview(KEY, ["Attila"])["can_decide"]
+
+
+def test_reference_change_during_confirmation_does_not_send(
+    decision_setup, monkeypatch, tmp_path,
+):
+    item, payload, confirm, client = decision_setup
+    turn = str(uuid4())
+    rollout = record_reference(monkeypatch, tmp_path, [
+        {"type": "session_meta", "payload": {"id": OWNER}},
+        completed_turn(turn, "May I install the staging fixture?"),
+    ])
+    item["next_step"]["wait"]["question_ref"] = f"codex:{OWNER}/{turn}"
+    preview = decisions.preview(KEY, ["Attila"])
+    confirm.side_effect = lambda *args: rollout.unlink()
+    with pytest.raises(actions.ActionError, match="changed"):
+        decisions.submit({**payload, "scope_digest": preview["scope_digest"]}, ["Attila"])
+    client.request.assert_not_called()

@@ -87,7 +87,8 @@ Deny require a macOS owner confirmation that displays the exact proposal. The co
 goes to the packet conversation as a user decision. The packet owner still verifies the scope
 and records the outcome. Use Comment for a coordination message.
 
-If a packet only links to a question, review the original in Herdr or record explicit proposal
+A Codex reference can supply the proposal when its exact completed turn contains one
+unambiguous question. Otherwise, review the original in Herdr or record explicit proposal
 text in the packet's waiting step (`wait.proposal`) before approving. Older dated questions
 with full inline proposals also work. For live Codex tool permissions or Herdr Core owners,
 use the native session. If delivery is unconfirmed, inspect the session before taking further
