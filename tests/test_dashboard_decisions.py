@@ -1,7 +1,10 @@
+import json
 from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
+import typer
+from typer.testing import CliRunner
 
 from agentroute import dashboard_actions as actions
 from agentroute import dashboard_decisions as decisions
@@ -14,7 +17,8 @@ PROPOSAL = "Install release abc123 on staging fixture, with the reviewed rollbac
 @pytest.fixture
 def decision_setup(monkeypatch, tmp_path):
     item = {"revision": 5, "status": "blocked", "assignment": {"session": OWNER},
-            "next_step": {"state": "awaiting_user", "action": "Wait for scoped decision",
+            "next_step": {"id": "await-fixture", "state": "awaiting_user",
+                          "action": "Wait for scoped decision",
                           "wait": {"owner": "Attila", "reason": "Waiting",
                                    "resume_when": "Explicit approval",
                                    "question_ref": f"2026-11-25 request: {PROPOSAL}"}}}
@@ -56,6 +60,8 @@ def test_confirmed_decision_sends_exact_scope_once(decision_setup, choice):
     sent = client.request.call_args.args[1]["input"][0]["text"]
     assert sent.startswith(f"I {choice} the exact")
     assert PROPOSAL in sent and payload["scope_digest"] in sent
+    assert "step await-fixture" in sent
+    assert f"`agentroute maintenance receipt {' '.join(KEY)} {payload['request_id']}`" in sent
     assert item["status"] == "blocked"
     assert decisions.history(KEY) == [got]
     with pytest.raises(actions.ActionError, match="already recorded"):
@@ -115,6 +121,68 @@ def test_uncertain_native_delivery_is_not_replayed(decision_setup):
     assert decisions.submit(payload, ["Attila"]) == result
     assert client.request.call_count == 2
     assert confirm.call_count == 1
+    with pytest.raises(actions.ActionError, match="no confirmed delivery"):
+        decisions.verify_receipt(KEY, payload["request_id"], OWNER)
+
+
+def test_receipt_verification_reads_legacy_record_and_binds_recipient(decision_setup, monkeypatch):
+    item, payload, confirm, client = decision_setup
+    got = decisions.submit(payload, ["Attila"])
+    receipt_id = got["id"]
+    path = decisions.directory(KEY) / f"{receipt_id}.json"
+    record = decisions.routes.read_record(path)
+    assert record.pop("step_id") == "await-fixture"
+    decisions.atomic_write(path, record)
+
+    app = typer.Typer()
+    app.callback()(lambda: None)
+    decisions.register_receipt_command(app)
+    runner = CliRunner()
+    args = ["receipt", *KEY, receipt_id]
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    local = runner.invoke(app, args)
+    assert local.exit_code == 0
+    assert json.loads(local.output)["verified_as"] == "local_inspection"
+    monkeypatch.setenv("CODEX_THREAD_ID", OWNER)
+    recipient = runner.invoke(app, args)
+    assert recipient.exit_code == 0
+    verified = json.loads(recipient.output)
+    assert verified["verified_as"] == "recipient"
+    assert verified["step_id"] == item["next_step"]["id"]
+    assert verified["scope_digest"] == payload["scope_digest"]
+    assert verified["turn_id"] == "test-turn"
+    assert verified["decision"] == "approve"
+    monkeypatch.setenv("CODEX_THREAD_ID", str(uuid4()))
+    wrong_thread = runner.invoke(app, args)
+    assert wrong_thread.exit_code != 0
+    assert "different session" in wrong_thread.output
+    assert "test-turn" not in wrong_thread.output
+    assert confirm.call_count == 1
+    assert client.request.call_count == 2
+
+
+def test_receipt_verification_refuses_stale_scope_and_step_id(decision_setup):
+    item, payload, _, _ = decision_setup
+    receipt_id = decisions.submit(payload, ["Attila"])["id"]
+    item["next_step"]["id"] = "different-step"
+    with pytest.raises(actions.ActionError, match="does not match"):
+        decisions.verify_receipt(KEY, receipt_id, OWNER)
+    item["next_step"]["id"] = "await-fixture"
+    item["revision"] += 1
+    with pytest.raises(actions.ActionError, match="outcome changed"):
+        decisions.verify_receipt(KEY, receipt_id, OWNER)
+
+
+def test_receipt_verification_refuses_a_changed_review_conversation(decision_setup, monkeypatch):
+    item, payload, _, _ = decision_setup
+    item["assignment"] = None
+    original = {"kind": "review", "thread": OWNER, "assignment": None}
+    monkeypatch.setattr(decisions.routes, "route", lambda *args: original)
+    preview = decisions.preview(KEY, ["Attila"])
+    got = decisions.submit({**payload, "scope_digest": preview["scope_digest"]}, ["Attila"])
+    original["thread"] = str(uuid4())
+    with pytest.raises(actions.ActionError, match="routes to a different session"):
+        decisions.verify_receipt(KEY, got["id"], OWNER)
 
 
 def test_managed_session_and_non_user_step_cannot_prompt(decision_setup, monkeypatch):
@@ -131,7 +199,6 @@ def test_managed_session_and_non_user_step_cannot_prompt(decision_setup, monkeyp
 
 
 def record_reference(monkeypatch, tmp_path, records):
-    import json
     import sqlite3
 
     folder = tmp_path / "sessions"
@@ -186,7 +253,6 @@ def test_reference_rejects_unfinished_conflicting_or_wrong_thread(decision_setup
         completed_turn(str(uuid4()), PROPOSAL),
     ])
     assert not decisions.preview(KEY, ["Attila"])["can_decide"]
-    import json
     with rollout.open("a") as out:
         out.write(json.dumps(completed_turn(turn, PROPOSAL)) + "\n")
         out.write(json.dumps(completed_turn(turn, "Conflicting proposal")) + "\n")
