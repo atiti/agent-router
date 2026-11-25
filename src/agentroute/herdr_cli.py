@@ -218,9 +218,9 @@ def new_command(directory: Path = typer.Option(Path.cwd(), "--dir", exists=True,
         raise typer.BadParameter(str(error)) from error
 
 
-def report(session: str, pane: str, thread: str, state: str) -> None:
-    command(session, "pane", "report-agent", pane, "--source", SOURCE, "--agent", "codex",
-            "--state", state, "--agent-session-id", thread)
+def report_session(session: str, pane: str, thread: str) -> None:
+    command(session, "pane", "report-agent-session", pane, "--source", "herdr:codex",
+            "--agent", "codex", "--agent-session-id", thread)
 
 
 @herdr_app.command("client", hidden=True)
@@ -234,21 +234,12 @@ def client_command(thread: str = typer.Option(...), session: str = SESSION) -> N
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     target.write_text(json.dumps({"pid": os.getpid(), "terminal_id": identity["terminal_id"]}))
     target.chmod(0o600)
-    report(session, pane, thread, "unknown")
-    # Resume through AgentRoute so routing and shared-owner writer guards survive restarts.
-    command(session, "pane", "report-agent-session", pane, "--source", SOURCE,
-            "--agent", "codex", "--agent-session-id", thread, "--",
-            "agentroute", "herdr", "client", "--thread", thread, "--session", session)
     try:
         result = subprocess.run([sys.executable, "-m", "agentroute.cli", "launch-codex",
                                  "--", "resume", thread], check=False,
                                 env={**os.environ, "HERDR_AGENT": "codex"})
     finally:
         target.unlink(missing_ok=True)
-        try:
-            command(session, "pane", "release-agent", pane, "--source", SOURCE, "--agent", "codex")
-        except chats.ERRORS:
-            pass
     raise typer.Exit(result.returncode)
 
 
@@ -441,14 +432,11 @@ def run_in_pane(argv: list[str], environment: dict[str, str]) -> int:
     """Track the visible shared thread for this terminal and save it for reboot recovery."""
     pane = environment["HERDR_PANE_ID"]
     session = environment.get("HERDR_SESSION") or SESSION
-    source = f"agentroute-launch-{os.getpid()}"
     shared = environment.get("AGENTROUTE_LOCAL_SERVER_SOCKET")
     initial = {}
     try:
         if shared:
             initial = command(session, "pane", "get", pane).get("pane", {})
-        command(session, "pane", "report-agent", pane, "--source", source,
-                "--agent", "codex", "--state", "unknown")
     except chats.ERRORS:
         pass
     thread = None
@@ -468,6 +456,7 @@ def run_in_pane(argv: list[str], environment: dict[str, str]) -> int:
         previous_native = native_thread(initial)
         current_thread = thread
         binding = None
+        report_pending = bool(thread)
         while not stopped.is_set():
             try:
                 try:
@@ -486,21 +475,18 @@ def run_in_pane(argv: list[str], environment: dict[str, str]) -> int:
                 if reported_thread and reported_thread != previous_native:
                     current_thread = reported_thread
                     previous_native = reported_thread
+                    report_pending = False
                 if current_thread:
-                    with RpcClient(socket_path(), timeout=5) as client:
-                        current = client.request("thread/read", {"threadId": current_thread})[
-                            "thread"
-                        ]
                     if terminal and binding != (pane, current_thread):
                         path = remember_pane(session, pane_info, current_thread)
                         if binding_path and binding_path != path:
                             binding_path.unlink(missing_ok=True)
                         binding_path = path
                         binding = (pane, current_thread)
-                    command(session, "pane", "report-agent", pane, "--source", source,
-                            "--agent", "codex", "--state", herdr_state(current),
-                            "--agent-session-id", current_thread)
-            except chats.ERRORS:
+                    if report_pending and pane_info.get("agent") == "codex":
+                        report_session(session, pane, current_thread)
+                        report_pending = False
+            except chats.ERRORS + (KeyError, TypeError, AttributeError):
                 pass
             stopped.wait(2)
 
@@ -510,7 +496,8 @@ def run_in_pane(argv: list[str], environment: dict[str, str]) -> int:
         watcher = threading.Thread(target=monitor, daemon=True)
         watcher.start()
     try:
-        result = subprocess.run(argv, env=environment, check=False).returncode
+        result = subprocess.run(argv, env={**environment, "HERDR_AGENT": "codex"},
+                                check=False).returncode
         return result
     finally:
         stopped.set()
@@ -518,7 +505,3 @@ def run_in_pane(argv: list[str], environment: dict[str, str]) -> int:
             watcher.join(timeout=12)
         if result == 0 and binding_path:
             binding_path.unlink(missing_ok=True)
-        try:
-            command(session, "pane", "release-agent", pane, "--source", source, "--agent", "codex")
-        except chats.ERRORS:
-            pass
