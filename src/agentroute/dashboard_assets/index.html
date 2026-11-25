@@ -783,7 +783,8 @@ function renderDecision(entry){
   const busy = entry.sending || !!entry.pending;
   if(!canDecide || busy || decided || entry.confirm !== decisionIdentity(decision)) entry.confirm = null;
   $("decision-details").hidden = !decision?.eligible;
-  $("decision-scope").textContent = decision?.proposal || decision?.scope || "";
+  $("decision-scope").textContent = decision?.proposal ||
+    (decision?.scope?.startsWith("codex:") ? "Original question unavailable" : decision?.scope || "");
   $("decision-reason").textContent = decision?.reason || "";
   $("decision-condition").textContent = decision?.resume_when || "";
   $("decision-owner").textContent = decision?.owner || "";
