@@ -208,3 +208,12 @@ def test_reference_change_during_confirmation_does_not_send(
     with pytest.raises(actions.ActionError, match="changed"):
         decisions.submit({**payload, "scope_digest": preview["scope_digest"]}, ["Attila"])
     client.request.assert_not_called()
+
+
+def test_dated_input_request_keeps_inline_proposal(decision_setup):
+    item, _, _, _ = decision_setup
+    item["next_step"]["wait"]["question_ref"] = (
+        "chat:request_user_input_async:2026-11-11:" + PROPOSAL
+    )
+    result = decisions.preview(KEY, ["Attila"])
+    assert result["can_decide"] and result["proposal"] == PROPOSAL

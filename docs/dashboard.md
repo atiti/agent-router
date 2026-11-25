@@ -81,7 +81,8 @@ The receipt shows the Herdr pane when it was verified. An agent response records
 
 ## Review decisions
 
-In Focus, **Review decisions** steps through work packet questions addressed to you. Review the
+In Focus, **Review decisions** steps through requests you can act on. Open an individual card
+for earlier decisions, comments or a request that needs to be handled in its session. Review the
 recorded proposal and revision, then choose **Approve**, **Deny**, or **Comment**. Approve and
 Deny require a macOS owner confirmation that displays the exact proposal. The confirmed choice
 goes to the packet conversation as a user decision. The packet owner still verifies the scope
@@ -93,6 +94,10 @@ text in the packet's waiting step (`wait.proposal`) before approving. Older date
 with full inline proposals also work. For live Codex tool permissions or Herdr Core owners,
 use the native session. If delivery is unconfirmed, inspect the session before taking further
 action. A retry with the same reference cannot send another turn.
+
+For worker handoffs, Focus shows current supervision and the review receipt when one is
+available. The team monitor forwards due reviews and flags an undated worker handoff once.
+The supervisor checks the existing worker and records an event or next review date.
 
 ## Where the data comes from
 

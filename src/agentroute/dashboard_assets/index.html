@@ -245,6 +245,7 @@ svg.chart{display:block;width:100%;height:220px}
   </div>
   <h3 id="decision-title"></h3>
   <div id="decision-context" class="meta"></div>
+  <p id="decision-queue-note" class="meta" role="status" hidden></p>
   <section id="decision-details" aria-labelledby="decision-scope-heading" hidden>
     <h3 id="decision-scope-heading">What you're deciding</h3>
     <p id="decision-scope"></p>
@@ -256,8 +257,8 @@ svg.chart{display:block;width:100%;height:220px}
     </dl>
   </section>
   <p id="decision-unavailable" class="meta" role="status"></p>
-  <label id="decision-note-label" hidden>Decision note or comment
-    <textarea id="decision-message" maxlength="2000" rows="3" placeholder="Optional for Approve or Deny"></textarea>
+  <label id="decision-note-label" hidden>Comment
+    <textarea id="decision-message" maxlength="2000" rows="3" placeholder="Write a coordination reply"></textarea>
   </label>
   <div class="decision-actions" id="decision-buttons" hidden>
     <button type="button" class="reply-button primary" id="decision-approve">Approve</button>
@@ -726,18 +727,82 @@ function queuePending(key, payload){
 function activeDecision(){
   return reviewQueue?.entry;
 }
-function openDecisionQueue(button){
+function decisionKey({namespace,packet,item}){
+  return [namespace,packet,item].join("/");
+}
+async function loadPacketDecision({namespace,packet,item}){
+  const query = new URLSearchParams({namespace,packet,item});
+  const response = await packetRequest(`${packetActionsUrl}?${query}`);
+  if(!response.ok) throw new Error("Decision unavailable");
+  return response.json();
+}
+function decisionQueueNote(queue){
+  const parts = [
+    [queue.recorded, "already decided"],
+    [queue.unsupported, "need review in the packet or session"],
+    [queue.failed, "could not be checked"],
+  ].filter(([count]) => count).map(([count, status]) => `${count} ${status}`);
+  const note = $("decision-queue-note");
+  note.hidden = !parts.length;
+  note.textContent = parts.length ? `Outside this queue: ${parts.join(" · ")}. See their cards in Focus.` : "";
+}
+function showDecisionQueueStatus(message){
+  for(const id of ["decision-details","decision-note-label","decision-buttons","decision-confirm",
+    "decision-system-prompt","decision-scope-issue","decision-retry"]){
+    $(id).hidden = true;
+  }
+  for(const id of ["decision-position","decision-title","decision-context","decision-receipt",
+    "decision-notice"]){
+    $(id).textContent = "";
+  }
+  for(const id of ["decision-prev","decision-next","decision-open"]){
+    $(id).disabled = true;
+  }
+  $("decision-close").disabled = false;
+  $("decision-unavailable").textContent = message;
+}
+async function openDecisionQueue(button){
   if(!packetActionToken || reviewQueue || reply) return;
-  const items = decisionEntries();
-  if(!items.length) return;
+  const candidates = decisionEntries();
+  if(!candidates.length) return;
   const requested = button?.dataset;
-  const index = requested ? items.findIndex(e =>
-    e.namespace === requested.namespace && e.packet === requested.packet &&
-    e.item === requested.item) : 0;
-  reviewQueue = {items, index:Math.max(0,index)};
+  const index = requested ?
+    candidates.findIndex(e => decisionKey(e) === decisionKey(requested)) : 0;
+  const queue = {items:candidates, index:Math.max(0,index), approvalsOnly:!requested,
+    handled:new Set(), recorded:0, unsupported:0, failed:0};
+  reviewQueue = queue;
+  decisionQueueNote(queue);
   $("packet-decision").showModal();
-  showDecisionEntry();
   $("decision-heading").focus();
+  if(queue.approvalsOnly){
+    showDecisionQueueStatus("Checking which requests can be decided here…");
+    queue.items = [];
+    for(let i = 0; i < candidates.length; i += 4){
+      const checks = await Promise.allSettled(candidates.slice(i,i+4).map(async candidate => {
+        if(queuePending(decisionKey(candidate))) return {candidate};
+        const {decision} = await loadPacketDecision(candidate);
+        const latest = packetOutcome(candidate.namespace,candidate.packet,candidate.item);
+        if(!latest || latest.revision !== candidate.revision) return {status:"failed"};
+        if(decision?.recorded) return {status:"recorded"};
+        if(decision?.eligible && decision.can_decide && decision.revision === latest.revision){
+          return {candidate};
+        }
+        return {status:"unsupported"};
+      }));
+      if(reviewQueue !== queue) return;
+      for(const check of checks){
+        if(check.status === "rejected") queue.failed++;
+        else if(check.value.candidate) queue.items.push(check.value.candidate);
+        else queue[check.value.status]++;
+      }
+    }
+    decisionQueueNote(queue);
+    if(!queue.items.length){
+      showDecisionQueueStatus("No pending approvals or denials available here.");
+      return;
+    }
+  }
+  showDecisionEntry();
   decisionPolling = setInterval(() => {
     const entry = activeDecision();
     if(entry) refreshDecision(entry);
@@ -745,8 +810,9 @@ function openDecisionQueue(button){
 }
 function showDecisionEntry(){
   const {items,index} = reviewQueue;
-  const {namespace,packet,item,title} = items[index];
-  const key = [namespace,packet,item].join("/");
+  const candidate = items[index];
+  const {namespace,packet,item,title} = candidate;
+  const key = decisionKey(candidate);
   const entry = {namespace,packet,item,key, pending:queuePending(key), receipts:new Map()};
   reviewQueue.entry = entry;
   $("decision-position").textContent = `${index+1} of ${items.length}`;
@@ -776,7 +842,6 @@ function renderDecision(entry){
   const outcome = packetOutcome(entry.namespace, entry.packet, entry.item);
   const latest = decision?.recorded ||
     [...entry.receipts.values()].sort((a,b) => b.created_at-a.created_at)[0];
-  const {index,items} = reviewQueue;
   const decided = !!decision?.recorded ||
     (entry.recordedScope !== undefined && entry.recordedScope === decision?.scope_digest);
   const canDecide = current && decision.can_decide === true;
@@ -807,8 +872,8 @@ function renderDecision(entry){
   $("decision-retry").hidden = !entry.pending;
   $("decision-retry").disabled = !!entry.sending;
   $("decision-close").disabled = !!entry.sending;
-  $("decision-prev").disabled = !!entry.sending || index === 0;
-  $("decision-next").disabled = !!entry.sending || index === items.length-1;
+  $("decision-prev").disabled = !!entry.sending || nextDecisionIndex(-1) < 0;
+  $("decision-next").disabled = !!entry.sending || nextDecisionIndex(1) < 0;
   $("decision-receipt").textContent = latest ? [
     latest.delivery?.state === "unknown" ? "Delivery unconfirmed. Check the session before acting." :
       [decisionLabel(latest.decision), receiptStatus(latest)].filter(Boolean).join(" · "),
@@ -822,13 +887,18 @@ async function refreshDecision(entry){
   if(entry.loading || entry.sending) return;
   entry.loading = true;
   try {
-    const {namespace,packet,item} = entry;
-    const response = await packetRequest(`${packetActionsUrl}?${new URLSearchParams({namespace,packet,item})}`);
-    if(!response.ok) throw new Error("Decision unavailable");
-    const {decision,receipts} = await response.json();
+    const {decision,receipts} = await loadPacketDecision(entry);
     if(activeDecision() !== entry) return;
     entry.failed = false;
     entry.decision = decision || {eligible:false,reason:"No structured decision is available for this packet."};
+    if(reviewQueue.approvalsOnly && !entry.pending &&
+        (!decisionCurrent(entry) || !decision.can_decide || decision.recorded)){
+      if(!reviewQueue.handled.has(entry.key)) {
+        reviewQueue.handled.add(entry.key);
+        reviewQueue[decision?.recorded ? "recorded" : "unsupported"]++;
+        decisionQueueNote(reviewQueue);
+      }
+    }
     for(const receipt of receipts || []){
       if(receipt.decision) entry.receipts.set(receipt.id,receipt);
     }
@@ -880,6 +950,11 @@ async function submitDecision(entry, action){
         entry.receipts.set(receipt.id,receipt);
         if(["approve","deny"].includes(entry.pending.decision)){
           entry.recordedScope = entry.pending.scope_digest;
+          if(reviewQueue.approvalsOnly && !reviewQueue.handled.has(entry.key)){
+            reviewQueue.handled.add(entry.key);
+            reviewQueue.recorded++;
+            decisionQueueNote(reviewQueue);
+          }
         }
         entry.pending = queuePending(entry.key,null);
         $("decision-message").value = "";
@@ -902,10 +977,18 @@ async function submitDecision(entry, action){
     refreshDecision(entry);
   }
 }
+function nextDecisionIndex(offset){
+  const {items,index,handled} = reviewQueue;
+  for(let candidate = index + offset; candidate >= 0 && candidate < items.length;
+      candidate += offset){
+    if(!handled.has(decisionKey(items[candidate]))) return candidate;
+  }
+  return -1;
+}
 function moveDecision(offset){
   if(!reviewQueue || activeDecision()?.sending) return;
-  const index = reviewQueue.index + offset;
-  if(index < 0 || index >= reviewQueue.items.length) return;
+  const index = nextDecisionIndex(offset);
+  if(index < 0) return;
   reviewQueue.index = index;
   showDecisionEntry();
 }
@@ -950,6 +1033,7 @@ function holdCard(e){
       ${e.review_overdue?`<span class="chip late">review due ${ago(e.review_at)}</span>`:""}
       <span class="meta">${where} · ${e.type==="agent"?"quiet":"held"} ${span(Date.now()/1000-e.since)}</span></div>
     ${e.owner&&e.kind!=="you"?`<div class="meta">Waiting on <b>${esc(e.owner)}</b></div>`:""}
+    ${e.supervision?`<div class="meta">${esc(e.supervision)}</div>`:""}
     ${e.reason?`<div class="why">${esc(e.reason)}</div>`:""}
     ${e.detail?`<div class="meta">${esc(e.detail)}</div>`:""}
     ${e.unblock?`<div class="fix"><span>Unblocks when</span>${esc(e.unblock)}</div>`:

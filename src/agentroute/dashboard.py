@@ -8,6 +8,7 @@ the view.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -570,6 +571,57 @@ def _focus_order(entry: dict[str, Any]) -> tuple:
             entry.get("since") or 0)
 
 
+def annotate_supervision(focus: dict[str, Any], now: float) -> None:
+    """Show current observation and queue receipts for item waits separately from assignment."""
+    from .shared_server import state_dir
+
+    coverage = {}
+    receipts = {}
+    for f in (state_dir() / "herdr-teams").glob("*/team.json"):
+        try:
+            team = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        key = (team.get("namespace"), team.get("packet"))
+        monitor = team.get("monitor") or {}
+        seen = monitor.get("checked_at")
+        targets = monitor.get("live_review_recipients") or []
+        if not isinstance(seen, (int, float)) or not 0 <= now - seen <= 120 or not targets:
+            continue
+        try:
+            with f.with_suffix(".monitor.lock").open("r") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    coverage[key] = True
+        except OSError:
+            pass
+        for message in (team.get("messages") or {}).values():
+            review = message.get("review") or {}
+            if not review or message.get("member") not in targets:
+                continue
+            event = message.get("coordination_event") or {}
+            if (event.get("disposition") or {}).get("action") in {"superseded", "resolved"}:
+                continue
+            identity = (*key, review.get("item"), review.get("revision"))
+            stamp = message.get("created_at", 0)
+            if stamp >= receipts.get(identity, (0, ""))[0]:
+                state = ("Reviewed by supervisor" if event.get("state") == "dispositioned" else
+                         "Delivered to supervisor" if
+                         (event.get("delivery") or {}).get("state") == "delivered" else
+                         "Queued for supervisor")
+                receipts[identity] = stamp, state
+    for group in focus["others"]:
+        if group["kind"] != "worker":
+            continue
+        for row in group["items"]:
+            key = (row["namespace"], row["packet"])
+            identity = (*key, row["item"], row.get("revision"))
+            row["supervision"] = receipts.get(identity, (0, ""))[1] or (
+                "Monitoring handoff" if coverage.get(key) else "No active supervisor monitor"
+            )
+
+
 def build_focus(packets: list[dict[str, Any]], agents: list[dict[str, Any]],
                 failed_waits: list[dict[str, Any]], names: list[str],
                 now: float) -> dict[str, Any]:
@@ -822,6 +874,8 @@ class Collector:
                        "state": "wait", "reason": f"wait {wait['state']} past its deadline"
                        if wait["state"] == "pending" else "wake could not be delivered"}
                       for wait in overdue]
+        focus = build_focus(packets, agents, overdue, self.names, now)
+        annotate_supervision(focus, now)
         return {
             "generated_at": now,
             "window": window,
@@ -845,7 +899,7 @@ class Collector:
                  if wait["state"] == "pending" or wait["created_at"] >= cutoff),
                 key=lambda wait: (wait["state"] != "pending", -wait["created_at"])),
             "packets": packets,
-            "focus": build_focus(packets, agents, overdue, self.names, now),
+            "focus": focus,
             "usage": usage,
             "sources": {
                 "codex_threads": state.exists(),

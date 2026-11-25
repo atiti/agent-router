@@ -328,19 +328,30 @@ def poll(team: str, stale_after: int, ack_after: int, now: float | None = None) 
                 alerts.append(f"message {key} to {message['member']}: receipt unacknowledged")
         from .supervisor_inbox import sync_packet_steps
 
-        sync_packet_steps(data, items, now)
+        live_review_recipients = {
+            name for name, member in data["members"].items()
+            if member.get("spec", {}).get("role") == "supervisor"
+            and (member.get("terminal_observation") or {}).get("at") == now
+            and member["terminal_observation"].get("terminal_state") == "live"
+        }
         monitor = data.setdefault("monitor", {})
         if data.get("anchor_terminal"):
             pane = next((p for p in h.tui.panes(data["tui_session"])
                          if p["terminal_id"] == data["anchor_terminal"]), None)
             supervisor_state = pane.get("agent_status", "unknown") if pane else "missing"
+            if pane and data.get("anchor_thread"):
+                live_review_recipients.add("supervisor")
             monitor["supervisor_state"] = supervisor_state
             monitor.pop("notification_hold", None)
             if supervisor_state in {"blocked", "missing"}:
                 monitor["notification_hold"] = (
                     f"Supervisor {supervisor_state}; inspection continues")
                 alerts.append(monitor["notification_hold"])
-        monitor.update(checked_at=now, alerts=alerts)
+        if data.get("inbox_consumer", {}).get("version") != 1:
+            live_review_recipients.clear()
+        sync_packet_steps(data, items, now, live_review_recipients)
+        monitor.update(checked_at=now, alerts=alerts,
+                       live_review_recipients=sorted(live_review_recipients))
         h.save(team, data)
     return {"team": team, "checked_at": now, "alerts": alerts}
 
@@ -366,7 +377,13 @@ def monitor(team: str, watch: bool = False, notify: bool = False,
                 data = h.load(team)
                 digest = hashlib.sha256(json.dumps(result["alerts"]).encode()).hexdigest()[:16]
                 previous = data.get("monitor", {}).get("notification", {})
-                if notify:
+                recipients = (data.get("monitor") or {}).get("live_review_recipients") or []
+                if data.get("inbox_consumer", {}).get("version") != 1:
+                    recipients = ["supervisor"]  # Preserve existing legacy monitor delivery.
+                if notify and len(recipients) == 1:
+                    recipient = recipients[0]
+                    if recipient != "supervisor":
+                        digest = hashlib.sha256(f"{digest}:{recipient}".encode()).hexdigest()[:16]
                     with h.locked(team) as current:
                         monitor_state = current.setdefault("monitor", {})
                         if monitor_state.get("event_digest") != digest:
@@ -379,7 +396,7 @@ def monitor(team: str, watch: bool = False, notify: bool = False,
                             and previous.get("event_key") != key):
                         due = not previous.get("at") or time.time()-previous["at"] >= stale_after
                         prompt = due and not data.get("monitor", {}).get("notification_hold")
-                        h.send(team, "supervisor", key,
+                        h.send(team, recipient, key,
                                "Team health requires inspection (no automatic approval/restart):\n"
                                + "\n".join(result["alerts"]), notify=bool(prompt))
                         with h.locked(team) as current:

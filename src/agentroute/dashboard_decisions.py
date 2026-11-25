@@ -163,7 +163,11 @@ def explicit_proposal(wait: dict) -> tuple[str, str | None]:
     if proposal is None:
         # The tracker previously recorded some proposals inline after a dated receipt.
         # A receipt ID or a bare description of the blocker cannot stand in for a proposal.
-        match = re.fullmatch(r"\d{4}-\d{2}-\d{2} request: (.+)", wait["question_ref"])
+        match = re.fullmatch(
+            r"(?:\d{4}-\d{2}-\d{2} request: |"
+            r"chat:request_user_input_async:\d{4}-\d{2}-\d{2}:)(.+)",
+            wait["question_ref"],
+        )
         proposal, thread = (match[1], None) if match else referenced_proposal(wait["question_ref"])
     if not isinstance(proposal, str) or not proposal.strip() or len(proposal) > 420:
         return "", None
