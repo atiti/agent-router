@@ -655,3 +655,17 @@ def test_restore_only_resumes_confirmed_core_member_in_original_pane(
         assert command.call_args.args[1:4] == ("pane", "run", "w1:p1")
         assert h.restore_team_views("agentroute") == []
         assert core.call_count == 1
+
+
+def test_packet_command_uses_agentroute_python_when_path_is_restricted(tmp_path, monkeypatch):
+    tracker = tmp_path / "workspace/tools/scripts/work_packets.py"
+    tracker.parent.mkdir(parents=True)
+    tracker.write_text(
+        "from datetime import datetime\n"
+        "print(datetime.fromisoformat('2026-12-02T13:19:00Z').isoformat())\n"
+    )
+    monkeypatch.setattr(h.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert h.packet_command({"namespace": "markster"}, "status").strip() == (
+        "2026-12-02T13:19:00+00:00"
+    )
