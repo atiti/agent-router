@@ -519,3 +519,27 @@ def test_missing_pause_guard_reports_manual_resume(monkeypatch):
     assert "manually" in payload["goal"]
     shown = json.loads(CliRunner().invoke(app, ["wait", "show", payload["id"]]).output)
     assert shown["automatic_resume_guarded"] is False
+
+
+def test_triage_disposition_requires_request_bound_tracker_state(monkeypatch):
+    from agentroute import dashboard_actions
+
+    spec = {"dashboard_workflow": "owner_triage", "dashboard_revision": 2,
+            "dashboard_packet": ["private", "packet", "item"]}
+    tracker = {"revision": 3, "status": "blocked", "next_step": {"state": "active"}}
+    monkeypatch.setattr(dashboard_actions, "read_item", lambda key: tracker)
+    with pytest.raises(waits.WaitError, match="must reference this request"):
+        waits.verify_triage_result("w-original", spec, 3)
+    tracker["next_step"]["triage_ref"] = "agentroute:wait/w-original"
+    with pytest.raises(waits.WaitError, match="tracker needs"):
+        waits.verify_triage_result("w-original", spec, 3)
+    tracker["assignment"] = {"session": "existing-owner"}
+    assert waits.verify_triage_result("w-original", spec, 3)["result"] == "owner_confirmed"
+    tracker["next_step"].update(state="waiting_worker", wait={"owner": "Supervisor",
+                                                             "event_ref": "handoff"})
+    assert waits.verify_triage_result("w-original", spec, 3)["result"] == "handoff_pending"
+    tracker["next_step"].update(state="awaiting_user", wait={"owner": "Attila",
+                                                            "question_ref": "codex:question"})
+    assert waits.verify_triage_result("w-original", spec, 3)["result"] == "needs_decision"
+    with pytest.raises(waits.WaitError, match="revision changed"):
+        waits.verify_triage_result("w-original", spec, 4)

@@ -26,6 +26,14 @@ recipient to verify the outside result and record who will follow up. Focus show
 recorded blocker and next step when they are available. Use **Recent dashboard activity**
 to see what was delivered and how the packet stands.
 
+**Request triage** stays open until the receiving session records a structured result in
+the packet. The agent links the next step to the originating wait with
+`next_step.triage_ref = "agentroute:wait/WAIT_ID"` and records either a current claim with
+an executable step, a named handoff with an event reference, or a delivered question.
+It then runs `agentroute wait resolve WAIT_ID --action ACTION --triage-revision REVISION`.
+Focus shows a pending handoff under the responsible agent or coordinator. The supervisor
+verifies pickup before recording acceptance. The explanatory reply stays in the receipt.
+
 Use `agentroute dashboard --me NAME` to match a different name recorded in the tracker.
 
 ## What it shows

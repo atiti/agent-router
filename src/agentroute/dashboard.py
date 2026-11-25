@@ -401,6 +401,11 @@ def item_hold(item: dict[str, Any], names: list[str]) -> dict[str, Any] | None:
         hold = _hold(STEP_HOLDS[step["state"]], step.get("wait") or {}, blocker, names, True)
         if step["state"] == "awaiting_user":
             hold["decision_slot"] = "step"
+        wait = step.get("wait") or {}
+        if step["state"] in {"waiting_worker", "coordination_required"} and str(
+            step.get("triage_ref") or wait.get("event_ref") or ""
+        ).startswith("agentroute:wait/w-"):
+            hold["triage_handoff"] = True
         return hold
     executable = step.get("state") in {"ready", "active"}
     if later.get("state") in STEP_HOLDS:
@@ -637,7 +642,13 @@ def annotate_actions(packets: list[dict], waits: list[dict], cutoff: float) -> l
                     later_hold["decision_in_session"] = True
             for wait in by_packet[key]:
                 disposition = wait.get("disposition") or {}
-                if disposition:
+                triage = disposition.get("triage") or {}
+                if triage and triage.get("revision") == item["revision"]:
+                    delivery = {"handoff_pending": "Waiting for owner to accept",
+                                "owner_confirmed": "Owner confirmed",
+                                "needs_decision": "Decision requested"}.get(
+                                    triage.get("result"), "Triage recorded")
+                elif disposition:
                     delivery = "Agent response · " + str(disposition.get("action", "recorded"))
                 elif wait.get("recipient_read"):
                     delivery = "Read by agent"
@@ -649,7 +660,9 @@ def annotate_actions(packets: list[dict], waits: list[dict], cutoff: float) -> l
                     delivery = "Delivery unconfirmed"
                 else:
                     delivery = wait["state"].replace("_", " ").capitalize()
-                action = "Comment" if wait["spec"].get("dashboard_decision_comment") else "Reply"
+                spec = wait["spec"]
+                action = ("Comment" if spec.get("dashboard_decision_comment") else
+                          "Triage" if spec.get("dashboard_workflow") == "owner_triage" else "Reply")
                 activity.append({**common, "action": action, "at": wait["created_at"],
                                  "delivery": delivery, "agent": wait.get("thread_id"),
                                  "detail": redact(str(disposition.get("reason") or ""), 360)})

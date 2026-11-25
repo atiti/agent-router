@@ -198,10 +198,13 @@ def submit(data: dict, *, decision_comment: bool = False) -> dict:
     if not isinstance(message, str) or not message.strip() or len(message) > MAX_MESSAGE:
         raise ActionError(f"Write a reply of 1 to {MAX_MESSAGE} characters.")
     message = message.strip()
-    fingerprint = hashlib.sha256(
-        json.dumps([key, revision, selected, message] + (["comment"] if decision_comment else []))
-        .encode()
-    ).hexdigest()
+    owner_triage = data.get("workflow") == "owner_triage" and not decision_comment
+    fingerprint_fields = [key, revision, selected, message]
+    if decision_comment:
+        fingerprint_fields.append("comment")
+    if owner_triage:
+        fingerprint_fields.append("owner_triage")
+    fingerprint = hashlib.sha256(json.dumps(fingerprint_fields).encode()).hexdigest()
     for wait in waits.load():
         spec = wait["spec"]
         if spec.get("dashboard_request") == request_id:
@@ -227,12 +230,22 @@ def submit(data: dict, *, decision_comment: bool = False) -> dict:
            "checkpoint." if kind == "owner" else "Review the outcome and coordinate its next step. "
            "Preserve any existing claim and use the canonical tracker before taking work.")
     )
+    if owner_triage:
+        note += (
+            " Record a confirmed claim, a named handoff with an event reference, "
+            "or a delivered question in the canonical tracker. Set next_step.triage_ref "
+            "to agentroute:wait/WAIT_ID. Then run "
+            "agentroute wait resolve WAIT_ID --action ACTION --triage-revision REVISION "
+            "with the new tracker revision."
+        )
     created = []
     try:
         wait = waits.register(
             target["thread"], "external",
             {"dashboard_request": request_id, "dashboard_fingerprint": fingerprint,
              "dashboard_packet": list(key), "dashboard_kind": kind,
+             **({"dashboard_workflow": "owner_triage", "dashboard_revision": revision}
+                if owner_triage else {}),
              **({"dashboard_decision_comment": True} if decision_comment else {})},
             note=note, fired_payload=message, timeout=waits.MAX_TIMEOUT, created=created,
         )

@@ -850,6 +850,39 @@ def pause_owned(wait: dict[str, Any], goal: dict[str, Any]) -> bool:
     return goal_log_unchanged(guard, snapshot)
 
 
+def verify_triage_result(wait_id: str, spec: dict, revision: int) -> dict:
+    """Link a triage acknowledgment to current structured packet state."""
+    from .dashboard_actions import ActionError, packet_key, read_item
+
+    key = spec.get("dashboard_packet")
+    original = spec.get("dashboard_revision")
+    if (spec.get("dashboard_workflow") != "owner_triage"
+            or not isinstance(key, list) or len(key) != 3
+            or type(original) is not int or revision <= original):
+        raise WaitError("triage needs an updated revision of this dashboard packet")
+    try:
+        item = read_item(packet_key(dict(zip(("namespace", "packet", "item"), key, strict=True))))
+    except ActionError as error:
+        raise WaitError(str(error)) from error
+    if item.get("revision") != revision or item.get("status") in {"done", "cancelled"}:
+        raise WaitError("triage revision changed or the outcome closed; read the current packet")
+    step = item.get("next_step") or {}
+    wait = step.get("wait") or {}
+    if step.get("triage_ref") != f"agentroute:wait/{wait_id}":
+        raise WaitError("the current step must reference this request in next_step.triage_ref")
+    assignment = item.get("assignment") or {}
+    if step.get("state") == "awaiting_user" and wait.get("owner") and wait.get("question_ref"):
+        result, owner = "needs_decision", wait["owner"]
+    elif (step.get("state") in {"waiting_worker", "coordination_required"}
+          and wait.get("owner") and wait.get("event_ref")):
+        result, owner = "handoff_pending", wait["owner"]
+    elif assignment.get("session") and step.get("state") in {"ready", "active"}:
+        result, owner = "owner_confirmed", assignment["session"]
+    else:
+        raise WaitError("tracker needs a claim, named handoff with an event, or delivered question")
+    return {"result": result, "revision": revision, "owner": owner}
+
+
 def record_recipient(
     wait_id: str,
     thread: str,
@@ -857,6 +890,7 @@ def record_recipient(
     action: str | None = None,
     reason: str = "",
     now: float | None = None,
+    triage_revision: int | None = None,
 ) -> dict[str, Any]:
     if action not in {None, "continue", "waiting", "blocked", "replan", "complete", "duplicate"}:
         raise WaitError("action must be continue, waiting, blocked, replan, complete or duplicate")
@@ -878,7 +912,19 @@ def record_recipient(
             old = wait.get("disposition")
             if old and (old["action"], old["reason"]) != (action, reason[:MAX_NOTE]):
                 raise WaitError("disposition already recorded; preserve the original receipt")
-            wait["disposition"] = old or disposition
+            spec = wait["spec"]
+            structured = (old or {}).get("triage")
+            if structured and triage_revision not in {None, structured["revision"]}:
+                raise WaitError("triage result already recorded at a different revision")
+            if triage_revision is not None and not structured:
+                structured = verify_triage_result(wait_id, spec, triage_revision)
+            if spec.get("dashboard_workflow") == "owner_triage" and not structured:
+                raise WaitError("Record the tracker outcome, then pass --triage-revision")
+            if structured:
+                disposition["triage"] = structured
+            if old:
+                disposition = {**old, **({"triage": structured} if structured else {})}
+            wait["disposition"] = disposition
 
     return update(wait_id, change)
 
