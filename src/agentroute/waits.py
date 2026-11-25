@@ -167,6 +167,7 @@ def register(
     cwd: str | None = None,
     now: float | None = None,
     fired_payload: str | None = None,
+    created: list[str] | None = None,
 ) -> dict[str, Any]:
     if fired_payload is not None and (kind != "external" or len(fired_payload) > MAX_PAYLOAD):
         raise WaitError("fired payload requires an external wake within the payload limit")
@@ -238,6 +239,8 @@ def register(
         if fired_payload is None and len(pending_for(thread_id, waits)) >= MAX_PENDING_PER_THREAD:
             raise WaitError(f"thread already has {MAX_PENDING_PER_THREAD} pending waits")
         waits.append(wait)
+    if created is not None:
+        created.append(wait["id"])
     return wait
 
 

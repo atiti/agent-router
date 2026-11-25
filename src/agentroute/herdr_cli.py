@@ -134,13 +134,23 @@ def launch_client(session: str, pane: str, thread: str) -> None:
     command(session, "pane", "run", pane, shlex.join(argv))
 
 
-def open_thread(thread: dict, session: str) -> str:
+def open_thread(thread: dict, session: str, *, workspace_label: str | None = None,
+                verify_native: bool = False) -> str:
     with chats.operation_lock():
-        existing = thread_panes(panes(session), session).get(thread["id"])
+        current = panes(session)
+        native = [p for p in current if native_thread(p) == thread["id"]]
+        if len(native) > 1:
+            raise SharedServerError("Multiple Herdr panes report this thread; reconcile views.")
+        mapped = thread_panes(current, session).get(thread["id"])
+        if verify_native and not native and mapped:
+            raise SharedServerError(
+                "Existing pane identity is unconfirmed; inspect it before reopening."
+            )
+        existing = native[0] if native else mapped
         if existing:
             focus_pane(session, existing)
             return existing["pane_id"]
-        label = chats.thread_namespace(thread)
+        label = workspace_label or chats.thread_namespace(thread)
         workspaces = command(session, "workspace", "list")["workspaces"]
         workspace = next((w for w in workspaces if w.get("label") == label), None)
         args = ["tab", "create", "--workspace", workspace["workspace_id"]] if workspace else [
@@ -151,8 +161,15 @@ def open_thread(thread: dict, session: str) -> str:
         launch_client(session, pane["pane_id"], thread["id"])
         # The client reports its identity before launching Codex. Wait under the lock
         # so a second opener cannot race that registration and spawn another writer.
-        for _ in range(50):
-            if thread["id"] in thread_panes(panes(session), session):
+        for _ in range(50 if not verify_native else 80):
+            current = panes(session)
+            if verify_native:
+                for reported in current:
+                    if (reported["terminal_id"] == pane["terminal_id"]
+                            and reported.get("agent") == "codex"
+                            and native_thread(reported) == thread["id"]):
+                        return reported["pane_id"]
+            elif thread["id"] in thread_panes(current, session):
                 return pane["pane_id"]
             time.sleep(.1)
         raise SharedServerError(

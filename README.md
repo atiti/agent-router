@@ -1268,7 +1268,8 @@ See [event-driven waits](docs/event-waits.md) for every condition, outside trigg
 `agentroute dashboard` serves a local page showing every agent's state (working, waiting,
 blocked, needs you, done), its current tool call, goal, tokens and context use, with pending
 waits, work packets, a map of what agents touch and token use by model. From Focus you can
-send a packet reply to its assigned session or choose a session to review unassigned work. See
+open the packet’s exact session in Herdr and send a reply. Outcomes without a bound session
+get a dedicated review conversation. See
 [live dashboard](docs/dashboard.md).
 
 ## Routine approvals

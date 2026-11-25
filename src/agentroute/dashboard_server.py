@@ -123,7 +123,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(dashboard_actions.lookup(fields["id"]))
             else:
                 key = dashboard_actions.packet_key(fields)
-                self._json({"receipts": dashboard_actions.history(key)})
+                self._json({"receipts": dashboard_actions.history(key),
+                            "route": dashboard_actions.packet_route(key)})
         except dashboard_actions.ActionError as error:
             self._json({"error": str(error)}, error.status)
 
@@ -152,7 +153,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "The reply body is not valid UTF-8 JSON."}, HTTPStatus.BAD_REQUEST)
             return
         try:
-            self._json(dashboard_actions.submit(payload), HTTPStatus.ACCEPTED)
+            action = payload.get("action", "reply")
+            if action == "reply":
+                self._json(dashboard_actions.submit(payload), HTTPStatus.ACCEPTED)
+            elif action == "open":
+                self._json(dashboard_actions.open_packet(payload))
+            else:
+                self._json({"error": "Unknown packet action."}, HTTPStatus.BAD_REQUEST)
         except dashboard_actions.ActionError as error:
             self._json({"error": str(error)}, error.status)
         except OSError:

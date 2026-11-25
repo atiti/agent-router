@@ -649,12 +649,17 @@ def restore_team_views(session: str, starting: bool = False) -> list[dict[str, s
     return results
 
 
-@team_app.command("view")
-def view(team: str, member: str) -> None:
+def open_member_view(team: str, member: str, *, exact_thread: str | None = None) -> str:
     """Open or reuse an interactive worker pane in the TUI."""
     with locked(team) as data:
         record = data["members"][member]
+        if exact_thread and record.get("thread") != exact_thread:
+            raise typer.BadParameter("Team member thread changed; reconcile its binding.")
         terminal = own_terminal(data, record)
+        if exact_thread and terminal and terminal.get("state") != "live":
+            resume_member_locked(team, data, member, restart_only=True)
+            record = data["members"][member]
+            terminal = own_terminal(data, record)
         if not terminal:
             raise typer.BadParameter("No terminal for this member")
         panes = tui.panes(data["tui_session"])
@@ -665,8 +670,9 @@ def view(team: str, member: str) -> None:
                 try:
                     if old.get("pid"):
                         os.kill(old["pid"], 0)
-                    typer.echo(found["pane_id"])
-                    return
+                    if exact_thread and (old.get("active") is not True or not old.get("pid")):
+                        raise typer.BadParameter("Existing Herdr view is still attaching.")
+                    return found["pane_id"]
                 except ProcessLookupError:
                     pass
         workspaces = tui.command(data["tui_session"], "workspace", "list")["workspaces"]
@@ -682,7 +688,22 @@ def view(team: str, member: str) -> None:
                                   "--label", member, "--no-focus")
             pane = created["root_pane"]
         launch_view_locked(team, data, member, pane)
-    typer.echo(pane["pane_id"])
+    if exact_thread:
+        for _ in range(80):
+            record = load(team)["members"][member]
+            view = record.get("view") or {}
+            if (record.get("thread") == exact_thread and view.get("active") is True
+                    and view.get("terminal_id") == pane["terminal_id"] and view.get("pid")):
+                return pane["pane_id"]
+            time.sleep(.1)
+        raise typer.BadParameter("Team viewer could not confirm its attachment.")
+    return pane["pane_id"]
+
+
+@team_app.command("view")
+def view(team: str, member: str) -> None:
+    """Open or reuse an interactive worker pane in the TUI."""
+    typer.echo(open_member_view(team, member))
 
 
 @team_app.command("attach")
