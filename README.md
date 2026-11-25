@@ -1475,3 +1475,21 @@ operator's actual credential setup. A bridge using API credentials remains
 metered even if its name is listed there. The classifier uses the Codex
 subscription transport with routing isolated from its own classification call.
 Use `classifier-enable` to return to an OpenAI-compatible API or local endpoint.
+
+### Shared maintenance
+
+On macOS, run `agentroute maintenance install` to schedule checks at login and
+every minute. `agentroute maintenance status` shows the latest tick.
+`agentroute maintenance run` previews recovery and owner-bound reviews.
+
+Maintenance starts the wait daemon when saved waits need attention. It recovers
+a team monitor when there is one verified live enrolled supervisor team and
+no existing monitor for its packet. Enrolled supervisors receive due handoffs
+through the native inbox. Ordinary due conversations are reported for review
+until the runtime has an idle-only admission path. The report distinguishes
+delivered approvals, outstanding decisions, unassigned work and unresolved
+effects. It can suggest a specialist role for a review.
+
+For dashboard decisions, run
+`agentroute maintenance receipt NAMESPACE PACKET ITEM DECISION_ID` to verify the
+delivered decision against the current step, revision and recipient.

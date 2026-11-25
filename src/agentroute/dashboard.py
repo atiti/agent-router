@@ -876,6 +876,15 @@ class Collector:
                       for wait in overdue]
         focus = build_focus(packets, agents, overdue, self.names, now)
         annotate_supervision(focus, now)
+        from .shared_server import state_dir
+
+        try:
+            maintenance = json.loads((state_dir() / "maintenance" / "status.json").read_text())
+            checked = maintenance.get("checked_at")
+            if isinstance(checked, (int, float)):
+                focus["maintenance"] = {"checked_at": checked, "fresh": 0 <= now - checked <= 150}
+        except (OSError, ValueError, AttributeError):
+            pass
         return {
             "generated_at": now,
             "window": window,

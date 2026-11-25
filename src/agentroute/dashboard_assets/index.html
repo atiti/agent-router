@@ -1068,6 +1068,9 @@ function focusView(){
       <span class="none"><b>${unowned.length}</b>blocked with no owner</span>
       <span><b>${blockedOthers}</b>blocked on someone else</span>
       <span><b>${moving.length}</b>working</span><span><b>${parked.length}</b>waiting on CI, a timer or an event</span></div>
+    <p class="lead">Maintenance ${f.maintenance ?
+      (f.maintenance.fresh ? "checked " : "overdue · last checked ") + ago(f.maintenance.checked_at) :
+      "has no recent startup report"}</p>
     <div class="decision-bar"><h2>Needs you<b>${you.length}</b></h2>
       ${packetActionToken && decisionEntries().length ?
         '<button type="button" class="reply-button primary" data-review-decisions>Review decisions</button>' : ""}

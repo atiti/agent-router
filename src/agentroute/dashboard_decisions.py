@@ -14,6 +14,8 @@ import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 
+import typer
+
 from . import dashboard_actions as actions
 from . import dashboard_packet_routes as routes
 from . import waits
@@ -255,6 +257,77 @@ def decision_route(key: tuple[str, str, str], item: dict, scope: dict) -> dict:
     return routes.route(key, item)
 
 
+def scoped_step_id(item: dict, slot: str) -> str | None:
+    return (item.get("next_step") or {}).get("id") if slot == "step" else None
+
+
+def verify_receipt(
+    key: tuple[str, str, str], request_id: str, caller_thread: str | None,
+) -> dict:
+    """Read delivered decision evidence and verify its current packet and recipient binding."""
+    key = actions.packet_key(dict(zip(("namespace", "packet", "item"), key, strict=True)))
+    receipt_id = routes.thread_id(request_id)
+    if not receipt_id:
+        raise actions.ActionError("Use the exact dashboard decision ID.")
+    try:
+        record = routes.read_record(directory(key) / f"{receipt_id}.json")
+    except (ValueError, OSError) as error:
+        raise actions.ActionError("The decision record could not be read.", 409) from error
+    if not record or record.get("id") != receipt_id:
+        raise actions.ActionError("No dashboard decision has that ID for this packet.", 404)
+    recipient, turn_id = record.get("recipient"), record.get("turn_id")
+    if (
+        not routes.thread_id(recipient) or not isinstance(turn_id, str) or not turn_id
+        or record.get("decision") not in ("approve", "deny")
+        or record.get("confirmation") != "macos-device-owner"
+    ):
+        raise actions.ActionError("The decision has no confirmed delivery receipt.", 409)
+    if caller_thread is not None and routes.thread_id(caller_thread) != recipient:
+        raise actions.ActionError("This decision was delivered to a different session.", 403)
+
+    slot = record.get("slot")
+    if slot not in ("step", "outcome"):
+        raise actions.ActionError("The saved decision slot is invalid.", 409)
+    item = actions.check_current(key, record.get("revision"))
+    scope = request_scope(key, item, slot)
+    step_id = scoped_step_id(item, slot)
+    # Legacy records do not have a separate step ID. Their exact current item
+    # revision and full scope still establish the step, without changing its digest.
+    if (
+        not scope.get("eligible") or not scope.get("proposal")
+        or record.get("scope") != scope or record.get("scope_digest") != scope["scope_digest"]
+        or ("step_id" in record and record["step_id"] != step_id)
+    ):
+        raise actions.ActionError("The decision does not match the current packet scope.", 409)
+    try:
+        current_recipient = decision_route(key, item, scope)["thread"]
+    except routes.HERDR_ERRORS as error:
+        raise actions.ActionError("The packet session could not be verified.", 409) from error
+    if current_recipient != recipient:
+        raise actions.ActionError("The packet now routes to a different session.", 409)
+
+    return {
+        "id": receipt_id, "packet": "/".join(key), "state": "delivered",
+        "decision": record["decision"], "recipient": recipient, "turn_id": turn_id,
+        "slot": slot, "step_id": step_id, "revision": scope["revision"],
+        "scope_digest": scope["scope_digest"], "scope": scope,
+        "verified_as": "recipient" if caller_thread is not None else "local_inspection",
+        "confirmation": record["confirmation"],
+    }
+
+
+def register_receipt_command(app: typer.Typer) -> None:
+    @app.command("receipt")
+    def receipt_command(namespace: str, packet: str, item: str, request_id: str) -> None:
+        """Read an exact delivered decision. Outside Codex, this is local inspection only."""
+        try:
+            result = verify_receipt((namespace, packet, item), request_id,
+                                    os.environ.get("CODEX_THREAD_ID"))
+        except actions.ActionError as error:
+            raise typer.BadParameter(str(error)) from error
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 def decision_issue(key: tuple[str, str, str], item: dict, scope: dict) -> str | None:
     if not scope["proposal"]:
         return "This question needs a written proposal before it can be approved here."
@@ -269,17 +342,23 @@ def decision_issue(key: tuple[str, str, str], item: dict, scope: dict) -> str | 
     return None
 
 
-def operator_text(key: tuple[str, str, str], scope: dict, choice: str, request_id: str) -> str:
+def operator_text(
+    key: tuple[str, str, str], scope: dict, choice: str, request_id: str,
+    step_id: str | None = None,
+) -> str:
     statement = (
         "I approve the exact proposal below. Do only what that proposal covers."
         if choice == "approve" else
         "I deny the exact proposal below. Keep that action on hold."
     )
+    verify = " ".join(("agentroute", "maintenance", "receipt", *key, request_id))
+    step_binding = f" step {step_id}," if step_id else ""
     return (
         f"{statement}\n\nDashboard decision {request_id} for {'/'.join(key)}, "
-        f"{scope['slot']} hold, revision {scope['revision']}, "
+        f"{scope['slot']} hold,{step_binding} revision {scope['revision']}, "
         f"scope {scope['scope_digest']}.\n"
-        "Verify the packet's current revision, owner and scope before using my decision. "
+        f"Run `{verify}` in this session to verify this decision's delivery, "
+        "recipient and current scope before using it. "
         "If anything material changed, ask me to review the new proposal. Honor other "
         "approval gates and Codex tool permissions. Preserve any existing claim.\n"
         f"Proposal: {json.dumps(scope['proposal'], ensure_ascii=False)}"
@@ -362,10 +441,12 @@ def deliver(key, scope, target, choice, request_id, fingerprint, item) -> dict:
                 or request_scope(key, item, scope["slot"]) != scope
                 or decision_route(key, item, scope)["thread"] != target or native_owner(target)):
             raise actions.ActionError("The packet or session changed. Review it again.", 409)
+        step_id = scoped_step_id(item, scope["slot"])
         record = {
             "id": request_id, "decision": choice, "fingerprint": fingerprint,
             "scope_digest": scope["scope_digest"], "recipient": target,
             "slot": scope["slot"], "revision": scope["revision"], "scope": scope,
+            "step_id": step_id,
             "created_at": time.time(), "confirmation": "macos-device-owner",
         }
         file = directory(key) / f"{request_id}.json"
@@ -374,7 +455,7 @@ def deliver(key, scope, target, choice, request_id, fingerprint, item) -> dict:
             response = client.request("turn/start", {
                 **params,
                 "input": [{"type": "text",
-                           "text": operator_text(key, scope, choice, request_id)}],
+                           "text": operator_text(key, scope, choice, request_id, step_id)}],
             })
             if turn := (response.get("turn") or {}).get("id"):
                 record["turn_id"] = turn

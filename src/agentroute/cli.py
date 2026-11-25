@@ -113,6 +113,7 @@ from .hook import _prompt_help, codex_interrupt, codex_stop, codex_user_prompt_s
 from .install import hook_command as installed_hook_command
 from .install import merge_codex_hook, trust_agentroute_hooks
 from .launcher import launch_codex
+from .maintenance_cli import maintenance_app
 from .memory_cli import memory_app
 from .models import RouteContext, Tier
 from .pricing import cost_report
@@ -157,6 +158,7 @@ app.add_typer(server_app, name="server")
 app.add_typer(storage_app, name="storage")
 app.add_typer(work_app, name="work")
 app.add_typer(wait_app, name="wait")
+app.add_typer(maintenance_app, name="maintenance")
 app.add_typer(approvals_app, name="approvals")
 app.command("gh-get")(gh_get)
 app.command("packet-read")(packet_read)
