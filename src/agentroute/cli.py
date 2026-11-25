@@ -967,13 +967,16 @@ def dashboard_command(
         None, "--port", help="Port to listen on (default 8719); 0 picks a free one."
     ),
     no_open: bool = typer.Option(False, "--no-open", help="Do not open a browser window."),
+    me: list[str] = typer.Option(
+        None, "--me", help="A name that marks a recorded hold as yours; repeat for several. "
+                           "Default: the first word of your git user.name."),
 ) -> None:
     """Serve a live, read-only view of agents, tools, tokens, waits, goals and work packets."""
     from .dashboard_server import DEFAULT_PORT, serve
 
     chosen = DEFAULT_PORT if port is None else port
     try:
-        serve(host, chosen, open_browser=not no_open)
+        serve(host, chosen, open_browser=not no_open, names=list(me) if me else None)
     except OSError as error:
         console.print(f"[red]Dashboard could not listen on {host}:{chosen}: {error}[/red]")
         console.print("Pick another port with --port, or --port 0 for any free one.")

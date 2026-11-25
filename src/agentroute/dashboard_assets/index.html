@@ -12,6 +12,7 @@
 @media (prefers-color-scheme:light){:root{--bg:#f6f7f9;--panel:#fff;--panel2:#f0f2f5;--line:#d9dee5;
 --text:#1b222b;--dim:#5d6875}}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--text);
 font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
 button,input,select{font:inherit;color:inherit}
@@ -80,6 +81,38 @@ a{color:var(--waiting);cursor:pointer;text-decoration:none}
 .gates i.failed,.gates i.blocked{background:var(--blocked);border-color:var(--blocked)}
 .gates i.pending,.gates i.waived{background:var(--needs_input);border-color:var(--needs_input)}
 .tools{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.focus{max-width:1040px;margin:0 auto}
+.headline{font-size:15px;line-height:1.7;margin:4px 0 6px}
+.headline b{font-size:22px;font-weight:650;margin-right:3px}
+.headline span{margin-right:18px;white-space:nowrap}
+.headline .you b{color:var(--needs_input)}.headline .none b{color:var(--blocked)}
+.focus h2{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);margin:22px 0 4px;font-weight:650}
+.focus h2 b{color:var(--text);margin-left:4px}
+.focus .lead{color:var(--dim);margin:0 0 8px;max-width:760px}
+.hold{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--c,var(--line));
+border-radius:9px;padding:9px 13px;margin-bottom:7px}
+.hold.link{cursor:pointer}
+.hold .hd{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.hold .hd b{font-weight:600}
+.hold .hd .meta{margin-left:auto;white-space:nowrap}
+.hold .why{margin-top:3px}
+.hold .fix{margin-top:4px;padding:5px 9px;background:var(--panel2);border-radius:6px}
+.hold .fix span{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.4px;margin-right:6px}
+.hold .meta{margin-top:3px}
+.chip.late{color:var(--blocked);border-color:var(--blocked)}
+details.grp{margin-bottom:7px}
+details.grp>summary{cursor:pointer;padding:7px 12px;background:var(--panel);border:1px solid var(--line);
+border-radius:9px;list-style:none;display:flex;gap:10px;align-items:baseline}
+details.grp>summary::before{content:"▸";color:var(--dim)}details.grp[open]>summary::before{content:"▾"}
+details.grp>summary b{font-weight:600}
+details.grp>div{padding:7px 0 0 16px}
+.line{display:flex;gap:10px;align-items:baseline;padding:5px 2px;border-bottom:1px solid var(--line);cursor:pointer}
+.line:last-child{border-bottom:0}
+.line i{width:8px;height:8px;border-radius:50%;background:var(--c);flex:none;transform:translateY(-1px)}
+.line b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:44%}
+.line span{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.claim{display:grid;grid-template-columns:110px 190px 1fr;gap:12px;align-items:center;padding:5px 2px}
+.claim .bar{height:8px}.claim .bar.full i{background:var(--blocked)}
 #map{width:100%;height:600px;min-height:420px;background:var(--panel);border:1px solid var(--line);
 border-radius:10px;cursor:grab;display:block}
 #map text{fill:var(--text);font-size:11px;pointer-events:none}
@@ -131,13 +164,18 @@ svg.chart{display:block;width:100%;height:220px}
 <aside id="drawer" hidden></aside>
 <script>
 "use strict";
-const STATES = {needs_input:"Needs you", working:"Working", waiting:"Waiting", stalled:"Stalled",
+const STATES = {needs_input:"Asking you", working:"Working", waiting:"Waiting", stalled:"Stalled",
   blocked:"Blocked", idle:"Idle", done:"Done"};
-const TABS = {board:"Board", map:"Map", waits:"Waits", packets:"Work packets", usage:"Usage"};
+const TABS = {focus:"Focus", board:"Board", map:"Map", waits:"Waits", packets:"Work packets", usage:"Usage"};
+const HOLD = {you:"needs_input", unowned:"blocked", external:"waiting", worker:"waiting", coordination:"stalled"};
+const HOLD_LABEL = {external:"outside party", worker:"another agent", coordination:"needs coordination"};
+const HOLD_GROUP = {coordination:["Needs coordination between owners", "A supervisor needs to investigate or settle a handoff."],
+  worker:["Waiting on another agent", "Another session owns the next result."],
+  external:["Waiting on an outside party", "CI, a provider, a customer or a person outside these sessions."]};
 const KIND_COLOR = {dir:"#8b96a3", github:"#58a6ff", pr:"#a78bfa", host:"#f0883e", service:"#f5a524",
   web:"#2ea58f", mcp:"#db61a2", file:"#6e7681", agent:"#3fb950", packet:"#e3b341"};
 const PALETTE = ["#58a6ff","#3fb950","#f5a524","#a78bfa","#f85149","#2ea58f","#db61a2","#e3b341","#8b96a3"];
-const S = {snap:null, tab:location.hash.slice(1).split("/")[0] || "board", filter:"", window:86400,
+const S = {snap:null, tab:Object.hasOwn(TABS, location.hash.slice(1).split("/")[0]) ? location.hash.slice(1).split("/")[0] : "focus", filter:"", window:86400,
   selected:null, hidden:new Set(), expanded:new Set(), showDone:false, source:null, last:0,
   positions:new Map(), view:{x:0,y:0,k:1}, viewTouched:false, focus:null, mapKey:"", detailAt:0};
 
@@ -189,7 +227,7 @@ function render(changed){
   const s = S.snap.summary;
   $("tabs").innerHTML = Object.entries(TABS).map(([key,label]) => {
     const count = key==="waits" ? s.pending_waits : key==="packets" ? s.open_packet_items :
-      key==="board" ? s.agents : "";
+      key==="board" ? s.agents : key==="focus" ? (S.snap.focus?.counts.needs_you ?? "") : "";
     return `<button class="${S.tab===key?"on":""}" data-tab="${key}">${label}${count!==""?`<b>${count}</b>`:""}</button>`;
   }).join("");
   $("tiles").innerHTML = Object.entries(STATES).map(([key,label]) =>
@@ -201,10 +239,74 @@ function render(changed){
   $("attention").innerHTML = S.snap.attention.slice(0,6).map(item =>
     `<div class="alert" style="--c:var(--${item.state==="wait"?"stalled":item.state})" data-agent="${esc(item.agent)}">
       <b>${esc(item.title)}</b><em>${esc(item.reason)}</em></div>`).join("");
+  $("tiles").hidden = $("attention").hidden = S.tab==="focus";
   if(S.tab==="map"){ if(!changed || changed.includes("agents")) renderMap(); return; }
-  const need = {board:["agents"], waits:["waits","agents"], packets:["packets","agents"], usage:["usage","agents","summary"]}[S.tab];
+  const need = {focus:["focus","agents"], board:["agents"], waits:["waits","agents"], packets:["packets","agents"], usage:["usage","agents","summary"]}[S.tab];
   if(!changed || need.some(name => changed.includes(name)))
-    $("view").innerHTML = ({board:boardView, waits:waitsView, packets:packetsView, usage:usageView}[S.tab])();
+    $("view").innerHTML = ({focus:focusView, board:boardView, waits:waitsView, packets:packetsView, usage:usageView}[S.tab])();
+}
+
+/* Focus: what waits on the reader, and why everything else that is stuck is stuck. */
+function holdCard(e){
+  const where = e.type==="outcome" ? `${esc(e.namespace)} / ${esc(e.packet)} / ${esc(e.item)}` :
+    e.type==="agent" ? (e.pane ? `${esc(e.workspace||"")} ${esc(e.pane)}` : "session") : "wait";
+  const holder = e.type!=="outcome" ? "" : e.agent ? `Held by ${agentLink(e.agent)}` :
+    e.session ? `Held by session <code>${esc(e.session.slice(0,28))}</code>, which is outside this view` : "No session holds this";
+  return `<div class="hold ${e.agent?"link":""}" style="--c:var(--${HOLD[e.kind]||"idle"})" ${e.agent?`data-agent="${esc(e.agent)}"`:""}>
+    <div class="hd"><b>${esc(e.title)}</b>${e.priority?`<span class="chip">${esc(e.priority)}</span>`:""}
+      ${e.blocking?"":`<span class="chip" title="Work continues for now; this has to be cleared before the outcome can close">not blocking yet</span>`}
+      ${e.review_overdue?`<span class="chip late">review due ${ago(e.review_at)}</span>`:""}
+      <span class="meta">${where} · ${e.type==="agent"?"quiet":"held"} ${span(Date.now()/1000-e.since)}</span></div>
+    ${e.owner&&e.kind!=="you"?`<div class="meta">Waiting on <b>${esc(e.owner)}</b></div>`:""}
+    ${e.reason?`<div class="why">${esc(e.reason)}</div>`:""}
+    ${e.detail?`<div class="meta">${esc(e.detail)}</div>`:""}
+    ${e.unblock?`<div class="fix"><span>Unblocks when</span>${esc(e.unblock)}</div>`:
+      e.next_action?`<div class="fix"><span>Recorded next action</span>${esc(e.next_action)}</div>`:""}
+    ${holder||e.question?`<div class="meta">${holder}${holder&&e.question?" · ":""}${e.question?"Asked in "+esc(e.question):""}</div>`:""}
+  </div>`;
+}
+function holdMatches(e){ return !S.filter || S.filter.toLowerCase().split(/\s+/).every(word =>
+  [e.title,e.namespace,e.packet,e.item,e.owner,e.reason,e.unblock,e.next_action,e.priority].join(" ").toLowerCase().includes(word)); }
+function holdList(entries, key, limit){
+  const shown = S.expanded.has(key) ? entries : entries.slice(0, limit);
+  return shown.map(holdCard).join("") + (entries.length>shown.length ?
+    `<button class="more" data-expand="${key}">Show ${entries.length-shown.length} more</button>` : "");
+}
+function focusView(){
+  const f = S.snap.focus, agents = visibleAgents();
+  const you = f.needs_you.filter(holdMatches), unowned = f.unowned.filter(holdMatches);
+  const groups = f.others.map(g => ({...g, items:g.items.filter(holdMatches)})).filter(g => g.items.length);
+  const blockedOthers = groups.reduce((n,g) => n+g.items.length, 0);
+  const moving = agents.filter(a => a.state==="working").sort((x,y) => y.active_at-x.active_at);
+  const parked = agents.filter(a => a.state==="waiting").sort((x,y) => y.active_at-x.active_at);
+  const line = a => `<div class="line" style="--c:var(--${a.state})" data-agent="${a.id}"><i></i><b>${esc(a.title||"(untitled)")}</b>
+    <span>${a.state==="working" ? esc((a.activity.last_event?.detail || a.activity.last_event?.label || a.state_reason)) : esc(a.state_reason)}</span>
+    <span style="flex:none">${ago(a.active_at)}</span></div>`;
+  const who = f.names.length ? esc(f.names.join(", ")) : "nobody (start with --me NAME)";
+  return `<div class="focus">
+    <div class="headline"><span class="you"><b>${you.length}</b>need you</span>
+      <span class="none"><b>${unowned.length}</b>blocked with no owner</span>
+      <span><b>${blockedOthers}</b>blocked on someone else</span>
+      <span><b>${moving.length}</b>working</span><span><b>${parked.length}</b>waiting on CI, a timer or an event</span></div>
+    <h2>Needs you<b>${you.length}</b></h2>
+    <p class="lead">Sessions waiting for an answer or approval, and outcomes whose recorded owner is ${who}.</p>
+    ${holdList(you, "f-you", 8) || `<div class="empty">Nothing is waiting on you.</div>`}
+    <h2>Blocked with no owner<b>${unowned.length}</b></h2>
+    <p class="lead">Marked blocked with a written reason only. Nobody is named to clear these and no condition is recorded, so nothing will ever prompt anyone. Check the source and assign an owner before asking for a decision.</p>
+    ${holdList(unowned, "f-none", 5) || `<div class="empty">Every blocked outcome names an owner.</div>`}
+    <h2>Blocked on someone else<b>${blockedOthers}</b></h2>
+    ${groups.map(g => `<details class="grp" ${S.expanded.has("g-"+g.kind)?"open":""} data-group="${g.kind}">
+      <summary><b>${HOLD_GROUP[g.kind][0]}</b><span class="meta">${g.items.length} outcome${g.items.length>1?"s":""} · ${
+        g.items.filter(e=>e.review_overdue).length} past their review date · ${HOLD_GROUP[g.kind][1]}</span></summary>
+      <div>${g.items.map(holdCard).join("")}</div></details>`).join("") || `<div class="empty">Nothing is blocked on anyone else.</div>`}
+    <h2>In motion<b>${moving.length+parked.length}</b></h2>
+    ${[...moving, ...parked].map(line).join("") || `<div class="empty">No session is working or waiting.</div>`}
+    <h2>Claims</h2>
+    <p class="lead">Each namespace allows ${f.claims[0]?.limit ?? 20} claimed outcomes. A claim stays until its session completes or releases it, even when the work is held or the session is gone.</p>
+    ${f.claims.map(c => `<div class="claim"><b>${esc(c.namespace)}</b>
+      <span class="bar ${c.claimed>=c.limit?"full":""}"><i style="width:${Math.min(100,100*c.claimed/c.limit)}%"></i></span>
+      <span>${c.claimed} of ${c.limit} claimed${c.claimed>=c.limit?" · <b>full: nothing new can be claimed</b>":""} · ${c.held} held · ${c.stale} with no checkpoint in 3 days · ${c.ready} ready and unclaimed</span></div>`).join("")}
+  </div>`;
 }
 
 function nowLine(a){
@@ -280,7 +382,9 @@ function packetsView(){
         <div><span class="chip s" style="--c:var(--${color[i.status]||"idle"})">${esc(i.status)}</span>
           <div class="meta">${esc(i.priority||"")}${i.step_state&&i.step_state!==i.status?" · "+esc(i.step_state.replace(/_/g," ")):""}</div></div>
         <div><b>${esc(i.id)}</b><div>${esc(i.objective)}</div></div>
-        <div><span class="meta">Next</span> ${esc(i.next_action)}${i.checkpoint?`<div class="meta" title="${esc(i.checkpoint)}">checkpoint ${ago(i.checkpoint_at)}</div>`:""}</div>
+        <div>${i.hold&&i.hold.blocking?`<div><span class="chip s" style="--c:var(--${HOLD[i.hold.kind]})">${
+          i.hold.kind==="you"?"needs you":i.hold.kind==="unowned"?"no owner":"held: "+esc(i.hold.owner||HOLD_LABEL[i.hold.kind])}</span></div>`:""}
+          <span class="meta">Next</span> ${esc(i.next_action)}${i.checkpoint?`<div class="meta" title="${esc(i.checkpoint)}">checkpoint ${ago(i.checkpoint_at)}</div>`:""}</div>
         <div>${i.criteria_total?`${i.criteria_met}/${i.criteria_total} criteria`:""}
           <div class="gates" title="${esc(Object.entries(i.gates).map(([k,v])=>k+": "+(v||"open")).join(", "))}">${
             Object.values(i.gates).map(v=>`<i class="${esc(v||"")}"></i>`).join("")}</div>
@@ -428,6 +532,8 @@ document.addEventListener("click", event => {
   if((el = hit("state"))){ const key = el.dataset.state; S.hidden.has(key) ? S.hidden.delete(key) : S.hidden.add(key);
     if(S.tab!=="board"){ S.tab="board"; $("view").innerHTML=""; } return render(); }
   if((el = hit("expand"))){ S.expanded.add(el.dataset.expand); return render(); }
+  if((el = event.target.closest("details.grp>summary"))){ const key = "g-"+el.parentElement.dataset.group;
+    S.expanded.has(key) ? S.expanded.delete(key) : S.expanded.add(key); return; }
   if((el = hit("node")) && S.tab==="map"){ S.focus = S.focus===el.dataset.node ? null : el.dataset.node; renderMap();
     if(el.dataset.agent) select(el.dataset.agent); return; }
   if((el = hit("agent")) && agentById(el.dataset.agent)) return select(el.dataset.agent);
