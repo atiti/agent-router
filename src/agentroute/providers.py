@@ -199,6 +199,21 @@ def _raise_gpt_context_window(model: dict, configured: int) -> None:
         model["auto_compact_token_limit"] = None
 
 
+def _narrow_tool_surface(model: dict, capabilities) -> None:
+    """Withdraw tool exposure for models that only return finished text.
+
+    A bridge that hands the turn to another agent and returns its answer never
+    emits a tool call. Offering Codex's patch or search tools there produces
+    prompts the model cannot satisfy.
+    """
+    if capabilities.tool_calling != "none":
+        return
+    model["apply_patch_tool_type"] = None
+    model["web_search_tool_type"] = None
+    model["supports_parallel_tool_calls"] = False
+    model["supports_search_tool"] = False
+
+
 def _installed_codex_catalog(source: Path | None = None) -> dict | None:
     """Read the bundled catalog from the exact invoking runtime revision."""
     build_id = _runtime_build_id()
@@ -462,6 +477,8 @@ def _write_model_catalog(
                     and slug in by_slug
                 ):
                     _raise_gpt_context_window(by_slug[slug], capabilities.context_window)
+                if slug in by_slug:
+                    _narrow_tool_surface(by_slug[slug], capabilities)
                 continue
             if capabilities.context_window is None:
                 continue
@@ -499,6 +516,7 @@ def _write_model_catalog(
             if capabilities.reasoning is False:
                 model["default_reasoning_level"] = None
                 model["supported_reasoning_levels"] = []
+            _narrow_tool_surface(model, capabilities)
             if not capabilities.vision:
                 model["input_modalities"] = ["text"]
                 model["supports_image_detail_original"] = False
