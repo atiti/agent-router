@@ -165,8 +165,12 @@ dashboard URL or a network bind serves the read-only views.
 Run `agentroute voice` in a terminal on the Mac running the shared App Server.
 Open the printed local link in your Mac browser, click **Start talking**, and
 allow microphone access. Use your usual headphones or speakers and speak
-normally when connected. Keep the voice tab open while you listen. Click
-**End conversation** or close the tab to stop.
+normally when connected. For push-to-talk, select **Push to talk** before
+connecting, then hold the button or hold **Space** while the button is focused.
+Pressing it silences the speaker immediately and opens the microphone.
+Releasing it closes the mic so you can listen without transmitting room speech.
+Keep the tab open while you listen. Click **End conversation** or close the tab
+to stop.
 
 Ask “What needs me?”, “What is the release session working on?”, or “Tell the
 release session to verify the checks and report back.” The conversation reads
@@ -187,9 +191,13 @@ Voice can send a message to a shared App Server session or a registered Herdr
 team member by name. Shared turns also support steering and interruption by
 turn ID. Herdr supervisor messages go through the team's native inbox. Ask
 Voice to check the receipt if you want to know whether a message was queued,
-entered in the terminal, accepted by Codex, or acknowledged.
+entered in the terminal, accepted by Codex, or acknowledged. The voice page
+shows the latest receipt, the exact target conversation, and any verified reply.
+A reply is linked only when the target session includes the instruction's
+receipt marker in a final answer. Some replies may arrive without that marker.
 
 Say “be more conversational,” “keep answers brief,” “only announce blockers,”
 or “give updates less often” to change saved preferences. New voice calls
 carry forward a bounded excerpt of recent local transcripts. The live feed
-uses agents' reported updates and verified state changes.
+groups fresh reports by project and surfaces verified state changes. Ask
+“Where did that update come from?” for the reporting session and observation time.

@@ -20,17 +20,31 @@
   #start { background: #adc3ff; color: #111837; border-color: #adc3ff; font-weight: 650; }
   button:focus-visible { outline: 3px solid #cbb5ff; outline-offset: 3px; }
   button:disabled { opacity: .45; cursor: default; }
+  label { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  #hold { touch-action: none; user-select: none; }
+  #hold[aria-pressed="true"] { background: #adc3ff; color: #111837; }
+  #receipt { border-top: 1px solid #343a50; margin-top: 16px; padding-top: 12px; }
+  #receipt p { margin: .5rem 0; }
+  a { color: #adc3ff; }
 </style>
 </head>
 <body>
 <main>
   <h1>AgentRoute Voice</h1>
   <p id="status" role="status">Ready to connect.</p>
+  <label><input type="checkbox" id="push-to-talk"> Push to talk</label>
   <div class="controls">
     <button id="start">Start talking</button>
     <button id="mute" type="button" aria-pressed="false" disabled>Mute mic</button>
+    <button id="hold" type="button" aria-pressed="false" hidden disabled>Hold to talk</button>
     <button id="stop" disabled>End conversation</button>
   </div>
+  <section id="receipt" aria-label="Last voice instruction" hidden>
+    <strong id="receipt-state"></strong>
+    <p id="instruction"></p>
+    <p id="verified-reply"></p>
+    <a id="conversation">Open conversation in Codex</a>
+  </section>
   <p>Try “What needs my attention?” or “Only tell me about blockers.”</p>
   <audio id="speaker" autoplay></audio>
 </main>
@@ -40,8 +54,85 @@
   const mute = document.getElementById('mute');
   const status = document.getElementById('status');
   const speaker = document.getElementById('speaker');
+  const pushToTalk = document.getElementById('push-to-talk');
+  const hold = document.getElementById('hold');
+  const receipt = document.getElementById('receipt');
+  const receiptState = document.getElementById('receipt-state');
+  const instruction = document.getElementById('instruction');
+  const verifiedReply = document.getElementById('verified-reply');
+  const conversation = document.getElementById('conversation');
+  let held = false;
   const token = new URLSearchParams(location.hash.slice(1)).get('access');
   let peer, mic, session, heartbeat;
+
+  const receiptLabels = {
+    queued: 'Queued',
+    entered_in_terminal: 'Entered in terminal',
+    accepted_by_codex: 'Accepted by Codex',
+    delivered: 'Delivered',
+    acknowledged: 'Acknowledged',
+    read: 'Read by recipient',
+    steer_accepted: 'Steer accepted',
+    interrupt_accepted: 'Interrupt accepted',
+    unconfirmed: 'Delivery unconfirmed',
+    rejected: 'Rejected',
+    undeliverable: 'Delivery failed',
+    cancelled: 'Cancelled',
+  };
+
+  function showReceipt(value) {
+    if (!value) return;
+    receipt.hidden = false;
+    const label = receiptLabels[value.receipt_state || value.state] || value.state;
+    receiptState.textContent = `${value.session || value.recipient} · ${label}`;
+    instruction.textContent = value.instruction || '';
+    verifiedReply.textContent = value.verified_reply
+      ? `Reply · ${new Date(value.verified_reply.at * 1000).toLocaleTimeString()} · ${value.verified_reply.text}`
+      : 'A linked reply is still unconfirmed.';
+    const url = value.conversation_url || '';
+    conversation.hidden = !/^codex:\/\/threads\/[0-9a-f-]+$/.test(url);
+    if (!conversation.hidden) conversation.href = url;
+  }
+
+  function holdMicrophone(pressed) {
+    if (!pushToTalk.checked || !mic) return;
+    held = pressed && peer?.connectionState === 'connected';
+    mic.getAudioTracks().forEach(track => { track.enabled = held; });
+    // Cut local playout immediately. The WebRTC voice turn can be interrupted by speech.
+    speaker.muted = held;
+    hold.setAttribute('aria-pressed', String(held));
+    if (peer?.connectionState === 'connected') {
+      status.textContent = held ? 'Listening…' : 'Hold to talk. Microphone idle.';
+    }
+  }
+
+  pushToTalk.addEventListener('change', () => {
+    hold.hidden = !pushToTalk.checked;
+    mute.hidden = pushToTalk.checked;
+  });
+
+  hold.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !event.isPrimary) return;
+    hold.setPointerCapture(event.pointerId);
+    holdMicrophone(true);
+  });
+  for (const event of ['pointerup', 'pointercancel', 'lostpointercapture', 'blur']) {
+    hold.addEventListener(event, () => holdMicrophone(false));
+  }
+  hold.addEventListener('keydown', event => {
+    if (event.code !== 'Space' && event.code !== 'Enter') return;
+    event.preventDefault();
+    if (!event.repeat) holdMicrophone(true);
+  });
+  hold.addEventListener('keyup', event => {
+    if (event.code !== 'Space' && event.code !== 'Enter') return;
+    event.preventDefault();
+    holdMicrophone(false);
+  });
+  addEventListener('blur', () => holdMicrophone(false));
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) holdMicrophone(false);
+  });
 
   async function request(action, fields = {}) {
     const response = await fetch('/api/voice', {
@@ -60,12 +151,14 @@
     const previous = session;
     session = undefined;
     if (previous) request('stop', {session: previous}).catch(() => {});
+    holdMicrophone(false);
     if (mic) mic.getTracks().forEach(track => track.stop());
     if (peer) peer.close();
     speaker.srcObject = null;
     mic = peer = undefined;
     start.disabled = !token;
-    stop.disabled = mute.disabled = true;
+    stop.disabled = mute.disabled = hold.disabled = true;
+    pushToTalk.disabled = false;
     mute.setAttribute('aria-pressed', 'false');
     mute.textContent = 'Mute mic';
     status.textContent = message;
@@ -89,11 +182,16 @@
 
   start.addEventListener('click', async () => {
     start.disabled = true;
+    pushToTalk.disabled = true;
+    receipt.hidden = true;
     status.textContent = 'Waiting for microphone access…';
     try {
       mic = await navigator.mediaDevices.getUserMedia({
         audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true},
       });
+      if (pushToTalk.checked) {
+        mic.getAudioTracks().forEach(track => { track.enabled = false; });
+      }
       status.textContent = 'Connecting to Codex…';
       const connection = new RTCPeerConnection();
       peer = connection;
@@ -107,8 +205,11 @@
         if (peer !== connection) return;
         if (connection.connectionState === 'connected') {
           status.textContent = 'Connected. You can speak.';
-          mute.disabled = false;
+          mute.disabled = pushToTalk.checked;
+          hold.disabled = !pushToTalk.checked;
+          if (pushToTalk.checked) holdMicrophone(false);
         } else if (connection.connectionState === 'disconnected') {
+          holdMicrophone(false);
           status.textContent = 'Audio reconnecting…';
         } else if (connection.connectionState === 'failed') {
           end('Audio connection failed. Start a new conversation.');
@@ -124,7 +225,9 @@
         const active = session;
         try {
           const result = await request('status');
-          if (session === active && (result.state === 'closed' || result.error)) {
+          if (session !== active) return;
+          showReceipt(result.receipt);
+          if (result.state === 'closed' || result.error) {
             end(result.error || 'Conversation ended. Start a new one when ready.');
           }
         } catch (error) {

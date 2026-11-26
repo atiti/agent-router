@@ -541,7 +541,8 @@ def send(team: str, member: str, message_id: str = typer.Option(...),
 
 
 def submit_message(team: str, member: str, message_id: str, text: str, *,
-                   actionable: bool = True, expected_thread: str | None = None) -> dict:
+                   actionable: bool = True, expected_thread: str | None = None,
+                   voice_reply_marker: str | None = None) -> dict:
     slug(message_id)
     with locked(team) as data:
         if data is None:
@@ -557,6 +558,12 @@ def submit_message(team: str, member: str, message_id: str, text: str, *,
         previous = data["messages"].get(message_id)
         message = {"member": member, "text": text, "from": "voice operator" if expected_thread
                    else os.environ.get("AGENTROUTE_HERDR_MEMBER", "coordinator")}
+        if voice_reply_marker:
+            # Local import keeps the native team CLI independent of the Voice module.
+            from .voice_evidence import reply_prompt
+
+            message.update(voice_reply_marker=voice_reply_marker, voice_instruction=text)
+            message["text"] = f"{reply_prompt(voice_reply_marker)}\n\n{text}"
         if not actionable:
             message["actionable"] = False
         if previous:
@@ -584,7 +591,7 @@ def submit_message(team: str, member: str, message_id: str, text: str, *,
         message.update(state="prepared", created_at=time.time(), target_thread=bound_thread)
         data["messages"][message_id] = message
         save(team, data)
-        envelope = (f"[team-message {message_id}; from {message['from']}]\n{text}\n"
+        envelope = (f"[team-message {message_id}; from {message['from']}]\n{message['text']}\n"
                     f"Acknowledge receipt: agentroute herdr team ack {team} {message_id}. "
                     "Receipt is not completion or authorization.")
         try:

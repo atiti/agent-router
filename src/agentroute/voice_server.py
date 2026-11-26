@@ -15,6 +15,7 @@ from http.server import ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 
+from . import dashboard_actions
 from .config import agentroute_home
 from .dashboard import Collector
 from .dashboard_server import Handler
@@ -44,6 +45,7 @@ class VoiceSession:
         self.last_seen = time.monotonic()
         self.error = ""
         self.voice_context = ""
+        self.pilot: VoicePilot | None = None
         self.worker = threading.Thread(target=self.run, args=(cwd, sdp), daemon=True)
         self.worker.start()
 
@@ -58,6 +60,8 @@ class VoiceSession:
         )
         instructions = INSTRUCTIONS + "\n" + self.voice_context
         pilot = VoicePilot(Collector(), preferences)
+        self.pilot = pilot
+        pilot.record_receipt = self.record_instruction
         try:
             with RpcClient(socket_path(), name="agentroute_voice", timeout=10) as client:
                 thread = client.request("thread/start", {
@@ -85,6 +89,24 @@ class VoiceSession:
                 self.answer.set_exception(RuntimeError(
                     self.error or "Codex voice did not connect. Check App Server and sign-in."
                 ))
+
+    def record_instruction(self, receipt: dict) -> None:
+        self.record_transcript("receipt", json.dumps(receipt, ensure_ascii=False))
+
+    def record_transcript(self, role: str, text: str) -> None:
+        record = {"time": datetime.now(timezone.utc).isoformat(), "role": role, "text": text}
+        with self.transcript.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def instruction_receipt(self) -> dict | None:
+        pilot = self.pilot
+        last = pilot.last_instruction if pilot else None
+        if not pilot or not last:
+            return None
+        try:
+            return {**last, **pilot.check_receipt(last["id"])}
+        except (OSError, ValueError, KeyError, dashboard_actions.ActionError):
+            return last
 
     def select_route(self, client: RpcClient, thread_id: str) -> None:
         # AgentRoute persists an explicit backend choice on the scoped conversation.
@@ -133,10 +155,7 @@ class VoiceSession:
             if method == "thread/realtime/transcript/done":
                 role, text = params.get("role"), params.get("text")
                 if role in {"user", "assistant"} and isinstance(text, str) and text.strip():
-                    record = {"time": datetime.now(timezone.utc).isoformat(),
-                              "role": role, "text": text}
-                    with self.transcript.open("a", encoding="utf-8") as stream:
-                        stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    self.record_transcript(role, text)
             if method == "thread/realtime/sdp" and not self.answer.done():
                 self.answer.set_result(params["sdp"])
             elif method == "thread/realtime/started" and self.voice_context:
@@ -213,7 +232,7 @@ class VoiceHandler(Handler):
             elif body.get("action") == "status":
                 session.last_seen = time.monotonic()
                 self._json({"state": "active" if session.worker.is_alive() else "closed",
-                            "error": session.error})
+                            "error": session.error, "receipt": session.instruction_receipt()})
             else:
                 self._json({"error": "Unknown voice request."}, HTTPStatus.BAD_REQUEST)
 
