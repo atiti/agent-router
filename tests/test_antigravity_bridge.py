@@ -223,3 +223,20 @@ def test_backend_registration_is_idempotent():
     ensure_backend(config, 8817)
     assert config.backends["antigravity"].base_url == "http://127.0.0.1:8817/v1"
 
+
+def test_relative_executable_is_resolved_for_background_services(monkeypatch):
+    monkeypatch.setattr(bridge.shutil, "which", lambda name: "/opt/bin/agy")
+    monkeypatch.setattr(bridge.os, "access", lambda path, mode: True)
+    assert bridge.resolve_agy("agy") == "/opt/bin/agy"
+
+
+def test_missing_executable_cannot_be_resolved(monkeypatch):
+    monkeypatch.setattr(bridge.shutil, "which", lambda name: None)
+    with pytest.raises(bridge.CredentialError, match="not installed"):
+        bridge.resolve_agy()
+
+
+def test_absolute_executable_is_used_verbatim(monkeypatch):
+    monkeypatch.setattr(bridge.os, "access", lambda path, mode: True)
+    assert bridge.resolve_agy("/usr/local/bin/agy") == "/usr/local/bin/agy"
+

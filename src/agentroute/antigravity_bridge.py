@@ -18,6 +18,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import urllib.error
 import urllib.request
@@ -396,6 +397,7 @@ def completion_body(text: str, model: str, usage: dict[str, Any] | None) -> dict
 
 class AntigravityHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    agy_binary: str = DEFAULT_AGY
 
     def log_message(self, *_args: Any) -> None:
         return
@@ -436,7 +438,7 @@ class AntigravityHandler(BaseHTTPRequestHandler):
             return
         model = str(body.get("model") or MODELS["normal"])
         try:
-            result = run_agy(build_prompt(body), model)
+            result = run_agy(build_prompt(body), model, executable=self.agy_binary)
         except CredentialError as exc:
             self._json(503, {"error": str(exc)})
             return
@@ -465,8 +467,28 @@ class AntigravityServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def serve(host: str = "127.0.0.1", port: int = 8816) -> None:
-    server = AntigravityServer((host, port), AntigravityHandler)
+def resolve_agy(executable: str | None = None) -> str:
+    """Resolve the Antigravity CLI to an absolute path.
+
+    Background services start with a minimal ``PATH``, so an unqualified
+    ``agy`` works in a shell but fails under launchd.
+    """
+    candidate = executable or DEFAULT_AGY
+    resolved = candidate if os.path.isabs(candidate) else shutil.which(candidate)
+    if not resolved or not os.access(resolved, os.X_OK):
+        raise CredentialError(
+            "the Antigravity CLI is not installed or not executable; install it and run `agy`"
+        )
+    return resolved
+
+
+def serve(host: str = "127.0.0.1", port: int = 8816, executable: str | None = None) -> None:
+    bound = type(
+        "BoundAntigravityHandler",
+        (AntigravityHandler,),
+        {"agy_binary": resolve_agy(executable)},
+    )
+    server = AntigravityServer((host, port), bound)
     log(f"listening on http://{host}:{port}/v1")
     server.serve_forever()
 
