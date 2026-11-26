@@ -68,17 +68,19 @@ def ensure_backend(config, port: int = DEFAULT_PORT) -> bool:
         config.backends["antigravity"].enabled = True
         config.backends["antigravity"].base_url = f"http://127.0.0.1:{port}/v1"
     for model in MODELS.values():
-        config.capabilities.models.setdefault(
-            model,
-            ModelCapabilities(
-                # The bridge delegates to `agy`, which runs its own tool loop and
-                # returns finished text. Codex therefore receives no tool calls
-                # and cannot execute any of its own tools on this backend.
-                tool_calling="none",
-                reasoning=True,
-                vision=True,
-                context_window=CONTEXT_WINDOW,
-            ),
+        # The bridge delegates to `agy`, which runs its own tool loop and returns
+        # finished text. Codex receives no tool calls, so it cannot execute its
+        # own tools here. Assign rather than default: a reinstall must correct a
+        # capability an earlier version recorded.
+        declared = config.capabilities.models.get(model)
+        update = {
+            "tool_calling": "none",
+            "reasoning": True,
+            "vision": True,
+            "context_window": CONTEXT_WINDOW,
+        }
+        config.capabilities.models[model] = (
+            declared.model_copy(update=update) if declared else ModelCapabilities(**update)
         )
     return created
 

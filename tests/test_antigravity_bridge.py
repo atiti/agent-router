@@ -226,11 +226,61 @@ def test_backend_declares_text_only_tool_calling():
         assert config.capabilities.models[model].tool_calling == "none"
 
 
+def test_catalog_withdraws_tools_for_text_only_models():
+    from agentroute.providers import _narrow_tool_surface
+
+    config = default_config()
+    ensure_backend(config, 8816)
+    # A descriptor that already exists in the Codex catalog keeps its harness
+    # fields, so the narrowing has to apply to that branch as well.
+    model = {
+        "slug": "gemini-3.8-flash-low",
+        "apply_patch_tool_type": "freeform",
+        "web_search_tool_type": "text_and_image",
+        "supports_parallel_tool_calls": True,
+        "supports_search_tool": True,
+        "context_window": 1_000_000,
+    }
+    capabilities = config.capabilities.models["gemini-3.8-flash-low"]
+    _narrow_tool_surface(model, capabilities)
+    assert model["apply_patch_tool_type"] is None
+    assert model["web_search_tool_type"] is None
+    assert model["supports_parallel_tool_calls"] is False
+    assert model["context_window"] == 1_000_000
+
+
+def test_catalog_leaves_tool_capable_models_alone():
+    from agentroute.providers import _narrow_tool_surface
+
+    config = default_config()
+    capabilities = config.capabilities.models.get("claude-sonnet-5-5")
+    if capabilities is None:
+        capabilities = config.capabilities.models["gemini-3.8-flash-low"].model_copy(
+            update={"tool_calling": "full"}
+        )
+    model = {"apply_patch_tool_type": "freeform", "supports_search_tool": True}
+    _narrow_tool_surface(model, capabilities)
+    assert model["apply_patch_tool_type"] == "freeform"
+
+
 def test_backend_registration_is_idempotent():
     config = default_config()
     ensure_backend(config, 8816)
     ensure_backend(config, 8817)
     assert config.backends["antigravity"].base_url == "http://127.0.0.1:8817/v1"
+
+
+def test_reinstall_corrects_a_stale_tool_capability():
+    from agentroute.config import ModelCapabilities
+
+    config = default_config()
+    config.capabilities.models["gemini-3.8-flash-low"] = ModelCapabilities(
+        tool_calling="apply_patch_only", context_window=200_000
+    )
+    ensure_backend(config, 8816)
+    capabilities = config.capabilities.models["gemini-3.8-flash-low"]
+    assert capabilities.tool_calling == "none"
+    assert capabilities.context_window == bridge.CONTEXT_WINDOW
 
 
 def test_relative_executable_is_resolved_for_background_services(monkeypatch):
