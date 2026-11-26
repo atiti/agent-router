@@ -646,7 +646,12 @@ Model tiers are discovered from the account rather than hardcoded, because
 Google renames and retires models. `agentroute gemini check` refreshes the token,
 lists the models the credential may use, and sends one live prompt.
 The alternative Vertex AI transport reuses an existing `cloud-platform` token.
-See [Gemini setup, transports, and troubleshooting](docs/gemini-bridge.md).
+
+Gemini turns are accounted like every other backend: `agentroute gemini usage`
+shows today's and this month's tokens and spend, and
+`agentroute capacity budget gemini --daily 10` adds a spend guard that also
+drives failover. See
+[Gemini setup, transports, usage and troubleshooting](docs/gemini-bridge.md).
 
 ## Grok subscription
 

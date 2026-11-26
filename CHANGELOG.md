@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Retire the Antigravity (`agy`) backend. Its Gemini coverage is replaced by the
+  direct provider; a saved config that still names it is migrated on load, and
+  its route, review and fallback references are cleared.
+- Price Gemini turns in AgentRoute's usage and capacity reports, with family
+  rates, per-model aliases from discovery, and dated rate changes. Add
+  `agentroute gemini usage` for today and month totals against the backend's
+  spend budget.
 - Add a direct Gemini provider (`agentroute gemini`). The bridge calls Google's
   `generateContent` API itself with an OAuth refresh token, converts native
   `functionCall` parts into Codex tool calls, and discovers the account's real

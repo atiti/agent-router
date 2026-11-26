@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import os
 import re
 from pathlib import Path
@@ -27,11 +28,14 @@ class ExecutionBackendConfig(BaseModel):
     base_url: str | None = None
     api_key_env: str | None = None
     api_key_header: str = "authorization"
-    tool_compatibility: Literal[
-        "full",
-        "functions_and_apply_patch",
-        "functions_and_apply_patch_preserve_reasoning",
-    ] | None = None
+    tool_compatibility: (
+        Literal[
+            "full",
+            "functions_and_apply_patch",
+            "functions_and_apply_patch_preserve_reasoning",
+        ]
+        | None
+    ) = None
     review_model: str | None = None
     daily_budget_usd: float | None = Field(default=None, gt=0)
     monthly_budget_usd: float | None = Field(default=None, gt=0)
@@ -139,24 +143,24 @@ class ProviderSelectionConfig(BaseModel):
     candidates: list[str] = Field(
         default_factory=lambda: ["gpt", "claude", "grok", "deepseek"], max_length=20
     )
-    task_preferences: dict[str, list[str]] = Field(default_factory=lambda: {
-        "implementation": ["gpt", "claude", "deepseek", "grok"],
-        "debugging": ["gpt", "claude", "grok", "deepseek"],
-        "operations": ["gpt", "claude", "grok", "deepseek"],
-        "orchestration": ["gpt", "claude", "grok", "deepseek"],
-        "security": ["gpt", "claude", "grok", "deepseek"],
-        "architecture": ["claude", "gpt", "grok", "deepseek"],
-        "communication": ["claude", "gpt", "deepseek", "grok"],
-        "research": ["grok", "gpt", "claude", "deepseek"],
-        "formatting": ["deepseek", "claude", "gpt", "grok"],
-    })
+    task_preferences: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "implementation": ["gpt", "claude", "deepseek", "grok"],
+            "debugging": ["gpt", "claude", "grok", "deepseek"],
+            "operations": ["gpt", "claude", "grok", "deepseek"],
+            "orchestration": ["gpt", "claude", "grok", "deepseek"],
+            "security": ["gpt", "claude", "grok", "deepseek"],
+            "architecture": ["claude", "gpt", "grok", "deepseek"],
+            "communication": ["claude", "gpt", "deepseek", "grok"],
+            "research": ["grok", "gpt", "claude", "deepseek"],
+            "formatting": ["deepseek", "claude", "gpt", "grok"],
+        }
+    )
     prefer_subscriptions: bool = True
     # A provider change re-reads the whole conversation uncached, so its penalty grows with
     # the measured context: penalty = switch_penalty * (1 + context / this). 0 keeps it flat.
     switch_context_scale_tokens: int = Field(default=50_000, ge=0)
-    subscription_backends: list[str] = Field(
-        default_factory=lambda: ["gpt", "grok"], max_length=20
-    )
+    subscription_backends: list[str] = Field(default_factory=lambda: ["gpt", "grok"], max_length=20)
     switch_penalty: float = Field(default=1.0, ge=0, le=10)
     usage_weight: float = Field(default=4.0, ge=0, le=20)
     unknown_capacity_penalty: float = Field(default=1.0, ge=0, le=10)
@@ -283,12 +287,23 @@ class ClaudeCacheConfig(BaseModel):
     ttl: Literal["5m", "1h"] = "5m"
 
 
+class PriceChange(BaseModel):
+    """A published rate that applies from a date, such as a promotional end."""
+
+    effective_from: datetime.date
+    input_per_million: float = Field(ge=0)
+    cached_input_per_million: float | None = Field(default=None, ge=0)
+    output_per_million: float = Field(ge=0)
+
+
 class ModelPrice(BaseModel):
     input_per_million: float = Field(ge=0)
     cached_input_per_million: float = Field(ge=0)
     output_per_million: float = Field(ge=0)
     cache_write_per_million: float | None = Field(default=None, ge=0)
     cache_write_1h_per_million: float | None = Field(default=None, ge=0)
+    # Scheduled changes keep a dated table accurate instead of silently stale.
+    scheduled: list[PriceChange] = Field(default_factory=list)
     long_context_threshold_tokens: int | None = Field(default=None, gt=0)
     long_context_threshold_inclusive: bool = False
     long_context_multiplier: float = Field(default=1, ge=1)
@@ -318,18 +333,27 @@ class PricingConfig(BaseModel):
             # https://docs.x.ai/developers/pricing (checked 2026-11-01).
             # Token-rate equivalents; subscription allowance comes from billing telemetry.
             "grok-4.7": ModelPrice(
-                input_per_million=2, cached_input_per_million=0.50, output_per_million=6,
-                long_context_threshold_tokens=200_000, long_context_multiplier=2,
+                input_per_million=2,
+                cached_input_per_million=0.50,
+                output_per_million=6,
+                long_context_threshold_tokens=200_000,
+                long_context_multiplier=2,
                 long_context_threshold_inclusive=True,
             ),
             "grok-4.6": ModelPrice(
-                input_per_million=2, cached_input_per_million=0.50, output_per_million=6,
-                long_context_threshold_tokens=200_000, long_context_multiplier=2,
+                input_per_million=2,
+                cached_input_per_million=0.50,
+                output_per_million=6,
+                long_context_threshold_tokens=200_000,
+                long_context_multiplier=2,
                 long_context_threshold_inclusive=True,
             ),
             "grok-4.5": ModelPrice(
-                input_per_million=2, cached_input_per_million=0.30, output_per_million=6,
-                long_context_threshold_tokens=200_000, long_context_multiplier=2,
+                input_per_million=2,
+                cached_input_per_million=0.30,
+                output_per_million=6,
+                long_context_threshold_tokens=200_000,
+                long_context_multiplier=2,
                 long_context_threshold_inclusive=True,
             ),
             "gpt-5.6-luna": ModelPrice(
@@ -392,15 +416,18 @@ class PricingConfig(BaseModel):
             ),
             # TypeSafe Jev 1.13 charges $0.042/MTok input; output is free.
             "jev-latest": ModelPrice(
-                input_per_million=0.042, cached_input_per_million=0.042,
+                input_per_million=0.042,
+                cached_input_per_million=0.042,
                 output_per_million=0,
             ),
             "jev-preview": ModelPrice(
-                input_per_million=0.042, cached_input_per_million=0.042,
+                input_per_million=0.042,
+                cached_input_per_million=0.042,
                 output_per_million=0,
             ),
             "jev-1.13.0": ModelPrice(
-                input_per_million=0.042, cached_input_per_million=0.042,
+                input_per_million=0.042,
+                cached_input_per_million=0.042,
                 output_per_million=0,
             ),
             # Claude rates come from Anthropic's published pricing page
@@ -430,20 +457,26 @@ class PricingConfig(BaseModel):
                 output_per_million=10.00,
             ),
             "claude-sonnet-5-5": ModelPrice(
-                input_per_million=2.00, cached_input_per_million=0.20,
-                cache_write_per_million=2.50, cache_write_1h_per_million=4.00,
+                input_per_million=2.00,
+                cached_input_per_million=0.20,
+                cache_write_per_million=2.50,
+                cache_write_1h_per_million=4.00,
                 output_per_million=10.00,
             ),
             "claude-fable-5-1": ModelPrice(
-                input_per_million=10.00, cached_input_per_million=0.25,
-                cache_write_per_million=12.50, cache_write_1h_per_million=20.00,
+                input_per_million=10.00,
+                cached_input_per_million=0.25,
+                cache_write_per_million=12.50,
+                cache_write_1h_per_million=20.00,
                 output_per_million=50.00,
             ),
             # Fable 5.2 (platform.claude.com/docs/en/models/fable-5-2/overview):
             # 1M context at standard pricing, no long-context multiplier.
             "claude-fable-5-2": ModelPrice(
-                input_per_million=8.00, cached_input_per_million=0.20,
-                cache_write_per_million=10.00, cache_write_1h_per_million=16.00,
+                input_per_million=8.00,
+                cached_input_per_million=0.20,
+                cache_write_per_million=10.00,
+                cache_write_1h_per_million=16.00,
                 output_per_million=40.00,
             ),
             "claude-opus-5": ModelPrice(
@@ -459,6 +492,59 @@ class PricingConfig(BaseModel):
                 cache_write_per_million=5.00,
                 cache_write_1h_per_million=8.00,
                 output_per_million=20.00,
+            ),
+            # Gemini Developer API, Standard tier (ai.google.dev/gemini-api/docs/pricing,
+            # checked 2026-11-26). Family keys cover every version the tier discovery
+            # picks; dated changes encode the published promotional end dates.
+            "gemini-pro": ModelPrice(
+                input_per_million=2.00,
+                cached_input_per_million=0.10,
+                output_per_million=10.00,
+                scheduled=[
+                    PriceChange(
+                        effective_from=datetime.date(2026, 12, 1),
+                        input_per_million=4.00,
+                        cached_input_per_million=0.20,
+                        output_per_million=20.00,
+                    )
+                ],
+            ),
+            "gemini-flash": ModelPrice(
+                input_per_million=0.75,
+                cached_input_per_million=0.075,
+                output_per_million=3.75,
+                scheduled=[
+                    PriceChange(
+                        effective_from=datetime.date(2027, 1, 1),
+                        input_per_million=1.50,
+                        cached_input_per_million=0.15,
+                        output_per_million=7.50,
+                    )
+                ],
+            ),
+            "gemini-flash-lite": ModelPrice(
+                input_per_million=0.30,
+                cached_input_per_million=0.03,
+                output_per_million=2.50,
+            ),
+            # Superseded models keep their own rates for historical audit rows.
+            "gemini-2.5-pro": ModelPrice(
+                input_per_million=1.25,
+                cached_input_per_million=0.125,
+                output_per_million=10.00,
+                long_context_threshold_tokens=200_000,
+                long_context_multiplier=2,
+                long_context_output_multiplier=1.5,
+            ),
+            "gemini-2.5-flash": ModelPrice(
+                input_per_million=0.30,
+                cached_input_per_million=0.03,
+                output_per_million=2.50,
+            ),
+            "gemini-2.5-flash-lite": ModelPrice(
+                input_per_million=0.10,
+                cached_input_per_million=0.025,
+                output_per_million=0.40,
             ),
         }
     )
@@ -484,10 +570,12 @@ class ZellijConfig(BaseModel):
     """Names and project rules used to sort and filter shared terminal sessions."""
 
     default_namespace: str = "Private"
-    namespaces: dict[str, ZellijNamespaceConfig] = Field(default_factory=lambda: {
-        "Markster": ZellijNamespaceConfig(),
-        "Private": ZellijNamespaceConfig(),
-    })
+    namespaces: dict[str, ZellijNamespaceConfig] = Field(
+        default_factory=lambda: {
+            "Markster": ZellijNamespaceConfig(),
+            "Private": ZellijNamespaceConfig(),
+        }
+    )
 
     @field_validator("default_namespace")
     @classmethod
@@ -546,9 +634,7 @@ def default_config() -> AppConfig:
     }
     config = AppConfig(
         providers={
-            "codex": ProviderConfig(
-                tiers=gpt_tiers
-            ),
+            "codex": ProviderConfig(tiers=gpt_tiers),
             "claude": ProviderConfig(
                 enabled=False,
                 tiers={
@@ -598,64 +684,131 @@ def default_config() -> AppConfig:
     )
     config.capabilities.models = {
         "claude-haiku-5-5": ModelCapabilities(
-            tool_calling="apply_patch_only", reasoning=True, vision=True,
-            context_window=1_000_000, pricing_model="claude-haiku-5-5",
+            tool_calling="apply_patch_only",
+            reasoning=True,
+            vision=True,
+            context_window=1_000_000,
+            pricing_model="claude-haiku-5-5",
         ),
         "gpt-5.6-luna": ModelCapabilities(
-            tool_calling="full", reasoning=True, vision=True,
+            tool_calling="full",
+            reasoning=True,
+            vision=True,
             pricing_model="gpt-5.6-luna",
         ),
         "gpt-5.6-terra": ModelCapabilities(
-            tool_calling="full", reasoning=True, vision=True,
+            tool_calling="full",
+            reasoning=True,
+            vision=True,
             pricing_model="gpt-5.6-terra",
         ),
         "gpt-5.6-sol": ModelCapabilities(
-            tool_calling="full", reasoning=True, vision=True,
+            tool_calling="full",
+            reasoning=True,
+            vision=True,
             pricing_model="gpt-5.6-sol",
         ),
         "gpt-6-luna": ModelCapabilities(
-            tool_calling="full", reasoning=True, vision=True,
+            tool_calling="full",
+            reasoning=True,
+            vision=True,
             pricing_model="gpt-6-luna",
         ),
         "gpt-6-sol": ModelCapabilities(
-            tool_calling="full", reasoning=True, vision=True,
+            tool_calling="full",
+            reasoning=True,
+            vision=True,
             pricing_model="gpt-6-sol",
         ),
         "gpt-6.1-sol": ModelCapabilities(
-            tool_calling="full", reasoning=True, vision=True,
-            context_window=872_000, pricing_model="gpt-6.1-sol",
+            tool_calling="full",
+            reasoning=True,
+            vision=True,
+            context_window=872_000,
+            pricing_model="gpt-6.1-sol",
         ),
         "gpt-6-astra": ModelCapabilities(
-            tool_calling="full", reasoning=True, vision=True,
+            tool_calling="full",
+            reasoning=True,
+            vision=True,
             pricing_model="gpt-6-astra",
         ),
         "deepseek-flash": ModelCapabilities(
-            tool_calling="apply_patch_only", reasoning=True, vision=True,
-            context_window=1_048_576, pricing_model="deepseek-flash",
+            tool_calling="apply_patch_only",
+            reasoning=True,
+            vision=True,
+            context_window=1_048_576,
+            pricing_model="deepseek-flash",
         ),
         "deepseek-v4-pro": ModelCapabilities(
-            tool_calling="none", reasoning=True, vision=False,
-            context_window=1_048_576, pricing_model="deepseek-v4-pro",
+            tool_calling="none",
+            reasoning=True,
+            vision=False,
+            context_window=1_048_576,
+            pricing_model="deepseek-v4-pro",
         ),
     }
     for model in ("gpt-6.2-sol", "gpt-6.2-astra"):
         config.capabilities.models[model] = ModelCapabilities(
-            tool_calling="full", reasoning=True, vision=True,
-            context_window=872_000, pricing_model=model,
+            tool_calling="full",
+            reasoning=True,
+            vision=True,
+            context_window=872_000,
+            pricing_model=model,
         )
     config.capacity.profiles["default"] = SubscriptionProfileConfig(priority=0)
     for model in MODERN_CLAUDE_MODELS:
-        config.capabilities.models.setdefault(model, ModelCapabilities(
-            tool_calling="apply_patch_only", reasoning=True,
-            context_window=1_000_000, pricing_model=model,
-        ))
+        config.capabilities.models.setdefault(
+            model,
+            ModelCapabilities(
+                tool_calling="apply_patch_only",
+                reasoning=True,
+                context_window=1_000_000,
+                pricing_model=model,
+            ),
+        )
     config.capacity.active_profile = "default"
     return config
+
+
+RETIRED_BACKENDS = frozenset({"antigravity"})
+
+
+def retire_backends(config: AppConfig) -> list[str]:
+    """Drop backends whose provider was removed from AgentRoute.
+
+    A saved config can still name the retired Antigravity (`agy`) backend. Left
+    in place it would keep emitting a dead provider block and remain selectable
+    as a route target, so the entry, its models and every reference to it are
+    removed together.
+    """
+    removed: list[str] = []
+    for name in sorted(RETIRED_BACKENDS):
+        backend = config.backends.pop(name, None)
+        if backend is None:
+            continue
+        removed.append(name)
+        for target in [*backend.tiers.values(), *backend.models.values()]:
+            config.capabilities.models.pop(target.model, None)
+            config.pricing.aliases.pop(target.model, None)
+        if config.routing.progress_review_backend == name:
+            config.routing.progress_review_backend = None
+        if config.capacity.default_fallback_backend == name:
+            config.capacity.default_fallback_backend = None
+        for other in config.backends.values():
+            if other.fallback_backend == name:
+                other.fallback_backend = None
+    if removed:
+        for tier, name in list(config.routing.backend_by_tier.items()):
+            if name in RETIRED_BACKENDS:
+                config.routing.backend_by_tier[tier] = "gpt"
+    return removed
 
 
 def _with_default_backends(config: AppConfig) -> AppConfig:
     """Add backend defaults and migrate former bundled GPT SMART/MAX targets."""
     defaults = default_config()
+    retire_backends(config)
     # The normal Codex credential is deliberately an implicit account.  Keep it
     # available for old installations instead of forcing users to move or copy
     # ~/.codex/auth.json before capacity routing can begin.
@@ -691,8 +844,7 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
             "max": "deepseek-v4-pro",
         }
         uses_previous_bundled_defaults = all(
-            deepseek.tiers.get(tier)
-            and deepseek.tiers[tier].model == model
+            deepseek.tiers.get(tier) and deepseek.tiers[tier].model == model
             for tier, model in previous_bundled_models.items()
         )
         if (
@@ -717,8 +869,11 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
         if config.pricing.models.get(model) == previous:
             config.pricing.models[model] = current
     previous_fast = ModelPrice(
-        input_per_million=4, cached_input_per_million=1, output_per_million=12,
-        long_context_threshold_tokens=200_000, long_context_multiplier=1.5,
+        input_per_million=4,
+        cached_input_per_million=1,
+        output_per_million=12,
+        long_context_threshold_tokens=200_000,
+        long_context_multiplier=1.5,
     )
     if config.pricing.models.get("grok-4.7-build-fast") == previous_fast:
         del config.pricing.models["grok-4.7-build-fast"]
@@ -731,11 +886,16 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
     # Upgrade only untouched bundled entries so operator overrides survive.
     previous_deepseek_capabilities = {
         "deepseek-flash": ModelCapabilities(
-            tool_calling="apply_patch_only", reasoning=True, vision=False,
-            context_window=128_000, pricing_model="deepseek-flash",
+            tool_calling="apply_patch_only",
+            reasoning=True,
+            vision=False,
+            context_window=128_000,
+            pricing_model="deepseek-flash",
         ),
         "deepseek-v4-pro": ModelCapabilities(
-            tool_calling="none", reasoning=True, vision=False,
+            tool_calling="none",
+            reasoning=True,
+            vision=False,
             pricing_model="deepseek-v4-pro",
         ),
     }
@@ -759,9 +919,7 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
         output_per_million=0.28,
     )
     if config.pricing.models.get("deepseek-flash") == previous_flash_price:
-        config.pricing.models["deepseek-flash"] = defaults.pricing.models[
-            "deepseek-flash"
-        ]
+        config.pricing.models["deepseek-flash"] = defaults.pricing.models["deepseek-flash"]
         config.pricing.source_checked_at = defaults.pricing.source_checked_at
     previous_pro_price = ModelPrice(
         input_per_million=0.435,
@@ -769,16 +927,12 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
         output_per_million=0.87,
     )
     if config.pricing.models.get("deepseek-v4-pro") == previous_pro_price:
-        config.pricing.models["deepseek-v4-pro"] = defaults.pricing.models[
-            "deepseek-v4-pro"
-        ]
+        config.pricing.models["deepseek-v4-pro"] = defaults.pricing.models["deepseek-v4-pro"]
         config.pricing.source_checked_at = defaults.pricing.source_checked_at
     return config
 
 
-def model_capabilities(
-    config: AppConfig, backend_name: str, model: str
-) -> ModelCapabilities:
+def model_capabilities(config: AppConfig, backend_name: str, model: str) -> ModelCapabilities:
     """Resolve configured model facts, falling back to conservative backend facts."""
     configured = config.capabilities.models.get(model)
     if configured is not None:
@@ -790,7 +944,8 @@ def model_capabilities(
     backend = config.backends[backend_name]
     tool_calling = (
         "apply_patch_only"
-        if backend.tool_compatibility in {
+        if backend.tool_compatibility
+        in {
             "functions_and_apply_patch",
             "functions_and_apply_patch_preserve_reasoning",
         }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import datetime
 import hashlib
 import http.server
 import json
@@ -20,6 +21,7 @@ from pathlib import Path
 import typer
 
 from .bridge_service import _agentroute_executable, wait_for_health
+from .capacity import backend_state
 from .config import (
     ExecutionBackendConfig,
     ModelCapabilities,
@@ -39,12 +41,14 @@ from .gemini_bridge import (
     environment,
     list_models,
     model_map,
+    price_family,
     probe,
     save_model_map,
     serve,
     transport,
     vertex_project,
 )
+from .pricing import canonical_model, token_cost_upper_bound, turn_cost
 from .providers import sync_codex_providers
 
 DEFAULT_PORT = 8817
@@ -124,15 +128,20 @@ def ensure_backend(config, port: int = DEFAULT_PORT, models: dict[str, str] | No
         backend.tiers = tiers
     for model in models.values():
         declared = config.capabilities.models.get(model)
+        family = price_family(model)
         update = {
             "tool_calling": "full",
             "reasoning": True,
             "vision": True,
             "context_window": CONTEXT_WINDOW,
+            "pricing_model": family,
         }
         config.capabilities.models[model] = (
             declared.model_copy(update=update) if declared else ModelCapabilities(**update)
         )
+        # Audit rows carry the model ID, so the alias is what makes captured
+        # Gemini usage price the same way every other backend does.
+        config.pricing.aliases[model] = family
     return created
 
 
@@ -318,7 +327,19 @@ def check_command(
         typer.echo(f"credential: {credential_path()}")
     models = model_map()
     for tier, model in models.items():
-        typer.echo(f"{tier:6} {model}")
+        typer.echo(f"{tier:6} {model}  ({price_family(model)} rates)")
+    try:
+        from .audit import AuditStore
+
+        since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=31)
+        totals = usage_totals(AuditStore().rows_since(since), load_config())
+        today = totals["today"]
+        typer.echo(
+            f"usage: today {today['turns']} turns · ${today['cost_usd']:.2f} · "
+            f"{_tokens(today['input_tokens'])} in / {_tokens(today['output_tokens'])} out"
+        )
+    except Exception as exc:  # audit store is optional for a bare credential check
+        typer.echo(f"usage: unavailable ({type(exc).__name__})")
     if inference:
         model = models["normal"]
         try:
@@ -349,6 +370,150 @@ def models_command(
         typer.echo("\navailable:")
         for name in sorted({entry.rsplit("/", 1)[-1] for entry in available}):
             typer.echo(f"  {name}")
+
+
+def usage_totals(rows, config, *, now: datetime.datetime | None = None) -> dict[str, object]:
+    """Summarize recorded Gemini turns for today and this month.
+
+    Token counters come from Codex's usage receipts through the audit store, so
+    this reports the same measured numbers as every other backend rather than a
+    provider estimate.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    today = {
+        "turns": 0,
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "cost_usd": 0.0,
+    }
+    month = dict(today)
+    models: dict[str, dict[str, float]] = {}
+    unpriced: set[str] = set()
+    for row in rows:
+        if row["usage_recorded_at"] is None:
+            continue
+        if str(row["backend"] or "") != "gemini":
+            continue
+        try:
+            created = datetime.datetime.fromisoformat(str(row["created_at"])).astimezone(
+                datetime.timezone.utc
+            )
+        except ValueError:
+            continue
+        if (created.year, created.month) != (now.year, now.month):
+            continue
+        model = str(row["answer_model"] or row["model"] or "unknown")
+        usage = {
+            "input_tokens": int(row["answer_input_tokens"] or 0),
+            "cached_input_tokens": int(row["answer_cached_input_tokens"] or 0),
+            "cache_write_input_tokens": int(row["answer_cache_write_input_tokens"] or 0),
+            "output_tokens": int(row["answer_output_tokens"] or 0),
+        }
+        cost = turn_cost(row, model, config.pricing)
+        if cost is None:
+            cost = token_cost_upper_bound(model, usage, config.pricing)
+        if canonical_model(model, config.pricing) not in config.pricing.models:
+            unpriced.add(model)
+        for bucket in (month, today if created.date() == now.date() else None):
+            if bucket is None:
+                continue
+            bucket["turns"] += 1
+            bucket["input_tokens"] += usage["input_tokens"]
+            bucket["cached_input_tokens"] += usage["cached_input_tokens"]
+            bucket["output_tokens"] += usage["output_tokens"]
+            bucket["cost_usd"] += cost
+        entry = models.setdefault(model, {"turns": 0, "cost_usd": 0.0, "output_tokens": 0})
+        entry["turns"] += 1
+        entry["cost_usd"] += cost
+        entry["output_tokens"] += usage["output_tokens"]
+    return {
+        "today": today,
+        "month": month,
+        "models": models,
+        "unpriced": sorted(unpriced),
+    }
+
+
+def _tokens(value: int) -> str:
+    return f"{value / 1_000_000:.2f}M" if value >= 1_000_000 else f"{value:,}"
+
+
+@app.command("usage")
+def usage_command(
+    days: int = typer.Option(31, help="Window to read from the audit store."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show measured Gemini tokens, spend, and budget headroom."""
+    from .audit import AuditStore
+
+    config = load_config()
+    since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+    totals = usage_totals(AuditStore().rows_since(since), config)
+    backend = config.backends.get("gemini")
+    daily_budget = backend.daily_budget_usd if backend else None
+    monthly_budget = backend.monthly_budget_usd if backend else None
+    today, month = totals["today"], totals["month"]
+    report = {
+        "transport": transport(),
+        "today": today,
+        "month": month,
+        "daily_budget_usd": daily_budget,
+        "monthly_budget_usd": monthly_budget,
+        "daily_used_percent": (
+            round(today["cost_usd"] / daily_budget * 100, 1) if daily_budget else None
+        ),
+        "monthly_used_percent": (
+            round(month["cost_usd"] / monthly_budget * 100, 1) if monthly_budget else None
+        ),
+        "models": totals["models"],
+        "unpriced_models": totals["unpriced"],
+    }
+    if json_output:
+        typer.echo(json.dumps(report, indent=2))
+        return
+    typer.echo(f"Gemini usage ({transport()} transport, measured from audit receipts)")
+    for label, bucket in (("today", today), ("month", month)):
+        typer.echo(
+            f"  {label:5} {bucket['turns']:>4} turns · "
+            f"{_tokens(bucket['input_tokens'])} in "
+            f"({_tokens(bucket['cached_input_tokens'])} cached) · "
+            f"{_tokens(bucket['output_tokens'])} out · ${bucket['cost_usd']:.2f}"
+        )
+    if daily_budget or monthly_budget:
+        daily = f"${daily_budget:g}" if daily_budget else "unlimited"
+        monthly = f"${monthly_budget:g}" if monthly_budget else "unlimited"
+        typer.echo(f"  budget daily {daily} · monthly {monthly}")
+        state = backend_state(
+            config,
+            "gemini",
+            daily_spend=today["cost_usd"],
+            monthly_spend=month["cost_usd"],
+            probe=False,
+        )
+        typer.echo(f"  status {state.status}: {state.detail}")
+    else:
+        typer.echo(
+            "  budget unlimited; set one with "
+            "`agentroute capacity budget gemini --daily 10 --monthly 100`"
+        )
+    if totals["models"]:
+        typer.echo("  by model")
+        for model, entry in sorted(totals["models"].items(), key=lambda item: -item[1]["cost_usd"]):
+            typer.echo(
+                f"    {model:28} {int(entry['turns']):>4} turns · "
+                f"{_tokens(int(entry['output_tokens']))} out · ${entry['cost_usd']:.2f}"
+            )
+    if totals["unpriced"]:
+        typer.echo(
+            "  unpriced: "
+            + ", ".join(totals["unpriced"])
+            + " (add a rate in ~/.agentroute/config.yaml under pricing.models)"
+        )
+    typer.echo(
+        "  Google does not publish remaining quota; spend budgets above are the "
+        "local guard, and a 429 surfaces Google's own retry window."
+    )
 
 
 @app.command("serve")
