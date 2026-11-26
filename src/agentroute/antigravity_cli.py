@@ -71,7 +71,10 @@ def ensure_backend(config, port: int = DEFAULT_PORT) -> bool:
         config.capabilities.models.setdefault(
             model,
             ModelCapabilities(
-                tool_calling="apply_patch_only",
+                # The bridge delegates to `agy`, which runs its own tool loop and
+                # returns finished text. Codex therefore receives no tool calls
+                # and cannot execute any of its own tools on this backend.
+                tool_calling="none",
                 reasoning=True,
                 vision=True,
                 context_window=CONTEXT_WINDOW,

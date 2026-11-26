@@ -425,6 +425,11 @@ class AntigravityHandler(BaseHTTPRequestHandler):
                     "provider": "antigravity",
                     "credential_source": AntigravityCredential().source(),
                     "models": MODELS,
+                    "tool_calling": "none",
+                    "note": (
+                        "Delegates to agy, which runs its own tool loop. Codex receives "
+                        "finished text and cannot execute its own tools on this backend."
+                    ),
                 },
             )
             return
