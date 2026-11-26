@@ -217,6 +217,15 @@ def test_backend_registration_preserves_tier_defaults():
     assert config.routing.backend_by_tier["fast"] == "gpt"
 
 
+def test_backend_declares_text_only_tool_calling():
+    # `agy` completes its own tool loop and returns text, so Codex must not
+    # treat these models as able to execute tools.
+    config = default_config()
+    ensure_backend(config, 8816)
+    for model in bridge.MODELS.values():
+        assert config.capabilities.models[model].tool_calling == "none"
+
+
 def test_backend_registration_is_idempotent():
     config = default_config()
     ensure_backend(config, 8816)
