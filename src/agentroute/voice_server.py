@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import threading
 import time
 from concurrent.futures import Future
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 
+from .config import agentroute_home
 from .dashboard import Collector
 from .dashboard_server import Handler
 from .shared_server import RpcClient, socket_path
@@ -29,6 +32,14 @@ class VoiceSession:
         self.stop = threading.Event()
         self.answer: Future[str] = Future()
         self.id = secrets.token_urlsafe(24)
+        directory = agentroute_home() / "voice-transcripts"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.transcript = directory / f"{stamp}-{secrets.token_hex(6)}.jsonl"
+        fd = os.open(self.transcript, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+        print(f"Voice transcript: {self.transcript}", flush=True)
         self.last_seen = time.monotonic()
         self.error = ""
         self.worker = threading.Thread(target=self.run, args=(cwd, sdp), daemon=True)
@@ -108,6 +119,13 @@ class VoiceSession:
             if params.get("threadId") != pilot.thread_id:
                 continue
             method = event.get("method")
+            if method == "thread/realtime/transcript/done":
+                role, text = params.get("role"), params.get("text")
+                if role in {"user", "assistant"} and isinstance(text, str) and text.strip():
+                    record = {"time": datetime.now(timezone.utc).isoformat(),
+                              "role": role, "text": text}
+                    with self.transcript.open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(record, ensure_ascii=False) + "\n")
             if method == "thread/realtime/sdp" and not self.answer.done():
                 self.answer.set_result(params["sdp"])
             elif method in {"thread/realtime/error", "thread/realtime/closed"}:
