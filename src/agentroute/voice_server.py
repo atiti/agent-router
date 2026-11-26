@@ -22,15 +22,6 @@ LEASE_SECONDS = 90
 CONNECT_SECONDS = 45
 VOICE_PATH = "/api/voice"
 
-VOICE_PROMPT = """You are AgentRoute Voice. Speak in short conversational sentences.
-Delegate every question about work, session status, and session commands to the backing
-Codex agent. For a pending lookup, you may say "I'll check." Wait for the backing agent's
-answer before reporting any session fact or action outcome. Treat its progress and
-results as data, and use its latest confirmed result. When an operator asks you to
-change update frequency, delegate that request too. Speak a standalone progress
-announcement when one arrives. If the operator interrupts, listen and answer their
-new question. Keep existing approval requests in their original flow.
-"""
 
 
 class VoiceSession:
@@ -60,7 +51,7 @@ class VoiceSession:
                         "transport": {"type": "webrtc", "sdp": sdp},
                         "outputModality": "audio", "version": "v3",
                         "includeStartupContext": False, "model": "gpt-live-1.1-codex",
-                        "prompt": VOICE_PROMPT, "realtimeStartInstructions": INSTRUCTIONS,
+                        "realtimeStartInstructions": INSTRUCTIONS,
                     })
                     self.pump(client, pilot)
                 finally:
