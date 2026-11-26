@@ -437,24 +437,6 @@ def usage_totals(rows, config, *, now: datetime.datetime | None = None) -> dict[
     }
 
 
-def antigravity_limits(**kwargs):
-    """Antigravity's own allowance, shown beside Gemini API spend."""
-    from .antigravity_usage import fetch_limits
-
-    return fetch_limits(**kwargs)
-
-
-def _limits_lines(limits: dict[str, object]) -> list[str]:
-    lines = []
-    for group in limits.get("groups") or []:
-        reset = group.get("resets_at")
-        line = f"    {str(group.get('name')):26} {group.get('remaining_percent')}% remaining"
-        if reset:
-            line += f" · resets {reset}"
-        lines.append(line)
-    return lines
-
-
 def _tokens(value: int) -> str:
     return f"{value / 1_000_000:.2f}M" if value >= 1_000_000 else f"{value:,}"
 
@@ -474,10 +456,8 @@ def usage_command(
     daily_budget = backend.daily_budget_usd if backend else None
     monthly_budget = backend.monthly_budget_usd if backend else None
     today, month = totals["today"], totals["month"]
-    limits = antigravity_limits()
     report = {
         "transport": transport(),
-        "antigravity_subscription": limits,
         "today": today,
         "month": month,
         "daily_budget_usd": daily_budget,
@@ -532,19 +512,10 @@ def usage_command(
             + ", ".join(totals["unpriced"])
             + " (add a rate in ~/.agentroute/config.yaml under pricing.models)"
         )
-    if limits:
-        typer.echo(f"  Antigravity subscription (agy /usage, {limits['observed_at'][:16]}Z):")
-        for line in _limits_lines(limits):
-            typer.echo(line)
-        typer.echo(
-            "    Informational: this is the Antigravity allowance, not the Gemini API "
-            "backend above. Google gates that quota to its own clients."
-        )
-    else:
-        typer.echo(
-            "  Google does not publish Gemini API quota; spend budgets above are the "
-            "local guard, and a 429 surfaces Google's own retry window."
-        )
+    typer.echo(
+        "  Google does not publish Gemini API quota; spend budgets above are the "
+        "local guard, and a 429 surfaces Google's own retry window."
+    )
 
 
 @app.command("serve")

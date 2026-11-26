@@ -633,17 +633,19 @@ every other backend.
 Full setup, credential, usage-limit, and troubleshooting detail lives in
 [Running Claude models through the bridge](docs/claude-bridge.md).
 
-## Antigravity subscription
+## Gemini — parked
 
-`agentroute antigravity install` runs Codex on your Antigravity subscription by
-driving the `agy` CLI through its structured stream, so the existing login and
-weekly allowance are used as-is. Output streams incrementally, token counts are
-recorded in the audit store, and `agentroute capacity status` shows the
-remaining allowance with its reset time. Antigravity executes its own tools, so
-Codex sees a text-only model on this backend. See
-[the Antigravity backend guide](docs/antigravity-bridge.md).
+Gemini support is parked. The direct API backend (`agentroute-gemini`) is kept so
+the work is not lost, but it is not installed, routed, or recommended: Google
+requires an OAuth client of your own for the `generative-language` scope, and the
+subscription route cannot be reached without impersonating Google's client.
+`agentroute-gemini` stays available for anyone who creates that client; see
+[the Gemini guide](docs/gemini-bridge.md).
 
-## Gemini (direct Google API)
+The earlier `agy`-based Antigravity bridge was withdrawn: Codex could not drive it
+as a plain model, so using it meant running a second agent with a second approval
+path and its own instructions.
+
 
 `agentroute gemini login` stores a Google OAuth refresh token, and
 `agentroute gemini install` runs a loopback bridge on `127.0.0.1:8817` that calls

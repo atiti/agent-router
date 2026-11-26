@@ -1,5 +1,11 @@
 # Gemini backend (direct Google API)
 
+> **Parked.** This backend is kept but is not installed, routed, or recommended.
+> Google requires an OAuth client of your own for the `generative-language`
+> scope, and the Antigravity subscription cannot be reached from a third-party
+> client. Everything below still describes the implementation for whoever
+> creates that client; nothing here is active by default.
+
 Routes Codex through the Gemini API with Google OAuth. The bridge calls
 `generativelanguage.googleapis.com` (or Vertex AI) itself, translates Responses
 requests into `generateContent` calls, and returns Gemini's native
@@ -43,17 +49,16 @@ impersonating Google's client. It is also the wrong billing path: the Gemini API
 charges the project that owns the OAuth client, so a reused Antigravity client
 would bill Google's project rather than your own.
 
-Two options avoid creating an app of your own:
+One route avoids creating an app of your own: **Vertex AI** with an existing
+Google token that already carries `cloud-platform` (for example the Gemini CLI
+credential). Set the Vertex transport below; usage is billed to your own project
+and no new OAuth client is involved. The project needs the Vertex AI API enabled
+and billing set up.
 
-- **Vertex AI** with an existing Google token that already carries
-  `cloud-platform` (for example the Gemini CLI credential). Set the Vertex
-  transport below; usage is billed to your own project, and no new OAuth client
-  is involved. The project needs the Vertex AI API enabled and billing set up.
-- **Keep Antigravity for subscription work** and use the Gemini API backend only
-  where its own quota is acceptable.
-
-`agentroute gemini usage` still shows the Antigravity allowance, read through
-`agy -p "/usage"` — see [Usage, spend and budgets](#usage-spend-and-budgets).
+Reusing the Antigravity subscription instead was attempted and withdrawn. Codex
+cannot drive it as a plain model, so the only working shape ran a second agent
+with its own instructions and approval path — not comparable with the other
+backends, and not worth carrying.
 
 ## One-time OAuth client
 
@@ -140,21 +145,6 @@ Gemini entries are family keys (`gemini-pro`, `gemini-flash`,
 [Google's pricing page](https://ai.google.dev/gemini-api/docs/pricing) and
 checked on 2026-11-26. `agentroute gemini install` aliases every discovered
 model ID to its family, so a new version cannot silently report zero cost.
-
-Antigravity's own allowance is shown separately, because it is a different
-quota with a different owner:
-
-```text
-Antigravity subscription (agy /usage, 2026-11-26T11:58Z):
-  Gemini Models              88.0% remaining · resets 2026-12-03T07:15:35Z
-  Claude and GPT models     100.0% remaining · resets 2026-12-03T06:55:01Z
-```
-
-That number is read by asking `agy` for its own `/usage` output, cached for ten
-minutes. It costs no model turn and does not impersonate anything: the request
-stays inside Google's client. It is informational for the Antigravity
-subscription and does not describe the `gemini` backend's spend, which is what
-the budget line above reports.
 
 Because Google changes these numbers on announced dates, an entry may carry
 `scheduled` changes with an `effective_from` date; a turn is priced at the rate

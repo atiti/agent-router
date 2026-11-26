@@ -824,11 +824,10 @@ def test_turn_cost_uses_the_rate_of_the_recorded_day():
     assert turn_cost(row("2026-12-01"), "gemini-4-carbon", config.pricing) == pytest.approx(4.00)
 
 
-def test_retirement_clears_every_reference(monkeypatch):
-    """The mechanism stays available for the next backend that is withdrawn."""
+def test_retirement_clears_every_reference():
+    """Loading a config that still names the withdrawn backend repairs it."""
     import agentroute.config as config_module
 
-    monkeypatch.setattr(config_module, "RETIRED_BACKENDS", frozenset({"antigravity"}))
     config = default_config()
     config.backends["antigravity"] = config.backends["gpt"].model_copy(deep=True)
     config.backends["antigravity"].tiers = {
@@ -850,10 +849,11 @@ def test_retirement_clears_every_reference(monkeypatch):
     assert config_module.retire_backends(config) == []
 
 
-def test_antigravity_is_not_retired_now_that_it_serves_the_subscription():
+def test_antigravity_is_retired():
+    """The agy bridge was withdrawn; a saved config must stop offering it."""
     from agentroute.config import RETIRED_BACKENDS
 
-    assert "antigravity" not in RETIRED_BACKENDS
+    assert "antigravity" in RETIRED_BACKENDS
 
 
 def test_install_does_not_create_catalog_aliases_for_new_models():
@@ -902,3 +902,26 @@ def test_load_migrates_family_aliases_written_by_the_earlier_build(tmp_path, mon
     assert loaded.pricing.families["gemini-3.8-flash"] == "gemini-flash"
     # A genuine catalog alias is preserved.
     assert loaded.pricing.aliases["dev-gpt-6-sol"] == "gpt-6-sol"
+
+
+def test_antigravity_command_is_gone():
+    from typer.testing import CliRunner
+
+    from agentroute.cli import app
+
+    result = CliRunner().invoke(app, ["antigravity", "--help"])
+    assert result.exit_code != 0
+
+
+def test_gemini_usage_does_not_report_the_withdrawn_subscription(monkeypatch):
+    """The allowance block belonged to the removed agy bridge."""
+    import agentroute.gemini_cli as cli
+
+    monkeypatch.setattr(cli, "load_config", default_config)
+    monkeypatch.setattr("agentroute.audit.AuditStore.rows_since", lambda self, *a, **k: [])
+    from typer.testing import CliRunner
+
+    result = CliRunner().invoke(cli.app, ["usage"])
+    assert result.exit_code == 0
+    assert "Antigravity" not in result.stdout
+    assert "Gemini usage" in result.stdout
