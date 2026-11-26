@@ -80,7 +80,7 @@ def ensure_backend(config, port: int = DEFAULT_PORT) -> bool:
             codex_provider="agentroute-antigravity",
             display_name="Antigravity subscription (agy)",
             base_url=f"http://127.0.0.1:{port}/v1",
-            tool_compatibility="functions_and_apply_patch",
+            tool_compatibility="functions_and_apply_patch_preserve_reasoning",
             review_model=MODELS["fast"],
             tiers=tiers,
         )
@@ -92,8 +92,9 @@ def ensure_backend(config, port: int = DEFAULT_PORT) -> bool:
     for model in MODELS.values():
         declared = config.capabilities.models.get(model)
         update = {
-            # agy runs its own tools inside the turn; Codex must not also.
-            "tool_calling": "none",
+            # Codex owns the tool loop; agy is only asked for one decision.
+            "tool_calling": "full",
+            "parallel_tool_calls": False,
             "reasoning": True,
             "vision": False,
             "context_window": CONTEXT_WINDOW,

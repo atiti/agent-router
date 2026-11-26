@@ -314,6 +314,9 @@ class ModelCapabilities(BaseModel):
     """Operator-maintained facts used to admit models into agent workflows."""
 
     tool_calling: Literal["full", "apply_patch_only", "none", "unknown"] = "unknown"
+    # None means "not declared". A provider that returns one call per reply must
+    # say False so Codex does not send parallel-call guidance it cannot honour.
+    parallel_tool_calls: bool | None = None
     reasoning: bool | None = None
     vision: bool | None = None
     context_window: int | None = Field(default=None, ge=1)
