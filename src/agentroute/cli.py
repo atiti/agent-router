@@ -964,6 +964,23 @@ def doctor_command(
         raise typer.Exit(1)
 
 
+@app.command("voice")
+def voice_command(
+    cwd: Path = typer.Option(Path("."), "--cwd", exists=True, file_okay=False),
+) -> None:
+    """Talk with a dedicated Codex voice thread about your AgentRoute sessions."""
+    from .dashboard import Collector
+    from .voice import TRANSPORT_ERRORS, VoicePilot
+
+    try:
+        code = VoicePilot(Collector()).run(cwd.resolve())
+    except TRANSPORT_ERRORS as error:
+        console.print(f"[red]Voice session could not connect: {error}[/red]")
+        code = 1
+    if code:
+        raise typer.Exit(code)
+
+
 @app.command("dashboard")
 def dashboard_command(
     host: str = typer.Option("127.0.0.1", "--host", help="Address to listen on."),
