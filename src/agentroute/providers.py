@@ -205,11 +205,15 @@ def _narrow_tool_surface(model: dict, capabilities) -> None:
     A bridge that hands the turn to another agent and returns its answer never
     emits a tool call. Offering Codex's patch or search tools there produces
     prompts the model cannot satisfy.
+
+    The tool-type fields must be absent rather than null. The installed runtime
+    parses them as a string or map, so a null value makes the whole catalog
+    unreadable and every route through the provider fails to start.
     """
     if capabilities.tool_calling != "none":
         return
-    model["apply_patch_tool_type"] = None
-    model["web_search_tool_type"] = None
+    model.pop("apply_patch_tool_type", None)
+    model.pop("web_search_tool_type", None)
     model["supports_parallel_tool_calls"] = False
     model["supports_search_tool"] = False
 
