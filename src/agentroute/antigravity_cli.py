@@ -46,13 +46,21 @@ def unit_path() -> Path:
     return Path.home() / ".config/systemd/user" / UNIT
 
 
-def environment() -> dict[str, str]:
+def environment(resolved: str | None = None) -> dict[str, str]:
+    """Variables the service needs, with the CLI pinned by absolute path.
+
+    launchd and systemd start with a minimal PATH that excludes ~/.local/bin, so
+    a service that resolves `agy` from PATH answers health checks and then fails
+    every turn. Pinning the path chosen at install time avoids that.
+    """
     keys = (
-        "AGENTROUTE_ANTIGRAVITY_BINARY",
         "AGENTROUTE_ANTIGRAVITY_CWD",
         "AGENTROUTE_ANTIGRAVITY_MODE",
     )
-    return {key: os.environ[key] for key in keys if os.environ.get(key)}
+    values = {key: os.environ[key] for key in keys if os.environ.get(key)}
+    if resolved:
+        values["AGENTROUTE_ANTIGRAVITY_BINARY"] = resolved
+    return values
 
 
 def ensure_backend(config, port: int = DEFAULT_PORT) -> bool:
@@ -100,7 +108,7 @@ def ensure_backend(config, port: int = DEFAULT_PORT) -> bool:
     return created
 
 
-def service_definition(port: int) -> dict:
+def service_definition(port: int, resolved: str | None = None) -> dict:
     log_path = Path.home() / ".agentroute" / "antigravity-bridge.log"
     definition = {
         "Label": LABEL,
@@ -117,13 +125,13 @@ def service_definition(port: int) -> dict:
         "StandardOutPath": str(log_path),
         "StandardErrorPath": str(log_path),
     }
-    values = environment()
+    values = environment(resolved)
     if values:
         definition["EnvironmentVariables"] = values
     return definition
 
 
-def systemd_unit_text(port: int) -> str:
+def systemd_unit_text(port: int, resolved: str | None = None) -> str:
     lines = [
         "[Unit]",
         "Description=AgentRoute Antigravity bridge (agy subscription to Responses)",
@@ -132,7 +140,7 @@ def systemd_unit_text(port: int) -> str:
         "[Service]",
         "Type=simple",
     ]
-    lines.extend(f"Environment={key}={value}" for key, value in environment().items())
+    lines.extend(f"Environment={key}={value}" for key, value in environment(resolved).items())
     lines.extend(
         [
             f"ExecStart={_agentroute_executable()} antigravity serve --port {port}",
@@ -236,9 +244,9 @@ def install_command(
     path = unit_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if platform.system() == "Darwin":
-        path.write_bytes(plistlib.dumps(service_definition(port)))
+        path.write_bytes(plistlib.dumps(service_definition(port, resolved)))
     else:
-        path.write_text(systemd_unit_text(port))
+        path.write_text(systemd_unit_text(port, resolved))
     load_service(path)
     health = wait_for_health(port, host="127.0.0.1", timeout=25)
     if health.status == "unreachable":
