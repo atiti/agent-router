@@ -640,3 +640,28 @@ def test_cli_mounts_the_gemini_command():
     result = CliRunner().invoke(app, ["gemini", "--help"])
     assert result.exit_code == 0
     assert "login" in result.stdout
+
+
+def test_cli_has_no_gemini_import_cycles():
+    import agentroute.cli  # noqa: F401
+    import agentroute.gemini_cli  # noqa: F401
+
+    assert callable(agentroute.gemini_cli.install_command)
+
+
+def test_install_registers_even_without_a_credential(monkeypatch, tmp_path):
+    """Before the one-time consent, install still leaves a runnable service."""
+    from typer.testing import CliRunner
+
+    import agentroute.gemini_cli as cli
+
+    monkeypatch.setenv("AGENTROUTE_GEMINI_CREDENTIALS", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("AGENTROUTE_GEMINI_MODELS_CACHE", str(tmp_path / "models.json"))
+    monkeypatch.setattr(cli, "load_config", lambda: default_config())
+    saved = {}
+    monkeypatch.setattr(cli, "save_config", lambda config: saved.update(config=config))
+    monkeypatch.setattr(cli, "sync_codex_providers", lambda config: (tmp_path, None))
+    result = CliRunner().invoke(cli.app, ["install", "--no-service"])
+    assert result.exit_code == 0
+    assert "not usable yet" in result.stdout
+    assert saved["config"].backends["gemini"].codex_provider == "agentroute-gemini"

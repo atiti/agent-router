@@ -394,12 +394,19 @@ def install_command(
     ),
 ) -> None:
     """Register the backend, resolve real model IDs, and start the bridge."""
+    available: list[str] = []
+    verified = True
     try:
         credential_for_transport().check()
         models, available = discover()
     except CredentialError as exc:
-        typer.echo(f"Gemini credential unavailable: {exc}")
-        raise typer.Exit(1) from exc
+        # Install stays useful before the one-time Google consent: the service
+        # starts and reports the credential problem instead of leaving nothing
+        # behind for `agentroute gemini check` to talk to.
+        verified = False
+        models = model_map()
+        typer.echo(f"Gemini credential not usable yet: {exc}")
+        typer.echo("Registering the backend with unverified model IDs instead.")
     config = load_config()
     ensure_backend(config, port, models)
     save_config(config)
@@ -407,7 +414,10 @@ def install_command(
     typer.echo(f"registered backend `gemini` at http://127.0.0.1:{port}/v1")
     for tier, model in models.items():
         typer.echo(f"  {tier:6} {model}")
-    typer.echo(f"discovered {len({name.rsplit('/', 1)[-1] for name in available})} chat models")
+    if verified:
+        typer.echo(f"discovered {len({name.rsplit('/', 1)[-1] for name in available})} chat models")
+    else:
+        typer.echo("run `agentroute gemini login` then `agentroute gemini install` to verify")
     if not start:
         return
     path = unit_path()
