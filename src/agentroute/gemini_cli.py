@@ -11,7 +11,6 @@ import os
 import platform
 import plistlib
 import secrets
-import shutil
 import subprocess
 import threading
 import urllib.error
@@ -438,86 +437,11 @@ def usage_totals(rows, config, *, now: datetime.datetime | None = None) -> dict[
     }
 
 
-SUBSCRIPTION_CACHE = "gemini-subscription.json"
+def antigravity_limits(**kwargs):
+    """Antigravity's own allowance, shown beside Gemini API spend."""
+    from .antigravity_usage import fetch_limits
 
-
-def subscription_cache_path() -> Path:
-    home = Path(os.environ.get("AGENTROUTE_HOME") or (Path.home() / ".agentroute"))
-    return home / SUBSCRIPTION_CACHE
-
-
-def parse_usage_output(text: str) -> list[dict[str, object]]:
-    """Parse `agy -p "/usage"` rows: name, metric, remaining percent, reset."""
-    groups: list[dict[str, object]] = []
-    for line in text.splitlines():
-        fields = [part.strip() for part in line.split("\t")]
-        if len(fields) < 3:
-            continue
-        name, metric = fields[0], fields[1]
-        percent_text = fields[2].rstrip("%")
-        try:
-            remaining = float(percent_text)
-        except ValueError:
-            continue
-        groups.append(
-            {
-                "name": name,
-                "metric": metric,
-                "remaining_percent": remaining,
-                "resets_at": fields[3] if len(fields) > 3 and fields[3] else None,
-            }
-        )
-    return groups
-
-
-def antigravity_limits(
-    *, max_age: float = 600.0, path: Path | None = None
-) -> dict[str, object] | None:
-    """Read the Antigravity subscription allowance through agy's own command.
-
-    Google gates the Code Assist quota API to its own clients, so the only
-    legitimate source is Antigravity itself. Asking agy for its usage keeps the
-    call inside Google's client, costs no model turn, and is cached because the
-    CLI takes a few seconds to start.
-    """
-    import time
-
-    path = path or subscription_cache_path()
-    try:
-        cached = json.loads(path.read_text(encoding="utf-8"))
-        if time.time() - float(cached.get("observed_epoch") or 0) < max_age:
-            return cached
-    except (OSError, ValueError, TypeError):
-        pass
-    binary = shutil.which("agy")
-    if not binary:
-        return None
-    try:
-        result = subprocess.run(
-            [binary, "-p", "/usage"],
-            capture_output=True,
-            text=True,
-            timeout=90,
-            cwd=os.environ.get("HOME") or "/tmp",
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    groups = parse_usage_output(result.stdout)
-    if not groups:
-        return None
-    observed = datetime.datetime.now(datetime.timezone.utc)
-    payload = {
-        "source": "antigravity-cli",
-        "observed_at": observed.isoformat(),
-        "observed_epoch": observed.timestamp(),
-        "groups": groups,
-    }
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    except OSError:
-        pass
-    return payload
+    return fetch_limits(**kwargs)
 
 
 def _limits_lines(limits: dict[str, object]) -> list[str]:

@@ -23,6 +23,16 @@ class CapacityState:
         return self.status not in {"exhausted", "budget_reached", "unavailable"}
 
 
+def _subscription_reset(value: Any) -> int | None:
+    """Antigravity reports resets as RFC 3339; capacity wants epoch seconds."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
+
 def _number(value: Any) -> float | None:
     try:
         return float(value) if value is not None else None
@@ -149,6 +159,30 @@ def backend_state(
 ) -> CapacityState:
     if backend_name == "gpt":
         return subscription_state(config, rate_limits, account_id, recovery_hold=recovery_hold)
+    if backend_name == "antigravity":
+        # The Antigravity subscription is a weekly allowance, not API spend, so
+        # report it the way the CLI does instead of inventing a dollar budget.
+        from .antigravity_usage import fetch_limits
+
+        limits = fetch_limits() if probe else None
+        if not limits:
+            return CapacityState("antigravity", "healthy", "subscription allowance unread")
+        groups = limits.get("groups") or []
+        primary = next(
+            (group for group in groups if "gemini" in str(group.get("name", "")).lower()),
+            groups[0] if groups else None,
+        )
+        if not primary:
+            return CapacityState("antigravity", "healthy", "subscription allowance unread")
+        remaining = float(primary.get("remaining_percent") or 0)
+        return CapacityState(
+            "antigravity",
+            "exhausted" if remaining <= 0 else "healthy",
+            f"subscription {remaining:g}% remaining",
+            "subscription",
+            used_percent=100.0 - remaining,
+            resets_at=_subscription_reset(primary.get("resets_at")),
+        )
     if not config.capacity.enabled:
         return CapacityState(backend_name, "disabled", "capacity management disabled")
     backend = config.backends[backend_name]

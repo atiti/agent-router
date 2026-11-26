@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Add an Antigravity subscription backend that drives `agy` through its
+  `stream-json` interface: streaming output, per-turn token accounting, and
+  conversation continuity. `agentroute antigravity usage` and capacity status
+  report the weekly allowance the CLI itself shows.
 
 - Show the Antigravity subscription allowance in `agentroute gemini usage`, read
   from `agy -p "/usage"` and cached. Google gates the Code Assist quota API to
