@@ -49,10 +49,10 @@ CONTEXT_WINDOW = 1_048_576
 # replaces these with model IDs the credential actually serves, because Google
 # renames and retires models without notice.
 FALLBACK_MODELS: dict[str, str] = {
-    "fast": "gemini-2.5-flash-lite",
-    "normal": "gemini-2.5-flash",
-    "smart": "gemini-2.5-pro",
-    "max": "gemini-2.5-pro",
+    "fast": "gemini-3.5-flash-lite",
+    "normal": "gemini-3.8-flash",
+    "smart": "gemini-4-argon",
+    "max": "gemini-4-carbon",
 }
 
 # Families that never serve a chat turn, filtered out of discovery results.
@@ -68,6 +68,8 @@ _NON_CHAT = (
     "aqa",
     "learnlm",
     "gemma",
+    "transcribe",
+    "genie",
 )
 
 # Ordered family preferences per tier. ``flash-lite`` must never satisfy a
@@ -75,9 +77,31 @@ _NON_CHAT = (
 TIER_FAMILIES: dict[str, tuple[str, ...]] = {
     "fast": ("flash-lite", "flash"),
     "normal": ("flash",),
-    "smart": ("pro", "flash"),
-    "max": ("pro", "flash"),
+    # Argon is the efficient frontier model and Carbon the most capable one.
+    "smart": ("argon", "pro", "carbon", "flash"),
+    "max": ("carbon", "argon", "pro", "flash"),
 }
+
+# Every Gemini chat family is billed at one published Standard rate; these keys
+# resolve in the operator's pricing table, which carries the dated changes.
+PRICE_FAMILIES = ("gemini-pro", "gemini-flash", "gemini-flash-lite")
+
+
+def price_family(model: str) -> str:
+    """Price key for one model ID, so captured usage is never silently unpriced."""
+    name = model.rsplit("/", 1)[-1]
+    legacies = {
+        "gemini-2.5-pro": "gemini-2.5-pro",
+        "gemini-2.5-flash": "gemini-2.5-flash",
+        "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
+    }
+    if name in legacies:
+        return legacies[name]
+    if "flash-lite" in name:
+        return "gemini-flash-lite"
+    if "flash" in name:
+        return "gemini-flash"
+    return "gemini-pro"
 
 
 def api_base() -> str:

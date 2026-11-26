@@ -65,8 +65,13 @@ renames and retires models. The newest chat model in each family wins:
 | --- | --- | --- |
 | FAST | flash-lite, then flash | low |
 | NORMAL | flash | medium |
-| SMART | pro, then flash | high |
-| MAX | pro, then flash | xhigh |
+| SMART | argon, pro, carbon, then flash | high |
+| MAX | carbon, argon, pro, then flash | xhigh |
+
+Argon is Google's efficient frontier model and Carbon its most capable one, so
+SMART prefers the cheaper frontier model and MAX prefers the strongest.
+Superseded families stay pinned for history: `gemini-2.5-*` keeps its own rates
+even after Google retires it.
 
 `agentroute gemini models --refresh` prints the available models and the chosen
 mapping. Override it with `AGENTROUTE_GEMINI_MODELS='{"normal":"gemini-2.5-flash"}'`
@@ -76,6 +81,39 @@ cache lives in `~/.agentroute/gemini-models.json`.
 Gemini 3 reasoning parts marked `thought` are dropped; they never leak into
 assistant output. Thinking controls are sent only for the families that
 document them (`thinkingLevel` for Gemini 3, `thinkingBudget` for 2.5).
+
+## Usage, spend and budgets
+
+Gemini is a normal AgentRoute backend for accounting. Each turn's token counts
+come from the usage receipt Codex records, are attributed to the `gemini`
+backend, and are priced with the same pricing table as every other provider.
+
+```sh
+agentroute gemini usage          # today and this month, plus per-model split
+agentroute gemini usage --json   # machine readable
+agentroute capacity budget gemini --daily 10 --monthly 100
+agentroute capacity status       # spend, budget and fallback chain
+```
+
+Rates live in `~/.agentroute/config.yaml` under `pricing.models`. The shipped
+Gemini entries are family keys (`gemini-pro`, `gemini-flash`,
+`gemini-flash-lite`) plus the superseded `gemini-2.5-*` IDs, taken from
+[Google's pricing page](https://ai.google.dev/gemini-api/docs/pricing) and
+checked on 2026-11-26. `agentroute gemini install` aliases every discovered
+model ID to its family, so a new version cannot silently report zero cost.
+
+Because Google changes these numbers on announced dates, an entry may carry
+`scheduled` changes with an `effective_from` date; a turn is priced at the rate
+published on the day it ran. Currently the Gemini 4 family doubles on
+2026-12-01 and the 3.x Flash family doubles on 2027-01-01. If a model has no
+rate at all, `agentroute gemini usage` and `agentroute models` say `unpriced`
+instead of pretending the turn was free.
+
+Daily and monthly USD budgets are enforced by AgentRoute's capacity system,
+which also drives failover when a budget is reached. Google does not expose
+remaining rate-limit quota (RPM, TPM or requests per day) through the Gemini
+API, so local budgets are the guard; a `429` from Google surfaces its own retry
+window in the bridge's error message.
 
 ## Tool calling
 

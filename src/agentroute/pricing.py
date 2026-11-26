@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -28,9 +29,7 @@ class CostReport:
 
     @property
     def gross_savings(self) -> float | None:
-        return (
-            self.baseline_cost - self.comparison_actual_cost if self.comparable_turns else None
-        )
+        return self.baseline_cost - self.comparison_actual_cost if self.comparable_turns else None
 
     @property
     def net_savings(self) -> float | None:
@@ -43,6 +42,22 @@ class CostReport:
         return net / self.baseline_cost * 100 if net is not None and self.baseline_cost else None
 
 
+def _row_date(row: sqlite3.Row) -> datetime.date | None:
+    """The UTC date a recorded turn ran, used to pick the rate in force."""
+    try:
+        created = row["created_at"]
+    except (KeyError, IndexError):
+        return None
+    if not created:
+        return None
+    try:
+        return (
+            datetime.datetime.fromisoformat(str(created)).astimezone(datetime.timezone.utc).date()
+        )
+    except ValueError:
+        return None
+
+
 def canonical_model(model: str, pricing: PricingConfig) -> str:
     aliased = pricing.aliases.get(model, model)
     if aliased in pricing.models:
@@ -51,10 +66,32 @@ def canonical_model(model: str, pricing: PricingConfig) -> str:
     return max(suffix_matches, key=len) if suffix_matches else aliased
 
 
+def rate_on(rate: ModelPrice, when: datetime.date | None = None) -> ModelPrice:
+    """Apply the latest scheduled price change that is already in effect."""
+    if not rate.scheduled:
+        return rate
+    day = when or datetime.datetime.now(datetime.timezone.utc).date()
+    changes = [change for change in rate.scheduled if change.effective_from <= day]
+    if not changes:
+        return rate
+    change = max(changes, key=lambda item: item.effective_from)
+    return rate.model_copy(
+        update={
+            "input_per_million": change.input_per_million,
+            "cached_input_per_million": change.cached_input_per_million
+            if change.cached_input_per_million is not None
+            else rate.cached_input_per_million,
+            "output_per_million": change.output_per_million,
+        }
+    )
+
+
 def long_context_multipliers(rate: ModelPrice, input_tokens: float) -> tuple[float, float]:
     threshold = rate.long_context_threshold_tokens
-    if threshold is None or input_tokens < threshold or (
-        input_tokens == threshold and not rate.long_context_threshold_inclusive
+    if (
+        threshold is None
+        or input_tokens < threshold
+        or (input_tokens == threshold and not rate.long_context_threshold_inclusive)
     ):
         return 1.0, 1.0
     output = rate.long_context_output_multiplier
@@ -63,11 +100,18 @@ def long_context_multipliers(rate: ModelPrice, input_tokens: float) -> tuple[flo
     )
 
 
-def token_cost(model: str, usage: dict[str, int | float], pricing: PricingConfig) -> float:
+def token_cost(
+    model: str,
+    usage: dict[str, int | float],
+    pricing: PricingConfig,
+    *,
+    when: datetime.date | None = None,
+) -> float:
     """Price one request; long-context thresholds never apply to a sum of requests."""
     rate = pricing.models.get(canonical_model(model, pricing))
     if rate is None:
         return 0.0
+    rate = rate_on(rate, when)
     input_tokens = max(0.0, float(usage.get("input_tokens", 0)))
     cached = max(0.0, float(usage.get("cached_input_tokens", 0)))
     cache_write = max(0.0, float(usage.get("cache_write_input_tokens", 0)))
@@ -75,22 +119,29 @@ def token_cost(model: str, usage: dict[str, int | float], pricing: PricingConfig
     output = max(0.0, float(usage.get("output_tokens", 0)))
     write_rate = (
         rate.input_per_million
-        if rate.cache_write_per_million is None else rate.cache_write_per_million
+        if rate.cache_write_per_million is None
+        else rate.cache_write_per_million
     )
     input_multiplier, output_multiplier = long_context_multipliers(rate, input_tokens)
     return (
-        (uncached * rate.input_per_million
-        + cached * rate.cached_input_per_million
-        + cache_write * write_rate) * input_multiplier
+        (
+            uncached * rate.input_per_million
+            + cached * rate.cached_input_per_million
+            + cache_write * write_rate
+        )
+        * input_multiplier
         + output * rate.output_per_million * output_multiplier
     ) / 1_000_000
 
 
 def turn_cost(row: sqlite3.Row, model: str, pricing: PricingConfig) -> float | None:
     """Price known requests or a provably flat aggregate; unknown tiers stay unknown."""
-    rate = pricing.models.get(canonical_model(model, pricing))
-    if rate is None:
+    base_rate = pricing.models.get(canonical_model(model, pricing))
+    if base_rate is None:
         return None
+    # Price a turn at the rate published on the day it ran.
+    when = _row_date(row)
+    rate = rate_on(base_rate, when)
     keys = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")
     if any(row[f"answer_{key}"] is None for key in keys):
         return None
@@ -109,7 +160,8 @@ def turn_cost(row: sqlite3.Row, model: str, pricing: PricingConfig) -> float | N
         requests = receipt.get("request_usage")
         if (
             receipt.get("coverage") != "turn_start_seen"
-            or not isinstance(requests, list) or not requests
+            or not isinstance(requests, list)
+            or not requests
             or len(requests) != receipt.get("response_count")
         ):
             return None
@@ -121,11 +173,15 @@ def turn_cost(row: sqlite3.Row, model: str, pricing: PricingConfig) -> float | N
                 return None
             response_id, counts = request.get("response_id"), request.get("usage")
             if (
-                not isinstance(response_id, str) or not response_id
-                or response_id in response_ids or not isinstance(counts, dict)
+                not isinstance(response_id, str)
+                or not response_id
+                or response_id in response_ids
+                or not isinstance(counts, dict)
                 or any(
-                    not isinstance(counts.get(key), int) or isinstance(counts[key], bool)
-                    or counts[key] < 0 for key in keys
+                    not isinstance(counts.get(key), int)
+                    or isinstance(counts[key], bool)
+                    or counts[key] < 0
+                    for key in keys
                 )
                 or counts["cached_input_tokens"] + counts["cache_write_input_tokens"]
                 > counts["input_tokens"]
@@ -134,16 +190,16 @@ def turn_cost(row: sqlite3.Row, model: str, pricing: PricingConfig) -> float | N
             response_ids.add(response_id)
             for key in keys:
                 observed[key] += counts[key]
-            costs.append(token_cost(model, counts, pricing))
+            costs.append(token_cost(model, counts, pricing, when=when))
         return sum(costs) if observed == usage else None
     threshold = rate.long_context_threshold_tokens
-    if (
-        threshold is not None
-        and long_context_multipliers(rate, usage["input_tokens"]) != (1.0, 1.0)
+    if threshold is not None and long_context_multipliers(rate, usage["input_tokens"]) != (
+        1.0,
+        1.0,
     ):
         # A cumulative total crossing a threshold does not prove any request did.
         return None
-    return token_cost(model, usage, pricing)
+    return token_cost(model, usage, pricing, when=when)
 
 
 def token_cost_upper_bound(model: str, usage: dict[str, int], pricing: PricingConfig) -> float:
@@ -151,17 +207,21 @@ def token_cost_upper_bound(model: str, usage: dict[str, int], pricing: PricingCo
     rate = pricing.models.get(canonical_model(model, pricing))
     if rate is None:
         return 0.0
+    rate = rate_on(rate)
     # Known cache subsets still prove input consumption when the total is absent.
     inputs = max(
-        0, usage.get("input_tokens", 0),
+        0,
+        usage.get("input_tokens", 0),
         max(0, usage.get("cached_input_tokens", 0))
         + max(0, usage.get("cache_write_input_tokens", 0)),
     )
     outputs = max(0, usage.get("output_tokens", 0))
     input_multiplier, output_multiplier = long_context_multipliers(rate, inputs)
     maximum_input_rate = max(
-        rate.input_per_million, rate.cached_input_per_million,
-        rate.cache_write_per_million or 0, rate.cache_write_1h_per_million or 0,
+        rate.input_per_million,
+        rate.cached_input_per_million,
+        rate.cache_write_per_million or 0,
+        rate.cache_write_1h_per_million or 0,
     )
     return (
         inputs * maximum_input_rate * input_multiplier

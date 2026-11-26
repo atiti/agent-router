@@ -7,7 +7,7 @@ import json
 import pytest
 
 from agentroute import gemini_bridge as bridge
-from agentroute.config import default_config
+from agentroute.config import ModelCapabilities, default_config
 from agentroute.gemini_cli import ensure_backend
 
 MODEL = "gemini-2.5-flash"
@@ -695,3 +695,154 @@ def test_default_client_json_path_can_be_overridden(monkeypatch, tmp_path):
 
     monkeypatch.setenv("AGENTROUTE_GEMINI_CLIENT_SECRETS", str(tmp_path / "c.json"))
     assert cli.default_client_secrets_path() == tmp_path / "c.json"
+
+
+def test_price_family_covers_legacy_and_current_models():
+    from agentroute.gemini_bridge import price_family
+
+    assert price_family("gemini-2.5-pro") == "gemini-2.5-pro"
+    assert price_family("models/gemini-3.8-flash") == "gemini-flash"
+    assert price_family("gemini-3.5-flash-lite") == "gemini-flash-lite"
+    assert price_family("gemini-4-carbon") == "gemini-pro"
+    assert price_family("gemini-4-argon") == "gemini-pro"
+
+
+def test_every_tier_model_is_priced_after_install():
+    from agentroute.gemini_bridge import price_family
+
+    config = default_config()
+    models = {
+        "fast": "gemini-3.5-flash-lite",
+        "normal": "gemini-3.8-flash",
+        "smart": "gemini-4-argon",
+        "max": "gemini-4-carbon",
+    }
+    ensure_backend(config, 8817, models)
+    for model in models.values():
+        assert config.pricing.aliases[model] == price_family(model)
+        assert config.capabilities.models[model].pricing_model == price_family(model)
+    from agentroute.pricing import canonical_model
+
+    for model in models.values():
+        assert canonical_model(model, config.pricing) in config.pricing.models
+
+
+def test_usage_totals_price_recorded_gemini_turns():
+    import datetime
+
+    import agentroute.gemini_cli as cli
+
+    config = default_config()
+    ensure_backend(config, 8817, {"normal": "gemini-3.8-flash"})
+    now = datetime.datetime(2026, 11, 26, 12, 0, tzinfo=datetime.timezone.utc)
+    row = {
+        "usage_recorded_at": now.isoformat(),
+        "created_at": now.isoformat(),
+        "backend": "gemini",
+        "answer_model": "gemini-3.8-flash",
+        "model": "gemini-3.8-flash",
+        "answer_input_tokens": 1_000_000,
+        "answer_cached_input_tokens": 0,
+        "answer_cache_write_input_tokens": 0,
+        "answer_output_tokens": 1_000_000,
+        "execution_receipt": "{}",
+    }
+    other = dict(row, backend="gpt", answer_model="gpt-6.2-sol")
+    totals = cli.usage_totals([row, other], config, now=now)
+    assert totals["today"]["turns"] == 1
+    assert totals["today"]["input_tokens"] == 1_000_000
+    # $0.75 input + $3.75 output for one million tokens each.
+    assert totals["today"]["cost_usd"] == pytest.approx(4.50)
+    assert totals["month"]["cost_usd"] == pytest.approx(4.50)
+    assert totals["unpriced"] == []
+
+
+def test_usage_totals_flag_unpriced_models():
+    import datetime
+
+    import agentroute.gemini_cli as cli
+
+    config = default_config()
+    now = datetime.datetime(2026, 11, 26, 12, 0, tzinfo=datetime.timezone.utc)
+    row = {
+        "usage_recorded_at": now.isoformat(),
+        "created_at": now.isoformat(),
+        "backend": "gemini",
+        "answer_model": "gemini-9-experimental",
+        "model": "gemini-9-experimental",
+        "answer_input_tokens": 100,
+        "answer_cached_input_tokens": 0,
+        "answer_cache_write_input_tokens": 0,
+        "answer_output_tokens": 100,
+        "execution_receipt": "{}",
+    }
+    totals = cli.usage_totals([row], config, now=now)
+    assert totals["unpriced"] == ["gemini-9-experimental"]
+    assert totals["today"]["cost_usd"] == 0
+
+
+def test_scheduled_price_change_switches_on_its_date():
+    import datetime
+
+    from agentroute.config import PriceChange
+    from agentroute.pricing import rate_on
+
+    rate = default_config().pricing.models["gemini-pro"]
+    assert rate.input_per_million == 2.00
+    before = rate_on(rate, datetime.date(2026, 11, 30))
+    after = rate_on(rate, datetime.date(2026, 12, 1))
+    assert (before.input_per_million, before.output_per_million) == (2.00, 10.00)
+    assert (after.input_per_million, after.output_per_million) == (4.00, 20.00)
+    assert after.cached_input_per_million == 0.20
+    assert rate.scheduled[0] == PriceChange(
+        effective_from=datetime.date(2026, 12, 1),
+        input_per_million=4.00,
+        cached_input_per_million=0.20,
+        output_per_million=20.00,
+    )
+
+
+def test_turn_cost_uses_the_rate_of_the_recorded_day():
+
+    from agentroute.pricing import turn_cost
+
+    config = default_config()
+    config.pricing.aliases["gemini-4-carbon"] = "gemini-pro"
+
+    def row(day: str):
+        return {
+            "created_at": f"{day}T12:00:00+00:00",
+            "answer_input_tokens": 1_000_000,
+            "answer_cached_input_tokens": 0,
+            "answer_cache_write_input_tokens": 0,
+            "answer_output_tokens": 0,
+            "execution_receipt": "{}",
+        }
+
+    assert turn_cost(row("2026-11-30"), "gemini-4-carbon", config.pricing) == pytest.approx(2.00)
+    assert turn_cost(row("2026-12-01"), "gemini-4-carbon", config.pricing) == pytest.approx(4.00)
+
+
+def test_retired_backend_is_removed_with_its_references():
+    from agentroute.config import retire_backends
+
+    config = default_config()
+    config.backends["antigravity"] = config.backends["gpt"].model_copy(deep=True)
+    config.backends["antigravity"].codex_provider = "agentroute-antigravity"
+    config.backends["antigravity"].tiers = {
+        "normal": config.backends["gpt"]
+        .tiers["normal"]
+        .model_copy(update={"model": "gemini-3.8-flash-medium"})
+    }
+    config.capabilities.models["gemini-3.8-flash-medium"] = ModelCapabilities(tool_calling="full")
+    config.routing.backend_by_tier["normal"] = "antigravity"
+    config.routing.progress_review_backend = "antigravity"
+    config.capacity.default_fallback_backend = "antigravity"
+
+    assert retire_backends(config) == ["antigravity"]
+    assert "antigravity" not in config.backends
+    assert "gemini-3.8-flash-medium" not in config.capabilities.models
+    assert config.routing.backend_by_tier["normal"] == "gpt"
+    assert config.routing.progress_review_backend is None
+    assert config.capacity.default_fallback_backend is None
+    assert retire_backends(config) == []
