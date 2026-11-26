@@ -107,6 +107,7 @@ from .desktop import (
 )
 from .doctor import run_doctor
 from .efficiency import efficiency_report
+from .gemini_cli import app as gemini_app
 from .grok_cli import app as grok_app
 from .herdr_cli import herdr_app
 from .herdr_team import team_app
@@ -152,6 +153,7 @@ app.add_typer(account_app, name="account")
 app.add_typer(context_app, name="context")
 app.add_typer(memory_app, name="memory")
 app.add_typer(grok_app, name="grok")
+app.add_typer(gemini_app, name="gemini")
 app.add_typer(antigravity_app, name="antigravity")
 app.add_typer(bridge_app, name="bridge")
 bridge_app.add_typer(claude_profile_app, name="profile")
