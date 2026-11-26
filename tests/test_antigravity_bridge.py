@@ -240,3 +240,19 @@ def test_absolute_executable_is_used_verbatim(monkeypatch):
     monkeypatch.setattr(bridge.os, "access", lambda path, mode: True)
     assert bridge.resolve_agy("/usr/local/bin/agy") == "/usr/local/bin/agy"
 
+
+def test_failure_reports_every_credential_source(monkeypatch):
+    def keychain_denied():
+        raise bridge.CredentialError("no Antigravity credential in Keychain")
+
+    def file_without_scope(path=None):
+        raise bridge.CredentialError("the credential file lacks the auth/aicode scope")
+
+    monkeypatch.setattr(bridge, "read_keychain_credential", keychain_denied)
+    monkeypatch.setattr(bridge, "read_file_credential", file_without_scope)
+    with pytest.raises(bridge.CredentialError) as caught:
+        bridge.AntigravityCredential().token()
+    message = str(caught.value)
+    assert "Keychain" in message
+    assert "auth/aicode" in message
+

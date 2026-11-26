@@ -139,23 +139,30 @@ class AntigravityCredential:
     mode: str = "antigravity"
 
     def token(self) -> str:
-        last: CredentialError | None = None
+        problems: list[str] = []
         for reader in (read_keychain_credential, read_file_credential):
             try:
                 data = reader()
             except CredentialError as exc:
-                last = exc
+                problems.append(str(exc))
                 continue
             token = data["access_token"]
             if not token:
+                problems.append(f"{data.get('source')}: the stored entry has an empty token")
                 continue
             if AICODE_SCOPE in credential_scope(token):
                 return token
-            last = CredentialError(
-                "the stored Antigravity credential lacks the auth/aicode scope; "
+            problems.append(
+                f"{data.get('source')}: the token lacks the auth/aicode scope; "
                 "run `agy` once to sign in again"
             )
-        raise last or CredentialError("no usable Antigravity credential")
+        # Report every source, so a Keychain permission failure is not hidden
+        # behind the unrelated Gemini CLI file credential.
+        raise CredentialError(
+            "no usable Antigravity credential (" + "; ".join(problems) + ")"
+            if problems
+            else "no usable Antigravity credential"
+        )
 
     def source(self) -> str:
         for reader in (read_keychain_credential, read_file_credential):
