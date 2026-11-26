@@ -254,3 +254,28 @@ def test_capacity_marks_an_exhausted_allowance(monkeypatch):
     state = capacity.backend_state(config, "antigravity", probe=True)
     assert state.status == "exhausted"
     assert not state.available
+
+
+def test_service_definition_pins_the_resolved_binary(monkeypatch):
+    """launchd's PATH excludes ~/.local/bin, so the path must be absolute."""
+    import agentroute.antigravity_cli as cli
+
+    monkeypatch.setenv("AGENTROUTE_ANTIGRAVITY_BINARY", "/wrong/from/shell/agy")
+    monkeypatch.setenv("AGENTROUTE_ANTIGRAVITY_CWD", "/srv/repo")
+    definition = cli.service_definition(8816, "/Users/me/.local/bin/agy")
+    env = definition["EnvironmentVariables"]
+    assert env["AGENTROUTE_ANTIGRAVITY_BINARY"] == "/Users/me/.local/bin/agy"
+    assert env["AGENTROUTE_ANTIGRAVITY_CWD"] == "/srv/repo"
+
+
+def test_systemd_unit_pins_the_resolved_binary(monkeypatch):
+    import agentroute.antigravity_cli as cli
+
+    monkeypatch.delenv("AGENTROUTE_ANTIGRAVITY_BINARY", raising=False)
+    text = cli.systemd_unit_text(8816, "/opt/agy")
+    assert "Environment=AGENTROUTE_ANTIGRAVITY_BINARY=/opt/agy" in text
+
+
+def test_bridge_uses_the_pinned_binary(monkeypatch):
+    monkeypatch.setenv("AGENTROUTE_ANTIGRAVITY_BINARY", "/opt/pinned/agy")
+    assert bridge.binary() == "/opt/pinned/agy"
