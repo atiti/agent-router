@@ -1,17 +1,11 @@
 # Changelog
 
 ## Unreleased
-- Add an Antigravity subscription backend that drives `agy` through its
-  `stream-json` interface: streaming output, per-turn token accounting, and
-  conversation continuity. `agentroute antigravity usage` and capacity status
-  report the weekly allowance the CLI itself shows.
 
-- Show the Antigravity subscription allowance in `agentroute gemini usage`, read
-  from `agy -p "/usage"` and cached. Google gates the Code Assist quota API to
-  its own clients, so this is the only source that does not impersonate one.
-- Retire the Antigravity (`agy`) backend. Its Gemini coverage is replaced by the
-  direct provider; a saved config that still names it is migrated on load, and
-  its route, review and fallback references are cleared.
+- Withdraw the Antigravity (`agy`) bridge and park Gemini support. Delegating
+  turns to another agent could not be made to behave like a model behind Codex,
+  and a prompt-level tool protocol is not a foundation worth carrying. A saved
+  config naming the retired backend is migrated on load.
 - Price Gemini turns in AgentRoute's usage and capacity reports, with family
   rates, per-model aliases from discovery, and dated rate changes. Add
   `agentroute gemini usage` for today and month totals against the backend's

@@ -800,7 +800,7 @@ def repair_price_families(config: AppConfig) -> list[str]:
     return moved
 
 
-RETIRED_BACKENDS: frozenset[str] = frozenset()
+RETIRED_BACKENDS: frozenset[str] = frozenset({"antigravity"})
 
 
 def retire_backends(config: AppConfig) -> list[str]:
