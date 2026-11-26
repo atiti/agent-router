@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentRoute Voice</title>
+<style>
+  :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #10121a;
+          color: #f4f5fb; }
+  body { margin: 0; padding: 24px; display: grid; min-height: 100svh; box-sizing: border-box;
+         place-items: center; }
+  main { width: min(100%, 29rem); background: #191d29; border: 1px solid #343a50;
+         border-radius: 22px; padding: clamp(20px, 6vw, 42px); box-sizing: border-box; }
+  h1 { font-size: 1.6rem; margin: 0 0 1rem; letter-spacing: -.035em; }
+  p { line-height: 1.55; color: #c1c8df; }
+  #status { min-height: 3rem; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; }
+  button { cursor: pointer; border: 1px solid #515b77; background: #26314d; color: #fff;
+           border-radius: 12px; padding: 12px 16px; min-height: 44px; font: inherit; }
+  #start { background: #adc3ff; color: #111837; border-color: #adc3ff; font-weight: 650; }
+  button:focus-visible { outline: 3px solid #cbb5ff; outline-offset: 3px; }
+  button:disabled { opacity: .45; cursor: default; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AgentRoute Voice</h1>
+  <p id="status" role="status">Ready to connect.</p>
+  <div class="controls">
+    <button id="start">Start talking</button>
+    <button id="mute" type="button" aria-pressed="false" disabled>Mute mic</button>
+    <button id="stop" disabled>End conversation</button>
+  </div>
+  <p>Try “What needs my attention?” or “Only tell me about blockers.”</p>
+  <audio id="speaker" autoplay></audio>
+</main>
+<script>
+  const start = document.getElementById('start');
+  const stop = document.getElementById('stop');
+  const mute = document.getElementById('mute');
+  const status = document.getElementById('status');
+  const speaker = document.getElementById('speaker');
+  const token = new URLSearchParams(location.hash.slice(1)).get('access');
+  let peer, mic, session, heartbeat;
+
+  async function request(action, fields = {}) {
+    const response = await fetch('/api/voice', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-AgentRoute-Token': token || ''},
+      body: JSON.stringify({action, session, ...fields}),
+      keepalive: action === 'stop',
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error);
+    return result;
+  }
+
+  function end(message = 'Conversation ended.') {
+    clearInterval(heartbeat);
+    const previous = session;
+    session = undefined;
+    if (previous) request('stop', {session: previous}).catch(() => {});
+    if (mic) mic.getTracks().forEach(track => track.stop());
+    if (peer) peer.close();
+    speaker.srcObject = null;
+    mic = peer = undefined;
+    start.disabled = !token;
+    stop.disabled = mute.disabled = true;
+    mute.setAttribute('aria-pressed', 'false');
+    mute.textContent = 'Mute mic';
+    status.textContent = message;
+  }
+
+  function iceGathered(connection) {
+    if (connection.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise(resolve => {
+      const finish = () => {
+        clearTimeout(timer);
+        connection.removeEventListener('icegatheringstatechange', changed);
+        resolve();
+      };
+      const changed = () => {
+        if (connection.iceGatheringState === 'complete') finish();
+      };
+      const timer = setTimeout(finish, 4000);
+      connection.addEventListener('icegatheringstatechange', changed);
+    });
+  }
+
+  start.addEventListener('click', async () => {
+    start.disabled = true;
+    status.textContent = 'Waiting for microphone access…';
+    try {
+      mic = await navigator.mediaDevices.getUserMedia({
+        audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true},
+      });
+      status.textContent = 'Connecting to Codex…';
+      const connection = new RTCPeerConnection();
+      peer = connection;
+      peer.createDataChannel('oai-events', {ordered: true});
+      mic.getAudioTracks().forEach(track => peer.addTrack(track, mic));
+      peer.ontrack = event => {
+        speaker.srcObject = new MediaStream([event.track]);
+        speaker.play().catch(() => { speaker.controls = true; });
+      };
+      peer.onconnectionstatechange = () => {
+        if (peer !== connection) return;
+        if (connection.connectionState === 'connected') {
+          status.textContent = 'Connected. You can speak.';
+          mute.disabled = false;
+        } else if (connection.connectionState === 'disconnected') {
+          status.textContent = 'Audio reconnecting…';
+        } else if (connection.connectionState === 'failed') {
+          end('Audio connection failed. Start a new conversation.');
+        }
+      };
+      await peer.setLocalDescription(await peer.createOffer());
+      await iceGathered(peer);
+      const answer = await request('start', {sdp: peer.localDescription.sdp});
+      session = answer.session;
+      await peer.setRemoteDescription({type: 'answer', sdp: answer.sdp});
+      stop.disabled = false;
+      heartbeat = setInterval(async () => {
+        const active = session;
+        try {
+          const result = await request('status');
+          if (session === active && (result.state === 'closed' || result.error)) {
+            end(result.error || 'Conversation ended. Start a new one when ready.');
+          }
+        } catch (error) {
+          if (session === active) end(error.message || 'Voice connection closed.');
+        }
+      }, 10000);
+    } catch (error) {
+      end(error.name === 'NotAllowedError' ? 'Allow microphone access and try again.'
+                                         : error.message || 'Could not start voice.');
+    }
+  });
+  mute.addEventListener('click', () => {
+    const tracking = mic.getAudioTracks()[0];
+    tracking.enabled = !tracking.enabled;
+    mute.setAttribute('aria-pressed', String(!tracking.enabled));
+    mute.textContent = tracking.enabled ? 'Mute mic' : 'Unmute mic';
+    status.textContent = tracking.enabled ? 'Connected. You can speak.' : 'Microphone muted.';
+  });
+  stop.addEventListener('click', () => end());
+  addEventListener('pagehide', () => end());
+  if (!token) end('Use the full link printed by AgentRoute.');
+</script>
+</body>
+</html>

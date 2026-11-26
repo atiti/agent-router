@@ -964,6 +964,22 @@ def doctor_command(
         raise typer.Exit(1)
 
 
+@app.command("voice")
+def voice_command(
+    cwd: Path = typer.Option(Path("."), "--cwd", exists=True, file_okay=False),
+) -> None:
+    """Talk with a dedicated Codex voice thread about your AgentRoute sessions."""
+    from .voice_server import serve
+
+    try:
+        serve(cwd.resolve())
+    except KeyboardInterrupt:
+        return
+    except OSError as error:
+        console.print(f"[red]Could not start the local voice page: {error}[/red]")
+        raise typer.Exit(1) from error
+
+
 @app.command("dashboard")
 def dashboard_command(
     host: str = typer.Option("127.0.0.1", "--host", help="Address to listen on."),
