@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Show the Antigravity subscription allowance in `agentroute gemini usage`, read
+  from `agy -p "/usage"` and cached. Google gates the Code Assist quota API to
+  its own clients, so this is the only source that does not impersonate one.
 - Retire the Antigravity (`agy`) backend. Its Gemini coverage is replaced by the
   direct provider; a saved config that still names it is migrated on load, and
   its route, review and fallback references are cleared.
