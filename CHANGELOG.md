@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep idle supervisor observations in Herdr health reports without opening
+  new inbox events. Worker health alerts and supervisor faults still reach the inbox.
 - Withdraw the Antigravity (`agy`) bridge and park Gemini support. Delegating
   turns to another agent could not be made to behave like a model behind Codex,
   and a prompt-level tool protocol is not a foundation worth carrying. A saved

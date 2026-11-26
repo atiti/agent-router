@@ -322,7 +322,8 @@ def test_monitor_health_supersession_and_cooldown_keep_latest_actionable(team, m
     monkeypatch.setattr(h, "own_terminal", lambda *_: None)
     alerts = ["worker: blocked"]
     monkeypatch.setattr(lifecycle, "poll", lambda *_: {
-        "team": "demo", "checked_at": 1, "alerts": list(alerts)})
+        "team": "demo", "checked_at": 1, "alerts": list(alerts),
+        "notification_alerts": list(alerts)})
     lifecycle.monitor("demo", False, True, 900, 300, 30)
     first = snapshot()["events"][0]["id"]
     alerts.append("worker: checkpoint overdue")
