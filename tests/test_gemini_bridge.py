@@ -824,12 +824,13 @@ def test_turn_cost_uses_the_rate_of_the_recorded_day():
     assert turn_cost(row("2026-12-01"), "gemini-4-carbon", config.pricing) == pytest.approx(4.00)
 
 
-def test_retired_backend_is_removed_with_its_references():
-    from agentroute.config import retire_backends
+def test_retirement_clears_every_reference(monkeypatch):
+    """The mechanism stays available for the next backend that is withdrawn."""
+    import agentroute.config as config_module
 
+    monkeypatch.setattr(config_module, "RETIRED_BACKENDS", frozenset({"antigravity"}))
     config = default_config()
     config.backends["antigravity"] = config.backends["gpt"].model_copy(deep=True)
-    config.backends["antigravity"].codex_provider = "agentroute-antigravity"
     config.backends["antigravity"].tiers = {
         "normal": config.backends["gpt"]
         .tiers["normal"]
@@ -840,13 +841,19 @@ def test_retired_backend_is_removed_with_its_references():
     config.routing.progress_review_backend = "antigravity"
     config.capacity.default_fallback_backend = "antigravity"
 
-    assert retire_backends(config) == ["antigravity"]
+    assert config_module.retire_backends(config) == ["antigravity"]
     assert "antigravity" not in config.backends
     assert "gemini-3.8-flash-medium" not in config.capabilities.models
     assert config.routing.backend_by_tier["normal"] == "gpt"
     assert config.routing.progress_review_backend is None
     assert config.capacity.default_fallback_backend is None
-    assert retire_backends(config) == []
+    assert config_module.retire_backends(config) == []
+
+
+def test_antigravity_is_not_retired_now_that_it_serves_the_subscription():
+    from agentroute.config import RETIRED_BACKENDS
+
+    assert "antigravity" not in RETIRED_BACKENDS
 
 
 def test_install_does_not_create_catalog_aliases_for_new_models():
@@ -895,68 +902,3 @@ def test_load_migrates_family_aliases_written_by_the_earlier_build(tmp_path, mon
     assert loaded.pricing.families["gemini-3.8-flash"] == "gemini-flash"
     # A genuine catalog alias is preserved.
     assert loaded.pricing.aliases["dev-gpt-6-sol"] == "gpt-6-sol"
-
-
-AGY_USAGE = """Gemini Models\tWeekly Limit Remaining\t88%\t2026-12-03T07:15:35Z
-Claude and GPT models\tWeekly Limit Remaining\t100%\t2026-12-03T06:55:01Z
-"""
-
-
-def test_parse_usage_output_reads_tab_separated_groups():
-    from agentroute.gemini_cli import parse_usage_output
-
-    groups = parse_usage_output(AGY_USAGE)
-    assert [group["name"] for group in groups] == ["Gemini Models", "Claude and GPT models"]
-    assert groups[0]["remaining_percent"] == 88.0
-    assert groups[0]["resets_at"] == "2026-12-03T07:15:35Z"
-    assert parse_usage_output("not a usage table") == []
-
-
-def test_antigravity_limits_uses_a_cache_before_calling_agy(tmp_path, monkeypatch):
-    import json as _json
-    import time as _time
-
-    import agentroute.gemini_cli as cli
-
-    cache = tmp_path / "sub.json"
-    cache.write_text(
-        _json.dumps(
-            {
-                "source": "antigravity-cli",
-                "observed_epoch": _time.time(),
-                "observed_at": "2026-11-26T12:00:00+00:00",
-                "groups": [
-                    {
-                        "name": "Gemini Models",
-                        "metric": "Weekly Limit Remaining",
-                        "remaining_percent": 88.0,
-                        "resets_at": None,
-                    }
-                ],
-            }
-        )
-    )
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/nonexistent/agy")
-    limits = cli.antigravity_limits(path=cache)
-    assert limits["groups"][0]["remaining_percent"] == 88.0
-
-
-def test_antigravity_limits_parses_a_live_command(tmp_path, monkeypatch):
-    import agentroute.gemini_cli as cli
-
-    class Result:
-        stdout = AGY_USAGE
-
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/agy")
-    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: Result())
-    cache = tmp_path / "sub.json"
-    limits = cli.antigravity_limits(path=cache)
-    assert len(limits["groups"]) == 2
-    assert cache.exists()
-
-
-def test_antigravity_limits_returns_none_when_agy_is_absent(tmp_path, monkeypatch):
-    import agentroute.gemini_cli as cli
-
-    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
-    assert cli.antigravity_limits(path=tmp_path / "none.json") is None

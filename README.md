@@ -633,6 +633,16 @@ every other backend.
 Full setup, credential, usage-limit, and troubleshooting detail lives in
 [Running Claude models through the bridge](docs/claude-bridge.md).
 
+## Antigravity subscription
+
+`agentroute antigravity install` runs Codex on your Antigravity subscription by
+driving the `agy` CLI through its structured stream, so the existing login and
+weekly allowance are used as-is. Output streams incrementally, token counts are
+recorded in the audit store, and `agentroute capacity status` shows the
+remaining allowance with its reset time. Antigravity executes its own tools, so
+Codex sees a text-only model on this backend. See
+[the Antigravity backend guide](docs/antigravity-bridge.md).
+
 ## Gemini (direct Google API)
 
 `agentroute gemini login` stores a Google OAuth refresh token, and
