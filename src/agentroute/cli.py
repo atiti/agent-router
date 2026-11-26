@@ -969,16 +969,15 @@ def voice_command(
     cwd: Path = typer.Option(Path("."), "--cwd", exists=True, file_okay=False),
 ) -> None:
     """Talk with a dedicated Codex voice thread about your AgentRoute sessions."""
-    from .dashboard import Collector
-    from .voice import TRANSPORT_ERRORS, VoicePilot
+    from .voice_server import serve
 
     try:
-        code = VoicePilot(Collector()).run(cwd.resolve())
-    except TRANSPORT_ERRORS as error:
-        console.print(f"[red]Voice session could not connect: {error}[/red]")
-        code = 1
-    if code:
-        raise typer.Exit(code)
+        serve(cwd.resolve())
+    except KeyboardInterrupt:
+        return
+    except OSError as error:
+        console.print(f"[red]Could not start the local voice page: {error}[/red]")
+        raise typer.Exit(1) from error
 
 
 @app.command("dashboard")

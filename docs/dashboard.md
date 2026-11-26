@@ -163,9 +163,10 @@ dashboard URL or a network bind serves the read-only views.
 ## Voice on the Mac
 
 Run `agentroute voice` in a terminal on the Mac running the shared App Server.
-Enter `/voice` in the dedicated Codex conversation and select your microphone or
-headphones in Codex's voice settings if needed. Speak normally once voice is
-connected. Stop voice with `/voice` or close the conversation to end the pilot.
+Open the printed local link in your Mac browser, click **Start talking**, and
+allow microphone access. Use your usual headphones or speakers and speak
+normally when connected. Keep the voice tab open while you listen. Click
+**End conversation** or close the tab to stop.
 
 Ask “What needs me?”, “What is the release session working on?”, or “Tell the
 release session to verify the checks and report back.” The conversation reads
@@ -174,7 +175,7 @@ blockers and completions. Say “only blockers” or “quiet updates” to chan
 for the current conversation.
 
 Commands address an exact session. A reply follows the existing AgentRoute
-queue and has a receipt. Interrupts use the exact active turn. Herdr Core
+queue and has a receipt. Steering and interrupts use the exact active turn. Herdr Core
 sessions that require their own terminal and Codex approval prompts are
 available through their existing controls. The dedicated conversation uses
 OpenAI for the native voice call, so sign in with a ChatGPT account with Codex

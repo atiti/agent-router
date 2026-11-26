@@ -92,3 +92,59 @@ def test_scopes_tools_to_conductor_and_current_target(monkeypatch):
         "threadId": "work", "expectedTurnId": "next-turn",
         "input": [{"type": "text", "text": "Check CI."}],
     })
+
+
+def test_message_uses_durable_queue_and_original_receipt(monkeypatch, tmp_path):
+    receiver = agent("abcd1234")
+    current = pilot(receiver)
+    monkeypatch.setattr(voice.dashboard_packet_routes, "core_member", lambda _: None)
+    monkeypatch.setattr(voice.dashboard_actions, "preflight", lambda _: None)
+    monkeypatch.setattr(voice, "loaded_ids", lambda _: {"abcd1234"})
+    monkeypatch.setattr(voice.waits, "waits_dir", lambda: tmp_path)
+    monkeypatch.setattr(voice.waits, "ensure_daemon", lambda: True)
+    rpc = Mock()
+    rpc.return_value.__enter__ = Mock(return_value=Mock())
+    rpc.return_value.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(voice, "RpcClient", rpc)
+    first = current.message("test-call", receiver, "Check CI.")
+    retry = current.message("test-call", receiver, "Check CI.")
+    assert first == retry
+    assert first["state"] == "fired"
+    assert len(voice.waits.load()) == 1
+
+
+def test_local_voice_page_requires_token_and_same_origin(tmp_path):
+    import http.client
+    import json
+    import threading
+
+    from agentroute.voice_server import VoiceServer
+
+    with VoiceServer(tmp_path) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        origin = f"http://127.0.0.1:{server.server_port}"
+        client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+        try:
+            client.request("GET", "/")
+            page = client.getresponse()
+            assert page.status == 200
+            assert b"Start talking" in page.read()
+            for headers in ({}, {"X-AgentRoute-Token": server.token,
+                                 "Origin": "http://other.example"}):
+                client.request("POST", "/api/voice", "{}", headers)
+                failed = client.getresponse()
+                assert failed.status == 403
+                failed.read()
+            client.request(
+                "POST", "/api/voice", json.dumps({"action": "status", "session": "missing"}),
+                {"Content-Type": "application/json", "Origin": origin,
+                 "X-AgentRoute-Token": server.token},
+            )
+            missing = client.getresponse()
+            assert missing.status == 410
+            missing.read()
+        finally:
+            client.close()
+            server.shutdown()
+            thread.join()
