@@ -18,6 +18,7 @@ from .shared_server import RpcClient, SharedServerError, socket_path
 from .voice_preferences import CADENCE_SECONDS, DEFAULTS, save_preference
 
 NAMESPACE = "agentroute_voice"
+SESSION_ACTIONS = {"message_session", "steer_session", "interrupt_session"}
 POLL_SECONDS = 2
 SPEECH_INTERVAL = 12
 ATTENTION = {"needs_input", "blocked", "stalled"}
@@ -98,14 +99,22 @@ def describe(agent: dict) -> dict:
 def team_receipt(team: str, message_id: str, entry: dict) -> dict:
     event = entry.get("coordination_event") or {}
     delivery = event.get("delivery") or {}
+    recorded = entry.get("state")
+    if entry.get("acknowledgment") or event.get("state") == "acked":
+        state = "acknowledged"
+    elif recorded in {"unknown", "prepared"}:
+        state = "unconfirmed"
+    elif recorded == "rejected":
+        state = "rejected"
+    elif recorded == "submitted":
+        state = "entered_in_terminal"
+    elif delivery.get("state") == "delivered" or event.get("state") == "delivered":
+        state = "delivered"
+    else:
+        state = "queued"
     return {
-        "id": f"herdr:{team}:{message_id}",
-        "recipient": entry.get("target_thread"),
-        "state": ("acknowledged" if entry.get("acknowledgment") else
-                  "entered_in_terminal" if entry.get("state") == "submitted" else
-                  "unconfirmed" if entry.get("state") in {"unknown", "prepared"} else
-                  "delivered" if delivery.get("state") == "delivered" else "queued"),
-        "hold": entry.get("delivery_hold"),
+        "id": f"herdr:{team}:{message_id}", "recipient": entry.get("target_thread"),
+        "state": state, "hold": entry.get("delivery_hold"),
     }
 
 
@@ -133,10 +142,6 @@ def next_announcements(previous: dict[str, str], agents: dict[str, dict]) -> dic
             label = {"needs_input": "needs your input", "blocked": "is blocked",
                      "stalled": "has gone quiet", "done": "is marked done"}[state]
             updates[thread_id] = f"{title} {label}."
-        elif old_state == "working" and state in {"idle", "waiting"}:
-            last_turn = (agent.get("activity") or {}).get("last_turn") or {}
-            if last_turn.get("outcome") == "completed":
-                updates[thread_id] = f"{title} has a new update."
     return updates
 
 
@@ -174,6 +179,7 @@ class VoicePilot:
         self.last_spoken = 0.0
         self.next_poll = 0.0
         self.last_voice_activity = 0.0
+        self.last_user_speech = 0.0
         self.states: dict[str, str] = {}
         self.progress: dict[str, tuple] = {}
         self.pending: dict[str, str] = {}
@@ -208,8 +214,6 @@ class VoicePilot:
                 else:
                     prefix = updates.get(thread_id) or f"{title}."
                     updates[thread_id] = f'{prefix} "{excerpt}"'
-            elif updates.get(thread_id) == f"{redact(agent['title'], 75)} has a new update.":
-                del updates[thread_id]  # A completed turn alone says nothing about the task result.
             self.progress[thread_id] = (stamp, detail)
         self.progress = {key: value for key, value in self.progress.items() if key in agents}
         for thread_id in self.pending.keys() - updates.keys():
@@ -364,15 +368,24 @@ class VoicePilot:
             }
             self.pending.clear()
             self.live = True
+            self.last_user_speech = 0.0
             self.last_spoken = time.monotonic()
         elif method in {"thread/realtime/transcript/delta", "thread/realtime/transcript/done",
                         "thread/realtime/item/transcript/delta"}:
             self.last_voice_activity = time.monotonic()
+            if (method == "thread/realtime/transcript/done"
+                    and params.get("role") == "user" and str(params.get("text", "")).strip()):
+                self.last_user_speech = self.last_voice_activity
         elif method in {"thread/realtime/closed", "thread/realtime/error"}:
             self.live = False
             self.pending.clear()
         elif method == "item/tool/call":
             try:
+                if params.get("tool") in SESSION_ACTIONS and (
+                    not self.live or not self.last_user_speech
+                    or time.monotonic() - self.last_user_speech > 120
+                ):
+                    raise ValueError("Ask for the instruction again during this voice call.")
                 result, success = self.dispatch(params), True
             except (ValueError, KeyError, BadParameter,
                     dashboard_actions.ActionError, waits.WaitError) as error:
