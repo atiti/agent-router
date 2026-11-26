@@ -16,6 +16,45 @@ agentroute gemini install
 one live prompt. `install` discovers real model IDs, registers the backend and
 starts a launchd agent (or systemd user unit) on `127.0.0.1:8817`.
 
+## Why a separate OAuth client
+
+The Antigravity CLI already holds a Google OAuth credential in the macOS
+keychain (`service=gemini`), including a refresh token. Reusing it for the
+Gemini API does not work, and the reason is in the token itself:
+
+| Credential | Scopes | Usable for |
+| --- | --- | --- |
+| Antigravity keychain token | `aicode`, `cclog`, `cloud-platform`, `experimentsandconfigs`, userinfo | Antigravity's own Code Assist endpoint |
+| OAuth client with `generative-language` | `generative-language` | `generativelanguage.googleapis.com` |
+
+Sending the Antigravity token to the Gemini API returns
+`403 ACCESS_TOKEN_SCOPE_INSUFFICIENT`. A refresh token cannot gain a scope
+after the fact: scopes are granted at consent time, and consent only offers the
+scopes registered on the client's consent screen. Antigravity's client belongs
+to Google, so its consent screen cannot be changed from here.
+
+The fallback — calling the Code Assist endpoint Antigravity uses with the
+Antigravity token — is gated by product. `retrieveUserQuota`,
+`retrieveUserQuotaSummary` and `generateContent` all answer
+`403 SUBSCRIPTION_REQUIRED (#3501)` unless the request also presents Google's
+own client identity; switching the user agent to their internal product name
+routes to a different backend entirely. Getting past that would mean
+impersonating Google's client. It is also the wrong billing path: the Gemini API
+charges the project that owns the OAuth client, so a reused Antigravity client
+would bill Google's project rather than your own.
+
+Two options avoid creating an app of your own:
+
+- **Vertex AI** with an existing Google token that already carries
+  `cloud-platform` (for example the Gemini CLI credential). Set the Vertex
+  transport below; usage is billed to your own project, and no new OAuth client
+  is involved. The project needs the Vertex AI API enabled and billing set up.
+- **Keep Antigravity for subscription work** and use the Gemini API backend only
+  where its own quota is acceptable.
+
+`agentroute gemini usage` still shows the Antigravity allowance, read through
+`agy -p "/usage"` — see [Usage, spend and budgets](#usage-spend-and-budgets).
+
 ## One-time OAuth client
 
 The Gemini API authenticates OAuth tokens and bills usage to the project that
@@ -101,6 +140,21 @@ Gemini entries are family keys (`gemini-pro`, `gemini-flash`,
 [Google's pricing page](https://ai.google.dev/gemini-api/docs/pricing) and
 checked on 2026-11-26. `agentroute gemini install` aliases every discovered
 model ID to its family, so a new version cannot silently report zero cost.
+
+Antigravity's own allowance is shown separately, because it is a different
+quota with a different owner:
+
+```text
+Antigravity subscription (agy /usage, 2026-11-26T11:58Z):
+  Gemini Models              88.0% remaining · resets 2026-12-03T07:15:35Z
+  Claude and GPT models     100.0% remaining · resets 2026-12-03T06:55:01Z
+```
+
+That number is read by asking `agy` for its own `/usage` output, cached for ten
+minutes. It costs no model turn and does not impersonate anything: the request
+stays inside Google's client. It is informational for the Antigravity
+subscription and does not describe the `gemini` backend's spend, which is what
+the budget line above reports.
 
 Because Google changes these numbers on announced dates, an entry may carry
 `scheduled` changes with an `effective_from` date; a turn is priced at the rate

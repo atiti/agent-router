@@ -11,6 +11,7 @@ import os
 import platform
 import plistlib
 import secrets
+import shutil
 import subprocess
 import threading
 import urllib.error
@@ -437,6 +438,99 @@ def usage_totals(rows, config, *, now: datetime.datetime | None = None) -> dict[
     }
 
 
+SUBSCRIPTION_CACHE = "gemini-subscription.json"
+
+
+def subscription_cache_path() -> Path:
+    home = Path(os.environ.get("AGENTROUTE_HOME") or (Path.home() / ".agentroute"))
+    return home / SUBSCRIPTION_CACHE
+
+
+def parse_usage_output(text: str) -> list[dict[str, object]]:
+    """Parse `agy -p "/usage"` rows: name, metric, remaining percent, reset."""
+    groups: list[dict[str, object]] = []
+    for line in text.splitlines():
+        fields = [part.strip() for part in line.split("\t")]
+        if len(fields) < 3:
+            continue
+        name, metric = fields[0], fields[1]
+        percent_text = fields[2].rstrip("%")
+        try:
+            remaining = float(percent_text)
+        except ValueError:
+            continue
+        groups.append(
+            {
+                "name": name,
+                "metric": metric,
+                "remaining_percent": remaining,
+                "resets_at": fields[3] if len(fields) > 3 and fields[3] else None,
+            }
+        )
+    return groups
+
+
+def antigravity_limits(
+    *, max_age: float = 600.0, path: Path | None = None
+) -> dict[str, object] | None:
+    """Read the Antigravity subscription allowance through agy's own command.
+
+    Google gates the Code Assist quota API to its own clients, so the only
+    legitimate source is Antigravity itself. Asking agy for its usage keeps the
+    call inside Google's client, costs no model turn, and is cached because the
+    CLI takes a few seconds to start.
+    """
+    import time
+
+    path = path or subscription_cache_path()
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8"))
+        if time.time() - float(cached.get("observed_epoch") or 0) < max_age:
+            return cached
+    except (OSError, ValueError, TypeError):
+        pass
+    binary = shutil.which("agy")
+    if not binary:
+        return None
+    try:
+        result = subprocess.run(
+            [binary, "-p", "/usage"],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            cwd=os.environ.get("HOME") or "/tmp",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    groups = parse_usage_output(result.stdout)
+    if not groups:
+        return None
+    observed = datetime.datetime.now(datetime.timezone.utc)
+    payload = {
+        "source": "antigravity-cli",
+        "observed_at": observed.isoformat(),
+        "observed_epoch": observed.timestamp(),
+        "groups": groups,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    return payload
+
+
+def _limits_lines(limits: dict[str, object]) -> list[str]:
+    lines = []
+    for group in limits.get("groups") or []:
+        reset = group.get("resets_at")
+        line = f"    {str(group.get('name')):26} {group.get('remaining_percent')}% remaining"
+        if reset:
+            line += f" · resets {reset}"
+        lines.append(line)
+    return lines
+
+
 def _tokens(value: int) -> str:
     return f"{value / 1_000_000:.2f}M" if value >= 1_000_000 else f"{value:,}"
 
@@ -456,8 +550,10 @@ def usage_command(
     daily_budget = backend.daily_budget_usd if backend else None
     monthly_budget = backend.monthly_budget_usd if backend else None
     today, month = totals["today"], totals["month"]
+    limits = antigravity_limits()
     report = {
         "transport": transport(),
+        "antigravity_subscription": limits,
         "today": today,
         "month": month,
         "daily_budget_usd": daily_budget,
@@ -512,10 +608,19 @@ def usage_command(
             + ", ".join(totals["unpriced"])
             + " (add a rate in ~/.agentroute/config.yaml under pricing.models)"
         )
-    typer.echo(
-        "  Google does not publish remaining quota; spend budgets above are the "
-        "local guard, and a 429 surfaces Google's own retry window."
-    )
+    if limits:
+        typer.echo(f"  Antigravity subscription (agy /usage, {limits['observed_at'][:16]}Z):")
+        for line in _limits_lines(limits):
+            typer.echo(line)
+        typer.echo(
+            "    Informational: this is the Antigravity allowance, not the Gemini API "
+            "backend above. Google gates that quota to its own clients."
+        )
+    else:
+        typer.echo(
+            "  Google does not publish Gemini API quota; spend budgets above are the "
+            "local guard, and a 429 surfaces Google's own retry window."
+        )
 
 
 @app.command("serve")
