@@ -719,7 +719,8 @@ def test_every_tier_model_is_priced_after_install():
     }
     ensure_backend(config, 8817, models)
     for model in models.values():
-        assert config.pricing.aliases[model] == price_family(model)
+        assert config.pricing.families[model] == price_family(model)
+        assert model not in config.pricing.aliases
         assert config.capabilities.models[model].pricing_model == price_family(model)
     from agentroute.pricing import canonical_model
 
@@ -846,3 +847,28 @@ def test_retired_backend_is_removed_with_its_references():
     assert config.routing.progress_review_backend is None
     assert config.capacity.default_fallback_backend is None
     assert retire_backends(config) == []
+
+
+def test_install_does_not_create_catalog_aliases_for_new_models():
+    """A pricing family must never become a Codex catalog alias.
+
+    Catalog aliases copy metadata from a real catalog model, so pointing one at
+    ``gemini-flash`` made `sync_codex_providers` fail with "catalog has no
+    metadata". Unknown Gemini IDs are synthesized from their declared limits.
+    """
+    from agentroute.providers import _write_model_catalog  # noqa: F401
+
+    config = default_config()
+    ensure_backend(config, 8817, {"normal": "gemini-3.8-flash"})
+    assert "gemini-3.8-flash" not in config.pricing.aliases
+    assert config.pricing.families["gemini-3.8-flash"] == "gemini-flash"
+
+
+def test_install_repairs_a_config_polluted_by_family_aliases():
+    """A config written by the earlier build must not keep failing to sync."""
+    config = default_config()
+    config.pricing.aliases["gemini-2.5-flash"] = "gemini-flash"
+    config.pricing.families.pop("gemini-2.5-flash", None)
+    ensure_backend(config, 8817, {"normal": "gemini-3.8-flash"})
+    assert "gemini-2.5-flash" not in config.pricing.aliases
+    assert config.pricing.families["gemini-3.8-flash"] == "gemini-flash"
