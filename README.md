@@ -633,6 +633,21 @@ every other backend.
 Full setup, credential, usage-limit, and troubleshooting detail lives in
 [Running Claude models through the bridge](docs/claude-bridge.md).
 
+## Gemini (direct Google API)
+
+`agentroute gemini login` stores a Google OAuth refresh token, and
+`agentroute gemini install` runs a loopback bridge on `127.0.0.1:8817` that calls
+Gemini's `generateContent` API itself. Nothing shells out to Antigravity or any
+other CLI. Tool declarations become native Gemini `functionDeclarations`, and
+Gemini's `functionCall` parts return as Codex tool calls, so `@gemini` runs with
+the same sandbox, approvals, and tool authority as every other backend.
+
+Model tiers are discovered from the account rather than hardcoded, because
+Google renames and retires models. `agentroute gemini check` refreshes the token,
+lists the models the credential may use, and sends one live prompt.
+The alternative Vertex AI transport reuses an existing `cloud-platform` token.
+See [Gemini setup, transports, and troubleshooting](docs/gemini-bridge.md).
+
 ## Grok subscription
 
 With the official Grok CLI installed and signed in (`grok login`), run

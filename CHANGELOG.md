@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a direct Gemini provider (`agentroute gemini`). The bridge calls Google's
+  `generateContent` API itself with an OAuth refresh token, converts native
+  `functionCall` parts into Codex tool calls, and discovers the account's real
+  model IDs instead of hardcoding them. A Vertex AI transport reuses an existing
+  `cloud-platform` token.
 - Preserve unpaired tool outputs as labeled history when replaying Codex turns through Claude.
 - Add `agentroute dashboard`, a local read-only page that shows each agent's state, tool
   calls, goal, tokens, waits and work packets as they change.

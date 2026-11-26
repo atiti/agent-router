@@ -1,0 +1,434 @@
+"""Gemini API backend: OAuth login, bridge lifecycle, and Codex registration."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import http.server
+import json
+import os
+import platform
+import plistlib
+import secrets
+import subprocess
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+import typer
+
+from .bridge_service import _agentroute_executable, wait_for_health
+from .config import (
+    ExecutionBackendConfig,
+    ModelCapabilities,
+    ModelTarget,
+    load_config,
+    save_config,
+)
+from .gemini_bridge import (
+    AUTHORIZE_URL,
+    CONTEXT_WINDOW,
+    GENERATIVE_SCOPE,
+    TOKEN_URL,
+    CredentialError,
+    choose_models,
+    credential_for_transport,
+    credential_path,
+    environment,
+    list_models,
+    model_map,
+    probe,
+    save_model_map,
+    serve,
+    transport,
+    vertex_project,
+)
+from .providers import sync_codex_providers
+
+DEFAULT_PORT = 8817
+LOGIN_PORT = 8818
+LABEL = "com.agentroute.gemini-bridge"
+UNIT = "agentroute-gemini-bridge.service"
+TIER_EFFORT = {"fast": "low", "normal": "medium", "smart": "high", "max": "xhigh"}
+
+app = typer.Typer(no_args_is_help=True, help="Route Codex through Google Gemini with OAuth.")
+
+_CALLBACK: dict[str, str] = {}
+_CALLBACK_EVENT = threading.Event()
+
+
+class _CallbackHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *_args):
+        return
+
+    def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler contract
+        params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        if "code" in params:
+            _CALLBACK["state"] = params.get("state", [""])[0]
+            _CALLBACK["code"] = params["code"][0]
+            body = b"AgentRoute: sign-in complete. You can close this tab."
+        elif "error" in params:
+            _CALLBACK["error"] = params["error"][0]
+            body = b"AgentRoute: sign-in was not completed."
+        else:
+            body = b"AgentRoute: waiting for Google's response."
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        _CALLBACK_EVENT.set()
+
+
+def _pkce_pair() -> tuple[str, str]:
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(48)).decode().rstrip("=")
+    digest = hashlib.sha256(verifier.encode()).digest()
+    return verifier, base64.urlsafe_b64encode(digest).decode().rstrip("=")
+
+
+def unit_path() -> Path:
+    if platform.system() == "Darwin":
+        return Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
+    return Path.home() / ".config/systemd/user" / UNIT
+
+
+def ensure_backend(config, port: int = DEFAULT_PORT, models: dict[str, str] | None = None) -> bool:
+    """Register the Gemini backend without changing default tier routing."""
+    models = models or model_map()
+    created = "gemini" not in config.backends
+    tiers = {
+        tier: ModelTarget(
+            model=model,
+            reasoning_effort=TIER_EFFORT[tier],
+            context_window=CONTEXT_WINDOW,
+        )
+        for tier, model in models.items()
+        if tier in TIER_EFFORT
+    }
+    if created:
+        config.backends["gemini"] = ExecutionBackendConfig(
+            enabled=True,
+            codex_provider="agentroute-gemini",
+            display_name="Google Gemini (OAuth)",
+            base_url=f"http://127.0.0.1:{port}/v1",
+            tool_compatibility="functions_and_apply_patch_preserve_reasoning",
+            review_model=models.get("fast") or models["normal"],
+            tiers=tiers,
+        )
+    else:
+        backend = config.backends["gemini"]
+        backend.enabled = True
+        backend.base_url = f"http://127.0.0.1:{port}/v1"
+        backend.tiers = tiers
+    for model in models.values():
+        declared = config.capabilities.models.get(model)
+        update = {
+            "tool_calling": "full",
+            "reasoning": True,
+            "vision": True,
+            "context_window": CONTEXT_WINDOW,
+        }
+        config.capabilities.models[model] = (
+            declared.model_copy(update=update) if declared else ModelCapabilities(**update)
+        )
+    return created
+
+
+def discover() -> tuple[dict[str, str], list[str]]:
+    """Ask Google which chat models this credential may use, then map tiers."""
+    token = credential_for_transport().token()
+    available = list_models(token)
+    models = choose_models(available)
+    save_model_map(models, [name.rsplit("/", 1)[-1] for name in available])
+    return models, available
+
+
+def _exchange(code: str, verifier: str, client_id: str, client_secret: str, redirect: str) -> dict:
+    body = urllib.parse.urlencode(
+        {
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code_verifier": verifier,
+            "grant_type": "authorization_code",
+            "redirect_uri": redirect,
+        }
+    ).encode()
+    request = urllib.request.Request(
+        TOKEN_URL,
+        data=body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "user-agent": "agentroute-gemini",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        raise typer.BadParameter(
+            f"Google rejected the authorization code ({exc.code}): {detail[:200]}"
+        ) from exc
+
+
+@app.command("login")
+def login_command(
+    client_id: str = typer.Option(None, "--client-id", envvar="AGENTROUTE_GEMINI_CLIENT_ID"),
+    client_secret: str = typer.Option(
+        None, "--client-secret", envvar="AGENTROUTE_GEMINI_CLIENT_SECRET"
+    ),
+    port: int = typer.Option(LOGIN_PORT, help="Loopback port for the OAuth callback."),
+) -> None:
+    """Authorize Gemini API access with Google OAuth and store the refresh token."""
+    if not client_id or not client_secret:
+        typer.echo(
+            "A Desktop OAuth client is required once.\n"
+            "  1. Open https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com\n"
+            "     and enable the Generative Language API.\n"
+            "  2. Open https://console.cloud.google.com/apis/credentials and create an\n"
+            "     OAuth client of type 'Desktop app'.\n"
+            "  3. Rerun: agentroute gemini login --client-id ID --client-secret SECRET\n"
+            "These values identify your project. Gemini OAuth usage is billed there."
+        )
+        raise typer.Exit(2)
+    _CALLBACK.clear()
+    _CALLBACK_EVENT.clear()
+    verifier, challenge = _pkce_pair()
+    state = secrets.token_urlsafe(16)
+    redirect = f"http://127.0.0.1:{port}/oauth2callback"
+    try:
+        server = http.server.HTTPServer(("127.0.0.1", port), _CallbackHandler)
+    except OSError as exc:
+        typer.echo(f"cannot listen on 127.0.0.1:{port} for the callback: {exc}")
+        raise typer.Exit(1) from exc
+    threading.Thread(target=server.handle_request, daemon=True).start()
+    query = urllib.parse.urlencode(
+        {
+            "client_id": client_id,
+            "redirect_uri": redirect,
+            "response_type": "code",
+            "scope": GENERATIVE_SCOPE,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "access_type": "offline",
+            "prompt": "consent",
+            "include_granted_scopes": "true",
+            "state": state,
+        }
+    )
+    typer.echo("Open this URL and approve Gemini access:\n")
+    typer.echo(f"{AUTHORIZE_URL}?{query}\n")
+    try:
+        if not _CALLBACK_EVENT.wait(timeout=600):
+            typer.echo("Timed out waiting for the Google sign-in.")
+            raise typer.Exit(1)
+    finally:
+        server.server_close()
+    if "code" not in _CALLBACK:
+        typer.echo(f"Sign-in failed: {_CALLBACK.get('error', 'no authorization code')}")
+        raise typer.Exit(1)
+    if _CALLBACK.get("state") != state:
+        typer.echo("Sign-in failed: the callback state did not match this request.")
+        raise typer.Exit(1)
+    payload = _exchange(_CALLBACK["code"], verifier, client_id, client_secret, redirect)
+    if not payload.get("refresh_token"):
+        typer.echo("Google returned no refresh token; rerun with a fresh consent.")
+        raise typer.Exit(1)
+    path = credential_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": payload["refresh_token"],
+                "scope": payload.get("scope") or GENERATIVE_SCOPE,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+    typer.echo(f"stored the Gemini OAuth credential in {path}")
+
+
+@app.command("check")
+def check_command(
+    inference: bool = typer.Option(
+        True, "--inference/--no-inference", help="Send one minimal prompt to prove inference."
+    ),
+) -> None:
+    """Verify the credential, resolve models, and optionally run one live turn."""
+    try:
+        credential_for_transport().check()
+    except CredentialError as exc:
+        typer.echo(f"Gemini credential unavailable: {exc}")
+        raise typer.Exit(1) from exc
+    typer.echo(f"transport: {transport()}")
+    if transport() == "vertex":
+        typer.echo(f"project:   {vertex_project()}")
+    else:
+        typer.echo(f"credential: {credential_path()}")
+    models = model_map()
+    for tier, model in models.items():
+        typer.echo(f"{tier:6} {model}")
+    if inference:
+        model = models["normal"]
+        try:
+            text = probe(model)
+        except CredentialError as exc:
+            typer.echo(f"inference failed: {exc}")
+            raise typer.Exit(1) from exc
+        typer.echo(f"inference: {model} replied {text.strip()[:60]!r}")
+
+
+@app.command("models")
+def models_command(
+    refresh: bool = typer.Option(False, "--refresh", help="Query Google again."),
+) -> None:
+    """List available Gemini chat models and the tier mapping."""
+    available: list[str] = []
+    if refresh:
+        try:
+            models, available = discover()
+        except CredentialError as exc:
+            typer.echo(f"cannot discover models: {exc}")
+            raise typer.Exit(1) from exc
+    else:
+        models = model_map()
+    for tier, model in models.items():
+        typer.echo(f"{tier:6} {model}")
+    if available:
+        typer.echo("\navailable:")
+        for name in sorted({entry.rsplit("/", 1)[-1] for entry in available}):
+            typer.echo(f"  {name}")
+
+
+@app.command("serve")
+def serve_command(
+    port: int = typer.Option(DEFAULT_PORT, help="Loopback port to bind."),
+    host: str = typer.Option("127.0.0.1", help="Loopback host to bind."),
+) -> None:
+    """Run the Gemini bridge in the foreground."""
+    serve(host=host, port=port)
+
+
+def service_definition(port: int) -> dict:
+    log_path = Path.home() / ".agentroute" / "gemini-bridge.log"
+    values = environment()
+    definition = {
+        "Label": LABEL,
+        "ProgramArguments": [
+            str(_agentroute_executable()),
+            "gemini",
+            "serve",
+            "--port",
+            str(port),
+        ],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ProcessType": "Background",
+        "StandardOutPath": str(log_path),
+        "StandardErrorPath": str(log_path),
+    }
+    if values:
+        # launchd does not inherit the shell environment that chose the transport.
+        definition["EnvironmentVariables"] = values
+    return definition
+
+
+def systemd_unit_text(port: int) -> str:
+    lines = [
+        "[Unit]",
+        "Description=AgentRoute Gemini bridge (Google OAuth to Responses)",
+        "After=network-online.target",
+        "",
+        "[Service]",
+        "Type=simple",
+    ]
+    lines.extend(f"Environment={key}={value}" for key, value in environment().items())
+    lines.extend(
+        [
+            f"ExecStart={_agentroute_executable()} gemini serve --port {port}",
+            "Restart=always",
+            "RestartSec=3",
+            "",
+            "[Install]",
+            "WantedBy=default.target",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _run(*command: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(list(command), capture_output=True, text=True, check=check)
+
+
+def load_service(path: Path) -> None:
+    if platform.system() == "Darwin":
+        _run("launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}")
+        _run("launchctl", "bootstrap", f"gui/{os.getuid()}", str(path), check=True)
+        return
+    _run("systemctl", "--user", "daemon-reload", check=True)
+    _run("systemctl", "--user", "enable", "--now", UNIT, check=True)
+
+
+def unload_service() -> None:
+    if platform.system() == "Darwin":
+        _run("launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}")
+        return
+    _run("systemctl", "--user", "disable", "--now", UNIT)
+
+
+@app.command("install")
+def install_command(
+    port: int = typer.Option(DEFAULT_PORT, help="Loopback port to bind."),
+    start: bool = typer.Option(
+        True, "--service/--no-service", help="Start the background service."
+    ),
+) -> None:
+    """Register the backend, resolve real model IDs, and start the bridge."""
+    try:
+        credential_for_transport().check()
+        models, available = discover()
+    except CredentialError as exc:
+        typer.echo(f"Gemini credential unavailable: {exc}")
+        raise typer.Exit(1) from exc
+    config = load_config()
+    ensure_backend(config, port, models)
+    save_config(config)
+    sync_codex_providers(config)
+    typer.echo(f"registered backend `gemini` at http://127.0.0.1:{port}/v1")
+    for tier, model in models.items():
+        typer.echo(f"  {tier:6} {model}")
+    typer.echo(f"discovered {len({name.rsplit('/', 1)[-1] for name in available})} chat models")
+    if not start:
+        return
+    path = unit_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if platform.system() == "Darwin":
+        path.write_bytes(plistlib.dumps(service_definition(port)))
+    else:
+        path.write_text(systemd_unit_text(port))
+    load_service(path)
+    health = wait_for_health(port, host="127.0.0.1", timeout=20)
+    if health.status == "unreachable":
+        typer.echo(f"installed at {path}, but the bridge did not answer: {health.detail}")
+        raise typer.Exit(1)
+    typer.echo(f"bridge healthy at http://127.0.0.1:{port} ({health.detail})")
+
+
+@app.command("uninstall")
+def uninstall_command() -> None:
+    """Stop the bridge service and remove its unit."""
+    unload_service()
+    path = unit_path()
+    if path.exists():
+        path.unlink()
+    typer.echo(f"stopped Gemini bridge ({path})")
