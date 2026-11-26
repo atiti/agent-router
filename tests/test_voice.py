@@ -148,3 +148,45 @@ def test_local_voice_page_requires_token_and_same_origin(tmp_path):
             client.close()
             server.shutdown()
             thread.join()
+
+
+def test_voice_transcript_persists_completed_dialogue(monkeypatch, tmp_path):
+    import json
+    import threading
+    from concurrent.futures import Future
+
+    from agentroute import voice_server
+
+    monkeypatch.setattr(voice_server, "agentroute_home", lambda: tmp_path)
+    monkeypatch.setattr(threading.Thread, "start", lambda self: None)
+    session = voice_server.VoiceSession(tmp_path, "offer")
+    session.answer = Future()
+    session.answer.set_result("answer")
+    session.last_seen = voice_server.time.monotonic()
+    pilot = Mock()
+    pilot.thread_id = "voice"
+    pilot.update = Mock()
+    client = Mock()
+    events = [
+        {"method": "thread/realtime/transcript/done",
+         "params": {"threadId": "other", "role": "user", "text": "ignore"}},
+        {"method": "thread/realtime/transcript/done",
+         "params": {"threadId": "voice", "role": "user", "text": "How is it going?"}},
+        {"method": "thread/realtime/transcript/done",
+         "params": {"threadId": "voice", "role": "assistant", "text": "Still working."}},
+    ]
+
+    def receive(_client):
+        if events:
+            return events.pop(0)
+        session.stop.set()
+        return None
+
+    monkeypatch.setattr(session, "receive", receive)
+    session.pump(client, pilot)
+    records = [json.loads(line) for line in session.transcript.read_text().splitlines()]
+    assert [(r["role"], r["text"]) for r in records] == [
+        ("user", "How is it going?"), ("assistant", "Still working."),
+    ]
+    assert session.transcript.stat().st_mode & 0o777 == 0o600
+    assert session.transcript.parent.stat().st_mode & 0o777 == 0o700

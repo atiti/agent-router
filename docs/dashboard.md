@@ -180,3 +180,5 @@ sessions that require their own terminal and Codex approval prompts are
 available through their existing controls. The dedicated conversation uses
 the GPT route and the OpenAI voice call. Sign in with a ChatGPT account with
 Codex voice access. The pilot uses the shared owner already running on the Mac.
+
+Voice conversations are saved as timestamped JSONL files in `~/.agentroute/voice-transcripts/`. Each line contains the time, speaker, and completed transcript text. The terminal prints the file path when a conversation starts. The directory and files are private to your account.
