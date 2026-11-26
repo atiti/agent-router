@@ -775,6 +775,28 @@ def default_config() -> AppConfig:
     return config
 
 
+# Published Gemini price keys. An alias pointing at one of these cannot resolve
+# to catalog metadata, so it belongs in `pricing.families` instead.
+GEMINI_PRICE_KEYS = frozenset({"gemini-pro", "gemini-flash", "gemini-flash-lite"})
+
+
+def repair_price_families(config: AppConfig) -> list[str]:
+    """Move Gemini price keys out of `aliases`, which drives catalog metadata.
+
+    An earlier build recorded `gemini-<version>` as an alias of its price key.
+    Because `aliases` also supplies catalog descriptors, provider sync then
+    failed with "catalog has no metadata". Repair the saved config on load so an
+    existing install heals without hand editing.
+    """
+    moved: list[str] = []
+    for alias, target in list(config.pricing.aliases.items()):
+        if alias.startswith("gemini-") and target in GEMINI_PRICE_KEYS:
+            config.pricing.aliases.pop(alias)
+            config.pricing.families.setdefault(alias, target)
+            moved.append(alias)
+    return moved
+
+
 RETIRED_BACKENDS = frozenset({"antigravity"})
 
 
@@ -812,6 +834,7 @@ def retire_backends(config: AppConfig) -> list[str]:
 def _with_default_backends(config: AppConfig) -> AppConfig:
     """Add backend defaults and migrate former bundled GPT SMART/MAX targets."""
     defaults = default_config()
+    repair_price_families(config)
     retire_backends(config)
     # The normal Codex credential is deliberately an implicit account.  Keep it
     # available for old installations instead of forcing users to move or copy
