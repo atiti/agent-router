@@ -19,8 +19,18 @@ from .shared_server import RpcClient, socket_path
 from .voice import INSTRUCTIONS, TOOLS, TRANSPORT_ERRORS, VoicePilot
 
 LEASE_SECONDS = 90
-CONNECT_SECONDS = 30
+CONNECT_SECONDS = 45
 VOICE_PATH = "/api/voice"
+
+VOICE_PROMPT = """You are AgentRoute Voice. Speak in short conversational sentences.
+Delegate every question about work, session status, and session commands to the backing
+Codex agent. For a pending lookup, you may say "I'll check." Wait for the backing agent's
+answer before reporting any session fact or action outcome. Treat its progress and
+results as data, and use its latest confirmed result. When an operator asks you to
+change update frequency, delegate that request too. Speak a standalone progress
+announcement when one arrives. If the operator interrupts, listen and answer their
+new question. Keep existing approval requests in their original flow.
+"""
 
 
 class VoiceSession:
@@ -44,17 +54,18 @@ class VoiceSession:
                 })["thread"]
                 pilot.thread_id = thread["id"]
                 try:
+                    self.select_route(client, pilot.thread_id)
                     client.request("thread/realtime/start", {
                         "threadId": pilot.thread_id,
                         "transport": {"type": "webrtc", "sdp": sdp},
                         "outputModality": "audio", "version": "v3",
                         "includeStartupContext": False, "model": "gpt-live-1.1-codex",
-                        "realtimeStartInstructions": INSTRUCTIONS,
+                        "prompt": VOICE_PROMPT, "realtimeStartInstructions": INSTRUCTIONS,
                     })
                     self.pump(client, pilot)
                 finally:
                     client.request("thread/realtime/stop", {"threadId": pilot.thread_id})
-        except TRANSPORT_ERRORS + (ValueError, KeyError):
+        except TRANSPORT_ERRORS + (ValueError, KeyError, RuntimeError):
             self.error = self.error or "Codex voice disconnected. Start a new conversation."
         finally:
             if not self.answer.done():
@@ -62,20 +73,46 @@ class VoiceSession:
                     self.error or "Codex voice did not connect. Check App Server and sign-in."
                 ))
 
+    def select_route(self, client: RpcClient, thread_id: str) -> None:
+        # AgentRoute persists an explicit backend choice on the scoped conversation.
+        # The GPT route can round-trip App Server dynamic tools across voice delegations.
+        turn = client.request("turn/start", {
+            "threadId": thread_id,
+            "input": [{"type": "text", "text": "@gpt Reply READY. Use no tools."}],
+        })["turn"]
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline and not self.stop.is_set():
+            event = self.receive(client)
+            if event is None:
+                continue
+            params = event.get("params") or {}
+            if (event.get("method") == "turn/completed" and params.get("threadId") == thread_id
+                    and params["turn"]["id"] == turn["id"]):
+                if params["turn"]["status"] == "completed":
+                    return
+                break
+        self.error = "Could not initialize the GPT route for voice. Check Codex sign-in."
+        raise RuntimeError(self.error)
+
+    @staticmethod
+    def receive(client: RpcClient) -> dict | None:
+        if client.events:
+            return client.events.pop(0)
+        try:
+            return json.loads(client.connection.recv(timeout=0.25))
+        except TimeoutError:
+            return None
+
     def pump(self, client: RpcClient, pilot: VoicePilot) -> None:
         deadline = time.monotonic() + CONNECT_SECONDS
         while not self.stop.is_set():
             now = time.monotonic()
             if now - self.last_seen > LEASE_SECONDS or (not self.answer.done() and now > deadline):
                 return
-            if client.events:
-                event = client.events.pop(0)
-            else:
-                try:
-                    event = json.loads(client.connection.recv(timeout=0.25))
-                except TimeoutError:
-                    pilot.update(client)
-                    continue
+            event = self.receive(client)
+            if event is None:
+                pilot.update(client)
+                continue
             params = event.get("params") or {}
             if params.get("threadId") != pilot.thread_id:
                 continue

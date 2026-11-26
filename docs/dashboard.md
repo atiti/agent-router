@@ -178,5 +178,5 @@ Commands address an exact session. A reply follows the existing AgentRoute
 queue and has a receipt. Steering and interrupts use the exact active turn. Herdr Core
 sessions that require their own terminal and Codex approval prompts are
 available through their existing controls. The dedicated conversation uses
-OpenAI for the native voice call, so sign in with a ChatGPT account with Codex
-voice access. The pilot uses the shared owner already running on the Mac.
+the GPT route and the OpenAI voice call. Sign in with a ChatGPT account with
+Codex voice access. The pilot uses the shared owner already running on the Mac.
