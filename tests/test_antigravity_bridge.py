@@ -243,8 +243,9 @@ def test_catalog_withdraws_tools_for_text_only_models():
     }
     capabilities = config.capabilities.models["gemini-3.8-flash-low"]
     _narrow_tool_surface(model, capabilities)
-    assert model["apply_patch_tool_type"] is None
-    assert model["web_search_tool_type"] is None
+    # The installed runtime rejects null for these fields, so they must be absent.
+    assert "apply_patch_tool_type" not in model
+    assert "web_search_tool_type" not in model
     assert model["supports_parallel_tool_calls"] is False
     assert model["context_window"] == 1_000_000
 
@@ -261,6 +262,42 @@ def test_catalog_leaves_tool_capable_models_alone():
     model = {"apply_patch_tool_type": "freeform", "supports_search_tool": True}
     _narrow_tool_surface(model, capabilities)
     assert model["apply_patch_tool_type"] == "freeform"
+
+
+def test_generated_descriptors_omit_null_tool_types(tmp_path, monkeypatch):
+    """Codex parses these tool fields as a string or map, so null breaks loading."""
+    from agentroute import providers
+
+    config = default_config()
+    ensure_backend(config, 8816)
+    base = {
+        "models": [
+            {
+                "slug": "gemini-3.8-flash-low",
+                "context_window": 32000,
+                "apply_patch_tool_type": "freeform",
+                "web_search_tool_type": "text_and_image",
+                "supports_parallel_tool_calls": True,
+                "supports_search_tool": True,
+                "availability_nux": None,
+                "default_service_tier": None,
+                "guardian": None,
+            }
+        ]
+    }
+    monkeypatch.setattr(providers, "_installed_codex_catalog", lambda source=None: base)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("")
+    written = providers._write_model_catalog(config, config_path=config_path)
+    emitted = json.loads(written.read_text())
+    gemini = [m for m in emitted["models"] if str(m.get("slug", "")).startswith("gemini")]
+    assert gemini, "expected generated Gemini descriptors"
+    for descriptor in gemini:
+        # Only the tool-type fields must be absent; the runtime applies defaults
+        # for the remaining optional nulls.
+        assert "apply_patch_tool_type" not in descriptor
+        assert "web_search_tool_type" not in descriptor
+        assert descriptor["supports_search_tool"] is False
 
 
 def test_backend_registration_is_idempotent():
