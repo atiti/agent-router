@@ -7,7 +7,7 @@ requests into `generateContent` calls, and returns Gemini's native
 Antigravity, or any other CLI.
 
 ```sh
-agentroute gemini login --client-id ID --client-secret SECRET
+agentroute gemini login
 agentroute gemini check
 agentroute gemini install
 ```
@@ -25,8 +25,9 @@ owns the OAuth client, so a Desktop client is created once:
    <https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com>.
 2. Create an OAuth client of type **Desktop app** in
    <https://console.cloud.google.com/apis/credentials>.
-3. Run `agentroute gemini login --client-id ... --client-secret ...` and approve
-   the printed URL.
+3. Download the client JSON to `~/.agentroute/gemini-oauth-client.json`
+   (or pass `--client-id` and `--client-secret`), run `agentroute gemini login`,
+   and approve the printed URL.
 
 The login uses PKCE, a `state` parameter, and a loopback callback on
 `127.0.0.1:8818`. The refresh token is stored in
