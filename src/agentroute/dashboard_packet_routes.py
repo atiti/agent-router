@@ -131,6 +131,10 @@ def core_member(target: str) -> tuple[str, str, str] | None:
         for member, record in data.get("members", {}).items():
             if record.get("thread") == target:
                 members.append((data["id"], member, data["tui_session"]))
+        if data.get("anchor_thread") == target:
+            bound = (data["id"], "supervisor", data["tui_session"])
+            if bound not in members:
+                members.append(bound)
     if len(members) > 1:
         raise RouteError("This thread has several Herdr team members; reconcile its bindings.")
     return members[0] if members else None

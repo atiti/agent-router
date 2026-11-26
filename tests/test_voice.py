@@ -48,10 +48,8 @@ def test_announces_only_new_work_and_waits_for_pause(monkeypatch):
     assert client.request.call_count == 1
 
 
-def test_announces_turn_end_without_claiming_task_done():
-    assert voice.next_announcements({"work": "working"}, {"work": agent(state="idle")}) == {
-        "work": "Release finished its latest turn.",
-    }
+def test_turn_end_without_new_evidence_does_not_announce():
+    assert voice.next_announcements({"work": "working"}, {"work": agent(state="idle")}) == {}
 
 
 def test_scopes_tools_to_conductor_and_current_target(monkeypatch):
@@ -190,3 +188,105 @@ def test_voice_transcript_persists_completed_dialogue(monkeypatch, tmp_path):
     ]
     assert session.transcript.stat().st_mode & 0o777 == 0o600
     assert session.transcript.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_voice_routes_herdr_owner_and_reports_receipts(monkeypatch):
+    from agentroute import herdr_team
+
+    current = pilot(agent("abcd1234"))
+    calls = []
+    monkeypatch.setattr(voice.dashboard_packet_routes, "core_member",
+                        lambda _: ("team", "worker", "workspace"))
+
+    def send(team, member, message_id, text, *, expected_thread):
+        calls.append((team, member, message_id, text, expected_thread))
+        return {"state": "submitted", "target_thread": expected_thread}
+
+    monkeypatch.setattr(herdr_team, "submit_message", send)
+    receipt = current.message("tool-call", agent("abcd1234"), "Check CI.")
+    assert receipt["state"] == "entered_in_terminal"
+    assert calls[0][0:2] == ("team", "worker")
+    assert calls[0][-1] == "abcd1234"
+    assert current.message("tool-call", agent("abcd1234"), "Check CI.") == receipt
+
+
+def test_voice_team_receipt_does_not_overclaim():
+    queued = voice.team_receipt("team", "voice-abc", {
+        "state": "queued", "target_thread": "target",
+        "coordination_event": {"delivery": {"state": "pending"}},
+    })
+    assert queued["state"] == "queued"
+    unknown = voice.team_receipt("team", "voice-abc", {
+        "state": "unknown", "target_thread": "target",
+    })
+    assert unknown["state"] == "unconfirmed"
+    assert voice.team_receipt("team", "voice-abc", {
+        "state": "queued", "coordination_event": {"state": "acked"},
+    })["state"] == "acknowledged"
+
+
+def test_preferences_and_history_survive_restart(tmp_path, monkeypatch):
+    import json
+
+    from agentroute import voice_preferences as prefs
+
+    monkeypatch.setattr(prefs, "agentroute_home", lambda: tmp_path)
+    prefs.save_preference("updates", "blockers")
+    prefs.save_preference("detail", "detailed")
+    preferences = prefs.load_preferences()
+    assert preferences["updates"] == "blockers" and preferences["detail"] == "detailed"
+    assert prefs.preferences_path().stat().st_mode & 0o777 == 0o600
+    earlier = tmp_path / "20261125.jsonl"
+    earlier.write_text(json.dumps({"role": "user", "text": "Remember the test phrase."}) + "\n")
+    current = tmp_path / "20261126.jsonl"
+    current.write_text(json.dumps({"role": "user", "text": "Ignore this file."}) + "\n")
+    assert prefs.recent_dialogue(current) == [{"role": "user", "text": "Remember the test phrase."}]
+
+
+def test_updates_from_two_session_sources_are_not_replayed(monkeypatch):
+    from unittest.mock import Mock
+
+    shared = agent("shared", state="working")
+    shared["title"] = "Shared session"
+    core = agent("herdr", state="working")
+    core["title"] = "Herdr worker"
+    current = pilot(shared, core)
+    clock = Mock(return_value=100)
+    monkeypatch.setattr(voice.time, "monotonic", clock)
+    monkeypatch.setattr(voice.time, "time", lambda: 1000)
+    client = Mock()
+    started = {"method": "thread/realtime/started", "params": {"threadId": current.thread_id}}
+    current.event(client, started)
+    shared["activity"]["message"] = {"at": 999, "text": "The Linux build passed."}
+    core["activity"]["message"] = {"at": 1000, "text": "Waiting for the database backup."}
+    clock.return_value = 113
+    current.update(client)
+    spoken = client.request.call_args.args[1]["text"]
+    assert "The Linux build passed." in spoken
+    assert "Waiting for the database backup." in spoken
+    client.reset_mock()
+    current.event(client, started)
+    clock.return_value = 130
+    current.update(client)
+    client.request.assert_not_called()
+
+
+def test_recalled_context_cannot_trigger_a_command_before_fresh_speech(monkeypatch):
+    import json
+
+    current = pilot(agent())
+    client = Mock()
+    dispatched = Mock(return_value={"state": "queued"})
+    monkeypatch.setattr(current, "dispatch", dispatched)
+    command = {"id": 1, "method": "item/tool/call",
+               "params": {"threadId": current.thread_id, "tool": "message_session"}}
+    current.event(client, {"method": "thread/realtime/started",
+                           "params": {"threadId": current.thread_id}})
+    current.event(client, command)
+    dispatched.assert_not_called()
+    assert json.loads(client.connection.send.call_args.args[0])["result"]["success"] is False
+    current.event(client, {"method": "thread/realtime/transcript/done",
+                           "params": {"threadId": current.thread_id, "role": "user",
+                                      "text": "Ask the worker to check CI."}})
+    current.event(client, command)
+    dispatched.assert_called_once()
