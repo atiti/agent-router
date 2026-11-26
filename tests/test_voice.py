@@ -50,7 +50,7 @@ def test_announces_only_new_work_and_waits_for_pause(monkeypatch):
 
 def test_announces_turn_end_without_claiming_task_done():
     assert voice.next_announcements({"work": "working"}, {"work": agent(state="idle")}) == {
-        "work": "Release finished its latest turn.",
+        "work": "Release has a new update.",
     }
 
 
@@ -190,3 +190,53 @@ def test_voice_transcript_persists_completed_dialogue(monkeypatch, tmp_path):
     ]
     assert session.transcript.stat().st_mode & 0o777 == 0o600
     assert session.transcript.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_voice_routes_herdr_owner_and_reports_receipts(monkeypatch):
+    from agentroute import herdr_team
+
+    current = pilot(agent("abcd1234"))
+    calls = []
+    monkeypatch.setattr(voice.dashboard_packet_routes, "core_member",
+                        lambda _: ("team", "worker", "workspace"))
+
+    def send(team, member, message_id, text, *, expected_thread):
+        calls.append((team, member, message_id, text, expected_thread))
+        return {"state": "submitted", "target_thread": expected_thread}
+
+    monkeypatch.setattr(herdr_team, "submit_message", send)
+    receipt = current.message("tool-call", agent("abcd1234"), "Check CI.")
+    assert receipt["state"] == "entered_in_terminal"
+    assert calls[0][0:2] == ("team", "worker")
+    assert calls[0][-1] == "abcd1234"
+    assert current.message("tool-call", agent("abcd1234"), "Check CI.") == receipt
+
+
+def test_voice_team_receipt_does_not_overclaim():
+    queued = voice.team_receipt("team", "voice-abc", {
+        "state": "queued", "target_thread": "target",
+        "coordination_event": {"delivery": {"state": "pending"}},
+    })
+    assert queued["state"] == "queued"
+    unknown = voice.team_receipt("team", "voice-abc", {
+        "state": "unknown", "target_thread": "target",
+    })
+    assert unknown["state"] == "unconfirmed"
+
+
+def test_preferences_and_history_survive_restart(tmp_path, monkeypatch):
+    import json
+
+    from agentroute import voice_preferences as prefs
+
+    monkeypatch.setattr(prefs, "agentroute_home", lambda: tmp_path)
+    prefs.save_preference("updates", "blockers")
+    prefs.save_preference("detail", "detailed")
+    preferences = prefs.load_preferences()
+    assert preferences["updates"] == "blockers" and preferences["detail"] == "detailed"
+    assert prefs.preferences_path().stat().st_mode & 0o777 == 0o600
+    earlier = tmp_path / "20261125.jsonl"
+    earlier.write_text(json.dumps({"role": "user", "text": "Remember the test phrase."}) + "\n")
+    current = tmp_path / "20261126.jsonl"
+    current.write_text(json.dumps({"role": "user", "text": "Ignore this file."}) + "\n")
+    assert prefs.recent_dialogue(current) == [{"role": "user", "text": "Remember the test phrase."}]

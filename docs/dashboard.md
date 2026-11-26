@@ -175,10 +175,21 @@ blockers and completions. Say “only blockers” or “quiet updates” to chan
 for the current conversation.
 
 Commands address an exact session. A reply follows the existing AgentRoute
-queue and has a receipt. Steering and interrupts use the exact active turn. Herdr Core
-sessions that require their own terminal and Codex approval prompts are
-available through their existing controls. The dedicated conversation uses
+queue and has a receipt. Steering and interrupts use the exact active turn on
+the shared App Server. Codex approval prompts use their existing controls.
+The dedicated conversation uses
 the GPT route and the OpenAI voice call. Sign in with a ChatGPT account with
 Codex voice access. The pilot uses the shared owner already running on the Mac.
 
 Voice conversations are saved as timestamped JSONL files in `~/.agentroute/voice-transcripts/`. Each line contains the time, speaker, and completed transcript text. The terminal prints the file path when a conversation starts. The directory and files are private to your account.
+
+Voice can send a message to a shared App Server session or a registered Herdr
+team member by name. Shared turns also support steering and interruption by
+turn ID. Herdr supervisor messages go through the team's native inbox. Ask
+Voice to check the receipt if you want to know whether a message was queued,
+entered in the terminal, accepted by Codex, or acknowledged.
+
+Say “be more conversational,” “keep answers brief,” “only announce blockers,”
+or “give updates less often” to change saved preferences. New voice calls
+carry forward a bounded excerpt of recent local transcripts. The live feed
+uses agents' reported updates and verified state changes.
