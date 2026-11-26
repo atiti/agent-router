@@ -211,6 +211,8 @@ def _narrow_tool_surface(model: dict, capabilities) -> None:
     unreadable and every route through the provider fails to start.
     """
     if capabilities.tool_calling != "none":
+        if capabilities.parallel_tool_calls is False:
+            model["supports_parallel_tool_calls"] = False
         return
     model.pop("apply_patch_tool_type", None)
     model.pop("web_search_tool_type", None)
@@ -305,8 +307,7 @@ def _refresh_context_limits(
     except (OSError, ValueError, TypeError, KeyError):
         return
     by_slug = {
-        m["slug"]: m for m in models
-        if isinstance(m, dict) and isinstance(m.get("slug"), str)
+        m["slug"]: m for m in models if isinstance(m, dict) and isinstance(m.get("slug"), str)
     }
     installed_slugs = {model.get("slug") for model in catalog["models"]}
     for slug in sorted((required_models or set()) - installed_slugs):
@@ -366,9 +367,13 @@ def _write_model_catalog(
         if backend.enabled and name != "claude"
     ]
     account_slugs = (
-        {target.model for target in (
-            *config.backends["gpt"].tiers.values(), *config.backends["gpt"].models.values()
-        )}
+        {
+            target.model
+            for target in (
+                *config.backends["gpt"].tiers.values(),
+                *config.backends["gpt"].models.values(),
+            )
+        }
         if "gpt" in config.backends
         else set()
     )
@@ -511,12 +516,14 @@ def _write_model_catalog(
             if backend_name not in {"gpt", "azure", "deepseek", "claude", "fable"}:
                 # Unknown custom models cannot be assumed to support GPT's wire options.
                 # Match native fallback defaults without changing safety metadata.
-                model.update({
-                    "support_verbosity": False,
-                    "default_verbosity": None,
-                    "use_responses_lite": False,
-                    "prefer_websockets": False,
-                })
+                model.update(
+                    {
+                        "support_verbosity": False,
+                        "default_verbosity": None,
+                        "use_responses_lite": False,
+                        "prefer_websockets": False,
+                    }
+                )
             if capabilities.reasoning is False:
                 model["default_reasoning_level"] = None
                 model["supported_reasoning_levels"] = []
