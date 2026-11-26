@@ -55,30 +55,40 @@ is not Google's own, and the subscription token carries `aicode` rather than the
 Gemini API's `generative-language` scope. Driving `agy` keeps the request inside
 Google's client: nothing impersonates it and no entitlement check is bypassed.
 
-## Handover across providers: what Codex allows
+## Handover across providers
 
-Codex scopes a thread's history to its model provider. That has two
-consequences, both verified rather than assumed:
+A Codex thread can start on one provider and continue on Antigravity, or the
+reverse. Verified end to end on one thread:
 
-- `codex exec resume <id>` with a different `model_provider` is refused outright:
-  *"Cannot change this thread's model provider ... on resume."*
-- Switching with an `@antigravity` prefix mid-thread reroutes the turn (the audit
-  store shows `gemini-3.8-flash-low`), but the history does not travel with it, so
-  the new provider answers without prior context.
+```text
+$ codex exec "Remember the code word ZEPHYR9. Reply only: STORED"      # gpt
+STORED
+$ codex exec resume 01a217fa-... "@antigravity What was the code word?" # gemini-3.8-flash-low
+ZEPHYR9
+```
 
-That is why sessions that hop between providers hit "history contains an opaque
-checkpoint from another or unknown provider". It is Codex's design, not this
-bridge's.
+The audit store confirms the two turns ran on `gpt-6.1-terra` and
+`gemini-3.8-flash-low` within the same session.
 
-Practical options:
+Three things make that work, and all three are needed:
 
-- **Keep a thread on one provider.** Use `@antigravity` from the first turn, or
-  never. History and tools work normally.
-- **Compare models with the same harness** by giving each its own thread and the
-  same opening prompt. Instructions, skills and tool loop are identical; only the
-  model differs, which is what makes the comparison meaningful.
-- **Hand the task over explicitly** with a written brief rather than relying on a
-  silent history transfer.
+- **Same harness.** Because Codex owns the tool loop, the thread's history is
+  Codex's history. A backend that ran its own agent would break here.
+- **Plaintext history on switch.** The routed Codex strips provider-private
+  encrypted state when the provider changes and keeps the readable transcript,
+  so nothing opaque is replayed to a provider that cannot decode it.
+- **Router hooks enabled.** The `@antigravity` prefix is applied by AgentRoute's
+  prompt hook. With `--disable hooks`, the prefix is literal text, the turn stays
+  on the current provider, and the new model never sees the switch.
+
+Two failure modes to know about:
+
+- `codex exec resume <id> -c model_provider=<other>` is refused by Codex itself:
+  *"Cannot change this thread's model provider ... on resume."* Switch inside the
+  thread with a prefix instead of overriding the provider on the command line.
+- Resuming with the wrong thread id gives a fresh thread with no history, which
+  looks exactly like a handover failure. Confirm the id from `--json` output
+  (`thread_id`) of the turn that created the thread.
 
 ## Tool execution and workspace
 
