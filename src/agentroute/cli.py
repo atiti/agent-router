@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .analytics import usage_analytics
+from .antigravity_cli import app as antigravity_app
 from .approvals import approvals_app, gh_get, packet_read
 from .audit import AuditStore
 from .bridge_service import (
@@ -151,6 +152,7 @@ app.add_typer(account_app, name="account")
 app.add_typer(context_app, name="context")
 app.add_typer(memory_app, name="memory")
 app.add_typer(grok_app, name="grok")
+app.add_typer(antigravity_app, name="antigravity")
 app.add_typer(bridge_app, name="bridge")
 bridge_app.add_typer(claude_profile_app, name="profile")
 bridge_app.add_typer(claude_cache_app, name="cache")
