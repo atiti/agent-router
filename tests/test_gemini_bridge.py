@@ -864,11 +864,34 @@ def test_install_does_not_create_catalog_aliases_for_new_models():
     assert config.pricing.families["gemini-3.8-flash"] == "gemini-flash"
 
 
-def test_install_repairs_a_config_polluted_by_family_aliases():
+def test_repair_moves_family_aliases_into_the_family_map():
     """A config written by the earlier build must not keep failing to sync."""
+    from agentroute.config import repair_price_families
+
     config = default_config()
     config.pricing.aliases["gemini-2.5-flash"] = "gemini-flash"
     config.pricing.families.pop("gemini-2.5-flash", None)
-    ensure_backend(config, 8817, {"normal": "gemini-3.8-flash"})
+    assert repair_price_families(config) == ["gemini-2.5-flash"]
     assert "gemini-2.5-flash" not in config.pricing.aliases
-    assert config.pricing.families["gemini-3.8-flash"] == "gemini-flash"
+    assert config.pricing.families["gemini-2.5-flash"] == "gemini-flash"
+    assert repair_price_families(config) == []
+
+
+def test_load_migrates_family_aliases_written_by_the_earlier_build(tmp_path, monkeypatch):
+    """A saved config with Gemini price keys in `aliases` must heal on load."""
+    import yaml
+
+    from agentroute.config import load_config
+
+    config = default_config()
+    config.pricing.aliases["gemini-3.8-flash"] = "gemini-flash"
+    config.pricing.families.pop("gemini-3.8-flash", None)
+    config.pricing.aliases["dev-gpt-6-sol"] = "gpt-6-sol"
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config.model_dump(mode="json", exclude_none=True)))
+    monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
+    loaded = load_config(path)
+    assert "gemini-3.8-flash" not in loaded.pricing.aliases
+    assert loaded.pricing.families["gemini-3.8-flash"] == "gemini-flash"
+    # A genuine catalog alias is preserved.
+    assert loaded.pricing.aliases["dev-gpt-6-sol"] == "gpt-6-sol"
