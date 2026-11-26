@@ -13,10 +13,10 @@ import typer
 
 from .antigravity_bridge import (
     CONTEXT_WINDOW,
-    DEFAULT_AGY,
     MODELS,
     AntigravityCredential,
     CredentialError,
+    resolve_agy,
     serve,
 )
 from .bridge_service import _agentroute_executable, wait_for_health
@@ -80,7 +80,7 @@ def ensure_backend(config, port: int = DEFAULT_PORT) -> bool:
     return created
 
 
-def service_definition(port: int) -> dict:
+def service_definition(port: int, binary: str) -> dict:
     log_path = Path.home() / ".agentroute" / "antigravity-bridge.log"
     return {
         "Label": LABEL,
@@ -90,6 +90,8 @@ def service_definition(port: int) -> dict:
             "serve",
             "--port",
             str(port),
+            "--agy-binary",
+            binary,
         ],
         "RunAtLoad": True,
         "KeepAlive": True,
@@ -99,7 +101,7 @@ def service_definition(port: int) -> dict:
     }
 
 
-def systemd_unit_text(port: int) -> str:
+def systemd_unit_text(port: int, binary: str) -> str:
     return (
         "[Unit]\n"
         "Description=AgentRoute Antigravity bridge (Gemini OAuth to Responses)\n"
@@ -107,7 +109,8 @@ def systemd_unit_text(port: int) -> str:
         "\n"
         "[Service]\n"
         "Type=simple\n"
-        f"ExecStart={_agentroute_executable()} antigravity serve --port {port}\n"
+        f"ExecStart={_agentroute_executable()} antigravity serve --port {port} "
+        f"--agy-binary {binary}\n"
         "Restart=always\n"
         "RestartSec=3\n"
         "\n"
@@ -140,9 +143,10 @@ def unload_service() -> None:
 def serve_command(
     port: int = typer.Option(DEFAULT_PORT, help="Loopback port to bind."),
     host: str = typer.Option("127.0.0.1", help="Loopback host to bind."),
+    agy_binary: str = typer.Option("agy", help="Antigravity CLI executable."),
 ) -> None:
     """Run the Antigravity bridge in the foreground."""
-    serve(host=host, port=port)
+    serve(host=host, port=port, executable=agy_binary)
 
 
 @app.command("check")
@@ -157,7 +161,7 @@ def check_command() -> None:
     typer.echo(f"credential: {credential.source()}")
     for tier, model in MODELS.items():
         typer.echo(f"{tier:6} {model}")
-    typer.echo(f"agy: {shutil.which(DEFAULT_AGY) or 'not found'}")
+    typer.echo(f"agy: {shutil.which('agy') or 'not found'}")
 
 
 @app.command("install")
@@ -168,9 +172,11 @@ def install_command(
     ),
 ) -> None:
     """Register the backend and start the bridge service."""
-    if not shutil.which(DEFAULT_AGY):
-        typer.echo("Install the Antigravity CLI and run `agy` to sign in first.")
-        raise typer.Exit(1)
+    try:
+        binary = resolve_agy()
+    except CredentialError as exc:
+        typer.echo(f"{exc}. Sign in with `agy` first.")
+        raise typer.Exit(1) from exc
     try:
         AntigravityCredential().token()
     except CredentialError as exc:
@@ -186,9 +192,9 @@ def install_command(
     path = unit_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if platform.system() == "Darwin":
-        path.write_bytes(plistlib.dumps(service_definition(port)))
+        path.write_bytes(plistlib.dumps(service_definition(port, binary)))
     else:
-        path.write_text(systemd_unit_text(port))
+        path.write_text(systemd_unit_text(port, binary))
     load_service(path)
     health = wait_for_health(port, host="127.0.0.1", timeout=20)
     if health.status == "unreachable":
