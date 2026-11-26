@@ -24,7 +24,8 @@ def reply_prompt(marker: str) -> str:
     )
 
 
-def linked_reply(target: str, marker: str | None, since: float) -> dict | None:
+def linked_reply(target: str, marker: str | None, since: float, *,
+                 expected_turn: str | None = None) -> dict | None:
     """Only a final assistant message in the target rollout can prove a linked reply."""
     if not marker or not thread_id(target):
         return None
@@ -72,7 +73,7 @@ def linked_reply(target: str, marker: str | None, since: float) -> dict | None:
                 item_id = identity.get("message_id") or item.get("id")
             else:
                 continue
-            if item.get("phase") != "final_answer":
+            if item.get("phase") != "final_answer" or expected_turn and turn != expected_turn:
                 continue
             text = "\n".join(part.get("text", "") for part in item.get("content", []))
         except (ValueError, KeyError, TypeError, AttributeError):

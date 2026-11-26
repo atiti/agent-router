@@ -320,6 +320,8 @@ def test_linked_reply_requires_exact_thread_marker_and_final_message(tmp_path, m
         "text": "Rollback finished.", "at": 101, "thread_id": target,
         "turn_id": "turn-1", "item_id": "message-1",
     }
+    assert voice_evidence.linked_reply(target, "token", 100, expected_turn="turn-2") is None
+    assert voice_evidence.linked_reply(target, "token", 100, expected_turn="turn-1")
     assert voice_evidence.linked_reply(other, "token", 100) is None
     assert voice_evidence.linked_reply(target, "other-token", 100) is None
     write(phase="commentary")

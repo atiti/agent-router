@@ -344,6 +344,7 @@ class VoicePilot:
                         **receipt,
                         "verified_reply": linked_reply(
                             receipt["recipient"], receipt["reply_marker"], receipt["created_at"],
+                            expected_turn=receipt["turn_id"],
                         ),
                     }
             raise ValueError("The turn receipt is unavailable in this voice call.")
