@@ -175,15 +175,55 @@ def _exchange(code: str, verifier: str, client_id: str, client_secret: str, redi
         ) from exc
 
 
+def client_from_secrets_file(path: Path) -> tuple[str, str]:
+    """Read the JSON Google gives you when a Desktop client is downloaded."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(f"no such client secrets file: {path}") from exc
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(f"cannot read {path}: {exc}") from exc
+    body = data.get("installed") if isinstance(data, dict) else None
+    if not isinstance(body, dict):
+        raise typer.BadParameter(
+            f"{path} is not a Desktop OAuth client file (expected an 'installed' object)"
+        )
+    client_id = body.get("client_id")
+    client_secret = body.get("client_secret")
+    if not client_id or not client_secret:
+        raise typer.BadParameter(f"{path} is missing client_id or client_secret")
+    return str(client_id), str(client_secret)
+
+
+def default_client_secrets_path() -> Path:
+    override = os.environ.get("AGENTROUTE_GEMINI_CLIENT_SECRETS")
+    if override:
+        return Path(override).expanduser()
+    home = Path(os.environ.get("AGENTROUTE_HOME") or (Path.home() / ".agentroute"))
+    return home / "gemini-oauth-client.json"
+
+
 @app.command("login")
 def login_command(
     client_id: str = typer.Option(None, "--client-id", envvar="AGENTROUTE_GEMINI_CLIENT_ID"),
     client_secret: str = typer.Option(
         None, "--client-secret", envvar="AGENTROUTE_GEMINI_CLIENT_SECRET"
     ),
+    secrets_file: Path = typer.Option(
+        None,
+        "--client-secrets",
+        help="Downloaded Desktop client JSON. Default: ~/.agentroute/gemini-oauth-client.json",
+    ),
     port: int = typer.Option(LOGIN_PORT, help="Loopback port for the OAuth callback."),
 ) -> None:
     """Authorize Gemini API access with Google OAuth and store the refresh token."""
+    if not (client_id and client_secret):
+        candidate = (
+            Path(secrets_file).expanduser() if secrets_file else default_client_secrets_path()
+        )
+        if candidate.exists():
+            client_id, client_secret = client_from_secrets_file(candidate)
+            typer.echo(f"using the OAuth client in {candidate}")
     if not client_id or not client_secret:
         typer.echo(
             "A Desktop OAuth client is required once.\n"
@@ -191,7 +231,9 @@ def login_command(
             "     and enable the Generative Language API.\n"
             "  2. Open https://console.cloud.google.com/apis/credentials and create an\n"
             "     OAuth client of type 'Desktop app'.\n"
-            "  3. Rerun: agentroute gemini login --client-id ID --client-secret SECRET\n"
+            "  3. Download its JSON to ~/.agentroute/gemini-oauth-client.json, then\n"
+            "     rerun: agentroute gemini login\n"
+            "     (or pass --client-id ID --client-secret SECRET)\n"
             "These values identify your project. Gemini OAuth usage is billed there."
         )
         raise typer.Exit(2)

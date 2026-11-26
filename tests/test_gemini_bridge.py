@@ -665,3 +665,33 @@ def test_install_registers_even_without_a_credential(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "not usable yet" in result.stdout
     assert saved["config"].backends["gemini"].codex_provider == "agentroute-gemini"
+
+
+def test_desktop_client_json_is_accepted(tmp_path):
+    import typer as _typer
+
+    import agentroute.gemini_cli as cli
+
+    path = tmp_path / "client.json"
+    path.write_text(
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "cid.apps.googleusercontent.com",
+                    "client_secret": "GOCSPX-secret",
+                    "redirect_uris": ["http://localhost"],
+                }
+            }
+        )
+    )
+    assert cli.client_from_secrets_file(path) == ("cid.apps.googleusercontent.com", "GOCSPX-secret")
+    path.write_text(json.dumps({"web": {"client_id": "x", "client_secret": "y"}}))
+    with pytest.raises(_typer.BadParameter, match="Desktop OAuth client"):
+        cli.client_from_secrets_file(path)
+
+
+def test_default_client_json_path_can_be_overridden(monkeypatch, tmp_path):
+    import agentroute.gemini_cli as cli
+
+    monkeypatch.setenv("AGENTROUTE_GEMINI_CLIENT_SECRETS", str(tmp_path / "c.json"))
+    assert cli.default_client_secrets_path() == tmp_path / "c.json"
