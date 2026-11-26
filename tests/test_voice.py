@@ -86,10 +86,11 @@ def test_scopes_tools_to_conductor_and_current_target(monkeypatch):
     params.update(callId="steer-1", tool="steer_session",
                   arguments={"thread_id": "work", "turn_id": "next-turn", "message": "Check CI."})
     assert current.dispatch(params)["state"] == "steer_accepted"
-    target.request.assert_called_with("turn/steer", {
-        "threadId": "work", "expectedTurnId": "next-turn",
-        "input": [{"type": "text", "text": "Check CI."}],
-    })
+    method, args = target.request.call_args.args
+    assert method == "turn/steer" and args["expectedTurnId"] == "next-turn"
+    assert args["input"][0]["text"].startswith("Check CI.\n\n")
+    assert current.last_instruction["state"] == "steer_accepted"
+    assert current.last_instruction["turn_id"] == "next-turn"
 
 
 def test_message_uses_durable_queue_and_original_receipt(monkeypatch, tmp_path):
@@ -198,7 +199,8 @@ def test_voice_routes_herdr_owner_and_reports_receipts(monkeypatch):
     monkeypatch.setattr(voice.dashboard_packet_routes, "core_member",
                         lambda _: ("team", "worker", "workspace"))
 
-    def send(team, member, message_id, text, *, expected_thread):
+    def send(team, member, message_id, text, *, expected_thread, voice_reply_marker):
+        assert voice_reply_marker in message_id
         calls.append((team, member, message_id, text, expected_thread))
         return {"state": "submitted", "target_thread": expected_thread}
 
@@ -290,3 +292,97 @@ def test_recalled_context_cannot_trigger_a_command_before_fresh_speech(monkeypat
                                       "text": "Ask the worker to check CI."}})
     current.event(client, command)
     dispatched.assert_called_once()
+
+
+def test_linked_reply_requires_exact_thread_marker_and_final_message(tmp_path, monkeypatch):
+    import json
+    from uuid import uuid4
+
+    from agentroute import voice_evidence
+
+    target, other = str(uuid4()), str(uuid4())
+    folder = tmp_path / "sessions"
+    folder.mkdir()
+    path = folder / "session.jsonl"
+    monkeypatch.setattr(voice_evidence, "codex_home", lambda: tmp_path)
+    monkeypatch.setattr(voice_evidence, "_rows", lambda *args: [{"rollout_path": str(path)}])
+
+    def write(phase="final_answer", phrase="[voice-reply token] Rollback finished.", at=101):
+        path.write_text("\n".join(map(json.dumps, [
+            {"type": "session_meta", "payload": {"id": target}},
+            {"type": "event_msg", "timestamp": at, "payload": {"type": "item_completed",
+             "turn_id": "turn-1", "item": {"id": "message-1", "type": "AgentMessage",
+             "phase": phase, "content": [{"type": "output_text", "text": phrase}]}}},
+        ])) + "\n")
+
+    write()
+    assert voice_evidence.linked_reply(target, "token", 100) == {
+        "text": "Rollback finished.", "at": 101, "thread_id": target,
+        "turn_id": "turn-1", "item_id": "message-1",
+    }
+    assert voice_evidence.linked_reply(target, "token", 100, expected_turn="turn-2") is None
+    assert voice_evidence.linked_reply(target, "token", 100, expected_turn="turn-1")
+    assert voice_evidence.linked_reply(other, "token", 100) is None
+    assert voice_evidence.linked_reply(target, "other-token", 100) is None
+    write(phase="commentary")
+    assert voice_evidence.linked_reply(target, "token", 100) is None
+    write(at=99)
+    assert voice_evidence.linked_reply(target, "token", 100) is None
+    write(phrase="I saw someone use [voice-reply token] as a marker.")
+    assert voice_evidence.linked_reply(target, "token", 100) is None
+
+
+    legacy = [
+        {"type": "session_meta", "payload": {"id": target}},
+        {"type": "response_item", "timestamp": 101, "payload": {
+            "type": "message", "role": "assistant", "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "[voice-reply token] Build passed."}],
+        }, "metadata": {"retained_source": {"id": {
+            "turn_id": "legacy-turn", "message_id": "legacy-message",
+        }}}},
+    ]
+    path.write_text("\n".join(map(json.dumps, legacy)) + "\n")
+    assert voice_evidence.linked_reply(target, "token", 100)["turn_id"] == "legacy-turn"
+
+
+def test_shared_receipt_records_acceptance_without_inventing_read_or_reply():
+    wait = {
+        "thread_id": "abcd1234", "state": "delivered", "created_at": 100,
+        "delivery": {"state": "delivered", "turn_id": "turn-1"},
+        "recipient_read": {"thread": "another-thread", "at": 110},
+        "spec": {}, "outcome": {"evidence": "Check CI."},
+    }
+    receipt = voice.shared_receipt(wait, {"recipient_read": {"at": 110}})
+    assert receipt["receipt_state"] == "accepted_by_codex"
+    assert receipt["recipient_read"] is None
+    assert receipt["verified_reply"] is None
+    assert receipt["turn_id"] == "turn-1"
+    wait["recipient_read"]["thread"] = wait["thread_id"]
+    assert voice.shared_receipt(wait, {"recipient_read": {"at": 110}})["receipt_state"] == "read"
+
+
+def test_update_uses_substantive_evidence_and_groups_project(monkeypatch):
+    first = agent("core", title="Worker")
+    second = agent("shared", title="Supervisor")
+    current = pilot(first, second)
+    client = Mock()
+    clock = Mock(return_value=100)
+    monkeypatch.setattr(voice.time, "monotonic", clock)
+    monkeypatch.setattr(voice.time, "time", lambda: 1000)
+    current.event(client, {"method": "thread/realtime/started", "params": {"threadId": "voice"}})
+    first["activity"]["message"] = {"at": 999, "text": "Recovered the four missing items."}
+    second["activity"]["message"] = {"at": 998, "text": "The Linux build failed on lint."}
+    clock.return_value = 125
+    current.update(client)
+    spoken = client.request.call_args.args[1]["text"]
+    assert spoken.startswith("On work.")
+    assert "Recovered the four missing items" in spoken and "Linux build failed" in spoken
+    result = current.dispatch({"namespace": voice.NAMESPACE, "tool": "update_evidence",
+                               "arguments": {"query": "Supervisor"}})
+    assert [item["thread_id"] for item in result["updates"]] == ["shared"]
+    assert result["updates"][0]["reported_at"] == 998
+    first["activity"]["message"] = {"at": 1000, "text": "I'll check and get back to you."}
+    second["activity"]["message"]["at"] = 1000
+    clock.return_value = 143
+    current.update(client)
+    assert client.request.call_count == 1
