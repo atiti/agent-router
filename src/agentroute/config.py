@@ -549,6 +549,10 @@ class PricingConfig(BaseModel):
         }
     )
     aliases: dict[str, str] = Field(default_factory=dict)
+    # Model ID to published price key, for providers that bill a whole family at
+    # one rate. Kept apart from `aliases`, which also drives Codex catalog
+    # metadata and therefore needs a real catalog model as its target.
+    families: dict[str, str] = Field(default_factory=dict)
 
 
 class SharedServerConfig(BaseModel):

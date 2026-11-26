@@ -33,6 +33,7 @@ from .gemini_bridge import (
     AUTHORIZE_URL,
     CONTEXT_WINDOW,
     GENERATIVE_SCOPE,
+    PRICE_FAMILIES,
     TOKEN_URL,
     CredentialError,
     choose_models,
@@ -139,9 +140,16 @@ def ensure_backend(config, port: int = DEFAULT_PORT, models: dict[str, str] | No
         config.capabilities.models[model] = (
             declared.model_copy(update=update) if declared else ModelCapabilities(**update)
         )
-        # Audit rows carry the model ID, so the alias is what makes captured
-        # Gemini usage price the same way every other backend does.
-        config.pricing.aliases[model] = family
+        # Audit rows carry the model ID, so the family is what makes captured
+        # Gemini usage price the same way every other backend does. It is not a
+        # catalog alias: those must resolve to a real catalog model.
+        config.pricing.families[model] = family
+        config.pricing.aliases.pop(model, None)
+    # An earlier build wrote those families into `aliases`, which made catalog
+    # synthesis fail. Repair such a config instead of leaving it broken.
+    for alias, target in list(config.pricing.aliases.items()):
+        if alias.startswith("gemini-") and target in PRICE_FAMILIES:
+            config.pricing.aliases.pop(alias)
     return created
 
 

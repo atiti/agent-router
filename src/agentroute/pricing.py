@@ -62,6 +62,9 @@ def canonical_model(model: str, pricing: PricingConfig) -> str:
     aliased = pricing.aliases.get(model, model)
     if aliased in pricing.models:
         return aliased
+    family = pricing.families.get(model)
+    if family in pricing.models:
+        return str(family)
     suffix_matches = [name for name in pricing.models if aliased.endswith(name)]
     return max(suffix_matches, key=len) if suffix_matches else aliased
 
