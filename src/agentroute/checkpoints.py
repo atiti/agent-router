@@ -1,0 +1,75 @@
+"""Read checkpoint ownership without changing or exporting saved conversation content."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+MAX_SCAN_BYTES = 64 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class Checkpoint:
+    provider: str | None
+    created_at: str
+
+
+def latest_checkpoint(path: object, session_id: str) -> Checkpoint | None:
+    """Inspect the newest replacement history, bounded to 64 MiB of complete lines.
+
+    A child must supply its own transcript; parent checkpoint ownership is not
+    evidence for a different thread. Missing evidence never clears native guards.
+    """
+    if not isinstance(path, str) or not path:
+        return None
+    try:
+        with Path(path).open("rb") as source:
+            first = json.loads(source.readline())
+            if (
+                first.get("type") != "session_meta"
+                or first.get("payload", {}).get("id") != session_id
+            ):
+                return None
+            source.seek(0, 2)
+            end = source.tell()
+            offset = max(0, end - MAX_SCAN_BYTES)
+            source.seek(offset)
+            data = source.read()
+        lines = data.splitlines()
+        if offset:
+            lines = lines[1:]
+        for line in reversed(lines):
+            try:
+                event = json.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                continue
+            payload = event.get("payload", {})
+            if event.get("type") != "compacted":
+                continue
+            history = payload.get("replacement_history")
+            if not isinstance(history, list):
+                return None
+            indices = [
+                i
+                for i, item in enumerate(history)
+                if item.get("type") in {"compaction", "context_compaction"}
+            ]
+            if not indices:
+                return None
+            metadata = payload.get("replacement_history_metadata") or []
+            owners = {
+                metadata[i].get("model_provider_id")
+                if i < len(metadata) and isinstance(metadata[i], dict)
+                else None
+                for i in indices
+            }
+            timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+            return Checkpoint(
+                next(iter(owners)) if len(owners) == 1 else None, timestamp.isoformat()
+            )
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+    # A bounded tail without a checkpoint cannot establish portable history.
+    return Checkpoint(None, "") if offset else None

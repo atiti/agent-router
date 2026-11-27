@@ -11,6 +11,7 @@ from . import __version__
 from .audit import AuditStore
 from .bridge_service import service_credential
 from .capacity import backend_spend, local_time_description, subscription_state
+from .checkpoints import latest_checkpoint
 from .classifier import JevShadowClassifier
 from .claude_bridge import read_usage_state
 from .claude_profiles import (
@@ -27,6 +28,7 @@ from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, 
 from .profiles import (
     TurnProfileSelection,
     account_credential_home,
+    account_hash,
     profile_has_daybreak_blue,
     profile_model_support,
     reviewer_fallback_profiles,
@@ -614,6 +616,37 @@ def codex_user_prompt_submit(
             previous_capacity_status=previous_capacity_status,
             previous_capacity_backend=previous_capacity_backend,
         )
+        checkpoint = latest_checkpoint(
+            payload.get("agent_transcript_path") if route_scope == "subagent"
+            else payload.get("transcript_path"), session_id,
+        )
+        checkpoint_backend = (
+            _backend_for_model_provider(config, checkpoint.provider)
+            if checkpoint and checkpoint.provider else None
+        )
+        checkpoint_account = (
+            store.checkpoint_account(session_id, checkpoint.created_at, route_scope, agent_id)
+            if checkpoint and checkpoint.provider == "openai" else None
+        )
+        if checkpoint and config.enabled:
+            # Automatic routing must not leave a provider-owned checkpoint behind.
+            # Explicit incompatible requests fail before updating route affinity.
+            if (not checkpoint_backend or
+                    (backend_override and backend_override != checkpoint_backend) or
+                    (requested_backend and requested_backend != checkpoint_backend)):
+                owner_label = "@" + checkpoint_backend if checkpoint_backend else "its owner"
+                message = (
+                    "Saved context contains a provider-owned checkpoint. Continue on "
+                    f"{owner_label} "
+                    "and account; compact to plaintext before changing providers. "
+                    "No provider or saved history was changed."
+                )
+                json.dump(
+                    {"continue": False, "stopReason": message, "systemMessage": message}, sink
+                )
+                sink.write("\n")
+                return 0
+            context.sticky_backend = checkpoint_backend
         route_config = config
         explicit_profile_selection = None
         direct_backend = (
@@ -798,6 +831,34 @@ def codex_user_prompt_submit(
                 and claude_profile != current_claude_profile
             )
         )
+        if checkpoint and config.enabled:
+            owner_matches = decision.model_provider == checkpoint.provider
+            account_matches = bool(
+                checkpoint.provider == "openai" and checkpoint_account
+                and account_hash(current_account_id) == checkpoint_account
+                and decision.capacity_account_id == checkpoint_account
+                and not (profile_selection is not None and profile_selection.switched)
+            )
+            if not owner_matches or (checkpoint.provider == "openai" and not account_matches):
+                message = (
+                    "Saved context requires its original provider/account. The selected route "
+                    "cannot prove matching ownership; no provider or history was changed. "
+                    "Resume the original account and compact to plaintext before switching."
+                )
+                json.dump(
+                    {"continue": False, "stopReason": message, "systemMessage": message}, sink
+                )
+                sink.write("\n")
+                return 0
+            if account_matches:
+                # A rejected switch cannot poison subsequent owner recovery. The
+                # native runtime still filters genuinely foreign item metadata.
+                decision.strip_provider_state = False
+            decision.selection_receipt["checkpoint_admission"] = {
+                "provider": checkpoint.provider,
+                "account_verified": account_matches,
+                "automatic_provider_retained": backend_override is None,
+            }
         # @auto clears affinity even though the router's ordinary backend choice may be GPT.
         if tier_override == "auto":
             decision.sticky_backend = None
@@ -994,6 +1055,7 @@ def codex_user_prompt_submit(
                     if ReasonCode.JEV_LOW_CONFIDENCE in decision.reason_codes
                     else ""
                 )
+                + (" · CHECKPOINT OWNER RETAINED" if checkpoint else "")
                 + _capacity_route_detail(decision, claude_profile)
                 + (
                     f" · AgentRoute v{__version__} · runtime {runtime_label}"

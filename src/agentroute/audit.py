@@ -879,6 +879,26 @@ class AuditStore:
                 return str(account["name"])
         return None
 
+    def checkpoint_account(
+        self, session_id: str, created_at: str,
+        route_scope: str = "root", agent_id: str | None = None,
+    ) -> str | None:
+        """Use applied account evidence before the checkpoint, never failed route intent."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT actual_model_provider, capacity_account_id, route_application_state, "
+                "turn_outcome FROM routing_decisions "
+                "WHERE session_id = ? AND route_scope = ? AND agent_id IS ? "
+                "AND julianday(created_at) <= julianday(?) "
+                "ORDER BY id DESC LIMIT 1",
+                (session_id, route_scope, agent_id, created_at),
+            ).fetchone()
+        if (row and row["actual_model_provider"] == "openai"
+                and row["route_application_state"] == "applied"
+                and row["turn_outcome"] == "completed"):
+            return row["capacity_account_id"] or None
+        return None
+
     def provider_state_is_mixed(
         self, session_id: str, route_scope: str = "root", agent_id: str | None = None
     ) -> bool:
