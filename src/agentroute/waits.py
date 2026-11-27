@@ -656,6 +656,11 @@ def deliver(
         backoff = min(300, 5 * 2 ** min(delivery["attempts"], 6)) if delivery["attempts"] else 0
         if now - delivery.get("at", 0) < backoff:
             return "backoff"
+        # Transport failures (e.g. thread/resume refused because another process holds the
+        # thread's writer lock) never reach the attempt counter, so back them off separately.
+        failures = delivery.get("failures", 0)
+        if failures and now - delivery.get("failed_at", 0) < min(300, 5 * 2 ** min(failures, 6)):
+            return "backoff"
         if delivery["attempts"] >= MAX_DELIVERY_ATTEMPTS:
 
             def give_up(current: dict[str, Any]) -> None:
@@ -727,7 +732,14 @@ def deliver(
         return "delivered"
     except Exception as error:  # noqa: BLE001 - every transport failure is retried with backoff
         message = str(error)[:300]
-        update(wait["id"], lambda w: w["delivery"].update(last_error=message))
+        update(
+            wait["id"],
+            lambda w: w["delivery"].update(
+                last_error=message,
+                failures=w["delivery"].get("failures", 0) + 1,
+                failed_at=now,
+            ),
+        )
         return "error"
 
 
