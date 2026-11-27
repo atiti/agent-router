@@ -47,7 +47,9 @@ def _prompt_help(config: AppConfig) -> str:
     """Render the configured prompt-tag reference for the terminal CLI."""
     enabled_backends = ["gpt"]
     enabled_backends.extend(
-        name for name, backend in config.backends.items() if name != "gpt" and backend.enabled
+        name
+        for name, backend in config.backends.items()
+        if name != "gpt" and backend.enabled
     )
     backend_tags = ", ".join(f"@{name}" for name in dict.fromkeys(enabled_backends))
     return "\n".join(
@@ -124,7 +126,9 @@ def _claude_route_usage(profile_name: str | None = None) -> str:
     return f" · Claude limits {'; '.join(parts)}{recorded}"
 
 
-def _capacity_route_detail(decision: RouteDecision, claude_profile: str | None = None) -> str:
+def _capacity_route_detail(
+    decision: RouteDecision, claude_profile: str | None = None
+) -> str:
     if (
         decision.model_provider.startswith("agentroute-claude")
         and service_credential() == "claude-code"
@@ -260,7 +264,8 @@ def _record_jev_shadow(decision: RouteDecision, context: RouteContext, config: A
             "tier_signals": result.tier_signals,
             "agreement": {
                 "selected_tier": str(result.tier) == str(decision.tier),
-                "reasoning_effort": result.reasoning_effort == decision.classifier_reasoning_effort,
+                "reasoning_effort": result.reasoning_effort
+                == decision.classifier_reasoning_effort,
                 "task_type": result.task_type.value == decision.classifier_task_type,
             },
         }
@@ -277,7 +282,9 @@ def _record_jev_shadow(decision: RouteDecision, context: RouteContext, config: A
     ).hexdigest()
 
 
-def _previous_response_usage(row: Any, current_model: str, current_provider: str) -> dict[str, int]:
+def _previous_response_usage(
+    row: Any, current_model: str, current_provider: str
+) -> dict[str, int]:
     """Use recent, observed per-response evidence only; no cumulative turn estimates."""
     if row is None:
         return {}
@@ -655,18 +662,13 @@ def codex_user_prompt_submit(
         def adaptive_gpt_profile(tier):
             if tier not in adaptive_profiles:
                 adaptive_profiles[tier] = select_turn_profile(
-                    config,
-                    current_subscription,
-                    current_account_id=current_account_id,
-                    sticky_profile=sticky_profile,
-                    tier=tier,
-                    requested_model=requested_model,
+                    config, current_subscription, current_account_id=current_account_id,
+                    sticky_profile=sticky_profile, tier=tier, requested_model=requested_model,
                 )
             return adaptive_profiles[tier]
 
         decision = Router(
-            route_config,
-            gpt_profile_selector=adaptive_gpt_profile if adaptive_provider else None,
+            route_config, gpt_profile_selector=adaptive_gpt_profile if adaptive_provider else None,
         ).route(context)
         profile_selection = (
             explicit_profile_selection
@@ -853,8 +855,7 @@ def codex_user_prompt_submit(
                 ).encode()
             ).hexdigest()
         decision.selection_receipt["current_tier_attribution"] = {
-            "tier": str(current_tier),
-            "source": current_tier_source,
+            "tier": str(current_tier), "source": current_tier_source,
             "previous_response_usage_observed": bool(context.previous_response_usage),
         }
         _record_jev_shadow(decision, context, config)
