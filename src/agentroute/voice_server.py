@@ -34,6 +34,7 @@ VOICE_PATH = "/api/voice"
 
 class VoiceSession:
     def __init__(self, cwd: Path, sdp: str):
+        self.cwd = cwd
         self.stop = threading.Event()
         self.answer: Future[str] = Future()
         self.id = secrets.token_urlsafe(24)
@@ -64,7 +65,7 @@ class VoiceSession:
             "new spoken instruction before acting. Delegate work and report verified receipts. "
             "Prior dialogue: " + json.dumps(context, ensure_ascii=False)
         )
-        return VoicePilot(Collector(), preferences), INSTRUCTIONS, TOOLS
+        return VoicePilot(Collector(), preferences, cwd=self.cwd), INSTRUCTIONS, TOOLS
 
     def thread_options(self, client: RpcClient, cwd: Path) -> dict:
         return {}
