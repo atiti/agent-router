@@ -48,6 +48,7 @@
   </div>
   <section id="receipt" aria-label="Last voice instruction" hidden>
     <strong id="receipt-state"></strong>
+    <p id="herdr-status" hidden></p>
     <p id="instruction"></p>
     <p id="verified-reply"></p>
     <a id="conversation">Open conversation in Codex</a>
@@ -70,6 +71,7 @@
   const hold = document.getElementById('hold');
   const receipt = document.getElementById('receipt');
   const receiptState = document.getElementById('receipt-state');
+  const herdrStatus = document.getElementById('herdr-status');
   const instruction = document.getElementById('instruction');
   const verifiedReply = document.getElementById('verified-reply');
   const conversation = document.getElementById('conversation');
@@ -114,13 +116,25 @@
     rejected: 'Rejected',
     undeliverable: 'Delivery failed',
     cancelled: 'Cancelled',
+    created: 'Session created',
+    pending: 'Waiting for App Server',
   };
 
   function showReceipt(value) {
     if (!value) return;
     receipt.hidden = false;
     const label = receiptLabels[value.receipt_state || value.state] || value.state;
-    receiptState.textContent = `${value.session || value.recipient} · ${label}`;
+    const namespace = value.namespace ? ` · ${value.namespace}` : '';
+    receiptState.textContent = `${value.session || value.recipient}${namespace} · ${label}`;
+    if (herdrStatus) {
+      herdrStatus.hidden = !value.herdr_state;
+      herdrStatus.textContent = ({
+        attached: `Herdr pane ${value.herdr_pane || ''} attached.`,
+        offline: 'Herdr is offline. You can ask Voice to open this session once Herdr is back.',
+        pending: 'Herdr attachment pending.',
+        unconfirmed: 'Herdr attachment is unconfirmed.',
+      })[value.herdr_state] || '';
+    }
     instruction.textContent = value.instruction || '';
     verifiedReply.textContent = value.verified_reply
       ? `Reply · ${new Date(value.verified_reply.at * 1000).toLocaleTimeString()} · ${value.verified_reply.text}${value.verified_reply.truncated ? '…' : ''}`
