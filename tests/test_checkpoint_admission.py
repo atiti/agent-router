@@ -242,3 +242,26 @@ def test_subagent_uses_runtime_transcript_path_without_child_field(tmp_path):
         )
     assert result["continue"] is False
     assert "compact to plaintext" in result["stopReason"]
+
+
+def test_child_transcript_binds_root_session_id(tmp_path):
+    path = tmp_path / "child.jsonl"
+    path.write_text(
+        "\n".join(
+            json.dumps(x)
+            for x in [
+                {"type": "session_meta", "payload": {"id": "child-id", "session_id": "root-id"}},
+                {
+                    "type": "compacted",
+                    "timestamp": "2026-01-01T01:00:00Z",
+                    "payload": {
+                        "replacement_history": [{"type": "compaction", "id": "cmp_child"}],
+                        "replacement_history_metadata": [{"model_provider_id": "openai"}],
+                    },
+                },
+            ]
+        )
+        + "\n"
+    )
+    assert latest_checkpoint(str(path), "root-id").provider == "openai"
+    assert latest_checkpoint(str(path), "unrelated") == Checkpoint(None, "")
