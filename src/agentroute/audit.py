@@ -431,7 +431,8 @@ class AuditStore:
                 started_at = datetime.fromisoformat(str(row["created_at"]))
                 duration_ms = max(
                     0.0,
-                    (interrupted_at - started_at.astimezone(timezone.utc)).total_seconds() * 1000,
+                    (interrupted_at - started_at.astimezone(timezone.utc)).total_seconds()
+                    * 1000,
                 )
             cursor = connection.execute(
                 "UPDATE routing_decisions SET turn_completed_at = COALESCE(turn_completed_at, ?), "
@@ -618,7 +619,10 @@ class AuditStore:
         request_matches = (
             requested.get("model") == requested_model
             and requested.get("provider") == requested_provider
-            and (not requested_effort or requested.get("reasoning_effort") == requested_effort)
+            and (
+                not requested_effort
+                or requested.get("reasoning_effort") == requested_effort
+            )
         )
         if not request_matches:
             return (
@@ -644,7 +648,10 @@ class AuditStore:
             matches = (
                 reported_model == requested_model
                 and reported_provider == requested_provider
-                and (not requested_effort or reported_effort == requested_effort)
+                and (
+                    not requested_effort
+                    or reported_effort == requested_effort
+                )
             )
             if not matches:
                 return (
