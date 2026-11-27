@@ -201,3 +201,21 @@ or “give updates less often” to change saved preferences. New voice calls
 carry forward a bounded excerpt of recent local transcripts. The live feed
 groups fresh reports by project and surfaces verified state changes. Ask
 “Where did that update come from?” for the reporting session and observation time.
+
+### Use Voice from your phone over Tailscale
+
+Run Voice on a fixed loopback port and tell it your exact Tailscale HTTPS origin:
+
+```sh
+agentroute voice --port 8874 --https-origin https://your-mac.your-tailnet.ts.net:8443
+tailscale serve --bg --https=8443 http://127.0.0.1:8874
+```
+
+Open the full private link printed by Voice on a phone connected to your
+tailnet. Keep the Voice process running on the Mac. The link's access token
+permits commands, so keep it private. Turn off this Serve route with
+`tailscale serve --https=8443 off`.
+
+For a browser call on an iPhone, keep the Voice page in front with the screen
+awake. A lock or tab suspension can pause the microphone or the browser's
+heartbeat. If the call ends, unlock the phone, open the page, and connect again.

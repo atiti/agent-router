@@ -14,6 +14,7 @@ from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import dashboard_actions
 from .config import agentroute_home
@@ -172,8 +173,26 @@ class VoiceSession:
 class VoiceServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, cwd: Path):
-        super().__init__(("127.0.0.1", 0), VoiceHandler)
+    def __init__(self, cwd: Path, *, port: int = 0, https_origin: str | None = None):
+        external_host = None
+        if https_origin:
+            try:
+                parsed = urlsplit(https_origin)
+                if (parsed.scheme != "https" or not parsed.hostname
+                        or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.ts\.net", parsed.hostname)
+                        or parsed.netloc != parsed.hostname
+                        + (f":{parsed.port}" if parsed.port and parsed.port != 443 else "")
+                        or https_origin != f"https://{parsed.netloc}"):
+                    raise ValueError
+            except ValueError as error:
+                raise ValueError("Use the exact Tailscale HTTPS origin without a path.") from error
+            external_host = parsed.netloc
+        super().__init__(("127.0.0.1", port), VoiceHandler)
+        self.local_origin = f"http://127.0.0.1:{self.server_port}"
+        self.origins = {f"127.0.0.1:{self.server_port}": self.local_origin}
+        if external_host:
+            self.origins[external_host] = https_origin
+        self.public_origin = https_origin or self.local_origin
         self.cwd = cwd
         self.token = secrets.token_urlsafe(32)
         self.lock = threading.Lock()
@@ -187,9 +206,24 @@ class VoiceHandler(Handler):
     def action_token(self) -> str:
         return self.server.token
 
+    def request_origin(self) -> str | None:
+        hosts = self.headers.get_all("Host", [])
+        return self.server.origins.get(hosts[0]) if len(hosts) == 1 else None
+
+    def _action_allowed(self) -> bool:
+        origin = self.request_origin()
+        tokens = self.headers.get_all("X-AgentRoute-Token", [])
+        return bool(
+            origin and self.client_address[0] == "127.0.0.1"
+            and self.headers.get_all("Origin", []) == [origin]
+            and self.headers.get("Sec-Fetch-Site") not in {"cross-site", "same-site"}
+            and len(tokens) == 1 and tokens[0].isascii()
+            and secrets.compare_digest(tokens[0], self.action_token)
+        )
+
     def do_GET(self) -> None:
-        if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
-            self._json({"error": "Open the local voice page."}, HTTPStatus.FORBIDDEN)
+        if not self.request_origin():
+            self._json({"error": "Use the link printed by AgentRoute."}, HTTPStatus.FORBIDDEN)
         elif self.path == "/":
             page = resources.files("agentroute").joinpath("dashboard_assets/voice.html")
             self._page(page.read_bytes())
@@ -201,7 +235,7 @@ class VoiceHandler(Handler):
         if self.path != VOICE_PATH:
             self._json({"error": "Unknown action."}, HTTPStatus.NOT_FOUND)
             return
-        if not self._action_allowed() or not self.headers.get("Origin"):
+        if not self._action_allowed():
             self._json({"error": "Use the link printed by AgentRoute."}, HTTPStatus.FORBIDDEN)
             return
         lengths = self.headers.get_all("Content-Length", [])
@@ -259,10 +293,9 @@ class VoiceHandler(Handler):
             session.stop.set()
 
 
-def serve(cwd: Path) -> None:
-    with VoiceServer(cwd) as server:
-        print(f"Open voice on this Mac: http://127.0.0.1:{server.server_port}/#access={server.token}",
-              flush=True)
+def serve(cwd: Path, *, port: int = 0, https_origin: str | None = None) -> None:
+    with VoiceServer(cwd, port=port, https_origin=https_origin) as server:
+        print(f"Open Voice: {server.public_origin}/#access={server.token}", flush=True)
         try:
             server.serve_forever()
         finally:
