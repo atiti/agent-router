@@ -752,6 +752,66 @@ def test_fired_wait_uses_native_owner_inbox_and_receipt_once(team, monkeypatch, 
     assert waits.find(w["id"])[0]["state"] == "delivered"
 
 
+@pytest.mark.parametrize("manual_pause", [False, True])
+def test_inbox_receipt_retries_goal_release(team, monkeypatch, tmp_path, manual_pause):
+    from agentroute import waits
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
+    monkeypatch.setattr(h, "own_terminal", lambda *args: {"state": "live", "address": "t1"})
+    w = waits.register(THREAD, "timer", {}, timeout=1, now=1000)
+    waits.update(
+        w["id"],
+        lambda record: record["goal"].update(
+            paused_by_wait=True,
+            pause_snapshot={"status": "paused"},
+            mutation_guard={"fixture": True},
+        ),
+    )
+    monkeypatch.setattr(waits, "goal_log_unchanged", lambda *args: True)
+    waits.check_pending(now=1002)
+    client = Mock(side_effect=OSError("goal server unavailable"))
+    assert waits.deliver(waits.find(w["id"])[0], client, now=1002) == "inbox_pending"
+    entry = h.load("demo")["messages"]["wait-" + w["id"]]
+    assert entry["target_thread"] == THREAD
+    assert snapshot()["events"][0]["id"] == "wait-" + w["id"]
+    assert waits.deliver(waits.find(w["id"])[0], client, now=1003) == "inbox_pending"
+    assert len(h.load("demo")["messages"]) == 1
+    client.assert_not_called()
+    # Recipient may read its own result while native admission receipt is pending.
+    assert waits.record_recipient(w["id"], THREAD)["recipient_read"]
+    root = inbox.codex_home() / "supervisor-delivery-receipts" / THREAD
+    root.mkdir(parents=True, mode=0o700)
+    (root.parent).chmod(0o700)
+    receipt = root / "token123.json"
+    receipt.write_text(json.dumps({"version": 1, "thread_id": THREAD, "turn_id": "turn-1",
+                                   "admission_token": "token123",
+                                   "event_ids": ["wait-" + w["id"]]}))
+    receipt.chmod(0o600)
+    assert waits.deliver(waits.find(w["id"])[0], client, now=1004) == "delivered"
+    assert waits.find(w["id"])[0]["delivery"]["turn_id"] == "turn-1"
+    assert waits.find(w["id"])[0]["state"] == "delivered"
+
+
+    assert waits.find(w["id"])[0]["goal"]["release"]["state"] == "retry"
+
+    import contextlib
+
+    if manual_pause:
+        monkeypatch.setattr(waits, "goal_log_unchanged", lambda *args: False)
+    rpc = Mock()
+    rpc.request.side_effect = [
+        {"goal": {"status": "paused"}},
+        {"goal": {"status": "active"}},
+    ]
+    assert waits.tick(lambda: contextlib.nullcontext(rpc), now=1035) == 0
+    methods = ["thread/goal/get"]
+    if not manual_pause:
+        methods.append("thread/goal/set")
+    assert [call.args[0] for call in rpc.request.call_args_list] == methods
+    expected = "ownership_unverified" if manual_pause else "resumed"
+    assert waits.find(w["id"])[0]["goal"]["release"]["state"] == expected
+    assert len(h.load("demo")["messages"]) == 1
+
+
 def test_unenrolled_supervisor_never_falls_back_to_shared_or_terminal(team, monkeypatch, tmp_path):
     from agentroute import waits
     monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute"))
