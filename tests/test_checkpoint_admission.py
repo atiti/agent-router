@@ -227,3 +227,18 @@ def test_empty_and_malformed_message_history_is_unknown(tmp_path):
             + "\n"
         )
         assert latest_checkpoint(str(path), "same-thread") == Checkpoint(None, "")
+
+
+def test_subagent_uses_runtime_transcript_path_without_child_field(tmp_path):
+    config, store, path, selection = setup_route(tmp_path)
+    with patch("agentroute.hook.select_turn_profile", return_value=selection):
+        result = invoke(
+            config,
+            store,
+            "@gpt @max continue",
+            transcript_path=path,
+            account_id="test-account",
+            flat_agent_id="child",
+        )
+    assert result["continue"] is False
+    assert "compact to plaintext" in result["stopReason"]

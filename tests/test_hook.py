@@ -80,13 +80,6 @@ def invoke(
         transcript_path.write_text(
             json.dumps({"type": "session_meta", "payload": {"id": "same-thread"}}) + "\n"
         )
-    if subagent is not None or flat_agent_id is not None:
-        child_path = store.path.parent / "portable-child-test-rollout.jsonl"
-        child_path.write_text(
-            json.dumps({"type": "session_meta", "payload": {"id": "same-thread"}}) + "\n"
-        )
-    else:
-        child_path = None
     source = io.StringIO(
         json.dumps(
             {
@@ -106,7 +99,6 @@ def invoke(
                 "rate_limits": rate_limits,
                 "ordinary_usage_allowed": ordinary_usage_allowed,
                 "transcript_path": str(transcript_path) if transcript_path else None,
-                "agent_transcript_path": str(child_path) if child_path else None,
             }
         )
     )

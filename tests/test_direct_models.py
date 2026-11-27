@@ -89,7 +89,6 @@ def invoke(config, store, prompt, model="gpt-6.1-sol", provider="agentroute-azur
             json.dumps({"type": "session_meta", "payload": {"id": "direct-session"}}) + "\n"
         )
         metadata.setdefault("transcript_path", str(transcript))
-        metadata.setdefault("agent_transcript_path", str(transcript))
     source = io.StringIO(json.dumps({"session_id": "direct-session", "turn_id": prompt,
                                     "model": model, "model_provider": provider,
                                     "prompt": prompt, "subagent": subagent, **metadata}))
