@@ -12,7 +12,11 @@ from agentroute.profiles import ProfileStatus, TurnProfileSelection, account_has
 
 
 def write_checkpoint(path, provider="openai", *, portable=False):
-    items = [] if portable else [{"type": "compaction", "id": "cmp_test"}]
+    items = (
+        [{"type": "message", "role": "user", "content": []}]
+        if portable
+        else [{"type": "compaction", "id": "cmp_test"}]
+    )
     path.write_text(
         "\n".join(
             json.dumps(x)
@@ -75,7 +79,9 @@ def test_opaque_history_reader_uses_latest_replacement_and_thread_identity(tmp_p
                 {
                     "type": "compacted",
                     "timestamp": "2026-01-01T02:00:00Z",
-                    "payload": {"replacement_history": []},
+                    "payload": {
+                        "replacement_history": [{"type": "message", "role": "user", "content": []}]
+                    },
                 }
             )
             + "\n"
@@ -201,3 +207,23 @@ def test_encrypted_portable_history_is_not_assumed_safe(tmp_path):
         + "\n"
     )
     assert latest_checkpoint(str(path), "same-thread") == Checkpoint(None, "")
+
+
+def test_empty_and_malformed_message_history_is_unknown(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    for history in ([], [{"type": "message"}], [{"type": "reasoning"}]):
+        path.write_text(
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {"type": "session_meta", "payload": {"id": "same-thread"}},
+                    {
+                        "type": "compacted",
+                        "timestamp": "2026-01-01T01:00:00Z",
+                        "payload": {"replacement_history": history},
+                    },
+                ]
+            )
+            + "\n"
+        )
+        assert latest_checkpoint(str(path), "same-thread") == Checkpoint(None, "")

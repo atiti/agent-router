@@ -75,6 +75,17 @@ def latest_checkpoint(path: object, session_id: str) -> Checkpoint | None:
                 not isinstance(item, dict) or item.get("type") not in allowed for item in history
             ):
                 return Checkpoint(None, "")
+            if not history:
+                return Checkpoint(None, "")
+            for item in history:
+                kind = item["type"]
+                if kind == "message" and (
+                    item.get("role") not in {"system", "developer", "user", "assistant"}
+                    or not isinstance(item.get("content"), list)
+                ):
+                    return Checkpoint(None, "")
+                if kind == "reasoning" and not isinstance(item.get("summary"), list):
+                    return Checkpoint(None, "")
             indices = [
                 i
                 for i, item in enumerate(history)
