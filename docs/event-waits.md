@@ -162,9 +162,12 @@ waits without a pause snapshot and mutation guard do not automatically resume a 
 the routing reminder permits independently runnable work and says to retain pending waits
 when the remaining prerequisite is unchanged.
 
-If the durable pause guard cannot be established, registration reports that automatic resume
-ownership is unavailable and manual goal resume is required. `show` exposes
-`automatic_resume_guarded`. The current native API has no conditional goal mutation: the
+If the durable goal history is unavailable at registration, the wait is registered with
+the goal still active. If the pause succeeds but ownership confirmation fails, registration
+reports that manual goal resume is required. After a wake is delivered or a wait is cancelled,
+`agentroute wait show` reports the independent `goal_release` result, including an RPC retry,
+a remaining wait, or unverifiable pause ownership.
+The current native API has no conditional goal mutation: the
 read/validate/resume sequence is not atomic against a simultaneous user edit. The guard
 preserves observed prior edits; an atomic compare-and-set would require a native protocol change.
 
@@ -174,6 +177,8 @@ preserves observed prior edits; an atomic compare-and-set would require a native
 When a wait belongs to a registered and enrolled Herdr supervisor, its stable wait ID is
 projected into that supervisor's native inbox. The embedded owner admits it at a safe boundary;
 the daemon records delivery only after a native admission receipt or recipient acknowledgment.
+That record triggers the same guarded goal resumption as a direct wake. A retry of the goal
+update does not enqueue a second inbox message.
 If the owner is missing, inbox enrollment is unavailable, or admission is uncertain, the wait
 stays held for reconciliation. It is never replayed into a terminal or another Codex owner.
 A new v69-or-newer supervisor enrolls when it registers from its own terminal. Existing older
