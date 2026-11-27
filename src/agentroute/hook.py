@@ -631,14 +631,11 @@ def codex_user_prompt_submit(
             session_id,
         )
         if checkpoint and config.enabled:
-            # Never infer account ownership from old routing records. Until the
-            # runtime exposes provenance, require original-owner compaction.
-            message = (
-                "Saved context contains a provider/account-owned checkpoint, or its "
-                "ownership cannot be checked. Resume its original provider/account and "
-                "compact to plaintext before continuing. No history was changed."
-            )
-            json.dump({"continue": False, "stopReason": message, "systemMessage": message}, sink)
+            # The native runtime owns checkpoint validation. Abstain from every
+            # route override, including explicit tags, rather than blocking valid
+            # same-owner turns or inferring account ownership from audit records.
+            # Never clear strip state or rewrite history to manufacture admission.
+            json.dump({"continue": True}, sink)
             sink.write("\n")
             return 0
         route_config = config

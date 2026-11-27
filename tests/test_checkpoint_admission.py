@@ -89,7 +89,7 @@ def test_opaque_history_reader_uses_latest_replacement_and_thread_identity(tmp_p
     assert latest_checkpoint(str(path), "same-thread") is None
 
 
-def test_mixed_checkpoint_requests_recovery_without_clearing_guard(tmp_path):
+def test_mixed_checkpoint_defers_to_native_without_clearing_guard(tmp_path):
     config, store, path, selection = setup_route(tmp_path)
     # This is the observed legacy failure: the last attempted route latched stripping.
     with store.connection() as db:
@@ -103,19 +103,26 @@ def test_mixed_checkpoint_requests_recovery_without_clearing_guard(tmp_path):
             account_id="test-account",
             model_provider="agentroute-azure",
         )
-    assert result["continue"] is False
-    assert "compact to plaintext" in result["stopReason"]
+    assert result == {"continue": True}
     assert store.latest("same-thread")["strip_provider_state"] == 1
 
 
-@pytest.mark.parametrize("prompt", ["@azure @max continue", "@gpt @max continue", "@auto continue"])
-def test_opaque_checkpoint_is_held_without_switch_or_account_inference(tmp_path, prompt):
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "@azure @max continue",
+        "@gpt @max continue",
+        "@auto continue",
+        "how can I work in there moving forward?",
+        "@max continue",
+    ],
+)
+def test_opaque_checkpoint_keeps_native_without_switch_or_account_inference(tmp_path, prompt):
     config, store, path, selection = setup_route(tmp_path)
     before = store.latest("same-thread")["id"]
     with patch("agentroute.hook.select_turn_profile", return_value=selection):
         result = invoke(config, store, prompt, transcript_path=path, account_id="test-account")
-    assert result["continue"] is False
-    assert "compact to plaintext" in result["stopReason"]
+    assert result == {"continue": True}
     assert store.latest("same-thread")["id"] == before
     assert "hookSpecificOutput" not in result
 
@@ -240,8 +247,7 @@ def test_subagent_uses_runtime_transcript_path_without_child_field(tmp_path):
             account_id="test-account",
             flat_agent_id="child",
         )
-    assert result["continue"] is False
-    assert "compact to plaintext" in result["stopReason"]
+    assert result == {"continue": True}
 
 
 def test_child_transcript_binds_root_session_id(tmp_path):
@@ -289,3 +295,20 @@ def test_absent_transcript_keeps_native_route_and_no_overrides(tmp_path):
     )
     assert json.loads(sink.getvalue()) == {"continue": True}
     assert store.latest("missing-path-session") is None
+
+
+@pytest.mark.parametrize("history_state", ["missing", "malformed", "wrong-thread"])
+def test_uncertain_history_defers_to_native_without_route_mutations(tmp_path, history_state):
+    config, store, path, _ = setup_route(tmp_path)
+    before = store.latest("same-thread")
+    if history_state == "missing":
+        path.unlink()
+    elif history_state == "malformed":
+        path.write_text("invalid json\n")
+    else:
+        path.write_text(path.read_text().replace("same-thread", "another-thread"))
+    with patch("agentroute.hook.select_turn_profile") as choose:
+        result = invoke(config, store, "@azure continue", transcript_path=path)
+    assert result == {"continue": True}
+    choose.assert_not_called()
+    assert store.latest("same-thread") == before
