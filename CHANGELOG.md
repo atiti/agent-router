@@ -5,6 +5,9 @@
 - Add `agentroute desktop open` to launch the unchanged official signed app with
   AgentRoute as its engine. macOS permissions keep the vendor app's stable identity.
 
+- Resume goals paused by AgentRoute waits after a supervisor inbox wake. Retry goal
+  resumption independently of wake delivery and report its status in `wait show`.
+
 - Start a shared Codex session from Voice, deliver its first instruction, and open the same
   thread in the selected Herdr namespace. Track delivery and pane attachment separately.
 
