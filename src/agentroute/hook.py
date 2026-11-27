@@ -631,6 +631,19 @@ def codex_user_prompt_submit(
             if checkpoint and checkpoint.provider == "openai"
             else None
         )
+        if (
+            checkpoint
+            and config.enabled
+            and store.provider_state_is_mixed(session_id, route_scope, agent_id)
+        ):
+            message = (
+                "Saved context has an opaque checkpoint and a prior provider/account switch. "
+                "Resume the original provider/account and compact to plaintext before continuing; "
+                "the history remains unchanged."
+            )
+            json.dump({"continue": False, "stopReason": message, "systemMessage": message}, sink)
+            sink.write("\n")
+            return 0
         if checkpoint and config.enabled:
             # Automatic routing must not leave a provider-owned checkpoint behind.
             # Explicit incompatible requests fail before updating route affinity.
@@ -851,7 +864,15 @@ def codex_user_prompt_submit(
                 and decision.capacity_account_id == checkpoint_account
                 and not (profile_selection is not None and profile_selection.switched)
             )
-            if not owner_matches or (checkpoint.provider == "openai" and not account_matches):
+            if not owner_matches or (
+                checkpoint.provider == "openai"
+                and (
+                    not checkpoint_account
+                    or account_hash(current_account_id) != checkpoint_account
+                    or decision.capacity_account_id != checkpoint_account
+                    or (profile_selection is not None and profile_selection.switched)
+                )
+            ):
                 message = (
                     "Saved context requires its original provider/account. The selected route "
                     "cannot prove matching ownership; no provider or history was changed. "
@@ -862,10 +883,8 @@ def codex_user_prompt_submit(
                 )
                 sink.write("\n")
                 return 0
-            if account_matches:
-                # A rejected switch cannot poison subsequent owner recovery. The
-                # native runtime still filters genuinely foreign item metadata.
-                decision.strip_provider_state = False
+            # Provider metadata alone does not prove which account owns an
+            # opaque checkpoint. Never clear the native account/state guard here.
             decision.selection_receipt["checkpoint_admission"] = {
                 "provider": checkpoint.provider,
                 "account_verified": account_matches,

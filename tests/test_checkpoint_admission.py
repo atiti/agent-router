@@ -83,7 +83,7 @@ def test_opaque_history_reader_uses_latest_replacement_and_thread_identity(tmp_p
     assert latest_checkpoint(str(path), "same-thread") is None
 
 
-def test_failed_switch_does_not_poison_verified_owner_recovery(tmp_path):
+def test_mixed_checkpoint_requests_recovery_without_clearing_guard(tmp_path):
     config, store, path, selection = setup_route(tmp_path)
     # This is the observed legacy failure: the last attempted route latched stripping.
     with store.connection() as db:
@@ -97,11 +97,9 @@ def test_failed_switch_does_not_poison_verified_owner_recovery(tmp_path):
             account_id="test-account",
             model_provider="agentroute-azure",
         )
-    assert result["continue"] is True
-    specific = result["hookSpecificOutput"]
-    assert specific["modelProvider"] == "openai"
-    assert "stripProviderState" not in specific
-    assert store.latest("same-thread")["strip_provider_state"] == 0
+    assert result["continue"] is False
+    assert "compact to plaintext" in result["stopReason"]
+    assert store.latest("same-thread")["strip_provider_state"] == 1
 
 
 def test_incompatible_explicit_route_does_not_replace_affinity(tmp_path):
@@ -215,7 +213,7 @@ def test_account_evidence_after_checkpoint_cannot_be_changed(tmp_path):
     assert result["continue"] is False
 
 
-def test_checkpoint_without_later_success_cannot_clear_guard(tmp_path):
+def test_first_continuation_after_checkpoint_is_allowed(tmp_path):
     config, store, path, selection = setup_route(tmp_path)
     lines = path.read_text().splitlines()
     path.write_text("\n".join(lines[:-1]) + "\n")
@@ -223,4 +221,4 @@ def test_checkpoint_without_later_success_cannot_clear_guard(tmp_path):
         result = invoke(
             config, store, "@gpt @max continue", transcript_path=path, account_id="test-account"
         )
-    assert result["continue"] is False
+    assert result["continue"] is True
