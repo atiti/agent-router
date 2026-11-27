@@ -90,7 +90,7 @@ class Handler(BaseHTTPRequestHandler):
         script_policy = hashes or "'none'"
         self._send(HTTPStatus.OK, "text/html; charset=utf-8", body, csp=(
             "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; "
-            f"img-src 'self' data:; script-src {script_policy}; "
+            f"img-src 'self' data:; manifest-src 'self'; script-src {script_policy}; "
             "base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
         ))
 

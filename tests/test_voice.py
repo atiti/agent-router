@@ -130,7 +130,25 @@ def test_voice_page_requires_token_and_same_origin(tmp_path, https_origin):
             client.request("GET", "/", headers={"Host": host})
             page = client.getresponse()
             assert page.status == 200
+            assert "manifest-src 'self'" in page.getheader("Content-Security-Policy")
             assert b"Start talking" in page.read()
+            for path, media_type in (
+                ("/voice.webmanifest", "application/manifest+json"),
+                ("/voice-icon-180.png", "image/png"),
+                ("/voice-icon-192.png", "image/png"),
+                ("/voice-icon-512.png", "image/png"),
+            ):
+                client.request("GET", path, headers={"Host": host})
+                asset = client.getresponse()
+                assert asset.status == 200
+                assert asset.getheader("Content-Type") == media_type
+                body = asset.read()
+                if path.endswith(".webmanifest"):
+                    manifest = json.loads(body)
+                    assert manifest["display"] == "standalone"
+                    assert manifest["start_url"] == "/"
+                else:
+                    assert body.startswith(b"\x89PNG\r\n\x1a\n")
             for headers in (
                 {"Host": host, "Origin": origin},
                 {"Host": host, "X-AgentRoute-Token": server.token,

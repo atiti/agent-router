@@ -2,30 +2,37 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#11182a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AgentRoute">
+<link rel="manifest" href="/voice.webmanifest">
+<link rel="apple-touch-icon" href="/voice-icon-180.png">
 <title>AgentRoute Voice</title>
 <style>
-  :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #10121a;
-          color: #f4f5fb; }
-  body { margin: 0; padding: 24px; display: grid; min-height: 100svh; box-sizing: border-box;
-         place-items: center; }
-  main { width: min(100%, 29rem); background: #191d29; border: 1px solid #343a50;
-         border-radius: 22px; padding: clamp(20px, 6vw, 42px); box-sizing: border-box; }
-  h1 { font-size: 1.6rem; margin: 0 0 1rem; letter-spacing: -.035em; }
-  p { line-height: 1.55; color: #c1c8df; }
-  #status { min-height: 3rem; }
-  .controls { display: flex; flex-wrap: wrap; gap: 10px; }
-  button { cursor: pointer; border: 1px solid #515b77; background: #26314d; color: #fff;
-           border-radius: 12px; padding: 12px 16px; min-height: 44px; font: inherit; }
-  #start { background: #adc3ff; color: #111837; border-color: #adc3ff; font-weight: 650; }
-  button:focus-visible { outline: 3px solid #cbb5ff; outline-offset: 3px; }
+  :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #11182a; color: #f4f7fb; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100svh; padding: max(24px, env(safe-area-inset-top)) 20px max(28px, env(safe-area-inset-bottom)); background: radial-gradient(circle at 80% 0%, #263d58, #11182a 45%); }
+  main { width: min(100%, 30rem); margin: auto; }
+  h1 { font-size: clamp(2rem, 9vw, 2.7rem); letter-spacing: -.055em; margin: 1.5rem 0 .5rem; }
+  p { line-height: 1.5; color: #bbc9d8; }
+  #status { min-height: 4rem; padding: 18px; border: 1px solid #38516b; border-radius: 18px; background: #1a2940; color: #e5f5f0; }
+  .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  button { cursor: pointer; border: 1px solid #526a80; background: #24354c; color: #fff; border-radius: 15px; padding: 14px 16px; min-height: 52px; font: inherit; font-weight: 650; }
+  #start { grid-column: 1 / -1; background: #a8e6d0; color: #122c2c; border-color: #a8e6d0; }
+  button:focus-visible, input:focus-visible { outline: 3px solid #a8e6d0; outline-offset: 3px; }
   button:disabled { opacity: .45; cursor: default; }
-  label { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  label { display: flex; align-items: center; gap: 10px; margin: 20px 0 14px; }
+  input[type="checkbox"] { width: 20px; height: 20px; accent-color: #a8e6d0; }
   #hold { touch-action: none; user-select: none; }
-  #hold[aria-pressed="true"] { background: #adc3ff; color: #111837; }
-  #receipt { border-top: 1px solid #343a50; margin-top: 16px; padding-top: 12px; }
+  #hold[aria-pressed="true"] { background: #a8e6d0; color: #122c2c; }
+  #receipt, #access-setup { border: 1px solid #38516b; border-radius: 18px; background: #19283c; margin-top: 24px; padding: 18px; overflow-wrap: anywhere; }
   #receipt p { margin: .5rem 0; }
-  a { color: #adc3ff; }
+  #access-link { width: 100%; font: inherit; padding: 12px; border: 1px solid #526a80; border-radius: 10px; background: #11182a; color: white; margin-bottom: 12px; }
+  #access-setup button { width: 100%; }
+  a { color: #a8e6d0; }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
@@ -45,7 +52,12 @@
     <p id="verified-reply"></p>
     <a id="conversation">Open conversation in Codex</a>
   </section>
-  <p>Try “What needs my attention?” or “Only tell me about blockers.”</p>
+  <section id="access-setup" hidden>
+    <strong>Connect this app</strong>
+    <p>Paste your private AgentRoute Voice link to connect this Home Screen app.</p>
+    <input id="access-link" type="url" autocomplete="off" placeholder="https://…">
+    <button id="save-access" type="button">Save link</button>
+  </section>
   <audio id="speaker" autoplay></audio>
 </main>
 <script>
@@ -62,7 +74,31 @@
   const verifiedReply = document.getElementById('verified-reply');
   const conversation = document.getElementById('conversation');
   let held = false;
-  const token = new URLSearchParams(location.hash.slice(1)).get('access');
+  const setup = document.getElementById('access-setup');
+  const accessLink = document.getElementById('access-link');
+  let token = new URLSearchParams(location.hash.slice(1)).get('access');
+  try {
+    if (token) localStorage.setItem('agentroute.voice.access', token);
+    else token = localStorage.getItem('agentroute.voice.access');
+  } catch (_) { /* The link still works if storage is unavailable. */ }
+  if (setup) {
+    setup.hidden = Boolean(token);
+    document.getElementById('save-access').addEventListener('click', () => {
+      try {
+        const link = new URL(accessLink.value);
+        const key = new URLSearchParams(link.hash.slice(1)).get('access');
+        if (link.origin !== location.origin || !key) throw new Error('Invalid link');
+        localStorage.setItem('agentroute.voice.access', key);
+        token = key;
+        accessLink.value = '';
+        setup.hidden = true;
+        start.disabled = false;
+        status.textContent = 'Ready to connect.';
+      } catch (_) {
+        status.textContent = 'Paste the full private Voice link for this address.';
+      }
+    });
+  }
   let peer, mic, session, heartbeat;
 
   const receiptLabels = {
@@ -255,7 +291,7 @@
   });
   stop.addEventListener('click', () => end());
   addEventListener('pagehide', () => end());
-  if (!token) end('Use the full link printed by AgentRoute.');
+  if (!token) end('Paste your private Voice link below to connect.');
 </script>
 </body>
 </html>

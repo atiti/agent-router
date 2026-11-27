@@ -260,6 +260,17 @@ class VoiceHandler(Handler):
         elif self.path == "/":
             page = resources.files("agentroute").joinpath("dashboard_assets/voice.html")
             self._page(page.read_bytes())
+        elif self.path in {
+            "/voice.webmanifest", "/voice-icon-180.png", "/voice-icon-192.png",
+            "/voice-icon-512.png",
+        }:
+            asset = resources.files("agentroute").joinpath(
+                "dashboard_assets", self.path.removeprefix("/")
+            )
+            content_type = (
+                "application/manifest+json" if self.path.endswith(".webmanifest") else "image/png"
+            )
+            self._send(HTTPStatus.OK, content_type, asset.read_bytes())
         else:
             self._json({"error": "Unknown page."}, HTTPStatus.NOT_FOUND)
 

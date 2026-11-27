@@ -43,6 +43,8 @@ artifacts = [
   "src/agentroute/*.cjs",
   "src/agentroute/plugins/*.wasm",
   "src/agentroute/dashboard_assets/*.html",
+  "src/agentroute/dashboard_assets/*.png",
+  "src/agentroute/dashboard_assets/*.webmanifest",
 ]
 
 [tool.pytest.ini_options]
