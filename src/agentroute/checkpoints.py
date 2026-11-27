@@ -28,10 +28,10 @@ def latest_checkpoint(path: object, session_id: str) -> Checkpoint | None:
     try:
         with Path(path).open("rb") as source:
             first = json.loads(source.readline())
-            if (
-                first.get("type") != "session_meta"
-                or first.get("payload", {}).get("id") != session_id
-            ):
+            if first.get("type") != "session_meta" or session_id not in {
+                first.get("payload", {}).get("id"),
+                first.get("payload", {}).get("session_id"),
+            }:
                 return Checkpoint(None, "")
             source.seek(0, 2)
             end = source.tell()
