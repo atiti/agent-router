@@ -239,12 +239,13 @@ def test_direct_same_model_preserves_selected_tier_effort(monkeypatch):
     assert decision.reasoning_effort == "medium"
 
 
-def test_explicit_request_cannot_fail_open_on_audit_error(monkeypatch):
+def test_explicit_request_cannot_fail_open_on_audit_error(monkeypatch, tmp_path):
     import sqlite3
     from unittest.mock import Mock
 
     config = configured(monkeypatch)
     store = Mock()
+    store.path = tmp_path / "audit.db"
     store.latest_route.side_effect = sqlite3.OperationalError("database is locked")
     output = invoke(config, store, "@gpt @sol @xhigh continue")
     assert output["continue"] is False
