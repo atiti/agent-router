@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an explicit Recall operator for the meeting prototype: private request journals,
+  uncertain-effect holds, exact-bot reconciliation and verified MP4/audio/transcript
+  collection. Requires a verified workspace API version and existing credentials;
+  live provider acceptance remains unverified.
+
 - Add a meeting media prototype bound to one worker, with isolated context,
   restricted coordinator capabilities and restart holds. Live Meet acceptance
   remains separate from local protocol and pinned native capability tests.
