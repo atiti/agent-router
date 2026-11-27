@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve the saved model provider when resuming or forking a Codex thread.
+  New-session defaults no longer become unwanted explicit resume overrides;
+  explicit user model/provider/effort arguments still pass through unchanged.
+
 - Start a shared Codex session from Voice, deliver its first instruction, and open the same
   thread in the selected Herdr namespace. Track delivery and pane attachment separately.
 
