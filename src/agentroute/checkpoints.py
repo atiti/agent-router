@@ -14,6 +14,7 @@ MAX_SCAN_BYTES = 64 * 1024 * 1024
 class Checkpoint:
     provider: str | None
     created_at: str
+    successful_owner_after: bool = False
 
 
 def latest_checkpoint(path: object, session_id: str) -> Checkpoint | None:
@@ -40,12 +41,15 @@ def latest_checkpoint(path: object, session_id: str) -> Checkpoint | None:
         lines = data.splitlines()
         if offset:
             lines = lines[1:]
+        successful_owner_after = False
         for line in reversed(lines):
             try:
                 event = json.loads(line)
             except (ValueError, UnicodeDecodeError):
                 continue
             payload = event.get("payload", {})
+            if event.get("type") == "token_usage_record" and payload.get("response_id"):
+                successful_owner_after = True
             if event.get("type") != "compacted":
                 continue
             history = payload.get("replacement_history")
@@ -67,7 +71,9 @@ def latest_checkpoint(path: object, session_id: str) -> Checkpoint | None:
             }
             timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
             return Checkpoint(
-                next(iter(owners)) if len(owners) == 1 else None, timestamp.isoformat()
+                next(iter(owners)) if len(owners) == 1 else None,
+                timestamp.isoformat(),
+                successful_owner_after,
             )
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         return None

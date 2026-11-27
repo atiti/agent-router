@@ -431,8 +431,7 @@ class AuditStore:
                 started_at = datetime.fromisoformat(str(row["created_at"]))
                 duration_ms = max(
                     0.0,
-                    (interrupted_at - started_at.astimezone(timezone.utc)).total_seconds()
-                    * 1000,
+                    (interrupted_at - started_at.astimezone(timezone.utc)).total_seconds() * 1000,
                 )
             cursor = connection.execute(
                 "UPDATE routing_decisions SET turn_completed_at = COALESCE(turn_completed_at, ?), "
@@ -619,10 +618,7 @@ class AuditStore:
         request_matches = (
             requested.get("model") == requested_model
             and requested.get("provider") == requested_provider
-            and (
-                not requested_effort
-                or requested.get("reasoning_effort") == requested_effort
-            )
+            and (not requested_effort or requested.get("reasoning_effort") == requested_effort)
         )
         if not request_matches:
             return (
@@ -648,10 +644,7 @@ class AuditStore:
             matches = (
                 reported_model == requested_model
                 and reported_provider == requested_provider
-                and (
-                    not requested_effort
-                    or reported_effort == requested_effort
-                )
+                and (not requested_effort or reported_effort == requested_effort)
             )
             if not matches:
                 return (
@@ -880,10 +873,14 @@ class AuditStore:
         return None
 
     def checkpoint_account(
-        self, session_id: str, created_at: str,
-        route_scope: str = "root", agent_id: str | None = None,
+        self,
+        session_id: str,
+        created_at: str,
+        route_scope: str = "root",
+        agent_id: str | None = None,
+        require_all_since: bool = False,
     ) -> str | None:
-        """Use applied account evidence before the checkpoint, never failed route intent."""
+        """Return account only when intervening route evidence does not contradict it."""
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT actual_model_provider, capacity_account_id, route_application_state, "
@@ -893,10 +890,26 @@ class AuditStore:
                 "ORDER BY id DESC LIMIT 1",
                 (session_id, route_scope, agent_id, created_at),
             ).fetchone()
-        if (row and row["actual_model_provider"] == "openai"
-                and row["route_application_state"] == "applied"
-                and row["turn_outcome"] == "completed"):
-            return row["capacity_account_id"] or None
+        if (
+            row
+            and row["actual_model_provider"] == "openai"
+            and row["route_application_state"] == "applied"
+            and row["turn_outcome"] == "completed"
+        ):
+            account = row["capacity_account_id"] or None
+            if require_all_since and account:
+                with self.connection() as connection:
+                    conflicting = connection.execute(
+                        "SELECT 1 FROM routing_decisions WHERE session_id = ? "
+                        "AND route_scope = ? AND agent_id IS ? "
+                        "AND julianday(created_at) > julianday(?) "
+                        "AND (model_provider != 'openai' OR capacity_account_id IS NULL "
+                        "OR capacity_account_id != ?) LIMIT 1",
+                        (session_id, route_scope, agent_id, created_at, account),
+                    ).fetchone()
+                if conflicting:
+                    return None
+            return account
         return None
 
     def provider_state_is_mixed(
