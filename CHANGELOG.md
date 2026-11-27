@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve verified Developer ID signatures on embedded runtime executables when
+  rebuilding Desktop, so Keychain grants retain a stable application identity.
+  Validate Code Mode with its gRPC transport on Codex 0.172 and newer.
+
 - Start a shared Codex session from Voice, deliver its first instruction, and open the same
   thread in the selected Herdr namespace. Track delivery and pane attachment separately.
 

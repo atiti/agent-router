@@ -18,7 +18,10 @@ def _fake_app(path: Path) -> None:
         plistlib.dump({"CFBundleIdentifier": "com.openai.codex"}, handle)
 
 
-def test_desktop_build_is_local_reversible_and_preserves_bundle_id(tmp_path, monkeypatch):
+@pytest.mark.parametrize("signed_runtime", [False, True])
+def test_desktop_build_is_local_reversible_and_preserves_bundle_id(
+    tmp_path, monkeypatch, signed_runtime
+):
     home = tmp_path / "home"
     source = tmp_path / "ChatGPT.app"
     destination = tmp_path / "ChatGPT-Routed.app"
@@ -39,6 +42,13 @@ def test_desktop_build_is_local_reversible_and_preserves_bundle_id(tmp_path, mon
         run_calls.append(command)
         if command[0] == "ditto":
             shutil.copytree(command[1], command[2])
+        if command[:2] == ("codesign", "-dv"):
+            return subprocess.CompletedProcess(
+                command, 0, stdout="", stderr=(
+                    "Authority=Developer ID Application: Example\nTeamIdentifier=EXAMPLE123\n"
+                    if signed_runtime else "Signature=adhoc\nTeamIdentifier=not set\n"
+                ),
+            )
         return subprocess.CompletedProcess(command, 0, stdout="codex-cli test\n", stderr="")
 
     monkeypatch.setattr(desktop, "_run", fake_run)
@@ -58,11 +68,22 @@ def test_desktop_build_is_local_reversible_and_preserves_bundle_id(tmp_path, mon
     helper_signing = [
         command
         for command in run_calls
-        if command[0] == "codesign" and Path(command[-1]).name == "codex-code-mode-host"
+        if command[0] == "codesign" and "--sign" in command
+        and Path(command[-1]).name == "codex-code-mode-host"
     ]
-    assert len(helper_signing) == 1
-    assert "--entitlements" in helper_signing[0]
-    assert Path(helper_signing[0][-2]).name == "codex-code-mode-host.entitlements.plist"
+    if signed_runtime:
+        assert helper_signing == []
+        assert not any(
+            command[0] == "codesign" and "--sign" in command
+            and Path(command[-1]).name == "codex-bin" for command in run_calls
+        )
+        app_signing = [c for c in run_calls if c[0] == "codesign" and "--sign" in c
+                       and str(c[-1]).endswith(".app")]
+        assert all("--deep" not in c for c in app_signing)
+    else:
+        assert len(helper_signing) == 1
+        assert "--entitlements" in helper_signing[0]
+        assert Path(helper_signing[0][-2]).name == "codex-code-mode-host.entitlements.plist"
 
     _, backup = desktop.build_desktop_app(source, destination, replace=True)
     assert backup is not None and backup.exists()
@@ -194,7 +215,10 @@ def test_desktop_build_can_strictly_reject_a_version_mismatch(tmp_path, monkeypa
         )
 
 
-def test_desktop_build_accepts_prerelease_variants_on_same_codex_release(tmp_path, monkeypatch):
+@pytest.mark.parametrize("release,expected_transport", [("0.155.0", "framed"), ("0.172.0", "grpc")])
+def test_desktop_build_accepts_prerelease_variants_on_same_codex_release(
+    tmp_path, monkeypatch, release, expected_transport
+):
     home = tmp_path / "home"
     source = tmp_path / "ChatGPT.app"
     destination = tmp_path / "ChatGPT-Routed.app"
@@ -206,16 +230,18 @@ def test_desktop_build_accepts_prerelease_variants_on_same_codex_release(tmp_pat
         path.chmod(0o755)
     monkeypatch.setenv("AGENTROUTE_HOME", str(home))
     monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(desktop, "smoke_code_mode_host", lambda _path: None)
+    transports = []
+    monkeypatch.setattr(desktop, "smoke_code_mode_host", lambda _path: transports.append("framed"))
+    monkeypatch.setattr(desktop, "smoke_grpc_host", lambda _path: transports.append("grpc"))
 
     def fake_run(*command, capture=False):
         if command[0] == "ditto":
             shutil.copytree(command[1], command[2])
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
         version = (
-            "codex-cli 0.155.0-alpha.9.2\n"
+            f"codex-cli {release}-alpha.9.2\n"
             if str(command[0]).startswith(str(source))
-            else "codex-cli 0.155.0-alpha.2.6\n"
+            else f"codex-cli {release}-alpha.2.6\n"
         )
         return subprocess.CompletedProcess(command, 0, stdout=version, stderr="")
 
@@ -223,11 +249,12 @@ def test_desktop_build_accepts_prerelease_variants_on_same_codex_release(tmp_pat
     installed, _ = desktop.build_desktop_app(source, destination)
 
     assert installed == destination
+    assert transports == [expected_transport]
     status = desktop.desktop_status(source, destination)
     assert status["source_routed_versions_match"] is True
     assert status["source_routed_versions_exact_match"] is False
-    assert status["source_routed_release_line"] == "0.155.0"
-    assert status["routed_release_line"] == "0.155.0"
+    assert status["source_routed_release_line"] == release
+    assert status["routed_release_line"] == release
 
 
 def test_codex_release_parser_requires_all_three_version_components():

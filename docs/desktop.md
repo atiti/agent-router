@@ -23,6 +23,13 @@ starts. Different official-app and routed-runtime versions produce a warning and
 continues by default. The copy is kept under `~/.agentroute/backups/desktop/` for rollback.
 Updating the CLI alone does not update Desktop.
 
+Rebuilds preserve valid Developer ID signatures on the embedded CLI and Code Mode
+host. Only unsigned or ad-hoc runtime binaries are locally signed. This keeps
+the runtime's Keychain identity stable instead of replacing it on every rebuild.
+The outer routed app remains locally signed; this does not grant it access to
+services that require the official app's identity. Code Mode validation uses the
+gRPC protocol for Codex 0.172 and newer.
+
 The version warning is informational because exact patch-line equality is a conservative proxy,
 not a verified protocol-compatibility signal. A successful build checks startup, not every Desktop
 workflow. After rebuilding, launch the routed app and test a normal routed turn; test mobile remote

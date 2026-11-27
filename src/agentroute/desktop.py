@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .code_mode_smoke import smoke_code_mode_host
+from .code_mode_smoke import smoke_code_mode_host, smoke_grpc_host
 from .config import agentroute_home
 
 DEFAULT_SOURCE_APP = Path("/Applications/ChatGPT.app")
@@ -38,6 +38,19 @@ def _run(*command: str | Path, capture: bool = False) -> subprocess.CompletedPro
         check=True,
         capture_output=capture,
         text=True,
+    )
+
+
+def _has_developer_signature(path: Path) -> bool:
+    """Only preserve a valid certificate-backed signature, not a local ad-hoc one."""
+    try:
+        _run("codesign", "--verify", "--strict", path, capture=True)
+        details = _run("codesign", "-dv", "--verbose=2", path, capture=True)
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    lines = (details.stderr or "").splitlines()
+    return any(line.startswith("Authority=Developer ID Application:") for line in lines) and any(
+        line.startswith("TeamIdentifier=") and line != "TeamIdentifier=not set" for line in lines
     )
 
 
@@ -275,21 +288,23 @@ def _build_desktop_app_locked(
         with info_path.open("wb") as handle:
             plistlib.dump(info, handle, sort_keys=False)
 
-        _run("codesign", "--force", "--deep", "--sign", signing_identity, resources / "codex-bin")
+        # Re-signing a release executable changes its Keychain identity. Keep
+        # valid Developer ID signatures on the embedded runtime across rebuilds.
+        if not _has_developer_signature(resources / "codex-bin"):
+            _run("codesign", "--force", "--sign", signing_identity, resources / "codex-bin")
+        if not _has_developer_signature(resources / "codex-code-mode-host"):
+            _run(
+                "codesign",
+                "--force",
+                "--sign",
+                signing_identity,
+                "--entitlements",
+                code_mode_entitlements,
+                resources / "codex-code-mode-host",
+            )
         _run(
             "codesign",
             "--force",
-            "--deep",
-            "--sign",
-            signing_identity,
-            "--entitlements",
-            code_mode_entitlements,
-            resources / "codex-code-mode-host",
-        )
-        _run(
-            "codesign",
-            "--force",
-            "--deep",
             "--sign",
             signing_identity,
             "--options",
@@ -303,7 +318,11 @@ def _build_desktop_app_locked(
             raise RuntimeError(
                 "rebuilt Desktop entrypoint did not launch the embedded routed runtime"
             )
-        smoke_code_mode_host(resources / "codex-code-mode-host")
+        release = _codex_release_line(routed_version)
+        if release and tuple(int(part) for part in release.split(".")) >= (0, 172, 0):
+            smoke_grpc_host(resources / "codex-code-mode-host")
+        else:
+            smoke_code_mode_host(resources / "codex-code-mode-host")
         _run(desktop_codex_path(staging_app), "app-server", "--help", capture=True)
         if destination.exists():
             conflict_root = home / "backups" / "desktop" / "conflicts"
