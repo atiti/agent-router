@@ -277,10 +277,16 @@ def run_once(apply: bool = False) -> dict:
         monitors = reconcile_monitors(teams, apply)
         report = {"checked_at": now, "apply": apply, "monitors": monitors,
                   "packets": reconcile_packets(teams, now, monitors)}
-        pending = sum(w["state"] in {"pending", "fired"} for w in waits.load())
-        started = waits.ensure_daemon() if apply and pending else False
-        report["waits"] = {"pending_or_fired": pending, "start_requested": started,
-                           "running": waits.daemon_running()}
+        wait_records = waits.load()
+        pending = sum(w["state"] in {"pending", "fired"} for w in wait_records)
+        goal_releases = sum(waits.goal_release_pending(w) for w in wait_records)
+        started = waits.ensure_daemon() if apply and (pending or goal_releases) else False
+        report["waits"] = {
+            "pending_or_fired": pending,
+            "pending_goal_releases": goal_releases,
+            "start_requested": started,
+            "running": waits.daemon_running(),
+        }
         if apply:
             atomic_write(status_path(), report)
         return report
