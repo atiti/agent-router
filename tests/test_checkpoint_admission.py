@@ -66,9 +66,9 @@ def test_opaque_history_reader_uses_latest_replacement_and_thread_identity(tmp_p
     path = tmp_path / "rollout.jsonl"
     write_checkpoint(path)
     assert latest_checkpoint(str(path), "same-thread") == Checkpoint(
-        "openai", "2026-01-01T01:00:00+00:00", True
+        "openai", "2026-01-01T01:00:00+00:00"
     )
-    assert latest_checkpoint(str(path), "other-thread") is None
+    assert latest_checkpoint(str(path), "other-thread") == Checkpoint(None, "")
     with path.open("a") as f:
         f.write(
             json.dumps(
@@ -102,52 +102,16 @@ def test_mixed_checkpoint_requests_recovery_without_clearing_guard(tmp_path):
     assert store.latest("same-thread")["strip_provider_state"] == 1
 
 
-def test_incompatible_explicit_route_does_not_replace_affinity(tmp_path):
-    config, store, path, _ = setup_route(tmp_path)
+@pytest.mark.parametrize("prompt", ["@azure @max continue", "@gpt @max continue", "@auto continue"])
+def test_opaque_checkpoint_is_held_without_switch_or_account_inference(tmp_path, prompt):
+    config, store, path, selection = setup_route(tmp_path)
     before = store.latest("same-thread")["id"]
-    result = invoke(
-        config, store, "@azure @max continue", transcript_path=path, account_id="test-account"
-    )
+    with patch("agentroute.hook.select_turn_profile", return_value=selection):
+        result = invoke(config, store, prompt, transcript_path=path, account_id="test-account")
     assert result["continue"] is False
-    assert "@gpt" in result["stopReason"]
+    assert "compact to plaintext" in result["stopReason"]
     assert store.latest("same-thread")["id"] == before
     assert "hookSpecificOutput" not in result
-
-
-def test_automatic_route_stays_with_checkpoint_owner(tmp_path):
-    config, store, path, selection = setup_route(tmp_path)
-    config.routing.backend_by_tier = dict.fromkeys(["fast", "normal", "smart", "max"], "azure")
-    with patch("agentroute.hook.select_turn_profile", return_value=selection):
-        result = invoke(
-            config,
-            store,
-            "@auto explain the answer",
-            transcript_path=path,
-            account_id="test-account",
-        )
-    assert result["continue"] is True
-    assert result["hookSpecificOutput"]["modelProvider"] == "openai"
-    assert store.latest("same-thread")["sticky_backend"] is None
-
-
-@pytest.mark.parametrize("current_account", [None, "different-account"])
-def test_unknown_or_changed_account_cannot_clear_checkpoint_guard(tmp_path, current_account):
-    config, store, path, selection = setup_route(tmp_path)
-    with patch("agentroute.hook.select_turn_profile", return_value=selection):
-        result = invoke(
-            config, store, "@gpt @max continue", transcript_path=path, account_id=current_account
-        )
-    assert result["continue"] is False
-    assert "matching ownership" in result["stopReason"]
-
-
-def test_unknown_provider_cannot_choose_a_substitute(tmp_path):
-    config, store, path, _ = setup_route(tmp_path)
-    write_checkpoint(path, None)
-    result = invoke(
-        config, store, "@gpt @max continue", transcript_path=path, account_id="test-account"
-    )
-    assert result["continue"] is False
 
 
 def test_plaintext_replacement_releases_checkpoint_constraint(tmp_path):
@@ -166,26 +130,24 @@ def test_reader_ignores_partial_final_write(tmp_path):
     write_checkpoint(path)
     with path.open("a") as f:
         f.write('{"type": "event_msg", "payload":')
-    assert latest_checkpoint(str(path), "same-thread").provider == "openai"
+    assert latest_checkpoint(str(path), "same-thread") == Checkpoint(None, "")
 
 
-@pytest.mark.parametrize("outcome,application", [("failed", "applied"), ("pending", "pending")])
-def test_intervening_account_attempt_invalidates_old_owner_evidence(tmp_path, outcome, application):
-    config, store, path, selection = setup_route(tmp_path)
-    invoke(config, store, "@gpt @max continue", turn_id="new-account-attempt")
-    with store.connection() as db:
-        db.execute(
-            "UPDATE routing_decisions SET created_at='2026-01-01T00:30:00+00:00', "
-            "actual_model_provider='openai', route_application_state=?, "
-            "turn_outcome=?, capacity_account_id=? WHERE turn_id='new-account-attempt'",
-            (application, outcome, account_hash("account-b")),
+def test_missing_or_malformed_history_is_unknown(tmp_path):
+    missing = tmp_path / "missing.jsonl"
+    assert latest_checkpoint(str(missing), "same-thread") == Checkpoint(None, "")
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            json.dumps(x)
+            for x in [
+                {"type": "session_meta", "payload": {"id": "same-thread"}},
+                {"type": "compacted", "timestamp": "2026-01-01T01:00:00Z", "payload": {}},
+            ]
         )
-    assert store.checkpoint_account("same-thread", "2026-01-01T01:00:00+00:00") is None
-    with patch("agentroute.hook.select_turn_profile", return_value=selection):
-        result = invoke(
-            config, store, "@gpt @max continue", transcript_path=path, account_id="test-account"
-        )
-    assert result["continue"] is False
+        + "\n"
+    )
+    assert latest_checkpoint(str(path), "same-thread") == Checkpoint(None, "")
 
 
 def test_bounded_scan_cannot_claim_older_checkpoint_absent(tmp_path, monkeypatch):
@@ -197,28 +159,45 @@ def test_bounded_scan_cannot_claim_older_checkpoint_absent(tmp_path, monkeypatch
     assert latest_checkpoint(str(path), "same-thread") == Checkpoint(None, "")
 
 
-def test_account_evidence_after_checkpoint_cannot_be_changed(tmp_path):
-    config, store, path, selection = setup_route(tmp_path)
-    invoke(config, store, "@gpt @max continue", turn_id="later-account")
-    with store.connection() as db:
-        db.execute(
-            "UPDATE routing_decisions SET created_at='2026-01-01T01:30:00+00:00', "
-            "capacity_account_id=? WHERE turn_id='later-account'",
-            (account_hash("account-b"),),
+def test_malformed_complete_record_and_replacement_are_unknown(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    write_checkpoint(path, portable=True)
+    with path.open("a") as f:
+        f.write("invalid json\n")
+    assert latest_checkpoint(str(path), "same-thread") == Checkpoint(None, "")
+    path.write_text(
+        "\n".join(
+            json.dumps(x)
+            for x in [
+                {"type": "session_meta", "payload": {"id": "same-thread"}},
+                {
+                    "type": "compacted",
+                    "timestamp": "2026-01-01T01:00:00Z",
+                    "payload": {"replacement_history": [{}]},
+                },
+            ]
         )
-    with patch("agentroute.hook.select_turn_profile", return_value=selection):
-        result = invoke(
-            config, store, "@gpt @max continue", transcript_path=path, account_id="test-account"
-        )
-    assert result["continue"] is False
+        + "\n"
+    )
+    assert latest_checkpoint(str(path), "same-thread") == Checkpoint(None, "")
 
 
-def test_first_continuation_after_checkpoint_is_allowed(tmp_path):
-    config, store, path, selection = setup_route(tmp_path)
-    lines = path.read_text().splitlines()
-    path.write_text("\n".join(lines[:-1]) + "\n")
-    with patch("agentroute.hook.select_turn_profile", return_value=selection):
-        result = invoke(
-            config, store, "@gpt @max continue", transcript_path=path, account_id="test-account"
+def test_encrypted_portable_history_is_not_assumed_safe(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "\n".join(
+            json.dumps(x)
+            for x in [
+                {"type": "session_meta", "payload": {"id": "same-thread"}},
+                {
+                    "type": "compacted",
+                    "timestamp": "2026-01-01T01:00:00Z",
+                    "payload": {
+                        "replacement_history": [{"type": "message", "encrypted_content": "opaque"}]
+                    },
+                },
+            ]
         )
-    assert result["continue"] is True
+        + "\n"
+    )
+    assert latest_checkpoint(str(path), "same-thread") == Checkpoint(None, "")

@@ -14,7 +14,6 @@ MAX_SCAN_BYTES = 64 * 1024 * 1024
 class Checkpoint:
     provider: str | None
     created_at: str
-    successful_owner_after: bool = False
 
 
 def latest_checkpoint(path: object, session_id: str) -> Checkpoint | None:
@@ -24,7 +23,8 @@ def latest_checkpoint(path: object, session_id: str) -> Checkpoint | None:
     evidence for a different thread. Missing evidence never clears native guards.
     """
     if not isinstance(path, str) or not path:
-        return None
+        return Checkpoint(None, "")
+    corrupt_tail = False
     try:
         with Path(path).open("rb") as source:
             first = json.loads(source.readline())
@@ -32,7 +32,7 @@ def latest_checkpoint(path: object, session_id: str) -> Checkpoint | None:
                 first.get("type") != "session_meta"
                 or first.get("payload", {}).get("id") != session_id
             ):
-                return None
+                return Checkpoint(None, "")
             source.seek(0, 2)
             end = source.tell()
             offset = max(0, end - MAX_SCAN_BYTES)
@@ -41,26 +41,51 @@ def latest_checkpoint(path: object, session_id: str) -> Checkpoint | None:
         lines = data.splitlines()
         if offset:
             lines = lines[1:]
-        successful_owner_after = False
         for line in reversed(lines):
             try:
                 event = json.loads(line)
             except (ValueError, UnicodeDecodeError):
+                corrupt_tail = True
                 continue
             payload = event.get("payload", {})
-            if event.get("type") == "token_usage_record" and payload.get("response_id"):
-                successful_owner_after = True
             if event.get("type") != "compacted":
                 continue
             history = payload.get("replacement_history")
-            if not isinstance(history, list):
-                return None
+            if corrupt_tail or not isinstance(history, list):
+                return Checkpoint(None, "")
+            allowed = {
+                "message",
+                "reasoning",
+                "function_call",
+                "function_call_output",
+                "custom_tool_call",
+                "custom_tool_call_output",
+                "local_shell_call",
+                "web_search_call",
+                "image_generation_call",
+                "tool_search_call",
+                "tool_search_output",
+                "agent_message",
+                "additional_tools",
+                "configuration_update",
+                "compaction",
+                "context_compaction",
+            }
+            if any(
+                not isinstance(item, dict) or item.get("type") not in allowed for item in history
+            ):
+                return Checkpoint(None, "")
             indices = [
                 i
                 for i, item in enumerate(history)
                 if item.get("type") in {"compaction", "context_compaction"}
             ]
             if not indices:
+                if any(
+                    item.get("encrypted_content") or item.get("encrypted_function_args")
+                    for item in history
+                ):
+                    return Checkpoint(None, "")
                 return None
             metadata = payload.get("replacement_history_metadata") or []
             owners = {
@@ -73,9 +98,8 @@ def latest_checkpoint(path: object, session_id: str) -> Checkpoint | None:
             return Checkpoint(
                 next(iter(owners)) if len(owners) == 1 else None,
                 timestamp.isoformat(),
-                successful_owner_after,
             )
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
-        return None
+        return Checkpoint(None, "")
     # A bounded tail without a checkpoint cannot establish portable history.
-    return Checkpoint(None, "") if offset else None
+    return Checkpoint(None, "") if offset or corrupt_tail else None
