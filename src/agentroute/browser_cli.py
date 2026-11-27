@@ -189,3 +189,24 @@ def resolve(
         detail = f" ({extension['detail']})" if extension.get("detail") else ""
         typer.echo(f"extension: {extension['status']}{detail}")
     typer.echo("authentication: not checked")
+
+
+@browser_app.command("open")
+def open_profile(
+    alias: str,
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Verify the launch without opening Chrome."
+    ),
+    as_json: bool = JSON_OUT,
+) -> None:
+    """Open about:blank in ALIAS's Chrome profile through the bundled vendor opener."""
+    try:
+        result = bp.open_profile(alias, dry_run=dry_run)
+    except bp.BrowserProfileError as error:
+        _fail(error)
+    if as_json:
+        _print_json(result)
+        return
+    status = "Verified dry run" if dry_run else "Requested Chrome window"
+    typer.echo(f"{status}: {alias} ({result['profile_dir']}, mode {result['mode']}).")
+    typer.echo("authentication: not checked; terminal connection: not established")

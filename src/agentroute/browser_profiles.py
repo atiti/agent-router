@@ -1,9 +1,10 @@
 """Private alias bindings from task names to existing Chromium browser profiles.
 
 AgentRoute does not drive the browser itself. The bundled ChatGPT browser plugin
-already selects a profile through ``CODEX_CHROMIUM_USER_DATA_DIR`` and
-``CODEX_CHROMIUM_PREFERENCES_PATH``; this module only records which existing
-profile directory an alias means, validates it, and produces those overrides.
+selects its diagnostic and open-window targets through
+``CODEX_CHROMIUM_USER_DATA_DIR`` and ``CODEX_CHROMIUM_PREFERENCES_PATH``. These
+overrides do not constrain live extension connections. This module records which
+existing profile directory an alias means, validates it, and produces those overrides.
 
 Bindings live in a private sidecar (``browser-profiles.json`` under the
 AgentRoute home, mode 0600 in a 0700 directory). Nothing here signs in,
@@ -124,6 +125,11 @@ def default_user_data_dir() -> Path:
     override = os.environ.get(USER_DATA_ENV)
     if override:
         return Path(override).expanduser()
+    return standard_user_data_dir()
+
+
+def standard_user_data_dir() -> Path:
+    """The root Chrome opens when the vendor opener supplies no --user-data-dir."""
     home = Path.home()
     if sys.platform == "darwin":
         return home / "Library" / "Application Support" / "Google" / "Chrome"
@@ -490,3 +496,93 @@ def extension_readiness(
     else:
         return {"status": "unavailable", "detail": f"checker exited {completed.returncode}"}
     return {"status": status}
+
+
+def _open_report(
+    completed: subprocess.CompletedProcess, resolved: ResolvedBinding, *, dry_run: bool
+) -> dict[str, Any]:
+    if completed.returncode != 0:
+        raise BrowserProfileError(f"vendor browser opener exited {completed.returncode}")
+    try:
+        report = json.loads(completed.stdout or "")
+    except ValueError as exc:
+        raise BrowserProfileError("vendor browser opener returned an invalid report") from exc
+    if not isinstance(report, dict):
+        raise BrowserProfileError("vendor browser opener returned no report")
+    args = report.get("args")
+    expected_tail = [f"--profile-directory={resolved.binding.profile_dir}",
+                     "--new-window", "about:blank"]
+    if (
+        report.get("browserFamily") != "chrome"
+        or report.get("profileDirectory") != resolved.binding.profile_dir
+        or report.get("dryRun") is not dry_run
+        or not isinstance(report.get("command"), str)
+        or not report["command"]
+        or not isinstance(args, list)
+        or not all(isinstance(arg, str) for arg in args)
+        or args[-3:] != expected_tail
+        or sum(arg.startswith("--profile-directory=") for arg in args) != 1
+    ):
+        raise BrowserProfileError("vendor browser opener did not select the exact bound profile")
+    # The current vendor opener uses the selected Preferences basename but does
+    # not forward its user-data root to Chrome. Never silently open another root.
+    root_args = [arg for arg in args if arg.startswith("--user-data-dir=")]
+    if root_args:
+        if root_args != [f"--user-data-dir={resolved.user_data_dir}"]:
+            raise BrowserProfileError("vendor browser opener selected a different user-data root")
+    elif resolved.user_data_dir.resolve() != standard_user_data_dir().resolve():
+        raise BrowserProfileError(
+            "vendor browser opener cannot select this non-default user-data root"
+        )
+    return report
+
+
+def open_profile(
+    alias: str, *, dry_run: bool = False, runner: Runner | None = None, timeout: float = 15
+) -> dict[str, Any]:
+    """Request an about:blank window through the vendor opener after exact preflight.
+
+    A successful request does not establish browser authorization or connect a
+    terminal session. Only this operation's mode gate is enforced here.
+    """
+    resolved = resolve_binding(alias)
+    if not resolved.browser_allowed:
+        raise BrowserProfileError(
+            f"{alias} has mode {resolved.mode}; opening a browser is not allowed"
+        )
+    runner = runner or subprocess.run
+    readiness = extension_readiness(resolved, runner=runner, timeout=timeout)
+    if readiness["status"] != "enabled":
+        raise BrowserProfileError(f"the bound profile's extension is {readiness['status']}")
+    script = plugin_dir() / "scripts" / "open-chrome-window.js"
+    if not script.is_file():
+        raise BrowserProfileError("browser plugin opener not found")
+    environment = {**os.environ, **resolved.env}
+
+    def invoke(preview: bool) -> dict[str, Any]:
+        argv = ["node", str(script), "--browser", "chrome", "--json"]
+        if preview:
+            argv.append("--dry-run")
+        try:
+            completed = runner(
+                argv, env=environment, capture_output=True, text=True, timeout=timeout, check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise BrowserProfileError(
+                f"vendor browser opener did not complete: {type(exc).__name__}"
+            ) from exc
+        return _open_report(completed, resolved, dry_run=preview)
+
+    report = invoke(True)
+    if not dry_run:
+        report = invoke(False)
+    return {
+        "alias": alias,
+        "mode": resolved.mode,
+        "profile_dir": resolved.binding.profile_dir,
+        "user_data_dir": str(resolved.user_data_dir),
+        "status": "dry_run" if dry_run else "open_requested",
+        "vendor": report,
+        "authentication": "not checked",
+        "terminal_connected": False,
+    }

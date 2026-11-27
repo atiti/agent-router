@@ -230,3 +230,151 @@ def test_cli_flow_respects_mode_and_email_opt_in(chrome, checker, monkeypatch):
     assert runner.invoke(app, ["resolve", "work"]).exit_code == 1
     assert runner.invoke(app, ["unbind", "work"]).exit_code == 0
     assert bp.load_bindings() == {}
+
+
+@pytest.fixture
+def opener(chrome, checker, monkeypatch):
+    (checker / "scripts" / "open-chrome-window.js").write_text("")
+    monkeypatch.setattr(bp, "standard_user_data_dir", lambda: chrome)
+    return checker
+
+
+def _opener_report(profile="Profile 3", dry_run=True):
+    return {
+        "browserFamily": "chrome", "profileDirectory": profile, "dryRun": dry_run,
+        "command": "chrome", "args": [f"--profile-directory={profile}",
+                                      "--new-window", "about:blank"],
+    }
+
+
+def _opener_runner(calls, *, preview=None, error=None):
+    def runner(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        if Path(argv[1]).name == "check-extension-installed.js":
+            report = {"selectedProfileDirectory": "Profile 3", "installed": True, "enabled": True}
+        else:
+            if error:
+                raise error
+            report = preview if preview is not None else _opener_report(
+                dry_run="--dry-run" in argv
+            )
+        return CompletedProcess(argv, 0, stdout=json.dumps(report), stderr="")
+    return runner
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_open_uses_vendor_preflight_and_exact_profile_env(chrome, opener, dry_run):
+    bp.bind("work", "Profile 3")
+    before_environment = dict(os.environ)
+    before_binding = bp.sidecar_path().read_bytes()
+    calls = []
+    result = bp.open_profile("work", dry_run=dry_run, runner=_opener_runner(calls))
+    assert result["status"] == ("dry_run" if dry_run else "open_requested")
+    assert result["authentication"] == "not checked"
+    assert result["terminal_connected"] is False
+    assert len(calls) == (2 if dry_run else 3)
+    assert "--dry-run" in calls[1][0]
+    if not dry_run:
+        assert "--dry-run" not in calls[2][0]
+    for _, kwargs in calls:
+        assert kwargs["env"][bp.USER_DATA_ENV] == str(chrome)
+        assert kwargs["env"][bp.PREFERENCES_ENV] == str(chrome / "Profile 3" / "Preferences")
+    assert dict(os.environ) == before_environment
+    assert bp.sidecar_path().read_bytes() == before_binding
+
+
+@pytest.mark.parametrize("mode", ["off", "computer"])
+def test_open_disallowed_mode_starts_no_process(chrome, opener, mode):
+    bp.bind("work", "Profile 3", mode=mode)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("disallowed mode must not start a process")
+
+    with pytest.raises(bp.BrowserProfileError, match="not allowed"):
+        bp.open_profile("work", runner=forbidden)
+
+
+@pytest.mark.parametrize("preview", [
+    _opener_report(profile="Default"),
+    {**_opener_report(), "args": ["--profile-directory=Default", "--new-window", "about:blank"]},
+    {**_opener_report(), "args": ["--profile-directory=Profile 3", "--new-window", "https://x.test"]},
+    {**_opener_report(), "dryRun": False},
+    [],
+])
+def test_open_mismatched_preflight_never_opens(chrome, opener, preview):
+    bp.bind("work", "Profile 3")
+    calls = []
+    with pytest.raises(bp.BrowserProfileError, match="vendor browser opener"):
+        bp.open_profile("work", runner=_opener_runner(calls, preview=preview))
+    assert len(calls) == 2
+    assert "--dry-run" in calls[-1][0]
+
+
+def test_open_nonstandard_root_refused_before_real_open(chrome, opener, monkeypatch):
+    bp.bind("work", "Profile 3")
+    monkeypatch.setattr(bp, "standard_user_data_dir", lambda: chrome.parent / "other-root")
+    calls = []
+    with pytest.raises(bp.BrowserProfileError, match="non-default user-data root"):
+        bp.open_profile("work", runner=_opener_runner(calls))
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("status", ["disabled", "not_installed", "unavailable"])
+def test_open_requires_enabled_extension(chrome, opener, monkeypatch, status):
+    bp.bind("work", "Profile 3")
+    monkeypatch.setattr(bp, "extension_readiness", lambda *a, **kw: {"status": status})
+    calls = []
+    with pytest.raises(bp.BrowserProfileError, match=status):
+        bp.open_profile("work", runner=_opener_runner(calls))
+    assert calls == []
+
+
+def test_open_vendor_error_is_reported_and_does_not_open(chrome, opener):
+    bp.bind("work", "Profile 3")
+    calls = []
+    with pytest.raises(bp.BrowserProfileError, match="did not complete: OSError"):
+        bp.open_profile("work", runner=_opener_runner(calls, error=OSError("failed")))
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(("code", "output", "message"), [
+    (2, "", "exited 2"), (0, "invalid json", "invalid report"),
+])
+def test_open_vendor_invalid_result_is_reported(chrome, opener, code, output, message):
+    bp.bind("work", "Profile 3")
+    calls = []
+    working = _opener_runner(calls)
+
+    def runner(argv, **kwargs):
+        if Path(argv[1]).name == "check-extension-installed.js":
+            return working(argv, **kwargs)
+        return CompletedProcess(argv, code, stdout=output, stderr="")
+
+    with pytest.raises(bp.BrowserProfileError, match=message):
+        bp.open_profile("work", runner=runner)
+
+
+def test_open_cli_reports_request_and_errors(chrome, monkeypatch):
+    calls = []
+
+    def opened(alias, dry_run=False):
+        calls.append((alias, dry_run))
+        return {"profile_dir": "Profile 3", "mode": "browser", "status": "open_requested"}
+
+    monkeypatch.setattr(bp, "open_profile", opened)
+    runner = CliRunner()
+    result = runner.invoke(browser_cli.browser_app, ["open", "work"])
+    assert result.exit_code == 0
+    assert "Requested Chrome window" in result.output
+    assert "terminal connection: not established" in result.output
+    result = runner.invoke(browser_cli.browser_app, ["open", "work", "--dry-run", "--json"])
+    assert result.exit_code == 0
+    assert calls == [("work", False), ("work", True)]
+
+    def failed(*args, **kwargs):
+        raise bp.BrowserProfileError("opener failed")
+
+    monkeypatch.setattr(bp, "open_profile", failed)
+    result = runner.invoke(browser_cli.browser_app, ["open", "work"])
+    assert result.exit_code == 1
+    assert "opener failed" in result.output
