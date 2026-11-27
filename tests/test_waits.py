@@ -510,13 +510,16 @@ def test_other_pending_wait_prevents_automatic_goal_resume(monkeypatch):
     assert client.goal == "paused" and "thread/goal/set" not in client.methods()
 
 
-def test_missing_pause_guard_reports_manual_resume(monkeypatch):
+def test_missing_pause_guard_leaves_goal_active(monkeypatch):
+    monkeypatch.setattr(waits, "goal_log_position", lambda *args: None)
     client = FakeClient(goal="active")
     monkeypatch.setattr(wait_cli, "_client", lambda: client)
     result = CliRunner().invoke(app, ["wait", "event", "handoff"])
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert "manually" in payload["goal"]
+    assert "without a verifiable goal pause" in payload["goal"]
+    assert client.goal == "active"
+    assert "thread/goal/set" not in client.methods()
     shown = json.loads(CliRunner().invoke(app, ["wait", "show", payload["id"]]).output)
     assert shown["automatic_resume_guarded"] is False
 
