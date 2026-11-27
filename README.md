@@ -314,13 +314,14 @@ its explanation are audited.
 
 ### Provider-owned checkpoints
 
-When an opaque checkpoint is present or its state cannot be read, routing stops
-before changing providers or accounts. Resume the original provider/account and
+When an opaque checkpoint is present or its existing transcript cannot be read,
+routing stops before changing providers or accounts. Resume the original provider/account and
 compact to plaintext to continue. Native ownership checks remain active.
 
 This conservative hold also applies to the first turn after an opaque checkpoint;
-it does not infer account ownership from older routing records. After plaintext
-compaction, ordinary adaptive selection resumes.
+it does not infer account ownership from older routing records. Sessions without a
+transcript retain their native model and account without AgentRoute overrides.
+After plaintext compaction, ordinary adaptive selection resumes.
 
 ### Adaptive provider selection
 
