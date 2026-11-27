@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add a meeting media prototype bound to one worker, with isolated context,
+  restricted coordinator capabilities and restart holds. Live Meet acceptance
+  remains separate from local protocol and pinned native capability tests.
+
 - Make AgentRoute Voice installable on mobile with an updated interface and private-link setup.
 
 - Verify Voice replies against the receipt's exact Codex turn completion, including
