@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Start a shared Codex session from Voice, deliver its first instruction, and open the same
+  thread in the selected Herdr namespace. Track delivery and pane attachment separately.
+
 - Make AgentRoute Voice installable on mobile with an updated interface and private-link setup.
 
 - Verify Voice replies against the receipt's exact Codex turn completion, including

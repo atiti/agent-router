@@ -62,7 +62,7 @@ class VoiceSession:
             "Prior dialogue: " + json.dumps(context, ensure_ascii=False)
         )
         instructions = INSTRUCTIONS + "\n" + self.voice_context
-        pilot = VoicePilot(Collector(), preferences)
+        pilot = VoicePilot(Collector(), preferences, cwd=cwd)
         self.pilot = pilot
         pilot.record_receipt = self.record_instruction
         try:

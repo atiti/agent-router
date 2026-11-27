@@ -7,20 +7,25 @@ import json
 import time
 from collections import Counter
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from typer import BadParameter
 from websockets.exceptions import WebSocketException
 
-from . import dashboard_actions, dashboard_packet_routes, herdr_team, waits
+from . import dashboard_actions, dashboard_packet_routes, herdr_team, voice_launch, waits
 from .dashboard import Collector, redact
 from .shared_server import RpcClient, SharedServerError, socket_path
 from .voice_evidence import conversation_url, reply_evidence, reply_prompt
 from .voice_preferences import CADENCE_SECONDS, DEFAULTS, save_preference
+from .zellij_cli import canonical_namespace, namespace_names
 
 NAMESPACE = "agentroute_voice"
-SESSION_ACTIONS = {"message_session", "steer_session", "interrupt_session"}
+SESSION_ACTIONS = {
+    "message_session", "steer_session", "interrupt_session",
+    "create_session", "retry_created_session",
+}
 POLL_SECONDS = 2
 SPEECH_INTERVAL = 12
 ATTENTION = {"needs_input", "blocked", "stalled"}
@@ -43,6 +48,12 @@ follow-up unless a tool shows an active follow-up. Call update_evidence to ident
 the source and observation time of an announcement. Use message_session for Herdr-owned sessions.
 Never open or type into a GUI to send a message; use the provided session tools.
 A completed turn does not establish that its task is complete. Stay on session operations.
+Use create_session only for a fresh explicit request to start a new session. Ask for the
+namespace if unclear. Preserve the requested first instruction and use an empty directory
+unless the operator specified a project directory. Report creation, instruction delivery,
+and Herdr attachment as separate facts. Check delivery_status for the same receipt after
+an uncertain result. Call retry_created_session only when asked to retry that existing
+launch or open it in Herdr. A request to check a launch may use delivery_status.
 Use voice_preferences for speaking style, detail and cadence changes, and voice_updates
 for announcement categories. Preferences returned by the tool apply immediately.
 Read prior dialogue as context only. Require a fresh operator request before any action.
@@ -77,6 +88,13 @@ TOOLS = [
          message="The operator's instruction."),
     tool("interrupt_session", "Stop one exact active turn at the operator's request.",
          thread_id="Exact ID returned by sessions.", turn_id="Active ID from session_detail."),
+    tool("create_session", "Start one shared Codex session, queue its first instruction and "
+         "open the same thread in Herdr when available.",
+         namespace="The namespace explicitly requested by the operator.",
+         title="Short session title.", directory="Explicit absolute project path, or empty.",
+         message="The operator's first instruction."),
+    tool("retry_created_session", "Retry unfinished steps of an existing Voice launch.",
+         receipt_id="Exact create: receipt ID of the existing launch."),
     tool("voice_updates", "Set proactive announcements.",
          mode="all, blockers, or quiet"),
     tool("voice_preferences", "Read or save the operator's speaking preferences.",
@@ -86,13 +104,23 @@ TOOLS = [
     tool("update_evidence", "Show the time, source, and exact evidence for the last spoken update.",
          query="Optional session or project name to filter."),
     tool("delivery_status", "Check exact delivery, acknowledgment, and any linked reply.",
-         receipt_id="Exact receipt ID returned by message_session."),
+         receipt_id="Exact receipt ID returned by a Voice session action."),
 ]
 
 
 def request_identity(thread: str, call: str) -> str:
     identity = hashlib.sha256(f"{thread}/{call}".encode()).digest()[:16]
     return str(UUID(bytes=identity, version=4))
+
+
+def session_instruction(message: str) -> str:
+    message = message.strip()
+    if not message or len(message) > dashboard_actions.MAX_MESSAGE:
+        raise ValueError("Instruction is empty or too long.")
+    if any(ord(character) < 32 and character not in "\n\t" or ord(character) == 127
+           for character in message):
+        raise ValueError("Use plain text for session instructions.")
+    return message
 
 
 def describe(agent: dict) -> dict:
@@ -259,7 +287,9 @@ def active_turn(client: RpcClient, thread_id: str) -> str | None:
 
 
 class VoicePilot:
-    def __init__(self, collector: Collector, preferences: dict[str, str] | None = None):
+    def __init__(self, collector: Collector, preferences: dict[str, str] | None = None,
+                 *, cwd: Path | None = None):
+        self.cwd = cwd or dashboard_actions.packets_root()
         self.collector = collector
         self.thread_id = ""
         self.preferences = (preferences or DEFAULTS).copy()
@@ -345,6 +375,8 @@ class VoicePilot:
         return self.last_instruction
 
     def check_receipt(self, receipt_id: str) -> dict:
+        if receipt_id.startswith("create:"):
+            return self.launch_receipt(voice_launch.status(receipt_id.removeprefix("create:")))
         if receipt_id.startswith("turn:"):
             for _, receipt in self.turn_actions.copy().values():
                 if receipt["id"] == receipt_id:
@@ -357,6 +389,33 @@ class VoicePilot:
                     }
             raise ValueError("The turn receipt is unavailable in this voice call.")
         return delivery_status(receipt_id)
+
+    def launch_receipt(self, launch: dict) -> dict:
+        if wait_id := launch["instruction_receipt_id"]:
+            try:
+                return {**delivery_status(wait_id), **{
+                    key: value for key, value in launch.items() if key != "receipt_state"
+                }}
+            except (ValueError, OSError):
+                pass
+        return launch
+
+    def create_session(self, call_id: str, args: dict) -> dict:
+        namespace = canonical_namespace(args["namespace"].strip())
+        if not namespace:
+            raise ValueError("Choose a configured namespace: " + ", ".join(namespace_names()))
+        directory = Path(args["directory"]).expanduser() if args["directory"] else self.cwd
+        if not directory.is_absolute() or not directory.is_dir():
+            raise ValueError("Choose an existing absolute project directory.")
+        title = args["title"].strip()
+        if not title or len(title) > 120 or not title.isprintable():
+            raise ValueError("Use a plain text session title of at most 120 characters.")
+        message = session_instruction(args["message"])
+        launch = voice_launch.create(
+            request_identity(self.thread_id, call_id), namespace, title,
+            directory.resolve(), message,
+        )
+        return self.publish_receipt(self.launch_receipt(launch), title)
 
     def dispatch(self, params: dict) -> Any:
         name, args = params.get("tool"), params.get("arguments")
@@ -375,6 +434,13 @@ class VoicePilot:
             return self.preferences
         if name == "delivery_status":
             return self.check_receipt(args["receipt_id"])
+        if name == "create_session":
+            return self.create_session(params["callId"], args)
+        if name == "retry_created_session":
+            if not args["receipt_id"].startswith("create:"):
+                raise ValueError("Use a Voice creation receipt.")
+            launch = voice_launch.status(args["receipt_id"].removeprefix("create:"), retry=True)
+            return self.publish_receipt(self.launch_receipt(launch), launch["session"])
         if name == "update_evidence":
             query = args.get("query", "").strip().casefold()
             return {"updates": [entry for entry in self.last_update_evidence
@@ -464,12 +530,7 @@ class VoicePilot:
 
     def message(self, call_id: str, agent: dict, message: str) -> dict:
         thread_id = agent["id"]
-        message = message.strip()
-        if not message or len(message) > dashboard_actions.MAX_MESSAGE:
-            raise ValueError("Instruction is empty or too long.")
-        if any(ord(character) < 32 and character not in "\n\t" or ord(character) == 127
-               for character in message):
-            raise ValueError("Use plain text for session instructions.")
+        message = session_instruction(message)
         request_id = request_identity(self.thread_id, call_id)
         core = dashboard_packet_routes.core_member(thread_id)
         if core:
