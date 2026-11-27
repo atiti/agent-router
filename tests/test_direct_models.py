@@ -1,6 +1,7 @@
 import io
 import itertools
 import json
+from pathlib import Path
 
 import pytest
 
@@ -80,6 +81,15 @@ def test_direct_terra_bypasses_classifier_and_interrupt_affinity(monkeypatch):
 
 def invoke(config, store, prompt, model="gpt-6.1-sol", provider="agentroute-azure",
            subagent=None, **metadata):
+    transcript = (
+        store.path.parent / "direct-portable.jsonl" if isinstance(store.path, Path) else None
+    )
+    if transcript is not None:
+        transcript.write_text(
+            json.dumps({"type": "session_meta", "payload": {"id": "direct-session"}}) + "\n"
+        )
+        metadata.setdefault("transcript_path", str(transcript))
+        metadata.setdefault("agent_transcript_path", str(transcript))
     source = io.StringIO(json.dumps({"session_id": "direct-session", "turn_id": prompt,
                                     "model": model, "model_provider": provider,
                                     "prompt": prompt, "subagent": subagent, **metadata}))

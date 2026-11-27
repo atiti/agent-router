@@ -75,6 +75,18 @@ def invoke(
     turn_id="turn-1",
     goal_id=None,
 ):
+    if transcript_path is None:
+        transcript_path = store.path.parent / "portable-hook-test-rollout.jsonl"
+        transcript_path.write_text(
+            json.dumps({"type": "session_meta", "payload": {"id": "same-thread"}}) + "\n"
+        )
+    if subagent is not None or flat_agent_id is not None:
+        child_path = store.path.parent / "portable-child-test-rollout.jsonl"
+        child_path.write_text(
+            json.dumps({"type": "session_meta", "payload": {"id": "same-thread"}}) + "\n"
+        )
+    else:
+        child_path = None
     source = io.StringIO(
         json.dumps(
             {
@@ -94,6 +106,7 @@ def invoke(
                 "rate_limits": rate_limits,
                 "ordinary_usage_allowed": ordinary_usage_allowed,
                 "transcript_path": str(transcript_path) if transcript_path else None,
+                "agent_transcript_path": str(child_path) if child_path else None,
             }
         )
     )
@@ -1866,6 +1879,10 @@ def test_confirmation_uses_previous_assistant_task_definition(tmp_path):
         )
         + "\n"
     )
+    transcript.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "same-thread"}})
+        + "\n" + transcript.read_text()
+    )
     config = default_config()
     config.enabled = True
     store = AuditStore(tmp_path / "audit.db")
@@ -1991,6 +2008,10 @@ def test_llm_context_telemetry_distinguishes_sent_from_inherited(tmp_path, monke
     config.routing.classifier.endpoint = "http://127.0.0.1:11434/v1/chat/completions"
     store = AuditStore(tmp_path / "audit.db")
 
+    transcript.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "same-thread"}})
+        + "\n" + transcript.read_text()
+    )
     invoke(config, store, "ok check?", transcript_path=transcript)
     row = store.latest("same-thread")
     receipt = json.loads(row["selection_receipt"])
@@ -2025,6 +2046,10 @@ def test_explicit_confirmation_approves_agent_request(tmp_path):
             }
         )
         + "\n"
+    )
+    transcript.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "same-thread"}})
+        + "\n" + transcript.read_text()
     )
     config = default_config()
     config.enabled = True

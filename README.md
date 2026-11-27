@@ -314,16 +314,13 @@ its explanation are audited.
 
 ### Provider-owned checkpoints
 
-Opaque compaction checkpoints belong to the provider/account that created them.
-While one remains in the saved history, automatic routing keeps that provider.
-An explicit incompatible provider or account change stops before applying the
-route; compact to plaintext on the original account before switching. A prior account or provider switch requires explicit plaintext recovery on the
-original account. Native history ownership checks remain active.
+When an opaque checkpoint is present or its state cannot be read, routing stops
+before changing providers or accounts. Resume the original provider/account and
+compact to plaintext to continue. Native ownership checks remain active.
 
-The routing guard reads only the latest checkpoint metadata from the matching
-thread transcript and uses prior applied account receipts. Missing or ambiguous
-ownership cannot authorize a substitute account or clear native state filters. After plaintext compaction,
-ordinary adaptive selection resumes. Recovery does not edit saved history.
+This conservative hold also applies to the first turn after an opaque checkpoint;
+it does not infer account ownership from older routing records. After plaintext
+compaction, ordinary adaptive selection resumes.
 
 ### Adaptive provider selection
 
