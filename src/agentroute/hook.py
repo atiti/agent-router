@@ -609,7 +609,7 @@ def codex_user_prompt_submit(
             previous_capacity_backend=previous_capacity_backend,
         )
         checkpoint = latest_checkpoint(
-            payload.get("agent_transcript_path")
+            payload.get("agent_transcript_path") or payload.get("transcript_path")
             if route_scope == "subagent"
             else payload.get("transcript_path"),
             session_id,
