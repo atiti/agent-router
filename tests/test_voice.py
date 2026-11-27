@@ -303,60 +303,131 @@ def test_recalled_context_cannot_trigger_a_command_before_fresh_speech(monkeypat
     dispatched.assert_called_once()
 
 
-def test_linked_reply_requires_exact_thread_marker_and_final_message(tmp_path, monkeypatch):
+@pytest.fixture
+def reply_rollout(tmp_path, monkeypatch):
     import json
     from uuid import uuid4
 
     from agentroute import voice_evidence
 
-    target, other = str(uuid4()), str(uuid4())
+    target = str(uuid4())
     folder = tmp_path / "sessions"
     folder.mkdir()
     path = folder / "session.jsonl"
     monkeypatch.setattr(voice_evidence, "codex_home", lambda: tmp_path)
     monkeypatch.setattr(voice_evidence, "_rows", lambda *args: [{"rollout_path": str(path)}])
 
-    def write(phase="final_answer", phrase="[voice-reply token] Rollback finished.", at=101):
-        path.write_text("\n".join(map(json.dumps, [
+    def write(*events):
+        records = [
             {"type": "session_meta", "payload": {"id": target}},
-            {"type": "event_msg", "timestamp": at, "payload": {"type": "item_completed",
-             "turn_id": "turn-1", "item": {"id": "message-1", "type": "AgentMessage",
-             "phase": phase, "content": [{"type": "output_text", "text": phrase}]}}},
-        ])) + "\n")
+            *({"type": "event_msg", "timestamp": event.get("at", 101), "payload": event}
+              for event in events),
+        ]
+        path.write_text("".join(json.dumps(record) + "\n" for record in records))
 
-    write()
-    assert voice_evidence.linked_reply(target, "token", 100) == {
-        "text": "Rollback finished.", "at": 101, "thread_id": target,
-        "turn_id": "turn-1", "item_id": "message-1",
+    def read(turn="turn-1", *, thread=target, marker="token", input_prefix=None):
+        return voice_evidence.reply_evidence(
+            thread, marker, 100, expected_turn=turn, input_prefix=input_prefix,
+        )
+
+    return target, write, read
+
+
+@pytest.mark.parametrize("phase_fields", [
+    {}, {"phase": None}, {"phase": "final_answer"}, {"phase": "runtime-variant"},
+])
+def test_reply_uses_receipt_linked_completion_independent_of_phase(reply_rollout, phase_fields):
+    target, write, read = reply_rollout
+    answer = "Rollback finished. " + "All checks passed. " * 70
+    tagged = f"[voice-reply token] {answer}"
+    write(
+        {"type": "item_completed", "turn_id": "turn-1", "item": {
+            "type": "AgentMessage", **phase_fields,
+            "content": [{"type": "output_text", "text": tagged}],
+        }},
+        {"type": "task_complete", "turn_id": "turn-1", "last_agent_message": tagged},
+    )
+    assert read() == {
+        "reply_state": "replied", "reply_turn_id": "turn-1",
+        "verified_reply": {
+            "text": answer.rstrip(), "at": 101, "thread_id": target,
+            "turn_id": "turn-1", "truncated": False,
+        },
     }
-    assert voice_evidence.linked_reply(target, "token", 100, expected_turn="turn-2") is None
-    assert voice_evidence.linked_reply(target, "token", 100, expected_turn="turn-1")
-    assert voice_evidence.linked_reply(other, "token", 100) is None
-    assert voice_evidence.linked_reply(target, "other-token", 100) is None
-    write(phase="commentary")
-    assert voice_evidence.linked_reply(target, "token", 100) is None
-    write(at=99)
-    assert voice_evidence.linked_reply(target, "token", 100) is None
-    write(phrase="I saw someone use [voice-reply token] as a marker.")
-    assert voice_evidence.linked_reply(target, "token", 100) is None
+    assert read("turn-2")["reply_state"] == "output_unconfirmed"
+    assert read(thread="abcd1234")["reply_state"] == "output_unconfirmed"
+    assert read(marker="other-token")["reply_state"] == "completed_without_reply"
 
 
-    legacy = [
-        {"type": "session_meta", "payload": {"id": target}},
-        {"type": "response_item", "timestamp": 101, "payload": {
-            "type": "message", "role": "assistant", "phase": "final_answer",
-            "content": [{"type": "output_text", "text": "[voice-reply token] Build passed."}],
-        }, "metadata": {"retained_source": {"id": {
-            "turn_id": "legacy-turn", "message_id": "legacy-message",
-        }}}},
-    ]
-    path.write_text("\n".join(map(json.dumps, legacy)) + "\n")
-    assert voice_evidence.linked_reply(target, "token", 100)["turn_id"] == "legacy-turn"
+def test_status_never_attaches_progress_or_unrelated_updates(reply_rollout):
+    _, write, read = reply_rollout
+    wrong = "[voice-reply token] Progress that must not be attached."
+    progress = {"type": "item_completed", "turn_id": "turn-1", "item": {
+        "type": "AgentMessage", "phase": "commentary",
+        "content": [{"type": "output_text", "text": wrong}],
+    }}
+    unrelated = {"type": "task_complete", "turn_id": "another-turn", "last_agent_message": wrong}
+    write(progress, unrelated)
+    assert read()["reply_state"] == "pending"
+    assert read()["verified_reply"] is None
+
+    write(progress, unrelated, {
+        "type": "task_complete", "turn_id": "turn-1", "last_agent_message": "An untagged final.",
+    })
+    assert read()["reply_state"] == "completed_without_reply"
+    assert read()["verified_reply"] is None
+
+    write(progress, unrelated, {
+        "type": "task_complete", "turn_id": "turn-1", "last_agent_message": wrong,
+    })
+    assert read()["reply_state"] == "output_unconfirmed"
+    assert read()["verified_reply"] is None
+
+
+@pytest.mark.parametrize(("terminal", "state"), [
+    ({"type": "task_complete"}, "output_unconfirmed"),
+    ({"type": "task_complete", "last_agent_message": {}}, "output_unconfirmed"),
+    ({"type": "task_complete", "last_agent_message": None}, "completed_without_reply"),
+    ({"type": "task_complete", "error": {"message": "failed"}}, "failed"),
+    ({"type": "turn_aborted"}, "interrupted"),
+])
+def test_reply_reports_terminal_without_verified_output(reply_rollout, terminal, state):
+    _, write, read = reply_rollout
+    write({"turn_id": "turn-1", **terminal})
+    assert read()["reply_state"] == state
+    assert read()["verified_reply"] is None
+
+
+def test_conflicting_completions_leave_reply_unconfirmed(reply_rollout):
+    _, write, read = reply_rollout
+    first = {"type": "task_complete", "turn_id": "turn-1",
+             "last_agent_message": "[voice-reply token] First."}
+    conflict = {**first, "last_agent_message": "[voice-reply token] Second."}
+    write(first, conflict, first)
+    assert read()["reply_state"] == "output_unconfirmed"
+    assert read()["verified_reply"] is None
+
+
+def test_missing_receipt_turn_requires_unique_exact_input(reply_rollout):
+    _, write, read = reply_rollout
+    prefix = "[agentroute wait-event w-exact]"
+    user = {"type": "item_completed", "turn_id": "turn-1", "item": {
+        "type": "UserMessage", "content": [{"text": f"{prefix} Check the build."}],
+    }}
+    final = {"type": "task_complete", "turn_id": "turn-1",
+             "last_agent_message": "[voice-reply token] Build passed."}
+    write({**user, "at": 99}, final)
+    assert read(None, input_prefix=prefix)["reply_state"] == "turn_unconfirmed"
+    write(user, final)
+    assert read(None, input_prefix=prefix)["verified_reply"]["text"] == "Build passed."
+    assert read(None, input_prefix="[agentroute wait-event w-ex]")["verified_reply"] is None
+    write(user, {**user, "turn_id": "turn-2"}, final)
+    assert read(None, input_prefix=prefix)["reply_state"] == "turn_unconfirmed"
 
 
 def test_shared_receipt_records_acceptance_without_inventing_read_or_reply():
     wait = {
-        "thread_id": "abcd1234", "state": "delivered", "created_at": 100,
+        "id": "w-test", "thread_id": "abcd1234", "state": "delivered", "created_at": 100,
         "delivery": {"state": "delivered", "turn_id": "turn-1"},
         "recipient_read": {"thread": "another-thread", "at": 110},
         "spec": {}, "outcome": {"evidence": "Check CI."},

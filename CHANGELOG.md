@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Verify Voice replies against the receipt's exact Codex turn completion, including
+  runtimes that omit assistant message phases. Report unavailable or ambiguous final output.
 - Withdraw the Antigravity (`agy`) bridge and park Gemini support. Delegating
   turns to another agent could not be made to behave like a model behind Codex,
   and a prompt-level tool protocol is not a foundation worth carrying. A saved

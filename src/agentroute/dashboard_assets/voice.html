@@ -87,8 +87,15 @@
     receiptState.textContent = `${value.session || value.recipient} · ${label}`;
     instruction.textContent = value.instruction || '';
     verifiedReply.textContent = value.verified_reply
-      ? `Reply · ${new Date(value.verified_reply.at * 1000).toLocaleTimeString()} · ${value.verified_reply.text}`
-      : 'A linked reply is still unconfirmed.';
+      ? `Reply · ${new Date(value.verified_reply.at * 1000).toLocaleTimeString()} · ${value.verified_reply.text}${value.verified_reply.truncated ? '…' : ''}`
+      : ({
+        pending: 'Waiting for a linked reply.',
+        completed_without_reply: 'The turn ended without a linked reply.',
+        failed: 'The target turn failed.',
+        interrupted: 'The target turn was interrupted.',
+        turn_unconfirmed: 'The exact target turn is unconfirmed.',
+        output_unconfirmed: 'The final output could not be verified.',
+      }[value.reply_state] || 'A linked reply is still unconfirmed.');
     const url = value.conversation_url || '';
     conversation.hidden = !/^codex:\/\/threads\/[0-9a-f-]+$/.test(url);
     if (!conversation.hidden) conversation.href = url;

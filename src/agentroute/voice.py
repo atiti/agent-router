@@ -16,7 +16,7 @@ from websockets.exceptions import WebSocketException
 from . import dashboard_actions, dashboard_packet_routes, herdr_team, waits
 from .dashboard import Collector, redact
 from .shared_server import RpcClient, SharedServerError, socket_path
-from .voice_evidence import conversation_url, linked_reply, reply_prompt
+from .voice_evidence import conversation_url, reply_evidence, reply_prompt
 from .voice_preferences import CADENCE_SECONDS, DEFAULTS, save_preference
 
 NAMESPACE = "agentroute_voice"
@@ -36,7 +36,9 @@ is ambiguous. Use the supplied tools for agent operations. Keep approval request
 their existing session. Call the tool before saying you sent anything. Report its exact
 receipt. Say queued, entered in terminal, accepted by Codex, read, or unconfirmed
 as the tool reports. Only attribute a reply to a command if its receipt contains
-verified_reply. A recent session update may be unrelated. Never promise a later
+verified_reply. Otherwise report reply_state: pending, completed without a linked reply,
+failed, interrupted, or unconfirmed. Delivery and read receipt fields are independent
+of the reply. A recent session update may be unrelated. Never promise a later
 follow-up unless a tool shows an active follow-up. Call update_evidence to identify
 the source and observation time of an announcement. Use message_session for Herdr-owned sessions.
 Never open or type into a GUI to send a message; use the provided session tools.
@@ -132,8 +134,11 @@ def team_receipt(team: str, message_id: str, entry: dict) -> dict:
         "turn_id": delivery.get("turn_id"),
         "conversation_url": conversation_url(target),
         "instruction": entry.get("voice_instruction"),
-        "verified_reply": linked_reply(target, entry.get("voice_reply_marker"),
-                                       entry.get("created_at", 0)),
+        **reply_evidence(
+            target, entry.get("voice_reply_marker"), entry.get("created_at", 0),
+            expected_turn=delivery.get("turn_id"),
+            input_prefix=f"[team-message {message_id};",
+        ),
     }
 
 
@@ -157,8 +162,11 @@ def shared_receipt(wait: dict, receipt: dict) -> dict:
         "recipient_read": receipt["recipient_read"] if read_confirmed else None,
         "turn_id": delivery.get("turn_id"), "conversation_url": conversation_url(target),
         "instruction": (wait.get("outcome") or {}).get("evidence"),
-        "verified_reply": linked_reply(target, wait["spec"].get("voice_reply_marker"),
-                                       wait["created_at"]),
+        **reply_evidence(
+            target, wait["spec"].get("voice_reply_marker"), wait["created_at"],
+            expected_turn=delivery.get("turn_id"),
+            input_prefix=waits.WAKE_MARKER.format(id=wait["id"]),
+        ),
     }
 
 
@@ -342,7 +350,7 @@ class VoicePilot:
                 if receipt["id"] == receipt_id:
                     return {
                         **receipt,
-                        "verified_reply": linked_reply(
+                        **reply_evidence(
                             receipt["recipient"], receipt["reply_marker"], receipt["created_at"],
                             expected_turn=receipt["turn_id"],
                         ),
