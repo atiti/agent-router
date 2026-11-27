@@ -419,6 +419,11 @@ Luna `xhigh` minimum is a model-safety floor and cannot be lowered by tier defau
 The GPT SMART target at the former bundled `gpt-6-sol`/high default migrates to
 `gpt-6.1-sol`/high when an existing config loads; other customized SMART targets remain.
 
+The [YOLO tier proposal](docs/yolo-tier.md) describes an opt-in fifth tier above MAX:
+GPT-6 Astra at its highest verified effort, Claude Fable 5.2 at max, and Grok 4.7 at
+xhigh, with subscriptions preferred before Azure. It is a proposal; `@yolo` is not
+implemented. Existing tier mappings and permissions remain unchanged.
+
 ### Daybreak Blue for security work
 
 For ChatGPT accounts that have [Daybreak Blue access in Codex](https://help.openai.com/en/articles/20001258-openai-daybreak-trusted-access-for-cyber-overview),
