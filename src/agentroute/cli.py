@@ -967,12 +967,18 @@ def doctor_command(
 @app.command("voice")
 def voice_command(
     cwd: Path = typer.Option(Path("."), "--cwd", exists=True, file_okay=False),
+    port: int = typer.Option(0, min=0, max=65535, help="Loopback port (0 picks a free port)."),
+    https_origin: str | None = typer.Option(
+        None, help="Exact Tailscale Serve HTTPS origin allowed to proxy Voice.",
+    ),
 ) -> None:
     """Talk with a dedicated Codex voice thread about your AgentRoute sessions."""
     from .voice_server import serve
 
     try:
-        serve(cwd.resolve())
+        serve(cwd.resolve(), port=port, https_origin=https_origin)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--https-origin") from error
     except KeyboardInterrupt:
         return
     except OSError as error:
