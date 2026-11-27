@@ -312,6 +312,20 @@ requests, high-confidence rules, and credential-shaped prompts never reach it. I
 cheapest sufficient tier, confidence, and task type; only the task type, confidence, and a hash of
 its explanation are audited.
 
+### Provider-owned checkpoints
+
+Opaque compaction checkpoints belong to the provider/account that created them.
+While one remains in the saved history, automatic routing keeps that provider.
+An explicit incompatible provider or account change stops before applying the
+route; compact to plaintext on the original account before switching. Returning
+to a verified original GPT account also clears a stale routing strip flag left
+by a previously rejected switch. Native history ownership checks remain active.
+
+The routing guard reads only the latest checkpoint metadata from the matching
+thread transcript and uses prior applied account receipts. Missing or ambiguous
+ownership cannot authorize a substitute account. After plaintext compaction,
+ordinary adaptive selection resumes. Recovery does not edit saved history.
+
 ### Adaptive provider selection
 
 Tier classification answers how much capability the task needs. Optional provider selection then

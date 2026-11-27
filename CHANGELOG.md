@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep opaque checkpoints on their provider/account during routing, and permit
+  verified original-account recovery after a rejected provider switch.
+
 - Start a shared Codex session from Voice, deliver its first instruction, and open the same
   thread in the selected Herdr namespace. Track delivery and pane attachment separately.
 
