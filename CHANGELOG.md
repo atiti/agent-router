@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Report the existing ChatGPT login under API-backed Codex configurations, and show live GPT
+  subscription usage in account status without enabling automatic capacity management.
+
 - Make AgentRoute Voice installable on mobile with an updated interface and private-link setup.
 
 - Verify Voice replies against the receipt's exact Codex turn completion, including

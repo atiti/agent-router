@@ -713,6 +713,9 @@ and includes the Grok allowance in the backend table.
 Each Claude profile has its own usage and identity row; `Default` marks the profile used for new
 Claude threads. Account IDs in the GPT profile table are masked hashes. `--no-probe` skips live
 quota reads and shows saved samples only. Reset times are displayed in local time.
+GPT status probes use OpenAI regardless of the execution provider in your Codex configuration.
+They show live subscription usage even when capacity management is disabled; viewing status
+does not enable automatic account or provider switching.
 
 When capacity is healthy the route banner includes `capacity healthy · subscription 62% used`.
 At the warning threshold it says `CAPACITY WARNING` and includes the reset time when available.
