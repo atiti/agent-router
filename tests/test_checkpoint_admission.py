@@ -265,3 +265,27 @@ def test_child_transcript_binds_root_session_id(tmp_path):
     )
     assert latest_checkpoint(str(path), "root-id").provider == "openai"
     assert latest_checkpoint(str(path), "unrelated") == Checkpoint(None, "")
+
+
+def test_absent_transcript_keeps_native_route_and_no_overrides(tmp_path):
+    import io
+
+    from agentroute.hook import codex_user_prompt_submit
+
+    config = default_config()
+    config.enabled = True
+    store = AuditStore(tmp_path / "missing.db")
+    sink = io.StringIO()
+    payload = {
+        "session_id": "missing-path-session",
+        "model": "gpt-6.1-sol",
+        "model_provider": "openai",
+        "prompt": "@azure continue",
+        "transcript_path": None,
+    }
+    assert (
+        codex_user_prompt_submit(io.StringIO(json.dumps(payload)), sink, config=config, store=store)
+        == 0
+    )
+    assert json.loads(sink.getvalue()) == {"continue": True}
+    assert store.latest("missing-path-session") is None
