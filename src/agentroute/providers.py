@@ -490,6 +490,7 @@ def _write_model_catalog(
                     _narrow_tool_surface(by_slug[slug], capabilities)
                     if (
                         backend_name in {"grok", "grok-api"}
+                        and backend.codex_provider == f"agentroute-{backend_name}"
                         and backend.tool_compatibility == "full"
                     ):
                         by_slug[slug]["tool_mode"] = "code_mode_only"
@@ -534,7 +535,11 @@ def _write_model_catalog(
                 model["default_reasoning_level"] = None
                 model["supported_reasoning_levels"] = []
             _narrow_tool_surface(model, capabilities)
-            if backend_name in {"grok", "grok-api"} and backend.tool_compatibility == "full":
+            if (
+                backend_name in {"grok", "grok-api"}
+                and backend.codex_provider == f"agentroute-{backend_name}"
+                and backend.tool_compatibility == "full"
+            ):
                 model["tool_mode"] = "code_mode_only"
                 model["supports_search_tool"] = True
             if not capabilities.vision:

@@ -329,7 +329,11 @@ def test_routed_provider_models_use_configured_context_limits_and_tool_modes(
 
 
 @pytest.mark.parametrize("existing", [False, True])
-def test_grok_catalog_keeps_client_code_mode_discovery(tmp_path, monkeypatch, existing):
+@pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize("backend_name", ["grok", "grok-api"])
+def test_grok_catalog_keeps_client_code_mode_discovery(
+    tmp_path, monkeypatch, existing, managed, backend_name
+):
     from agentroute.grok_bridge import ensure_backend
     from agentroute.providers import refresh_launch_catalog
 
@@ -344,13 +348,19 @@ def test_grok_catalog_keeps_client_code_mode_discovery(tmp_path, monkeypatch, ex
         "models": models,
     })
     config = default_config()
-    ensure_backend(config)
+    ensure_backend(
+        config, credential_mode="api-key" if backend_name == "grok-api" else "subscription"
+    )
+    if not managed:
+        config.backends[backend_name].codex_provider = "custom-grok"
     path = refresh_launch_catalog(config)
     generated = {model["slug"]: model for model in json.loads(path.read_text())["models"]}
 
-    assert generated["grok-4.7"]["tool_mode"] == "code_mode_only"
-    assert generated["grok-4.7"]["supports_search_tool"] is True
-    assert generated["grok-4.7"]["context_window"] == 256_000
+    assert generated["grok-4.7"]["tool_mode"] == ("code_mode_only" if managed else "direct")
+    assert generated["grok-4.7"]["supports_search_tool"] is managed
+    assert generated["grok-4.7"]["context_window"] == (
+        500_000 if backend_name == "grok-api" else 256_000
+    )
     assert generated["gpt-6-astra"]["tool_mode"] == "direct"
 
 
