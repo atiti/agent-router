@@ -115,6 +115,8 @@ def test_mixed_checkpoint_defers_to_native_without_clearing_guard(tmp_path):
         "@auto continue",
         "how can I work in there moving forward?",
         "@max continue",
+        "@claude:unknown continue",
+        "@model:unknown continue",
     ],
 )
 def test_opaque_checkpoint_keeps_native_without_switch_or_account_inference(tmp_path, prompt):

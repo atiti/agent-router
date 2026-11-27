@@ -365,6 +365,29 @@ def codex_user_prompt_submit(
         current_model, current_claude_profile = split_profile_model(str(payload.get("model", "")))
         store = store or AuditStore()
         session_id = str(payload["session_id"])
+        checkpoint_path = (
+            payload.get("agent_transcript_path") or payload.get("transcript_path")
+            if route_scope == "subagent"
+            else payload.get("transcript_path")
+        )
+        if not checkpoint_path:
+            # Some native auxiliary sessions have no durable transcript. Leave
+            # their native settings untouched; never guess history or route them.
+            json.dump({"continue": True}, sink)
+            sink.write("\n")
+            return 0
+        checkpoint = latest_checkpoint(
+            checkpoint_path,
+            session_id,
+        )
+        if checkpoint and config.enabled:
+            # The native runtime owns checkpoint validation. Abstain from every
+            # route override, including explicit tags, rather than blocking valid
+            # same-owner turns or inferring account ownership from audit records.
+            # Never clear strip state or rewrite history to manufacture admission.
+            json.dump({"continue": True}, sink)
+            sink.write("\n")
+            return 0
         prompt = str(payload.get("prompt", ""))
         (
             tier_override,
@@ -615,29 +638,6 @@ def codex_user_prompt_submit(
             previous_capacity_status=previous_capacity_status,
             previous_capacity_backend=previous_capacity_backend,
         )
-        checkpoint_path = (
-            payload.get("agent_transcript_path") or payload.get("transcript_path")
-            if route_scope == "subagent"
-            else payload.get("transcript_path")
-        )
-        if not checkpoint_path:
-            # Some native auxiliary sessions have no durable transcript. Leave
-            # their native settings untouched; never guess history or route them.
-            json.dump({"continue": True}, sink)
-            sink.write("\n")
-            return 0
-        checkpoint = latest_checkpoint(
-            checkpoint_path,
-            session_id,
-        )
-        if checkpoint and config.enabled:
-            # The native runtime owns checkpoint validation. Abstain from every
-            # route override, including explicit tags, rather than blocking valid
-            # same-owner turns or inferring account ownership from audit records.
-            # Never clear strip state or rewrite history to manufacture admission.
-            json.dump({"continue": True}, sink)
-            sink.write("\n")
-            return 0
         route_config = config
         explicit_profile_selection = None
         direct_backend = (
