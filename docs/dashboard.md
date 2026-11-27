@@ -216,6 +216,12 @@ tailnet. Keep the Voice process running on the Mac. The link's access token
 permits commands, so keep it private. Turn off this Serve route with
 `tailscale serve --https=8443 off`.
 
+Add `--access-key-file ~/.agentroute/voice-access.key` to the Voice command
+to keep the same bookmark across service restarts. Voice creates the file
+with mode 0600 when it is missing. Keep the file and the full link private.
+To rotate the key, stop Voice, move the key file aside, then restart and
+bookmark the new link.
+
 For a browser call on an iPhone, keep the Voice page in front with the screen
 awake. A lock or tab suspension can pause the microphone or the browser's
 heartbeat. If the call ends, unlock the phone, open the page, and connect again.

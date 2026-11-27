@@ -395,3 +395,33 @@ def test_update_uses_substantive_evidence_and_groups_project(monkeypatch):
     clock.return_value = 143
     current.update(client)
     assert client.request.call_count == 1
+
+
+def test_stable_access_key_survives_restarts_and_rejects_insecure_file(tmp_path):
+    from agentroute.voice_server import VoiceServer
+
+    key = tmp_path / "voice-access.key"
+    with VoiceServer(tmp_path, access_key_file=key) as first:
+        token = first.token
+        assert key.stat().st_mode & 0o777 == 0o600
+    with VoiceServer(tmp_path, access_key_file=key) as second:
+        assert second.token == token
+    with VoiceServer(tmp_path) as default:
+        assert default.token != token
+    key.chmod(0o644)
+    with pytest.raises(ValueError, match="owner-only"):
+        VoiceServer(tmp_path, access_key_file=key)
+
+
+def test_voice_access_key_refuses_symlink_and_invalid_content(tmp_path):
+    from agentroute.voice_server import voice_access_key
+
+    key = tmp_path / "voice-access.key"
+    key.write_text("not-a-valid-key\n")
+    key.chmod(0o600)
+    with pytest.raises(ValueError, match="URL-safe"):
+        voice_access_key(key)
+    alias = tmp_path / "alias"
+    alias.symlink_to(key)
+    with pytest.raises(OSError):
+        voice_access_key(alias)

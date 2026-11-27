@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import threading
 import time
 from concurrent.futures import Future
@@ -14,6 +15,7 @@ from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from urllib.parse import urlsplit
 
 from . import dashboard_actions
@@ -170,10 +172,40 @@ class VoiceSession:
             pilot.update(client)
 
 
+def voice_access_key(path: Path) -> str:
+    """Create the credential once or reuse an owner-only regular file."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        with NamedTemporaryFile(dir=path.parent, prefix=".voice-key-", delete=False) as temporary:
+            draft = Path(temporary.name)
+            try:
+                temporary.write(secrets.token_urlsafe(32).encode("ascii") + b"\n")
+                temporary.flush()
+                os.fsync(temporary.fileno())
+                try:
+                    os.link(draft, path)
+                except FileExistsError:
+                    pass  # Another process created it first.
+            finally:
+                draft.unlink(missing_ok=True)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600):
+            raise ValueError("The Voice access key must be an owner-only regular file (0600).")
+        value = stream.read(129).removesuffix(b"\n")
+        if not re.fullmatch(rb"[A-Za-z0-9_-]{43,128}", value):
+            raise ValueError("The Voice access key must contain 43–128 URL-safe characters.")
+        return value.decode("ascii")
+
+
 class VoiceServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, cwd: Path, *, port: int = 0, https_origin: str | None = None):
+    def __init__(self, cwd: Path, *, port: int = 0, https_origin: str | None = None,
+                 access_key_file: Path | None = None):
         external_host = None
         if https_origin:
             try:
@@ -187,6 +219,7 @@ class VoiceServer(ThreadingHTTPServer):
             except ValueError as error:
                 raise ValueError("Use the exact Tailscale HTTPS origin without a path.") from error
             external_host = parsed.netloc
+        token = voice_access_key(access_key_file) if access_key_file else secrets.token_urlsafe(32)
         super().__init__(("127.0.0.1", port), VoiceHandler)
         self.local_origin = f"http://127.0.0.1:{self.server_port}"
         self.origins = {f"127.0.0.1:{self.server_port}": self.local_origin}
@@ -194,7 +227,7 @@ class VoiceServer(ThreadingHTTPServer):
             self.origins[external_host] = https_origin
         self.public_origin = https_origin or self.local_origin
         self.cwd = cwd
-        self.token = secrets.token_urlsafe(32)
+        self.token = token
         self.lock = threading.Lock()
         self.session: VoiceSession | None = None
 
@@ -293,8 +326,10 @@ class VoiceHandler(Handler):
             session.stop.set()
 
 
-def serve(cwd: Path, *, port: int = 0, https_origin: str | None = None) -> None:
-    with VoiceServer(cwd, port=port, https_origin=https_origin) as server:
+def serve(cwd: Path, *, port: int = 0, https_origin: str | None = None,
+          access_key_file: Path | None = None) -> None:
+    with VoiceServer(cwd, port=port, https_origin=https_origin,
+                     access_key_file=access_key_file) as server:
         print(f"Open Voice: {server.public_origin}/#access={server.token}", flush=True)
         try:
             server.serve_forever()

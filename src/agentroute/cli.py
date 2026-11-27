@@ -971,14 +971,20 @@ def voice_command(
     https_origin: str | None = typer.Option(
         None, help="Exact Tailscale Serve HTTPS origin allowed to proxy Voice.",
     ),
+    access_key_file: Path | None = typer.Option(
+        None, dir_okay=False, help="Create or reuse a private key file for a stable link.",
+    ),
 ) -> None:
     """Talk with a dedicated Codex voice thread about your AgentRoute sessions."""
     from .voice_server import serve
 
     try:
-        serve(cwd.resolve(), port=port, https_origin=https_origin)
+        serve(cwd.resolve(), port=port, https_origin=https_origin,
+              access_key_file=access_key_file)
     except ValueError as error:
-        raise typer.BadParameter(str(error), param_hint="--https-origin") from error
+        raise typer.BadParameter(
+            str(error), param_hint="--https-origin or --access-key-file",
+        ) from error
     except KeyboardInterrupt:
         return
     except OSError as error:
