@@ -93,3 +93,41 @@ async function testVoiceUi() {
 }
 
 testVoiceUi().catch(error => { console.error(error); process.exitCode = 1; });
+
+function testInstalledAppAccess() {
+  const saved = new Map();
+  const storage = {
+    getItem: key => saved.get(key) || null,
+    setItem: (key, value) => saved.set(key, value),
+  };
+  function launch() {
+    const names = ['start', 'stop', 'mute', 'status', 'speaker', 'push-to-talk', 'hold',
+      'receipt', 'receipt-state', 'instruction', 'verified-reply', 'conversation',
+      'access-setup', 'access-link', 'save-access'];
+    const elements = new Map(names.map(name => [name, new Element()]));
+    const document = new Element();
+    document.getElementById = name => elements.get(name);
+    vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8')
+      .match(/<script>([\s\S]*?)<\/script>/)[1], {
+      document, addEventListener() {}, location: {hash: '', origin: 'https://voice.example'},
+      URL, URLSearchParams, localStorage: storage, clearInterval() {}, setInterval() {},
+    });
+    return elements;
+  }
+  const first = launch();
+  assert.equal(first.get('access-setup').hidden, false);
+  assert.equal(first.get('start').disabled, true);
+  first.get('access-link').value = 'https://other.example/#access=wrong';
+  first.get('save-access').handlers.click();
+  assert.equal(saved.size, 0);
+  first.get('access-link').value = 'https://voice.example/#access=private-key';
+  first.get('save-access').handlers.click();
+  assert.equal(first.get('access-setup').hidden, true);
+  assert.equal(first.get('start').disabled, false);
+  assert.equal(first.get('access-link').value, '');
+  const reopened = launch();
+  assert.equal(reopened.get('access-setup').hidden, true);
+  assert.notEqual(reopened.get('start').disabled, true);
+}
+
+testInstalledAppAccess();
