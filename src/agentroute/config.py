@@ -854,6 +854,21 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
             configured = config.backends[name]
             if configured.tool_compatibility is None:
                 configured.tool_compatibility = backend.tool_compatibility
+    for name in ("grok", "grok-api"):
+        backend = config.backends.get(name)
+        if backend is None or backend.codex_provider != f"agentroute-{name}":
+            continue
+        if backend.tool_compatibility in {
+            "functions_and_apply_patch",
+            "functions_and_apply_patch_preserve_reasoning",
+        }:
+            backend.tool_compatibility = "full"
+        if backend.tool_compatibility != "full":
+            continue
+        for target in (*backend.tiers.values(), *backend.models.values()):
+            capabilities = config.capabilities.models.get(target.model)
+            if capabilities is not None and capabilities.tool_calling == "apply_patch_only":
+                capabilities.tool_calling = "full"
     gpt_smart = config.backends["gpt"].tiers.get("smart")
     if gpt_smart in (
         ModelTarget(model="gpt-6-sol", reasoning_effort="high"),
