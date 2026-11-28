@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Tell the user when an explicit routing tag is not applied because the thread has an
+  opaque compaction checkpoint or no transcript; plain prompts still pass silently.
+
 ## 0.5.88 — 2026-11-28
 
 - Keep idle supervisor observations in Herdr health reports without opening
