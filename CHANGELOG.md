@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.88 — 2026-11-28
 
 - Keep idle supervisor observations in Herdr health reports without opening
   new inbox events. Worker health alerts and supervisor faults still reach the inbox.
