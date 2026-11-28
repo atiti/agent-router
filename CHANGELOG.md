@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.91 — 2026-11-28
 
 - Identify the shared server's runtime by its build id instead of the binary's mtime and size, so
   an update that keeps the same pinned runtime no longer locks new clients out of a running
