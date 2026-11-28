@@ -110,14 +110,17 @@ def invoke(
 
 @pytest.mark.parametrize("prompt,expected_continue", [("@auto respond briefly", True),
                                                     ("@gpt respond briefly", False)])
+@pytest.mark.parametrize("classifier_enabled", [False, True])
 def test_probed_gpt_exhaustion_uses_only_allowed_backend_fallback(
-    tmp_path, prompt, expected_continue
+    tmp_path, prompt, expected_continue, classifier_enabled
 ):
     config = default_config()
     config.enabled = True
     config.capacity.enabled = True
     config.capacity.active_profile = "personal"
-    config.routing.classifier.enabled = False
+    config.routing.classifier.enabled = classifier_enabled
+    config.routing.mode = "llm" if classifier_enabled else "heuristic"
+    config.routing.classifier.endpoint = "http://127.0.0.1:11434/v1/chat/completions"
     home = tmp_path / "personal"
     home.mkdir()
     config.capacity.profiles = {"personal": SubscriptionProfileConfig(credential_home=str(home))}
@@ -132,15 +135,21 @@ def test_probed_gpt_exhaustion_uses_only_allowed_backend_fallback(
         "personal", str(home), 0, True, True, account_hash("personal-account"),
         CapacityState("gpt", "exhausted", "subscription exhausted", "subscription", 100),
     )
+    store = AuditStore(tmp_path / "test.db")
     with (
         patch("agentroute.profiles.probe_profile", return_value=exhausted),
         patch("agentroute.router.backend_readiness", return_value=(True, [])),
+        patch("agentroute.classifier.urllib.request.urlopen", return_value=FakeClassifierResponse())
+        as classify,
     ):
-        result = invoke(config, AuditStore(tmp_path / "test.db"), prompt,
-                        account_id="personal-account", rate_limits=None)
+        result = invoke(config, store, prompt, account_id="personal-account", rate_limits=None)
     assert result["continue"] is expected_continue
+    assert classify.call_count == int(classifier_enabled)
     if expected_continue:
         assert result["hookSpecificOutput"]["modelProvider"] == "agentroute-azure"
+        if classifier_enabled:
+            usage = json.loads(store.latest("same-thread")["classifier_usage"])
+            assert usage["total_tokens"] == 120
 
 def test_daybreak_security_model_follows_selected_chatgpt_profile(tmp_path):
     default_home = tmp_path / "default"

@@ -28,7 +28,6 @@ from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, 
 from .profiles import (
     TurnProfileSelection,
     account_credential_home,
-    account_hash,
     profile_has_daybreak_blue,
     profile_model_support,
     reviewer_fallback_profiles,
@@ -788,7 +787,7 @@ def codex_user_prompt_submit(
             return adaptive_profiles[tier]
 
         decision = Router(
-            route_config, gpt_profile_selector=adaptive_gpt_profile if adaptive_provider else None,
+            route_config, gpt_profile_selector=adaptive_gpt_profile,
         ).route(context)
         profile_selection = (
             explicit_profile_selection
@@ -808,30 +807,6 @@ def codex_user_prompt_submit(
             and sticky_backend in {None, "gpt"}
             else None
         )
-        if (
-            profile_selection is not None
-            and profile_selection.selected is None
-            and profile_selection.current is not None
-            and profile_selection.current.capacity.status == "exhausted"
-            and current_subscription.status == "unknown"
-            and current_account_id is not None
-            and profile_selection.current.account_hash == account_hash(current_account_id)
-            and decision.backend == "gpt"
-            and not adaptive_provider
-            and backend_override is None
-            and requested_backend is None
-            and sticky_backend is None
-            and requested_model is None
-        ):
-            # Re-run ordinary fallback with the freshly confirmed account quota;
-            # explicit routes remain locked, and unknown/mismatched probes do
-            # not justify changing providers.
-            exhausted_context = context.model_copy(update={
-                "rate_limits": {"ordinary_usage_allowed": False},
-            })
-            decision = Router(route_config).route(exhausted_context)
-            if decision.backend != "gpt":
-                profile_selection = None
         if (
             profile_selection is not None
             and profile_selection.selected is not None
