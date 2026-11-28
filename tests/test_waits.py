@@ -572,3 +572,140 @@ def test_triage_disposition_requires_request_bound_tracker_state(monkeypatch):
     assert waits.verify_triage_result("w-original", spec, 3)["result"] == "needs_decision"
     with pytest.raises(waits.WaitError, match="revision changed"):
         waits.verify_triage_result("w-original", spec, 4)
+
+
+# --- retention ------------------------------------------------------------------------
+
+
+HOUR = 3600
+
+
+def _retention_fixture():
+    """One wait per retention case, all registered at t=1000."""
+    pending = waits.register(THREAD, "timer", {}, timeout=waits.MAX_TIMEOUT, now=1000)
+    fired = waits.register(THREAD, "external", {}, now=1000, fired_payload="data")
+    cancelled = waits.cancel(waits.register(THREAD, "timer", {}, timeout=60, now=1000)["id"])
+    delivered = waits.register(THREAD, "timer", {}, timeout=1, now=1000)
+    unknown = waits.register(THREAD, "timer", {}, timeout=1, now=1000)
+
+    def finish(state: str, delivery: str):
+        return lambda w: (
+            w.update(state=state, outcome={"reason": "timer", "evidence": "", "at": 1001}),
+            w["delivery"].update(state=delivery, at=1002),
+        )
+
+    waits.update(delivered["id"], finish("delivered", "delivered"))
+    cancelled = waits.update(cancelled["id"], lambda w: w["outcome"].update(at=1001))
+    # Fired with an unreconciled admission is never archived, whatever its age.
+    waits.update(unknown["id"], finish("fired", "unknown"))
+    return pending, fired, cancelled, delivered, unknown
+
+
+def test_prune_archives_only_settled_finished_waits_past_retention():
+    pending, fired, cancelled, delivered, unknown = _retention_fixture()
+    # Delivered recently relative to retention: nothing finished is old enough yet.
+    assert waits.prune(now=1002 + HOUR)["archived"] == 0
+    result = waits.prune(now=1002 + waits.DEFAULT_RETENTION_SECONDS + 1)
+    assert result["archived"] == 2
+    live = {w["id"] for w in waits.load()}
+    assert live == {pending["id"], fired["id"], unknown["id"]}
+    archived = {w["id"] for w in waits.load_archive()}
+    assert archived == {cancelled["id"], delivered["id"]}
+    raw = (waits.waits_dir() / "waits.json").read_text()
+    assert json.loads(raw)["version"] == 1 and "\n" not in raw
+
+
+def test_recent_receipt_keeps_a_finished_wait_and_keyed_requests_stay_a_week():
+    *_, delivered, _ = _retention_fixture()
+    receipt_at = 1002 + 5 * HOUR
+    waits.update(delivered["id"], lambda w: w.update(recipient_read={"at": receipt_at}))
+    keyed = waits.register(THREAD, "external", {"dashboard_request": "r1"}, now=1000,
+                           fired_payload="data")
+    waits.update(keyed["id"], lambda w: (w.update(state="delivered"),
+                                         w["delivery"].update(state="delivered", at=1002)))
+    waits.prune(now=receipt_at + HOUR)
+    live = {w["id"] for w in waits.load()}
+    assert {delivered["id"], keyed["id"]} <= live
+    waits.prune(now=1002 + waits.RETAIN_FINISHED_SECONDS + 1)
+    assert keyed["id"] not in {w["id"] for w in waits.load()}
+
+
+def test_archive_failure_leaves_the_registry_unchanged(monkeypatch):
+    _retention_fixture()
+    before = (waits.waits_dir() / "waits.json").read_text()
+
+    real = waits._append_archive
+
+    def broken(path, records):
+        path.write_text('{"id": "w-torn')  # partial line, as a crash would leave
+        raise OSError("disk full")
+
+    monkeypatch.setattr(waits, "_append_archive", broken)
+    with pytest.raises(OSError):
+        waits.prune(now=10**9)
+    assert (waits.waits_dir() / "waits.json").read_text() == before
+    monkeypatch.setattr(waits, "_append_archive", real)
+    assert waits.prune(now=10**9)["archived"] == 2
+    # The torn line is skipped and does not swallow the next record.
+    assert len(waits.load_archive()) == 2
+
+
+def test_archived_wait_stays_reachable_by_id_and_in_stats():
+    *_, delivered, _ = _retention_fixture()
+    stats_before = json.loads(CliRunner().invoke(app, ["wait", "stats", "--all"]).output)
+    waits.prune(now=10**9)
+    assert delivered["id"] not in {w["id"] for w in waits.load()}
+    assert waits.find(delivered["id"])[0]["id"] == delivered["id"]
+    stats_after = json.loads(CliRunner().invoke(app, ["wait", "stats", "--all"]).output)
+    assert stats_after == stats_before
+    shown = CliRunner().invoke(app, ["wait", "show", delivered["id"]])
+    assert shown.exit_code == 0, shown.output
+    # Showing from the recipient thread records receipt, restoring the wait to the registry.
+    assert waits.lookup(delivered["id"])["recipient_read"]["thread"] == THREAD
+    resolved = CliRunner().invoke(
+        app, ["wait", "resolve", delivered["id"], "--action", "continue"]
+    )
+    assert resolved.exit_code == 0, resolved.output
+    assert [w for w in waits.load() if w["id"] == delivered["id"]][0]["disposition"]
+    stats_restored = json.loads(CliRunner().invoke(app, ["wait", "stats", "--all"]).output)
+    assert stats_restored["waits"] == stats_before["waits"]
+
+
+def test_prune_cli_dry_run_reports_without_changing_files():
+    _retention_fixture()
+    registry = waits.waits_dir() / "waits.json"
+    before = registry.read_text()
+    result = CliRunner().invoke(app, ["wait", "prune", "--older-than", "1s", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["archived"] == 2 and report["kept"] == 3 and report["dry_run"] is True
+    assert registry.read_text() == before
+    assert not waits.archive_path().exists()
+    result = CliRunner().invoke(app, ["wait", "prune", "--older-than", "1s"])
+    assert json.loads(result.output)["archived"] == 2
+    assert len(waits.load()) == 3
+
+
+def test_daemon_prunes_at_a_bounded_cadence(monkeypatch):
+    calls = []
+    monkeypatch.setattr(waits, "prune", lambda: calls.append(1))
+    last = waits.maybe_prune(None, clock=100.0)
+    assert calls == [1] and last == 100.0
+    assert waits.maybe_prune(last, clock=100.0 + waits.PRUNE_INTERVAL_SECONDS - 1) == last
+    assert calls == [1]
+    last = waits.maybe_prune(last, clock=100.0 + waits.PRUNE_INTERVAL_SECONDS)
+    assert calls == [1, 1]
+
+    def failing():
+        raise OSError("boom")
+
+    monkeypatch.setattr(waits, "prune", failing)
+    assert waits.maybe_prune(None, clock=5.0) == 5.0  # a failed prune never stops the daemon
+
+
+def test_retention_is_configurable(monkeypatch):
+    assert waits.retention_seconds() == waits.DEFAULT_RETENTION_SECONDS
+    monkeypatch.setenv("AGENTROUTE_WAIT_RETENTION", "2d")
+    assert waits.retention_seconds() == 2 * 86400
+    monkeypatch.setenv("AGENTROUTE_WAIT_RETENTION", "nonsense")
+    assert waits.retention_seconds() == waits.DEFAULT_RETENTION_SECONDS

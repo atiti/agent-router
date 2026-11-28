@@ -330,9 +330,10 @@ def wait_list(
 @wait_app.command("show")
 def wait_show(wait_id: str) -> None:
     """Show one wait with its result, saved note and any outside payload (data, not approval)."""
-    found = [w for w in waits.load() if w["id"] == wait_id]
-    if not found:
+    wait = waits.lookup(wait_id)
+    if wait is None:
         raise typer.BadParameter(f"no wait {wait_id}")
+    found = [wait]
     current = os.environ.get("CODEX_THREAD_ID", "")
     if current == found[0]["thread_id"] and found[0]["delivery"]["state"] in {
         "delivered",
@@ -401,6 +402,21 @@ def wait_fire(
         raise typer.BadParameter(f"no pending wait matches {reference}")
     waits.ensure_daemon()
     typer.echo(json.dumps({"fired": [w["id"] for w in fired]}))
+
+
+@wait_app.command("prune")
+def wait_prune(
+    older_than: str = typer.Option(
+        "", "--older-than", help="Retention for finished waits, e.g. 6h or 2d (default 6h)."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report counts without changing files."),
+) -> None:
+    """Move finished waits past retention from waits.json into the append-only archive."""
+    try:
+        retention = waits.parse_duration(older_than) if older_than else None
+    except waits.WaitError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(json.dumps(waits.prune(older_than=retention, dry_run=dry_run), indent=2))
 
 
 @wait_app.command("daemon")
@@ -516,7 +532,7 @@ def wait_stats(thread: str = THREAD, all_threads: bool = typer.Option(False, "--
     """Report observed wait counts, errors and receipt coverage; no inferred token savings."""
     from collections import Counter
 
-    items = waits.load()
+    items = waits.load_all()
     current = thread or os.environ.get("CODEX_THREAD_ID", "")
     if not all_threads:
         current = _thread(current)

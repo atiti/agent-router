@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Keep `waits.json` small: finished waits move to an append-only `waits-archive.jsonl`
+  six hours after their last activity (`AGENTROUTE_WAIT_RETENTION`), pruned by the wait
+  daemon and maintenance at most every five minutes or with `agentroute wait prune
+  [--older-than] [--dry-run]`. `wait show`, `resolve` and `stats` still see archived waits,
+  and `waits.json` is now written without indentation.
+
 - Preserve verified Developer ID signatures on embedded runtime executables when
   rebuilding Desktop, so Keychain grants retain a stable application identity.
   Validate Code Mode with its gRPC transport on Codex 0.172 and newer.

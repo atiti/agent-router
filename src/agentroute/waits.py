@@ -44,6 +44,15 @@ MAX_DELIVERY_ATTEMPTS = 20
 TICK_SECONDS = 5.0
 IDLE_EXIT_SECONDS = 60.0
 RETAIN_FINISHED_SECONDS = 7 * 24 * 3600
+# Finished waits leave waits.json for the append-only archive after this long. Codex
+# status lines parse waits.json, so its size is UI cost. Override with
+# AGENTROUTE_WAIT_RETENTION (for example 2h or 1d).
+DEFAULT_RETENTION_SECONDS = 6 * 3600
+PRUNE_INTERVAL_SECONDS = 5 * 60
+TERMINAL_STATES = frozenset({"delivered", "cancelled", "undeliverable"})
+SETTLED_DELIVERY_STATES = frozenset({"none", "delivered", "failed"})
+ARCHIVE_NAME = "waits-archive.jsonl"
+WAIT_ID_PATTERN = re.compile(r"^w-[0-9a-f]{8}$")
 DEFAULT_INTERVALS = {"pr": 60, "run": 60, "file": 5, "url": 60, "command": 60, "packet": 5}
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 REPO_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -121,7 +130,7 @@ def _read(path: Path) -> list[dict[str, Any]]:
 def _write(path: Path, waits: list[dict[str, Any]]) -> None:
     temporary = path.with_suffix(".tmp")
     with temporary.open("w") as stream:
-        json.dump({"version": 1, "waits": waits}, stream, indent=1)
+        json.dump({"version": 1, "waits": waits}, stream, separators=(",", ":"))
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
@@ -256,20 +265,35 @@ def register(
 
 
 def update(wait_id: str, change: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+    """Change one wait; an archived wait is restored to the registry when changed."""
     with mutate() as waits:
         for wait in waits:
             if wait["id"] == wait_id:
                 change(wait)
                 return wait
+        archived = _archived(wait_id)
+        if archived is not None:
+            # A failed change raises before mutate() writes, so nothing is restored.
+            change(archived)
+            waits.append(archived)
+            return archived
     raise WaitError(f"no wait {wait_id}")
 
 
 def find(reference: str, waits: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """Resolve a wait ID, or the pending waits listening for an event name."""
+    """Resolve a wait ID, or the pending waits listening for an event name.
+
+    A wait ID that is no longer in the registry is looked up in the archive.
+    """
+    use_archive = waits is None
     waits = load() if waits is None else waits
     by_id = [w for w in waits if w["id"] == reference]
     if by_id:
         return by_id
+    if use_archive and WAIT_ID_PATTERN.match(reference):
+        archived = _archived(reference)
+        if archived is not None:
+            return [archived]
     return [
         w
         for w in waits
@@ -813,16 +837,136 @@ def _release_goal(wait_id: str, client_factory: Callable[[], Any], now: float | 
         record("retry", last_error=str(error)[:300])
 
 
-def prune(now: float | None = None) -> None:
+# --- retention --------------------------------------------------------------------------
+
+
+def archive_path() -> Path:
+    return waits_dir() / ARCHIVE_NAME
+
+
+def retention_seconds() -> int:
+    value = os.environ.get("AGENTROUTE_WAIT_RETENTION", "").strip()
+    if value:
+        try:
+            return parse_duration(value)
+        except WaitError:
+            pass
+    return DEFAULT_RETENTION_SECONDS
+
+
+def last_activity(wait: dict[str, Any]) -> float:
+    """Latest recorded moment a finished wait changed or could still be acted on."""
+    goal = wait.get("goal") or {}
+    stamps = [
+        wait.get("created_at"),
+        (wait.get("outcome") or {}).get("at"),
+        (wait.get("delivery") or {}).get("at"),
+        (wait.get("delivery") or {}).get("failed_at"),
+        (wait.get("recipient_read") or {}).get("at"),
+        (wait.get("disposition") or {}).get("at"),
+        (goal.get("release") or {}).get("at"),
+    ]
+    return max((float(v) for v in stamps if isinstance(v, (int, float))), default=0.0)
+
+
+def archivable(wait: dict[str, Any], now: float, retention: float) -> bool:
+    """Only settled terminal waits past retention; anything unresolved stays."""
+    if wait.get("state") not in TERMINAL_STATES:
+        return False
+    if (wait.get("delivery") or {}).get("state", "none") not in SETTLED_DELIVERY_STATES:
+        return False
+    if goal_release_pending(wait):
+        return False
+    spec = wait.get("spec") or {}
+    if spec.get("dashboard_request") or (wait.get("kind") == "event" and spec.get("event_id")):
+        # Request and keyed-event deduplication scan the registry for a week.
+        retention = max(retention, RETAIN_FINISHED_SECONDS)
+    return now - last_activity(wait) >= retention
+
+
+def _append_archive(path: Path, records: list[dict[str, Any]]) -> None:
+    with path.open("ab") as stream:
+        if stream.tell():
+            with path.open("rb") as existing:
+                existing.seek(-1, os.SEEK_END)
+                if existing.read(1) != b"\n":
+                    stream.write(b"\n")  # never extend a line torn by an earlier crash
+        for record in records:
+            stream.write(json.dumps(record, separators=(",", ":")).encode() + b"\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def load_archive() -> list[dict[str, Any]]:
+    """Archived waits, latest copy of each ID; unreadable lines are skipped."""
+    by_id: dict[str, dict[str, Any]] = {}
+    try:
+        stream = archive_path().open(errors="replace")
+    except FileNotFoundError:
+        return []
+    with stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and isinstance(record.get("id"), str):
+                by_id.pop(record["id"], None)
+                by_id[record["id"]] = record
+    return list(by_id.values())
+
+
+def _archived(wait_id: str) -> dict[str, Any] | None:
+    return next((w for w in reversed(load_archive()) if w["id"] == wait_id), None)
+
+
+def load_all() -> list[dict[str, Any]]:
+    """Archived history followed by the registry; a restored wait counts once."""
+    live = load()
+    ids = {w["id"] for w in live}
+    return [w for w in load_archive() if w["id"] not in ids] + live
+
+
+def lookup(wait_id: str) -> dict[str, Any] | None:
+    return next((w for w in load() if w["id"] == wait_id), None) or _archived(wait_id)
+
+
+def prune(
+    now: float | None = None, older_than: float | None = None, dry_run: bool = False
+) -> dict[str, Any]:
+    """Move settled terminal waits past retention into the archive.
+
+    The archive is appended and fsynced before waits.json is rewritten, so a failure
+    leaves the registry unchanged and at worst duplicates archive lines.
+    """
     now = time.time() if now is None else now
-    with mutate() as waits:
-        waits[:] = [
-            w
-            for w in waits
-            if w["state"] in {"pending", "fired"}
-            or now - ((w.get("outcome") or {}).get("at") or w["created_at"])
-            < RETAIN_FINISHED_SECONDS
-        ]
+    retention = retention_seconds() if older_than is None else older_than
+    with _locked() as path:
+        waits = _read(path)
+        old = [w for w in waits if archivable(w, now, retention)]
+        if old and not dry_run:
+            _append_archive(path.parent / ARCHIVE_NAME, old)
+            moved = {w["id"] for w in old}
+            _write(path, [w for w in waits if w["id"] not in moved])
+    return {
+        "archived": len(old),
+        "kept": len(waits) - len(old),
+        "retention_seconds": int(retention),
+        "dry_run": dry_run,
+        "archive": str(path.parent / ARCHIVE_NAME),
+    }
+
+
+def maybe_prune(last: float | None, clock: float | None = None) -> float | None:
+    """Prune at most once per PRUNE_INTERVAL_SECONDS; returns the new last-run clock."""
+    clock = time.monotonic() if clock is None else clock
+    if last is not None and clock - last < PRUNE_INTERVAL_SECONDS:
+        return last
+    try:
+        prune()
+    except Exception as error:  # noqa: BLE001 - retention never stops wake delivery
+        print(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} prune failed: {error}", flush=True)
+    return clock
 
 
 def tick(
@@ -850,8 +994,9 @@ def run_daemon(client_factory: Callable[[], Any], once: bool = False) -> int:
         except BlockingIOError:
             return 0
         idle_since: float | None = None
-        prune()
+        last_prune: float | None = None
         while True:
+            last_prune = maybe_prune(last_prune)
             try:
                 remaining = tick(client_factory)
             except Exception as error:  # noqa: BLE001 - the daemon must survive one bad pass
