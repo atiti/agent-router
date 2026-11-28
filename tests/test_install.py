@@ -238,3 +238,30 @@ def test_app_server_reports_exit_when_stdin_is_broken(tmp_path):
 
     with pytest.raises(RuntimeError, match="exited before receiving hooks/list.*-9"):
         client._send({"method": "hooks/list"})
+
+
+def test_app_server_terminates_child_when_initialization_fails(tmp_path, monkeypatch):
+    from agentroute.install import _CodexAppServer
+
+    class FakeProcess:
+        terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout):
+            assert timeout == 2
+
+    child = FakeProcess()
+    monkeypatch.setattr("agentroute.install.subprocess.Popen", lambda *a, **kw: child)
+
+    def fail_initialize(self, method, params):
+        raise RuntimeError("initialize timed out")
+
+    monkeypatch.setattr(_CodexAppServer, "request", fail_initialize)
+    with pytest.raises(RuntimeError, match="initialize timed out"):
+        _CodexAppServer(tmp_path / "codex-bin", timeout=2)
+    assert child.terminated

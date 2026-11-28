@@ -20,6 +20,7 @@ from agentroute.models import Tier
 from agentroute.profiles import (
     ProfileStatus,
     TurnProfileSelection,
+    account_hash,
     profile_has_daybreak_blue,
     reviewer_fallback_profiles,
     select_turn_profile,
@@ -106,6 +107,73 @@ def invoke(
     assert codex_user_prompt_submit(source, sink, config=config, store=store) == 0
     return json.loads(sink.getvalue())
 
+
+@pytest.mark.parametrize("prompt,expected_continue", [("@auto respond briefly", True),
+                                                    ("@gpt respond briefly", False)])
+@pytest.mark.parametrize("classifier_enabled", [False, True])
+def test_probed_gpt_exhaustion_uses_only_allowed_backend_fallback(
+    tmp_path, prompt, expected_continue, classifier_enabled
+):
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.active_profile = "personal"
+    config.routing.classifier.enabled = classifier_enabled
+    config.routing.mode = "llm" if classifier_enabled else "heuristic"
+    config.routing.classifier.endpoint = "http://127.0.0.1:11434/v1/chat/completions"
+    home = tmp_path / "personal"
+    home.mkdir()
+    config.capacity.profiles = {"personal": SubscriptionProfileConfig(credential_home=str(home))}
+    (home / "auth.json").write_text(json.dumps({"tokens": {"account_id": "personal-account"}}))
+    (home / "models_cache.json").write_text(json.dumps({
+        "fetched_at": "2999-01-01T00:00:00+00:00",
+        "models": [{"slug": target.model} for target in config.backends["gpt"].tiers.values()],
+    }))
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.com/v1"
+    exhausted = ProfileStatus(
+        "personal", str(home), 0, True, True, account_hash("personal-account"),
+        CapacityState("gpt", "exhausted", "subscription exhausted", "subscription", 100),
+    )
+    store = AuditStore(tmp_path / "test.db")
+    with (
+        patch("agentroute.profiles.probe_profile", return_value=exhausted),
+        patch("agentroute.router.backend_readiness", return_value=(True, [])),
+        patch("agentroute.classifier.urllib.request.urlopen", return_value=FakeClassifierResponse())
+        as classify,
+    ):
+        result = invoke(config, store, prompt, account_id="personal-account", rate_limits=None)
+    assert result["continue"] is expected_continue
+    assert classify.call_count == int(classifier_enabled)
+    if expected_continue:
+        assert result["hookSpecificOutput"]["modelProvider"] == "agentroute-azure"
+        if classifier_enabled:
+            usage = json.loads(store.latest("same-thread")["classifier_usage"])
+            assert usage["total_tokens"] == 120
+
+def test_explicit_gpt_model_reuses_one_account_selection(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.active_profile = "personal"
+    config.routing.classifier.enabled = False
+    home = tmp_path / "personal"
+    home.mkdir()
+    config.capacity.profiles = {"personal": SubscriptionProfileConfig(credential_home=str(home))}
+    current = ProfileStatus(
+        "personal", str(home), 0, True, True, account_hash("personal-account"),
+        CapacityState("gpt", "healthy", "available", "subscription", 10),
+    )
+    selection = TurnProfileSelection("personal", current, current, False, "session_affinity", False)
+    with (
+        patch("agentroute.hook.select_turn_profile", return_value=selection) as select,
+        patch("agentroute.router.backend_readiness", return_value=(True, [])),
+    ):
+        result = invoke(config, AuditStore(tmp_path / "direct.db"),
+                        "@gpt @model:gpt-6.2-sol hello", account_id="personal-account")
+    assert result["continue"]
+    assert result["hookSpecificOutput"]["model"] == "gpt-6.2-sol"
+    assert select.call_count == 1
 
 def test_daybreak_security_model_follows_selected_chatgpt_profile(tmp_path):
     default_home = tmp_path / "default"
@@ -832,6 +900,46 @@ def test_unknown_subscription_telemetry_does_not_trigger_profile_switch(tmp_path
 
     probe.assert_not_called()
     assert "chatgptProfileHome" not in output["hookSpecificOutput"]
+
+
+def test_unknown_quota_new_thread_switches_only_after_confirmed_exhaustion(tmp_path):
+    from datetime import datetime, timezone
+
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.routing.classifier.enabled = False
+    config.capacity.active_profile = "personal"
+    config.capacity.profiles = {}
+    for name in ("personal", "work"):
+        home = tmp_path / name
+        home.mkdir()
+        config.capacity.profiles[name] = SubscriptionProfileConfig(credential_home=str(home))
+        (home / "models_cache.json").write_text(json.dumps({
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "models": [{"slug": target.model} for target in config.backends["gpt"].tiers.values()],
+        }))
+    personal = ProfileStatus(
+        "personal", str(tmp_path / "personal"), 0, True, True, account_hash("id-personal"),
+        CapacityState("gpt", "exhausted", "rate limited", "subscription", 100),
+    )
+    work = ProfileStatus(
+        "work", str(tmp_path / "work"), 1, True, True, account_hash("id-work"),
+        CapacityState("gpt", "healthy", "available", "subscription", 20),
+    )
+    with (
+        patch("agentroute.profiles.profile_name_for_home", return_value="personal"),
+        patch("agentroute.profiles.profile_name_for_account", return_value="personal"),
+        patch("agentroute.profiles.probe_profile",
+              side_effect=lambda name, *a, **kw: personal if name == "personal" else work),
+    ):
+        output = invoke(
+            config, AuditStore(tmp_path / "audit.db"), "@gpt @max Respond briefly",
+            account_id="id-personal",
+        )
+    assert output["continue"]
+    assert output["hookSpecificOutput"]["chatgptProfileHome"] == str(tmp_path / "work")
+    assert "failover" in output["hookSpecificOutput"]["routeMessage"]
 
 
 def test_reviewer_fallbacks_only_include_healthy_distinct_accounts(tmp_path):

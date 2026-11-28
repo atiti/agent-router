@@ -862,11 +862,15 @@ signed-in account:
 ◆ ACCOUNT FAILOVER · work → default · current subscription exhausted · continuing this thread on the next turn
 ```
 
-The transcript and thread remain in the canonical home. Provider-bound encrypted reasoning,
-compaction state, encrypted function arguments, and response item IDs are discarded at an account
-or provider boundary because another identity cannot decrypt them. Ordinary conversation and
-portable tool history remain. AgentRoute never interrupts or replays an in-flight request, and
-unknown quota telemetry never triggers an account switch. Automatic failover requires the destination account's own fresh model catalog to list
+The transcript and thread remain in the canonical home. When a switch is admitted, foreign
+provider-bound reasoning, encrypted function arguments, and response item IDs are removed from
+the outgoing request. If the latest checkpoint is opaque or unverified, AgentRoute keeps the
+native route and lets the runtime validate it; failover may be blocked to preserve the history. AgentRoute
+never interrupts or replays an in-flight request, and
+unknown quota telemetry never triggers an account switch. When a turn has neither a quota snapshot
+nor account affinity, AgentRoute checks the matched account directly; a confirmed exhaustion for the same
+identity can then trigger failover. A failed or inconclusive check retains the current account.
+Automatic failover requires the destination account's own fresh model catalog to list
 its effective target for the requested tier (including per-account overrides). Missing or stale
 catalogs do not qualify an account as a new failover destination. Before considering a destination with an unknown catalog, AgentRoute attempts native catalog discovery
 in an isolated temporary Codex home, with a five-minute retry cooldown per account. It trusts the

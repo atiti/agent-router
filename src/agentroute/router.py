@@ -774,6 +774,15 @@ class Router:
             for candidate in provider_selection.get("candidates", []):
                 if candidate["backend"] == backend_name and candidate.get("profile_capacity"):
                     capacity = CapacityState(**candidate["profile_capacity"])
+        elif backend_name == "gpt" and self.gpt_profile_selector is not None:
+            # Resolve quota after classification and before capacity fallback.
+            # The hook caches this result for its later account-switch output.
+            profile_selection = self.gpt_profile_selector(proposed)
+            if profile_selection and profile_selection.selected is not None:
+                capacity = profile_selection.selected.capacity
+            elif (profile_selection and profile_selection.current is not None
+                  and profile_selection.current.capacity.status == "exhausted"):
+                capacity = profile_selection.current.capacity
         capacity_blocked = False
         capacity_detail = capacity.detail
         capacity_trigger = capacity.trigger
