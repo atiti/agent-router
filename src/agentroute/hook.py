@@ -779,6 +779,8 @@ def codex_user_prompt_submit(
         adaptive_profiles = {}
 
         def adaptive_gpt_profile(tier):
+            if explicit_profile_selection is not None:
+                return explicit_profile_selection
             if tier not in adaptive_profiles:
                 adaptive_profiles[tier] = select_turn_profile(
                     config, current_subscription, current_account_id=current_account_id,

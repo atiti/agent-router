@@ -151,6 +151,30 @@ def test_probed_gpt_exhaustion_uses_only_allowed_backend_fallback(
             usage = json.loads(store.latest("same-thread")["classifier_usage"])
             assert usage["total_tokens"] == 120
 
+def test_explicit_gpt_model_reuses_one_account_selection(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.active_profile = "personal"
+    config.routing.classifier.enabled = False
+    home = tmp_path / "personal"
+    home.mkdir()
+    config.capacity.profiles = {"personal": SubscriptionProfileConfig(credential_home=str(home))}
+    current = ProfileStatus(
+        "personal", str(home), 0, True, True, account_hash("personal-account"),
+        CapacityState("gpt", "healthy", "available", "subscription", 10),
+    )
+    selection = TurnProfileSelection("personal", current, current, False, "session_affinity", False)
+    with (
+        patch("agentroute.hook.select_turn_profile", return_value=selection) as select,
+        patch("agentroute.router.backend_readiness", return_value=(True, [])),
+    ):
+        result = invoke(config, AuditStore(tmp_path / "direct.db"),
+                        "@gpt @model:gpt-6.2-sol hello", account_id="personal-account")
+    assert result["continue"]
+    assert result["hookSpecificOutput"]["model"] == "gpt-6.2-sol"
+    assert select.call_count == 1
+
 def test_daybreak_security_model_follows_selected_chatgpt_profile(tmp_path):
     default_home = tmp_path / "default"
     markster_home = tmp_path / "markster"
