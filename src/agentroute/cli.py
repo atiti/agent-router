@@ -41,6 +41,7 @@ from .bridge_service import (
 from .bridge_service import (
     uninstall_service as uninstall_bridge_service,
 )
+from .browser_cli import browser_app
 from .capacity import (
     backend_spend,
     backend_state,
@@ -149,6 +150,7 @@ bridge_app = typer.Typer(
 )
 app.add_typer(desktop_app, name="desktop")
 app.add_typer(capacity_app, name="capacity")
+app.add_typer(browser_app, name="browser")
 app.add_typer(account_app, name="account")
 app.add_typer(context_app, name="context")
 app.add_typer(memory_app, name="memory")
