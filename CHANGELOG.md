@@ -69,6 +69,15 @@
 - Leave checkpoint-bearing threads on native settings instead of stopping ordinary
   turns. Preserve native ownership validation without routing or account overrides.
 
+- Add an explicit Recall operator for the meeting prototype: private request journals,
+  uncertain-effect holds, exact-bot reconciliation and verified MP4/audio/transcript
+  collection. Requires a verified workspace API version and existing credentials;
+  live provider acceptance remains unverified.
+
+- Add a meeting media prototype bound to one worker, with isolated context,
+  restricted coordinator capabilities and restart holds. Live Meet acceptance
+  remains separate from local protocol and pinned native capability tests.
+
 - Start a shared Codex session from Voice, deliver its first instruction, and open the same
   thread in the selected Herdr namespace. Track delivery and pane attachment separately.
 

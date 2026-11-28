@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aura · Meeting</title>
+<style>
+  :root { color-scheme: dark; font: 24px system-ui, sans-serif; }
+  body { margin: 0; min-height: 100vh; display: grid; place-content: center;
+    text-align: center; background: #111b24; color: #edf7fa; }
+  .face { font-size: 100px; color: #a4e3cf; line-height: 1.2; }
+  h1 { margin: 18px 0 8px; font-size: 50px; }
+  p { color: #bdccd5; max-width: 760px; margin: 8px auto; }
+  small { color: #8ca5b6; }
+</style>
+<main>
+  <div class="face" aria-hidden="true">◉</div>
+  <h1>Aura</h1>
+  <p id="status" role="status">Connecting to the meeting…</p>
+  <small>AI participant · __MEETING__</small>
+  <audio id="speaker" autoplay></audio>
+</main>
+<script>
+  const status = document.getElementById('status');
+  const speaker = document.getElementById('speaker');
+  const token = new URLSearchParams(location.hash.slice(1)).get('access');
+  history.replaceState(null, '', location.pathname);
+  let session, peer, mic, heartbeat, ended = false;
+  async function request(action, fields = {}) {
+    const response = await fetch('/api/voice', {
+      method: 'POST', headers: {'Content-Type': 'application/json',
+        'X-AgentRoute-Token': token || ''},
+      body: JSON.stringify({action, session, ...fields}), keepalive: action === 'stop',
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || 'Meeting connection failed.');
+    return body;
+  }
+  function end(message) {
+    ended = true;
+    clearInterval(heartbeat);
+    const previous = session;
+    session = undefined;
+    if (previous) request('stop', {session: previous}).catch(() => {});
+    if (mic) mic.getTracks().forEach(track => track.stop());
+    if (peer) { peer.onconnectionstatechange = peer.ontrack = null; peer.close(); }
+    speaker.srcObject = null;
+    status.textContent = message;
+  }
+  async function connect() {
+    if (!token) { end('Meeting connection is not configured.'); return; }
+    try {
+      const acquired = await navigator.mediaDevices.getUserMedia({audio: true});
+      if (ended) { acquired.getTracks().forEach(track => track.stop()); return; }
+      mic = acquired;
+      peer = new RTCPeerConnection();
+      peer.createDataChannel('oai-events', {ordered: true});
+      mic.getAudioTracks().forEach(track => peer.addTrack(track, mic));
+      peer.ontrack = event => {
+        if (ended) return;
+        speaker.srcObject = new MediaStream([event.track]);
+        speaker.play().catch(() => end('Audio playback could not start.'));
+      };
+      peer.onconnectionstatechange = () => {
+        if (peer.connectionState === 'connected') status.textContent = 'Listening';
+        if (peer.connectionState === 'disconnected') status.textContent = 'Audio reconnecting…';
+        if (peer.connectionState === 'failed') end('Connection ended. Work retains its own status.');
+      };
+      await peer.setLocalDescription(await peer.createOffer());
+      if (ended) return;
+      if (peer.iceGatheringState !== 'complete') await new Promise(resolve => {
+        const timer = setTimeout(resolve, 4000);
+        peer.addEventListener('icegatheringstatechange', () => {
+          if (peer.iceGatheringState === 'complete') { clearTimeout(timer); resolve(); }
+        });
+      });
+      if (ended) return;
+      const answer = await request('start', {sdp: peer.localDescription.sdp});
+      if (ended) {
+        await request('stop', {session: answer.session}).catch(() => {});
+        return;
+      }
+      session = answer.session;
+      await peer.setRemoteDescription({type: 'answer', sdp: answer.sdp});
+      if (ended) return;
+      heartbeat = setInterval(async () => {
+        const current = session;
+        try {
+          const result = await request('status');
+          if (ended || session !== current) return;
+          if (result.state === 'closed' || result.error) end('Meeting connection ended.');
+        } catch { end('Connection uncertain. The operator must reconcile this meeting.'); }
+      }, 10000);
+    } catch (error) { end(error.message || 'Could not connect to Aura.'); }
+  }
+  addEventListener('pagehide', () => end('Meeting ended.'));
+  connect();
+</script>
+</html>

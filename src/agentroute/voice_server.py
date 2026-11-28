@@ -34,10 +34,11 @@ VOICE_PATH = "/api/voice"
 
 class VoiceSession:
     def __init__(self, cwd: Path, sdp: str):
+        self.cwd = cwd
         self.stop = threading.Event()
         self.answer: Future[str] = Future()
         self.id = secrets.token_urlsafe(24)
-        directory = agentroute_home() / "voice-transcripts"
+        directory = self.transcript_directory()
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(directory, 0o700)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -52,7 +53,10 @@ class VoiceSession:
         self.worker = threading.Thread(target=self.run, args=(cwd, sdp), daemon=True)
         self.worker.start()
 
-    def run(self, cwd: Path, sdp: str) -> None:
+    def transcript_directory(self) -> Path:
+        return agentroute_home() / "voice-transcripts"
+
+    def voice_setup(self) -> tuple[VoicePilot, str, list[dict]]:
         preferences = load_preferences()
         context = recent_dialogue(self.transcript)
         self.voice_context = (
@@ -61,8 +65,13 @@ class VoiceSession:
             "new spoken instruction before acting. Delegate work and report verified receipts. "
             "Prior dialogue: " + json.dumps(context, ensure_ascii=False)
         )
-        instructions = INSTRUCTIONS + "\n" + self.voice_context
-        pilot = VoicePilot(Collector(), preferences, cwd=cwd)
+        return VoicePilot(Collector(), preferences, cwd=self.cwd), INSTRUCTIONS, TOOLS
+
+    def thread_options(self, client: RpcClient, cwd: Path) -> dict:
+        return {}
+
+    def run(self, cwd: Path, sdp: str) -> None:
+        pilot, instructions, tools = self.voice_setup()
         self.pilot = pilot
         pilot.record_receipt = self.record_instruction
         try:
@@ -70,7 +79,9 @@ class VoiceSession:
                 thread = client.request("thread/start", {
                     "cwd": str(cwd), "sandbox": "read-only", "ephemeral": True,
                     "modelProvider": "openai",
-                    "developerInstructions": instructions, "dynamicTools": TOOLS,
+                    "developerInstructions": instructions + "\n" + self.voice_context,
+                    "dynamicTools": tools,
+                    **self.thread_options(client, cwd),
                 })["thread"]
                 pilot.thread_id = thread["id"]
                 try:
@@ -80,7 +91,7 @@ class VoiceSession:
                         "transport": {"type": "webrtc", "sdp": sdp},
                         "outputModality": "audio", "version": "v3",
                         "includeStartupContext": False, "model": "gpt-live-1.1-codex",
-                        "realtimeStartInstructions": INSTRUCTIONS,
+                        "realtimeStartInstructions": instructions,
                     })
                     self.pump(client, pilot)
                 finally:
