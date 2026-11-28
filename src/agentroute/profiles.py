@@ -630,7 +630,12 @@ def select_turn_profile(
     if current_name is None:
         current_name = config.capacity.active_profile
     current = current or by_name.get(current_name)
-    current_profile_hash = current.account_hash if current is not None else current_hash
+    current_profile_hash = current.account_hash if current is not None else None
+    if current_profile_hash is None and current_name == matched_name:
+        # The hook supplied the identity for this matched account even when a
+        # separate status probe could not return one. Never use it for a
+        # different sticky profile whose ownership has not been established.
+        current_profile_hash = current_hash
 
     # A fresh account read can supersede an exhausted snapshot retained by a
     # long-running session. Reuse the same account before seeking a different one.

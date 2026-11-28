@@ -76,6 +76,56 @@ def test_failover_uses_verified_per_account_override(tmp_path):
     assert result.use_profile_home
 
 
+@pytest.mark.parametrize("sticky", [False, True])
+def test_known_exhaustion_survives_current_probe_transport_failure(tmp_path, sticky):
+    config = setup_accounts(
+        tmp_path, personal_models=["gpt-6.2-sol"], work_models=["gpt-6.2-sol"]
+    )
+    current_id = "personal-account"
+    failed = ProfileStatus(
+        "personal", "personal", 0, True, False, None,
+        CapacityState("gpt", "unavailable", "profile probe failed"), "timeout",
+    )
+    work = status("work", 20)
+    with (
+        patch("agentroute.profiles.profile_name_for_home", return_value="personal"),
+        patch("agentroute.profiles.profile_name_for_account", return_value="personal"),
+        patch("agentroute.profiles.probe_profile", return_value=failed),
+        patch("agentroute.profiles.probe_profiles", return_value=(failed, work)),
+    ):
+        result = select_turn_profile(
+            config, CapacityState("gpt", "exhausted", "rate limited"),
+            current_account_id=current_id,
+            sticky_profile="personal" if sticky else None,
+            tier=Tier.SMART,
+        )
+    assert result.selected == work
+    assert result.source == "failover"
+    assert result.use_profile_home
+
+
+def test_failed_sticky_probe_cannot_substitute_loaded_identity(tmp_path):
+    config = setup_accounts(
+        tmp_path, personal_models=["gpt-6.2-sol"], work_models=["gpt-6.2-sol"]
+    )
+    failed = ProfileStatus(
+        "personal", "personal", 0, True, False, None,
+        CapacityState("gpt", "unavailable", "profile probe failed"), "timeout",
+    )
+    work = status("work", 20)
+    with (
+        patch("agentroute.profiles.profile_name_for_home", return_value="work"),
+        patch("agentroute.profiles.profile_name_for_account", return_value="work"),
+        patch("agentroute.profiles.probe_profile", return_value=failed),
+        patch("agentroute.profiles.probe_profiles", return_value=(failed, work)),
+    ):
+        result = select_turn_profile(
+            config, CapacityState("gpt", "exhausted", "rate limited"),
+            current_account_id="work-account", sticky_profile="personal", tier=Tier.SMART,
+        )
+    assert result.selected is None
+    assert result.source == "unavailable"
+
 def test_unknown_current_quota_fails_over_only_after_identity_matched_exhaustion(tmp_path):
     config = setup_accounts(
         tmp_path, personal_models=["gpt-6.2-sol"], work_models=["gpt-6.2-sol"]
