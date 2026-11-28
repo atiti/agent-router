@@ -288,3 +288,12 @@ original provider and the explicit plaintext compaction procedure in the fork.
 ## Stable 0.172.0 port
 
 The runtime descends from upstream `rust-v0.172.0` at `3d86e43b075adeba2193ec5c22ac92f55afd82e6`. Routed turns that require provider-state isolation use portable foreground compaction and avoid speculative opaque checkpoints. The matching Code Mode host uses gRPC, which the installer verifies by opening a session and executing JavaScript.
+
+## TUI wait-status cache (runtime v73)
+
+The TUI shows AgentRoute wait state in its status line and terminal title. It used to read and parse
+`~/.agentroute/state/waits/waits.json` on the UI thread before every frame while a turn ran, so a
+large registry pinned each active TUI at a full core and delayed keyboard input. The runtime pins
+atiti/codex#58 (`5c3a817d50`), which caches the status per thread by the file's identity, checks it at
+most once per second and re-parses only when the file changes. AgentRoute also archives finished
+waits so the registry stays small.
