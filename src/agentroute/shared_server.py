@@ -136,7 +136,10 @@ def _fingerprint(binary: Path, config: AppConfig, environment: Mapping[str, str]
     return hashlib.sha256(json.dumps(settings).encode()).hexdigest()
 
 
-def server_environment(environment: Mapping[str, str] | None = None) -> dict[str, str]:
+def server_environment(
+    environment: Mapping[str, str] | None = None, *, prune: bool = True
+) -> dict[str, str]:
+    """Build the owner's environment; ``prune=False`` keeps read-only callers side-effect free."""
     from .providers import credentials_path
 
     result = dict(os.environ if environment is None else environment)
@@ -170,7 +173,10 @@ def server_environment(environment: Mapping[str, str] | None = None) -> dict[str
         result["AGENTROUTE_RUNTIME_BUILD_ID"] = receipt.read_text().strip()
     from .storage import prepare_capture
 
-    prepare_capture(result)
+    if prune:
+        prepare_capture(result)
+    else:
+        prepare_capture(result, prune=False)
     return result
 
 

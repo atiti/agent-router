@@ -106,7 +106,7 @@ from .desktop import (
     open_official_desktop,
     rollback_desktop_app,
 )
-from .doctor import run_doctor
+from .doctor import run_doctor_report
 from .efficiency import efficiency_report
 from .gemini_cli import app as gemini_app
 from .grok_cli import app as grok_app
@@ -950,15 +950,47 @@ def models_command() -> None:
 @app.command("doctor")
 def doctor_command(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable results."),
+    fingerprint: bool = typer.Option(
+        False, "--fingerprint", help="Print a redacted setup snapshot to share for comparison."
+    ),
+    compare: Path | None = typer.Option(
+        None, "--compare", exists=True, dir_okay=False,
+        help="Compare a fingerprint file from another machine with this one.",
+    ),
 ) -> None:
     """Validate the local runtime, hooks, providers, classifier, audit store, and capabilities."""
     try:
-        checks = run_doctor(load_config())
+        config = load_config()
+        checks, provenance, build_id = run_doctor_report(config)
     except Exception as error:
         console.print(
             f"[red]Doctor could not load configuration: {type(error).__name__}: {error}[/red]"
         )
         raise typer.Exit(1) from error
+    if fingerprint or compare is not None:
+        from .provenance import build_fingerprint, compare_fingerprints, format_differences
+
+        ours = build_fingerprint(config, checks, provenance, build_id)
+        if compare is None:
+            typer.echo(json.dumps(ours, indent=2, sort_keys=True))
+            return
+        try:
+            theirs = json.loads(compare.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            console.print(f"[red]Cannot read fingerprint: {type(error).__name__}[/red]")
+            raise typer.Exit(1) from error
+        if not isinstance(theirs, dict):
+            console.print("[red]Fingerprint file is not a JSON object[/red]")
+            raise typer.Exit(1)
+        differences = compare_fingerprints(theirs, ours)
+        if json_output:
+            typer.echo(json.dumps({
+                "schema": {"theirs": theirs.get("schema"), "ours": ours.get("schema")},
+                "differences": differences,
+            }, indent=2, sort_keys=True))
+        else:
+            typer.echo(format_differences(differences, (theirs.get("schema"), ours.get("schema"))))
+        return
     if json_output:
         console.print_json(json.dumps([asdict(check) for check in checks], sort_keys=True))
     else:
