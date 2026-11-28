@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep idle supervisor observations in Herdr health reports without opening
+  new inbox events. Worker health alerts and supervisor faults still reach the inbox.
+
 - Add `agentroute desktop open` to launch the unchanged official signed app with
   AgentRoute as its engine. macOS permissions keep the vendor app's stable identity.
 
