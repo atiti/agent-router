@@ -536,62 +536,76 @@ def status(team: str, role: str | None = None, state: str | None = None) -> None
 def send(team: str, member: str, message_id: str = typer.Option(...),
          text: str = typer.Option(..., "--text"), notify: bool = True,
          actionable: bool = True) -> None:
-    """Persist message intent before sending; unknown delivery requires human reconciliation."""
+    """Persist message intent before sending; unknown delivery requires reconciliation."""
+    typer.echo(json.dumps(submit_message(team, member, message_id, text, actionable=actionable)))
+
+
+def submit_message(team: str, member: str, message_id: str, text: str, *,
+                   actionable: bool = True, expected_thread: str | None = None,
+                   voice_reply_marker: str | None = None) -> dict:
     slug(message_id)
     with locked(team) as data:
+        if data is None:
+            raise typer.BadParameter("The Herdr team no longer exists.")
         target = data["members"].get(member)
-        previous = data["messages"].get(message_id)
-        message = {"member": member, "text": text, "from": os.environ.get(
-            "AGENTROUTE_HERDR_MEMBER", "coordinator")}
-        if not actionable:
-            message["actionable"] = False
-        if previous:
-            if any(previous.get(k) != v for k, v in message.items()) or (
-                    previous.get("actionable", True) != actionable):
-                raise typer.BadParameter("Message ID already has different content or target")
-            if previous.get("coordination_event"):
-                save(team, data)  # Repair a snapshot interrupted after ledger persistence.
-                typer.echo(json.dumps(previous))
-                return
-            if previous["state"] != "submitted":
-                raise typer.BadParameter("Delivery unresolved; inspect messages and target first.")
-            typer.echo(json.dumps(previous))
-            return
         from . import supervisor_inbox as inbox
 
         supervisor = inbox.is_supervisor(data, member)
-        # Persistence is the supervisor delivery channel. Never submit user-style
-        # turns that could bypass the native pause, budget or usage-limit state.
+        bound_thread = (inbox.supervisors(data).get(member) if supervisor
+                        else (target or {}).get("thread"))
+        if expected_thread is not None and bound_thread != expected_thread:
+            raise typer.BadParameter("The Herdr member changed sessions. Look it up again.")
+        previous = data["messages"].get(message_id)
+        message = {"member": member, "text": text, "from": "voice operator" if expected_thread
+                   else os.environ.get("AGENTROUTE_HERDR_MEMBER", "coordinator")}
+        if voice_reply_marker:
+            # Local import keeps the native team CLI independent of the Voice module.
+            from .voice_evidence import reply_prompt
+
+            message.update(voice_reply_marker=voice_reply_marker, voice_instruction=text)
+            message["text"] = f"{reply_prompt(voice_reply_marker)}\n\n{text}"
+        if not actionable:
+            message["actionable"] = False
+        if previous:
+            if (any(previous.get(k) != v for k, v in message.items())
+                    or previous.get("actionable", True) != actionable
+                    or (expected_thread and previous.get("target_thread") != expected_thread)):
+                raise typer.BadParameter("Message ID already has different content or target")
+            if previous.get("coordination_event"):
+                save(team, data)
+            elif previous["state"] != "submitted" and expected_thread is None:
+                raise typer.BadParameter("Delivery unresolved; inspect messages and target first.")
+            return previous
+        # Preserve the native inbox admission checks, including user-paused goals.
         if supervisor:
-            message.update(state="queued", created_at=time.time(),
-                           target_thread=inbox.supervisors(data).get(member))
+            message.update(state="queued", created_at=time.time(), target_thread=bound_thread)
             message["coordination_event"] = inbox.event(message_id, message, team)
             data["messages"][message_id] = message
             if data.get("inbox_consumer", {}).get("version") != 1:
                 message["delivery_hold"] = "native_inbox_enrollment_required"
             save(team, data)
-            typer.echo(json.dumps(message))
-            return  # Supervisor events never submit user-style turns or bypass pause/limits.
+            return message
         terminal = own_terminal(data, target) if target else None
         if not terminal or terminal["state"] != "live":
             raise typer.BadParameter("Target is not live; no message sent")
-        message.update(state="prepared", created_at=time.time(), target_thread=target.get("thread"))
+        message.update(state="prepared", created_at=time.time(), target_thread=bound_thread)
         data["messages"][message_id] = message
         save(team, data)
-        envelope = (f"[team-message {message_id}; from {message['from']}]\n{text}\n"
+        envelope = (f"[team-message {message_id}; from {message['from']}]\n{message['text']}\n"
                     f"Acknowledge receipt: agentroute herdr team ack {team} {message_id}. "
                     "Receipt is not completion or authorization.")
         try:
             message["receipt"] = core(data, "send", terminal["address"], envelope, timeout=30)
-            message["state"] = "submitted"  # transport only; ack is recorded separately
+            message["state"] = "submitted"
             message["submitted_at"] = time.time()
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
             message["state"] = "unknown"
             message["delivery_error"] = str(error)
-            raise
+            if expected_thread is None:
+                raise
         finally:
             save(team, data)
-    typer.echo(json.dumps(message))
+        return message
 
 
 @team_app.command("messages")

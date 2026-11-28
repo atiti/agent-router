@@ -159,3 +159,69 @@ the port over SSH rather than listening on a network address.
 
 The reply link is private to the running dashboard and authorizes local replies. A plain
 dashboard URL or a network bind serves the read-only views.
+
+## Voice on the Mac
+
+Run `agentroute voice` in a terminal on the Mac running the shared App Server.
+Open the printed local link in your Mac browser, click **Start talking**, and
+allow microphone access. Use your usual headphones or speakers and speak
+normally when connected. For push-to-talk, select **Push to talk** before
+connecting, then hold the button or hold **Space** while the button is focused.
+Pressing it silences the speaker immediately and opens the microphone.
+Releasing it closes the mic so you can listen without transmitting room speech.
+Keep the tab open while you listen. Click **End conversation** or close the tab
+to stop.
+
+Ask “What needs me?”, “What is the release session working on?”, or “Tell the
+release session to verify the checks and report back.” The conversation reads
+current session evidence on demand. While you listen, it can also announce new
+blockers and completions. Say “only blockers” or “quiet updates” to change that
+for the current conversation.
+
+Commands address an exact session. A reply follows the existing AgentRoute
+queue and has a receipt. Steering and interrupts use the exact active turn on
+the shared App Server. Codex approval prompts use their existing controls.
+The dedicated conversation uses
+the GPT route and the OpenAI voice call. Sign in with a ChatGPT account with
+Codex voice access. The pilot uses the shared owner already running on the Mac.
+
+Voice conversations are saved as timestamped JSONL files in `~/.agentroute/voice-transcripts/`. Each line contains the time, speaker, and completed transcript text. The terminal prints the file path when a conversation starts. The directory and files are private to your account.
+
+Voice can send a message to a shared App Server session or a registered Herdr
+team member by name. Shared turns also support steering and interruption by
+turn ID. Herdr supervisor messages go through the team's native inbox. Ask
+Voice to check the receipt if you want to know whether a message was queued,
+entered in the terminal, accepted by Codex, or acknowledged. The voice page
+shows the latest receipt, the exact target conversation, and any verified reply.
+A reply is linked only when the target session includes the instruction's
+receipt marker in a final answer. Some replies may arrive without that marker.
+
+Say “be more conversational,” “keep answers brief,” “only announce blockers,”
+or “give updates less often” to change saved preferences. New voice calls
+carry forward a bounded excerpt of recent local transcripts. The live feed
+groups fresh reports by project and surfaces verified state changes. Ask
+“Where did that update come from?” for the reporting session and observation time.
+
+### Use Voice from your phone over Tailscale
+
+Run Voice on a fixed loopback port and tell it your exact Tailscale HTTPS origin:
+
+```sh
+agentroute voice --port 8874 --https-origin https://your-mac.your-tailnet.ts.net:8443
+tailscale serve --bg --https=8443 http://127.0.0.1:8874
+```
+
+Open the full private link printed by Voice on a phone connected to your
+tailnet. Keep the Voice process running on the Mac. The link's access token
+permits commands, so keep it private. Turn off this Serve route with
+`tailscale serve --https=8443 off`.
+
+Add `--access-key-file ~/.agentroute/voice-access.key` to the Voice command
+to keep the same bookmark across service restarts. Voice creates the file
+with mode 0600 when it is missing. Keep the file and the full link private.
+To rotate the key, stop Voice, move the key file aside, then restart and
+bookmark the new link.
+
+For a browser call on an iPhone, keep the Voice page in front with the screen
+awake. A lock or tab suspension can pause the microphone or the browser's
+heartbeat. If the call ends, unlock the phone, open the page, and connect again.

@@ -28,7 +28,15 @@ SOURCE = "agentroute"
 
 
 def command(session: str | None, *args: str) -> dict:
-    result = subprocess.run([chats.executable("herdr"),
+    # Voice can run as a LaunchAgent with only macOS system paths.
+    installed = Path.home() / ".local" / "bin" / "herdr"
+    try:
+        binary = chats.executable("herdr")
+    except SharedServerError:
+        if not os.access(installed, os.X_OK):
+            raise
+        binary = str(installed)
+    result = subprocess.run([binary,
                              *(["--session", session] if session else []), *args],
                             capture_output=True, text=True, timeout=15)
     if result.returncode:

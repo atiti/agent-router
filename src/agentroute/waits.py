@@ -99,6 +99,17 @@ def _locked() -> Iterator[Path]:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
+@contextmanager
+def goal_transition_lock(thread: str) -> Iterator[None]:
+    """Serialize AgentRoute pause and release operations for one thread."""
+    directory = waits_dir() / "goal-locks"
+    directory.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(thread.encode()).hexdigest()
+    with (directory / key).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def _read(path: Path) -> list[dict[str, Any]]:
     try:
         data = json.loads(path.read_text())
@@ -634,10 +645,13 @@ def deliver(
 ) -> str:
     """Start one turn for a fired wait and reactivate a goal this wait paused."""
     now = time.time() if now is None else now
-    owner = deliver_supervisor_inbox(wait, now)
-    if owner is not None:
-        return owner
     delivery = wait["delivery"]
+    if delivery["state"] != "delivered":
+        owner = deliver_supervisor_inbox(wait, now)
+        if owner is not None:
+            if owner == "delivered":
+                release_goal(find(wait["id"])[0], client_factory, now)
+            return owner
     if delivery["state"] != "delivered":
         backoff = min(300, 5 * 2 ** min(delivery["attempts"], 6)) if delivery["attempts"] else 0
         if now - delivery.get("at", 0) < backoff:
@@ -708,24 +722,83 @@ def deliver(
                         state="delivered", turn_id=turn_id, at=now, mode=mode
                     ),
                 )
-            if wait["goal"].get("paused_by_wait") and not any(
-                w["goal"].get("paused_by_wait") for w in pending_for(wait["thread_id"])
-            ):
-                goal = (
-                    client.request("thread/goal/get", {"threadId": wait["thread_id"]}).get("goal")
-                    or {}
-                )
-                if pause_owned(wait, goal):
-                    client.request(
-                        "thread/goal/set",
-                        {"threadId": wait["thread_id"], "origin": "automatic", "status": "active"},
-                    )
-            update(wait["id"], lambda w: w.update(state="delivered"))
-            return "delivered"
+        wait = update(wait["id"], lambda w: w.update(state="delivered"))
+        release_goal(wait, client_factory, now)
+        return "delivered"
     except Exception as error:  # noqa: BLE001 - every transport failure is retried with backoff
         message = str(error)[:300]
         update(wait["id"], lambda w: w["delivery"].update(last_error=message))
         return "error"
+
+
+def goal_release_pending(wait: dict[str, Any]) -> bool:
+    goal = wait.get("goal") or {}
+    release = goal.get("release") or {}
+    return (
+        wait["state"] in {"delivered", "cancelled"}
+        and bool(goal.get("paused_by_wait"))
+        and release.get("state") in {None, "retry"}
+    )
+
+
+def release_goal(
+    wait: dict[str, Any], client_factory: Callable[[], Any], now: float | None = None
+) -> None:
+    """Release an owned pause independently of wake delivery."""
+    if not wait["goal"].get("paused_by_wait"):
+        return
+    with goal_transition_lock(wait["thread_id"]):
+        _release_goal(wait["id"], client_factory, now)
+
+
+def _release_goal(wait_id: str, client_factory: Callable[[], Any], now: float | None) -> None:
+    wait = find(wait_id)[0]
+    if not goal_release_pending(wait):
+        return
+    now = time.time() if now is None else now
+    previous = wait["goal"].get("release") or {}
+    if previous.get("state") == "retry" and now - previous["at"] < 30:
+        return
+
+    def record(state: str, **details: Any) -> None:
+        update(
+            wait["id"],
+            lambda w: w["goal"].update(release={"state": state, "at": now, **details}),
+        )
+
+    if not wait["goal"].get("mutation_guard"):
+        record("manual_resume_required", reason="pause ownership was not recorded")
+        return
+    try:
+        with client_factory() as client:
+            thread = wait["thread_id"]
+            goal = client.request("thread/goal/get", {"threadId": thread}).get("goal") or {}
+            if goal.get("status") != "paused":
+                record("no_pause", goal_status=goal.get("status"))
+            elif not pause_owned(wait, goal):
+                record(
+                    "ownership_unverified", reason="goal changed or pause evidence is unavailable"
+                )
+            else:
+                holders = [
+                    candidate["id"]
+                    for candidate in load()
+                    if candidate["thread_id"] == thread
+                    and candidate["state"] in {"pending", "fired"}
+                    and pause_owned(candidate, goal)
+                ]
+                if holders:
+                    record("held_by_wait", wait_ids=holders)
+                    return
+                result = client.request(
+                    "thread/goal/set",
+                    {"threadId": thread, "origin": "automatic", "status": "active"},
+                )
+                if (result.get("goal") or {}).get("status") != "active":
+                    raise WaitError("goal activation was not confirmed")
+                record("resumed")
+    except Exception as error:  # noqa: BLE001 - retry goal RPC independently of delivery
+        record("retry", last_error=str(error)[:300])
 
 
 def prune(now: float | None = None) -> None:
@@ -748,7 +821,12 @@ def tick(
     check_pending(runner, now)
     for wait in [w for w in load() if w["state"] == "fired"]:
         deliver(wait, client_factory, now)
-    return sum(1 for w in load() if w["state"] in {"pending", "fired"})
+    for wait in load():
+        if goal_release_pending(wait):
+            release_goal(wait, client_factory, now)
+    return sum(
+        w["state"] in {"pending", "fired"} or goal_release_pending(w) for w in load()
+    )
 
 
 def run_daemon(client_factory: Callable[[], Any], once: bool = False) -> int:

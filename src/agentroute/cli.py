@@ -964,6 +964,34 @@ def doctor_command(
         raise typer.Exit(1)
 
 
+@app.command("voice")
+def voice_command(
+    cwd: Path = typer.Option(Path("."), "--cwd", exists=True, file_okay=False),
+    port: int = typer.Option(0, min=0, max=65535, help="Loopback port (0 picks a free port)."),
+    https_origin: str | None = typer.Option(
+        None, help="Exact Tailscale Serve HTTPS origin allowed to proxy Voice.",
+    ),
+    access_key_file: Path | None = typer.Option(
+        None, dir_okay=False, help="Create or reuse a private key file for a stable link.",
+    ),
+) -> None:
+    """Talk with a dedicated Codex voice thread about your AgentRoute sessions."""
+    from .voice_server import serve
+
+    try:
+        serve(cwd.resolve(), port=port, https_origin=https_origin,
+              access_key_file=access_key_file)
+    except ValueError as error:
+        raise typer.BadParameter(
+            str(error), param_hint="--https-origin or --access-key-file",
+        ) from error
+    except KeyboardInterrupt:
+        return
+    except OSError as error:
+        console.print(f"[red]Could not start the local voice page: {error}[/red]")
+        raise typer.Exit(1) from error
+
+
 @app.command("dashboard")
 def dashboard_command(
     host: str = typer.Option("127.0.0.1", "--host", help="Address to listen on."),

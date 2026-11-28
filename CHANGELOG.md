@@ -4,6 +4,17 @@
 
 - Keep idle supervisor observations in Herdr health reports without opening
   new inbox events. Worker health alerts and supervisor faults still reach the inbox.
+
+- Resume goals paused by AgentRoute waits after a supervisor inbox wake. Retry goal
+  resumption independently of wake delivery and report its status in `wait show`.
+
+- Start a shared Codex session from Voice, deliver its first instruction, and open the same
+  thread in the selected Herdr namespace. Track delivery and pane attachment separately.
+
+- Make AgentRoute Voice installable on mobile with an updated interface and private-link setup.
+
+- Verify Voice replies against the receipt's exact Codex turn completion, including
+  runtimes that omit assistant message phases. Report unavailable or ambiguous final output.
 - Withdraw the Antigravity (`agy`) bridge and park Gemini support. Delegating
   turns to another agent could not be made to behave like a model behind Codex,
   and a prompt-level tool protocol is not a foundation worth carrying. A saved

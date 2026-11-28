@@ -37,13 +37,17 @@ def _thread(value: str) -> str:
 def _pause_goal(wait: dict[str, Any]) -> str:
     """Pause an active goal so the runtime stops continuation turns while waiting."""
     try:
-        with _client() as client:
+        with waits.goal_transition_lock(wait["thread_id"]), _client() as client:
+            if waits.find(wait["id"])[0]["state"] != "pending":
+                return "wait already ended"
             goal = (
                 client.request("thread/goal/get", {"threadId": wait["thread_id"]}).get("goal") or {}
             )
             status = goal.get("status")
             if status == "active":
                 before = waits.goal_log_position(client, wait["thread_id"], goal)
+                if before is None:
+                    return "active (wait registered without a verifiable goal pause)"
                 result = client.request(
                     "thread/goal/set",
                     {"threadId": wait["thread_id"], "origin": "automatic", "status": "paused"},
@@ -61,23 +65,27 @@ def _pause_goal(wait: dict[str, Any]) -> str:
                 if not current["goal"].get("mutation_guard"):
                     return "paused; automatic resume ownership unavailable, resume goal manually"
                 return "paused until this wait ends"
-            if status == "paused" and any(
-                waits.pause_owned(w, goal) and w["id"] != wait["id"]
-                for w in waits.pending_for(wait["thread_id"])
-            ):
-                waits.update(
-                    wait["id"],
-                    lambda w: w["goal"].update(
-                        paused_by_wait=True,
-                        pause_snapshot=goal,
-                        mutation_guard=next(
-                            w["goal"]["mutation_guard"]
-                            for w in waits.pending_for(wait["thread_id"])
-                            if waits.pause_owned(w, goal)
-                        ),
+            if status == "paused":
+                owner = next(
+                    (
+                        w for w in waits.load()
+                        if w["id"] != wait["id"]
+                        and w["thread_id"] == wait["thread_id"]
+                        and w["state"] in {"pending", "fired"}
+                        and waits.pause_owned(w, goal)
                     ),
+                    None,
                 )
-                return "already paused by another wait"
+                if owner is not None:
+                    waits.update(
+                        wait["id"],
+                        lambda w: w["goal"].update(
+                            paused_by_wait=True,
+                            pause_snapshot=goal,
+                            mutation_guard=owner["goal"]["mutation_guard"],
+                        ),
+                    )
+                    return "already paused by another wait"
             return f"unchanged ({status or 'no goal'})"
     except (OSError, SharedServerError) as error:
         return f"not paused: {error}"
@@ -291,6 +299,7 @@ def _public(wait: dict[str, Any]) -> dict[str, Any]:
         "disposition": wait.get("disposition"),
         "goal_paused_by_wait": wait["goal"].get("paused_by_wait", False),
         "automatic_resume_guarded": bool(wait["goal"].get("mutation_guard")),
+        "goal_release": wait["goal"].get("release"),
     }
 
 
@@ -333,26 +342,6 @@ def wait_show(wait_id: str) -> None:
     typer.echo(json.dumps(_public(found[0]), indent=2))
 
 
-def _resume_goal_if_idle(wait: dict[str, Any]) -> None:
-    """After a cancel, reactivate a goal this wait paused unless another wait still holds it."""
-    if not wait["goal"].get("paused_by_wait") or any(
-        w["goal"].get("paused_by_wait") for w in waits.pending_for(wait["thread_id"])
-    ):
-        return
-    try:
-        with _client() as client:
-            goal = (
-                client.request("thread/goal/get", {"threadId": wait["thread_id"]}).get("goal") or {}
-            )
-            if waits.pause_owned(wait, goal):
-                client.request(
-                    "thread/goal/set",
-                    {"threadId": wait["thread_id"], "origin": "automatic", "status": "active"},
-                )
-    except (OSError, SharedServerError) as error:
-        typer.echo(f"Goal was not reactivated: {error}", err=True)
-
-
 @wait_app.command("cancel")
 def wait_cancel(wait_id: str) -> None:
     """Cancel a pending wait and reactivate a goal it paused."""
@@ -360,7 +349,9 @@ def wait_cancel(wait_id: str) -> None:
         wait = waits.cancel(wait_id)
     except waits.WaitError as error:
         raise typer.BadParameter(str(error)) from error
-    _resume_goal_if_idle(wait)
+    waits.release_goal(wait, _client)
+    if waits.goal_release_pending(waits.find(wait_id)[0]):
+        waits.ensure_daemon()
     typer.echo(f"Cancelled {wait_id}")
 
 
