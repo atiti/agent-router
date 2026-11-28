@@ -58,6 +58,17 @@ def test_bind_writes_private_sidecar_and_keeps_mode_on_rebind(chrome):
             and not p.name.endswith(".lock")] == []
 
 
+def test_bind_records_the_validated_root_against_later_env_changes(chrome, tmp_path, monkeypatch):
+    bp.bind("work", "Profile 3")
+    other = tmp_path / "other-root"
+    (other / "Profile 3").mkdir(parents=True)
+    (other / "Profile 3" / "Preferences").write_text("{}")
+    monkeypatch.setenv(bp.USER_DATA_ENV, str(other))
+    resolved = bp.resolve_binding("work")
+    assert resolved.user_data_dir == chrome.resolve()
+    assert resolved.user_data_dir != other.resolve()
+
+
 @pytest.mark.parametrize(("alias", "profile_dir"), [
     ("work", "Profile 9"),          # listed in Local State but gone from disk
     ("work", "../outside"),
