@@ -869,16 +869,11 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
             capabilities = config.capabilities.models.get(target.model)
             if capabilities is not None and capabilities.tool_calling == "apply_patch_only":
                 capabilities.tool_calling = "full"
-    gpt_smart = config.backends["gpt"].tiers.get("smart")
-    if gpt_smart in (
-        ModelTarget(model="gpt-6-sol", reasoning_effort="high"),
-        ModelTarget(model="gpt-6.1-sol", reasoning_effort="high"),
-    ):
-        config.backends["gpt"].tiers["smart"] = defaults.backends["gpt"].tiers["smart"]
-    if config.backends["gpt"].tiers.get("max") == ModelTarget(
-        model="gpt-6-astra", reasoning_effort="xhigh"
-    ):
-        config.backends["gpt"].tiers["max"] = defaults.backends["gpt"].tiers["max"]
+    # Hooks reload configuration inside already-running Codex processes. Those
+    # processes retain their startup model catalog, so silently upgrading an
+    # existing target can select a model with fallback metadata (small context,
+    # eager tools) and cause repeated compaction. New installs get current
+    # defaults; existing model selections change only through an explicit update.
     deepseek = config.backends.get("deepseek")
     if deepseek:
         legacy_models = {"deepseek-chat", "deepseek-reasoner"}

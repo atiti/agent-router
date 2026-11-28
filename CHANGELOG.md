@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve configured GPT models when routing hooks reload settings. Silently
+  upgrading a model inside a running Codex process could select missing catalog
+  metadata, expand tool input, and repeatedly trigger compaction.
+
 - Preserve the saved model provider when resuming or forking a Codex thread.
   New-session defaults no longer become unwanted explicit resume overrides;
   explicit user model/provider/effort arguments still pass through unchanged.

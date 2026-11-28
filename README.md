@@ -430,8 +430,10 @@ apply. The requested tier and a SHA-256 hash of the reason are audited; the reas
 
 Mappings, thresholds, and risk floors are editable in `~/.agentroute/config.yaml`. The GPT/Azure
 Luna `xhigh` minimum is a model-safety floor and cannot be lowered by tier defaults or prompt tags.
-The GPT SMART target at the former bundled `gpt-6-sol`/high default migrates to
-`gpt-6.1-sol`/high when an existing config loads; other customized SMART targets remain.
+Existing GPT model and effort selections are preserved when configuration loads.
+New installations receive the current bundled defaults. To adopt a newer model,
+update its mapping explicitly and start or resume Codex with a refreshed model
+catalog; a running process retains the catalog it loaded at startup.
 
 ### Daybreak Blue for security work
 
