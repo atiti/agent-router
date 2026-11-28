@@ -5,9 +5,11 @@
 - Add the explicit `@yolo` tier above MAX: the strongest configured model at its highest
   supported effort (GPT/Azure Astra at `ultra`, Claude Fable 5.2 at `max`, Grok 4.7 at
   `xhigh`). It is blocked until `policy.max_tier: yolo`, never chosen by automatic routing,
-  tries GPT, Claude and Grok subscriptions before Azure, and keeps explicit provider pins
-  binding. Existing tier mappings are unchanged; backends without a YOLO mapping cannot
-  serve it. See [docs/yolo-tier.md](docs/yolo-tier.md).
+  tries admitted GPT, Claude and Grok subscriptions before Azure (only when Azure is an
+  admitted candidate), and keeps explicit provider pins binding. GPT and Azure reuse the
+  Astra model or deployment their MAX names. Bundled YOLO targets are never written to the
+  config file, and existing tier mappings are unchanged; backends without a YOLO mapping
+  cannot serve it. See [docs/yolo-tier.md](docs/yolo-tier.md).
 
 ## 0.5.88 — 2026-11-28
 

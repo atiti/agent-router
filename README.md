@@ -466,25 +466,31 @@ target.
 
 | Backend | Bundled YOLO target | Wire effort |
 |---|---|---|
-| `gpt` | GPT-6 Astra (`gpt-6.2-astra`, or the Astra model your MAX already names), `ultra` | `ultra` |
+| `gpt` | The Astra model your MAX names (`gpt-6.2-astra` by default), `ultra`; none if MAX is not Astra | `ultra` |
 | `claude`, `fable` | `claude-fable-5-2`, `ultra` | Anthropic `max` (bridge translation) |
 | `grok` | `grok-4.7`, `xhigh` (equal to MAX; no stronger Grok effort is known) | `xhigh` |
-| `azure` | Astra deployment (`gpt-6.2-astra`, or the Astra deployment your MAX names), `ultra` | `ultra` |
+| `azure` | The Astra deployment your Azure MAX names (for example `dev-gpt-6-astra`), `ultra`; none otherwise | `ultra` |
 
-Bundled targets are added to existing configurations without changing any mapping. Deleting a
-bundled backend's `tiers.yolo` entry does not disable it (it is re-added on load); override
-the entry, pin another provider, or keep `policy.max_tier: max` instead. Other
+Bundled targets are added in memory without changing any mapping and are never written to
+your config file unless you configure or change them. They cannot be removed by deleting
+them from the file (they are re-added on load); remove the backend from
+`routing.provider_selection.candidates`, override the entry, or keep `policy.max_tier: max`
+instead. Other
 backends (Gemini, DeepSeek, local or custom) have no YOLO mapping, which means unavailable;
 there is no fallback to their MAX target. Add `backends.<name>.tiers.yolo` (or a ChatGPT
 account's `capacity.profiles.<name>.tiers.yolo`) only after verifying that model and effort
 with a live request. A target whose effort the provider is not known to accept (GPT/Azure up
 to `ultra`, Claude `low`–`max`/`ultra` on effort-capable models, Grok up to `xhigh`) is excluded
-with a reason; effort is never silently lowered. `@yolo @high` applies an explicit lower effort
-and records both the preset and the applied effort in the receipt.
+with a reason, and so is an unsupported explicit pair such as `@grok @yolo @ultra`; effort is
+never silently lowered. `@yolo @high` applies an explicit lower effort and records both the
+preset and the applied effort in the receipt. A continuation carries an explicit effort only
+on the same backend; after a backend change the new backend's YOLO preset applies.
 
-**Provider order.** Without a provider tag, YOLO tries eligible subscriptions (GPT, Claude,
-Grok; ordered within the group by task preference, usage and switching cost), then
-operator-admitted `provider_selection.candidates` with a YOLO mapping, and Azure last. A
+**Provider order.** Without a provider tag, YOLO ranks only the admitted
+`routing.provider_selection.candidates`: eligible subscriptions (GPT, Claude, Grok; ordered
+within the group by task preference, usage and switching cost), then other candidates with a
+YOLO mapping, and Azure last if `azure` is in the list (it is not by default; `@azure @yolo`
+pins it directly). A
 cheaper or less disruptive Azure route never outranks an eligible subscription. Account
 rotation, capacity, login, context-window and tool checks apply as for other tiers; unknown
 quota is not treated as exhaustion. Provider, session and interrupted-turn pins are binding:

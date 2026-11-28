@@ -19,30 +19,47 @@ rewritten.
 
 | Backend | YOLO target | Router effort | Provider effort | Notes |
 | --- | --- | --- | --- | --- |
-| ChatGPT (`gpt`) | `gpt-6.2-astra`, or the Astra model the configured MAX already names (for example `gpt-6-astra`) | `ultra` | `ultra` | `ultra` is the existing Codex spelling for the highest GPT effort (`ReasoningEffortConfig::Ultra` in the pinned runtime patch). Account entitlement is checked through the existing account catalog. |
+| ChatGPT (`gpt`) | The exact Astra model the configured MAX names (`gpt-6.2-astra` in new installs, `gpt-6-astra` on some accounts); unmapped if MAX is not Astra | `ultra` | `ultra` | `ultra` is the existing Codex spelling for the highest GPT effort (`ReasoningEffortConfig::Ultra` in the pinned runtime patch). Account entitlement is checked through the existing account catalog. |
 | Claude subscription (`claude`, explicit `fable`) | `claude-fable-5-2` | `ultra` | `max` | The router represents Claude `max` as `ultra`; `claude_effort()` and the bridge translate it back to `max`. |
 | Grok subscription (`grok`) | `grok-4.7` | `xhigh` | `xhigh` | Intentionally equal to Grok MAX. No stronger Grok effort is known; `ultra`/`max` are rejected. |
-| Azure (`azure`) | `gpt-6.2-astra`, or the Astra deployment the configured MAX already names | `ultra` | `ultra` | Deployment availability and accepted effort are independent of ChatGPT access. Azure is the last automatic fallback. |
+| Azure (`azure`) | The exact Astra deployment the configured Azure MAX names (for example `dev-gpt-6-astra`); unmapped if MAX is not an Astra deployment (the bundled `gpt-5` default is not) | `ultra` | `ultra` | Deployment availability and accepted effort are independent of ChatGPT access. Azure is the last automatic fallback, and only when it is an admitted candidate. |
 
-These bundled targets are recommendations, not quality benchmarks. They are merged into
-existing configurations only where no `tiers.yolo` entry exists, and only for backends
-whose Codex provider identity matches the bundled backend (`openai`, `agentroute-azure`,
+These bundled targets are recommendations, not quality benchmarks. They are merged in
+memory when configuration loads (or a bridge registers), only where no `tiers.yolo` entry
+exists, and only for backends whose Codex provider identity matches the bundled backend (`openai`, `agentroute-azure`,
 `agentroute-claude`, `agentroute-claude-fable`, `agentroute-grok`). Gemini, DeepSeek,
 `grok-api`, local and custom backends receive no mapping: an omitted mapping means that
 backend cannot serve YOLO, never a fallback to its MAX target.
 
-Deleting a bundled backend's `tiers.yolo` entry does **not** disable YOLO there: the
-merge-on-load step re-adds the bundled target on the next load. To keep YOLO off a
-bundled backend, override its `tiers.yolo` instead (for example a different verified
-model, or `enabled: false` for the whole backend), avoid it with an explicit provider pin
-(`@claude @yolo`), or keep YOLO off everywhere with `policy.max_tier: max` (the default).
+**On disk.** Bundled targets are never written by `save_config`: a saved file keeps only
+YOLO entries the operator configured or changed, so files stay readable by releases
+without YOLO (until the operator writes `max_tier: yolo` or a `tiers.yolo` entry). The
+GPT backend's merged target no longer leaks into `providers.codex.tiers` for legacy
+configurations. `policy.max_tier` normalizes known tiers, including `yolo`, and keeps
+unknown values as before.
 
-Before execution each target's effort is validated per provider family (GPT/Azure:
-`none`…`ultra`; Claude: `low`…`max`/`ultra` on effort-capable models; Grok: `low`…`xhigh`;
-other backends: operator-verified, not validated). An unsupported pair excludes that target
-with a reason such as `unsupported_effort:grok-4.7/ultra`. Effort is never silently lowered.
-An explicit effort tag (`@yolo @high`) may override the preset; the receipt's `yolo` block
-records the preset, requested and applied efforts.
+Because bundled targets are not stored in the file, deleting a `tiers.yolo` entry does
+**not** disable one: the merge-on-load step adds the bundled target again. To keep YOLO off
+a bundled backend, remove it from `routing.provider_selection.candidates` (unpinned YOLO
+then skips it), override its `tiers.yolo` with a different verified target, disable the
+whole backend (`enabled: false`), or keep YOLO off everywhere with `policy.max_tier: max`
+(the default).
+
+Each target's effort, and then the final applied effort, is validated per provider family
+(GPT/Azure: `none`…`ultra`; Claude: `low`…`max`/`ultra` on effort-capable models; Grok:
+`low`…`xhigh`; other backends: operator-verified, not validated) and per model where
+capability data exists (a model declared with `reasoning: false` accepts no effort; there
+is no per-effort model data, so `ultra` is not restricted further). An unsupported pair is
+unavailable with a reason such as `unsupported_effort:grok-4.7/ultra`; this includes an
+explicit `@grok @yolo @ultra`, which stops the turn instead of being sent. Effort is never
+silently lowered. An explicit effort tag (`@yolo @high`) may override the preset; the
+receipt's `yolo` block records the preset, requested, explicit and applied efforts.
+
+**Effort on continuation.** A YOLO continuation carries an effort only when it was an
+explicit user effort (`explicit_reasoning_effort` in the previous receipt) and the backend
+is unchanged. Otherwise the current backend's YOLO preset applies: a continuation that moves
+from Grok (`xhigh`) to GPT runs Astra at `ultra`, and one that moves from GPT (`ultra`) to
+Grok runs `xhigh`.
 
 ## Selection and account behavior
 
@@ -77,10 +94,12 @@ records the preset, requested and applied efforts.
   `continue` is routed by ordinary FAST–MAX classification. Only a new explicit `@yolo`
   hits the block again. `yolo_blocked` also avoids the capacity recovery hold that an
   ordinary `blocked` status would trigger.
-- Unpinned YOLO ranks its own groups in every routing mode: eligible GPT, Claude and Grok
-  subscriptions first (ordered within the group by task preference, usage and switching
-  scores), then operator-admitted `provider_selection.candidates` that have a YOLO mapping,
-  and Azure last. Scores never move Azure ahead of an eligible subscription. Capacity
+- Unpinned YOLO ranks only `routing.provider_selection.candidates` (the existing admission
+  boundary), in every routing mode: eligible GPT, Claude and Grok subscriptions first
+  (ordered within the group by task preference, usage and switching scores), then other
+  admitted candidates that have a YOLO mapping, and Azure last only when `azure` is in the
+  allowlist (it is not by default). A backend outside the allowlist is reachable only
+  through an explicit pin such as `@azure @yolo`. Scores never move Azure ahead of an eligible subscription. Capacity
   fallback continues down the same list.
 - ChatGPT accounts rotate under the existing account rules; an account's `tiers.yolo`
   override is honoured and validated. Authentication, quota, model access, tool
