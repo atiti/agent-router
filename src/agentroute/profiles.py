@@ -266,6 +266,7 @@ def probe_profile(
     config: AppConfig,
     *,
     codex_binary: Path | None = None,
+    timeout: float = 15.0,
 ) -> ProfileStatus:
     home = account_credential_home(name, profile)
     binary = codex_binary or routed_codex_binary()
@@ -289,7 +290,9 @@ def probe_profile(
     try:
         # Account discovery hides ChatGPT auth under API-backed providers. Scope
         # OpenAI to this probe; never change the user's saved execution provider.
-        with _CodexAppServer(binary, codex_home=home, model_provider="openai") as client:
+        with _CodexAppServer(
+            binary, codex_home=home, model_provider="openai", timeout=timeout
+        ) as client:
             account = client.request("account/read", {"refreshToken": False})
             limits = client.request(
                 "account/rateLimits/read", {"supportsLunaReserve": False}
@@ -509,6 +512,7 @@ def select_turn_profile(
                 preferred.account_hash != current_hash,
             )
 
+    verified_current = None
     if sticky_profile is not None:
         profile = profiles.get(sticky_profile)
         current = (
@@ -521,6 +525,30 @@ def select_turn_profile(
             if profile is not None
             else None
         )
+        if (
+            current is not None
+            and current.error
+            and current.capacity.detail == "profile probe failed"
+            and current_capacity.status not in {"exhausted", "unavailable"}
+        ):
+            # A transport failure says nothing about the account's quota.
+            # Preserve affinity only if the loaded account is provably its owner.
+            if (
+                current_hash is None
+                or profile_account_hash(sticky_profile, profile) != current_hash
+                or not compatible(sticky_profile)
+            ):
+                return TurnProfileSelection(
+                    current_name, current, None, False, "unavailable", False
+                )
+            retained = _current_profile_status(
+                sticky_profile, profile,
+                CapacityState("gpt", "unknown", "profile probe failed"),
+                current_hash,
+            )
+            return TurnProfileSelection(
+                current_name, retained, retained, False, "session_affinity", False
+            )
         if (
             current is not None
             and current.enabled
@@ -548,14 +576,31 @@ def select_turn_profile(
             current_capacity,
             current_hash,
         )
-        return TurnProfileSelection(
-            matched_name,
-            current,
-            current,
-            False,
-            "account_match",
-            False,
-        )
+        # A new thread can start before Codex has supplied a quota snapshot.
+        # Consult the current account directly, but never infer a switch from
+        # a failed/unknown probe or from a different account's credentials.
+        if current_capacity.status == "unknown" and current_hash is not None:
+            observed = probe_profile(
+                matched_name, profiles[matched_name], config, codex_binary=codex_binary,
+                timeout=2.0,
+            )
+            if (
+                observed.enabled
+                and observed.authenticated
+                and observed.account_hash == current_hash
+                and observed.capacity.status == "exhausted"
+            ):
+                current = observed
+                verified_current = observed
+                needs_failover = True
+            else:
+                return TurnProfileSelection(
+                    matched_name, current, current, False, "account_match", False
+                )
+        else:
+            return TurnProfileSelection(
+                matched_name, current, current, False, "account_match", False
+            )
     else:
         current = None
         needs_failover = True
@@ -563,7 +608,19 @@ def select_turn_profile(
     if not needs_failover:
         return None
 
-    statuses = probe_profiles(config, codex_binary=codex_binary)
+    if verified_current is not None:
+        # Keep the identity-bound observation; a second read of this account
+        # could race a credential change. Only probe other destinations.
+        statuses = tuple(
+            verified_current
+            if name == matched_name
+            else probe_profile(name, profile, config, codex_binary=codex_binary)
+            for name, profile in sorted(
+                profiles.items(), key=lambda item: (item[1].priority, item[0])
+            )
+        )
+    else:
+        statuses = probe_profiles(config, codex_binary=codex_binary)
     by_name = {item.name: item for item in statuses}
     if current_name is None and current_hash is not None:
         current_name = next(
@@ -600,11 +657,9 @@ def select_turn_profile(
             for item in statuses
             if item.name != current_name
             and compatible(item.name, destination=True)
-            and (
-                current_profile_hash is None
-                or item.account_hash is None
-                or item.account_hash != current_profile_hash
-            )
+            and current_profile_hash is not None
+            and item.account_hash is not None
+            and item.account_hash != current_profile_hash
             and item.enabled
             and item.authenticated
             and item.capacity.status in {"healthy", "warning"}

@@ -20,6 +20,7 @@ from agentroute.models import Tier
 from agentroute.profiles import (
     ProfileStatus,
     TurnProfileSelection,
+    account_hash,
     profile_has_daybreak_blue,
     reviewer_fallback_profiles,
     select_turn_profile,
@@ -832,6 +833,46 @@ def test_unknown_subscription_telemetry_does_not_trigger_profile_switch(tmp_path
 
     probe.assert_not_called()
     assert "chatgptProfileHome" not in output["hookSpecificOutput"]
+
+
+def test_unknown_quota_new_thread_switches_only_after_confirmed_exhaustion(tmp_path):
+    from datetime import datetime, timezone
+
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.routing.classifier.enabled = False
+    config.capacity.active_profile = "personal"
+    config.capacity.profiles = {}
+    for name in ("personal", "work"):
+        home = tmp_path / name
+        home.mkdir()
+        config.capacity.profiles[name] = SubscriptionProfileConfig(credential_home=str(home))
+        (home / "models_cache.json").write_text(json.dumps({
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "models": [{"slug": target.model} for target in config.backends["gpt"].tiers.values()],
+        }))
+    personal = ProfileStatus(
+        "personal", str(tmp_path / "personal"), 0, True, True, account_hash("id-personal"),
+        CapacityState("gpt", "exhausted", "rate limited", "subscription", 100),
+    )
+    work = ProfileStatus(
+        "work", str(tmp_path / "work"), 1, True, True, account_hash("id-work"),
+        CapacityState("gpt", "healthy", "available", "subscription", 20),
+    )
+    with (
+        patch("agentroute.profiles.profile_name_for_home", return_value="personal"),
+        patch("agentroute.profiles.profile_name_for_account", return_value="personal"),
+        patch("agentroute.profiles.probe_profile",
+              side_effect=lambda name, *a, **kw: personal if name == "personal" else work),
+    ):
+        output = invoke(
+            config, AuditStore(tmp_path / "audit.db"), "@gpt @max Respond briefly",
+            account_id="id-personal",
+        )
+    assert output["continue"]
+    assert output["hookSpecificOutput"]["chatgptProfileHome"] == str(tmp_path / "work")
+    assert "failover" in output["hookSpecificOutput"]["routeMessage"]
 
 
 def test_reviewer_fallbacks_only_include_healthy_distinct_accounts(tmp_path):
