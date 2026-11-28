@@ -7,7 +7,7 @@ from test_hook import invoke
 
 from agentroute.audit import AuditStore
 from agentroute.claude_models import claude_effort
-from agentroute.config import ModelTarget, default_config
+from agentroute.config import ModelTarget, default_config, merge_default_yolo_targets
 from agentroute.grok_bridge import ensure_backend as ensure_grok_backend
 from agentroute.models import ReasonCode, RouteContext, Tier
 from agentroute.providers import ensure_claude_bridge_backend
@@ -26,6 +26,12 @@ def config(monkeypatch):
     ensure_grok_backend(config)
     config.backends["azure"].enabled = True
     config.backends["azure"].base_url = "https://example.openai.azure.com/openai/v1"
+    # Azure YOLO reuses the operator's own Astra MAX deployment name.
+    config.backends["azure"].tiers["max"] = ModelTarget(
+        model="dev-gpt-6-astra", reasoning_effort="high", context_window=872_000
+    )
+    merge_default_yolo_targets(config)
+    config.routing.provider_selection.candidates = ["gpt", "claude", "grok", "deepseek", "azure"]
     config.backends["deepseek"].enabled = True
     return config
 
@@ -41,7 +47,7 @@ def route(config, prompt, **kwargs):
     ("prompt", "backend", "model", "effort"),
     [
         ("@gpt @yolo review this design", "gpt", "gpt-6.2-astra", "ultra"),
-        ("@azure @yolo use my Astra deployment", "azure", "gpt-6.2-astra", "ultra"),
+        ("@azure @yolo use my Astra deployment", "azure", "dev-gpt-6-astra", "ultra"),
         ("@claude @yolo investigate the failure", "claude", "claude-fable-5-2", "ultra"),
         ("@fable @yolo investigate the failure", "fable", "claude-fable-5-2", "ultra"),
         ("@grok @yolo research this question", "grok", "grok-4.7", "xhigh"),
@@ -130,7 +136,7 @@ def test_azure_is_reached_only_after_subscriptions_are_ineligible(config, monkey
     decision = route(config, "@yolo solve this difficult problem")
     assert not decision.capacity_blocked, decision.capacity_detail
     assert (decision.backend, decision.model, decision.reasoning_effort) == (
-        "azure", "gpt-6.2-astra", "ultra"
+        "azure", "dev-gpt-6-astra", "ultra"
     )
     assert decision.selection_receipt["provider_selection"]["selection_pool"] == "yolo_azure"
 
