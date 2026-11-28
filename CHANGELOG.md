@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve the saved model provider when resuming or forking a Codex thread.
+  New-session defaults no longer become unwanted explicit resume overrides;
+  explicit user model/provider/effort arguments still pass through unchanged.
+
 - Report the existing ChatGPT login under API-backed Codex configurations, and show live GPT
   subscription usage in account status without enabling automatic capacity management.
 

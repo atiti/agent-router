@@ -48,6 +48,15 @@ def _has_model_override(args: Sequence[str]) -> bool:
 
 def startup_route_args(config: AppConfig, user_args: Sequence[str]) -> list[str]:
     """Select a safe initial provider before any prompt or compaction request runs."""
+    command_index, command = _launch_command_position(user_args)
+    if command in {"resume", "fork"} or (
+        command in {"exec", "e"}
+        and _launch_command(user_args[command_index + 1:]) == "resume"
+    ):
+        # Resume/fork owns its saved provider. Injecting the new-session route is
+        # an explicit provider override to Codex and can reject the saved thread.
+        # User-supplied overrides are still forwarded unchanged by codex_argv.
+        return []
     if _has_config_override(user_args, "model_provider"):
         return []
     backend_name = config.routing.backend_by_tier.get("normal", "gpt")
@@ -121,6 +130,10 @@ def codex_argv(
 
 
 def _launch_command(user_args: Sequence[str]) -> str:
+    return _launch_command_position(user_args)[1]
+
+
+def _launch_command_position(user_args: Sequence[str]) -> tuple[int, str]:
     value_options = {
         "-c",
         "--config",
@@ -142,6 +155,9 @@ def _launch_command(user_args: Sequence[str]) -> str:
         "--remote-auth-token-env",
         "--add-dir",
         "--local-provider",
+        "-o",
+        "--output-last-message",
+        "--output-schema",
     }
     commands = {
         "exec",
@@ -169,17 +185,17 @@ def _launch_command(user_args: Sequence[str]) -> str:
         "exec-server",
     }
     skip_value = False
-    for arg in user_args:
+    for index, arg in enumerate(user_args):
         if skip_value:
             skip_value = False
             continue
         if arg == "--":
-            return "start"  # Everything after -- is the initial prompt.
+            return index, "start"  # Everything after -- is the initial prompt.
         if arg in value_options:
             skip_value = True
         elif not arg.startswith("-"):
-            return arg if arg in commands else "start"
-    return "start"
+            return index, arg if arg in commands else "start"
+    return len(user_args), "start"
 
 
 def interactive_launch(user_args: Sequence[str]) -> bool:
