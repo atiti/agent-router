@@ -12,6 +12,8 @@
 
 - Reject a Grok custom `tool_choice` without a name as an invalid request
   instead of failing on a missing key.
+- Warn instead of claiming success when `agentroute desktop open` finds the official
+  app already running; quit it and run the command again to switch its engine.
 
 ## 0.5.88 — 2026-11-28
 

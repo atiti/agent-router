@@ -60,16 +60,34 @@ def _require_macos() -> None:
         raise RuntimeError("Codex Desktop installation is supported only on macOS")
 
 
-def open_official_desktop(source: Path, runtime: Path) -> None:
-    """Launch the unchanged vendor app with an explicit routed engine override."""
+def _desktop_app_running(source: Path) -> bool:
+    """Report whether an instance of this app bundle already runs."""
+    # pgrep -f takes an extended regex; match the bundle's executables literally.
+    executables = f"{source.resolve()}/Contents/MacOS/"
+    pattern = re.sub(r"([\\.^$|?*+()\[\]{}])", r"\\\1", executables)
+    try:
+        result = _run("pgrep", "-f", pattern, capture=True)
+    except (OSError, subprocess.CalledProcessError):
+        return False  # pgrep exits 1 when nothing matches.
+    return bool(result and (result.stdout or "").strip())
+
+
+def open_official_desktop(source: Path, runtime: Path) -> bool:
+    """Launch the unchanged vendor app with an explicit routed engine override.
+
+    Returns False without launching when the app already runs, because an
+    existing instance keeps the environment (and engine) of its original launch.
+    """
     _require_macos()
     if not source.is_dir():
         raise FileNotFoundError(f"official Desktop app does not exist: {source}")
     if not runtime.is_file() or not os.access(runtime, os.X_OK):
         raise FileNotFoundError(f"executable AgentRoute runtime does not exist: {runtime}")
+    if _desktop_app_running(source):
+        return False
     # LaunchServices retains the signed application's identity for OS permissions.
-    # An existing instance keeps the environment from its original launch.
     _run("open", "-a", source, "--env", f"CODEX_CLI_PATH={runtime.resolve()}")
+    return True
 
 
 @contextmanager

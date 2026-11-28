@@ -2397,12 +2397,17 @@ def desktop_open_command(
 
     selected_runtime = runtime or agentroute_home() / "bin/codex"
     try:
-        open_official_desktop(source.expanduser(), selected_runtime.expanduser())
+        launched = open_official_desktop(source.expanduser(), selected_runtime.expanduser())
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         console.print(f"[red]Desktop launch failed: {error}[/red]")
         raise typer.Exit(1) from error
+    if not launched:
+        console.print(
+            "[yellow]The official Desktop app is already running and keeps its current "
+            "engine. Quit the app, then run `agentroute desktop open` again.[/yellow]"
+        )
+        return
     console.print("Opened the official Desktop app with the AgentRoute engine.")
-    console.print("An already-running app keeps its engine; quit normally before changing it.")
 
 
 @desktop_app.command("install")
