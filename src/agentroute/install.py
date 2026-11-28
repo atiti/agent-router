@@ -27,14 +27,18 @@ class _CodexAppServer:
         timeout: float = 15.0,
         *,
         codex_home: Path | None = None,
+        model_provider: str | None = None,
     ) -> None:
         self.timeout = timeout
         self.next_request_id = 1
         environment = os.environ.copy()
         if codex_home is not None:
             environment["CODEX_HOME"] = str(codex_home.expanduser())
+        command = [str(codex_binary), "app-server", "--stdio"]
+        if model_provider is not None:
+            command.extend(["-c", f"model_provider={json.dumps(model_provider)}"])
         self.process = subprocess.Popen(
-            [str(codex_binary), "app-server", "--stdio"],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
