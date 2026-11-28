@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.89 — 2026-11-28
 
 - Pin the Codex runtime that caches AgentRoute wait status in the TUI. Active sessions no longer
   re-parse the wait registry on every frame, which pinned a core per running turn and lagged typing.
