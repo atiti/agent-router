@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Preserve verified Developer ID signatures on embedded runtime executables when
+  rebuilding Desktop, so Keychain grants retain a stable application identity.
+  Validate Code Mode with its gRPC transport on Codex 0.172 and newer.
+  This also fixes `agentroute desktop rebuild` against Codex 0.172 in 0.5.88.
+
+- Tell the user when an explicit routing tag is not applied because the thread has an
+  opaque compaction checkpoint or no transcript; plain prompts still pass silently.
+
+- Keep backend `status` as `disabled` in `capacity status` when capacity management is
+  off; live GPT usage health is reported separately as `observed_status`.
+- Detect `codex exec resume` after value-taking options such as `--color never`,
+  `--thread-source`, and `--cyber-access-program`, so the saved provider is kept.
+
+- Reject a Grok custom `tool_choice` without a name as an invalid request
+  instead of failing on a missing key.
+- Warn instead of claiming success when `agentroute desktop open` finds the official
+  app already running; quit it and run the command again to switch its engine.
+
 ## 0.5.88 — 2026-11-28
 
 - Keep idle supervisor observations in Herdr health reports without opening
@@ -25,10 +45,6 @@
 
 - Record the validated Chrome user-data root when binding a browser profile, so a later
   `CODEX_CHROMIUM_USER_DATA_DIR` change cannot resolve a different profile under the same alias.
-
-- Preserve verified Developer ID signatures on embedded runtime executables when
-  rebuilding Desktop, so Keychain grants retain a stable application identity.
-  Validate Code Mode with its gRPC transport on Codex 0.172 and newer.
 
 - Resume goals paused by AgentRoute waits after a supervisor inbox wake. Retry goal
   resumption independently of wake delivery and report its status in `wait show`.

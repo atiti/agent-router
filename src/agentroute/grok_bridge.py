@@ -499,9 +499,12 @@ def translate_request(body):
     body["tools"] = flattened_tools(body.get("tools", []))
     choice = body.get("tool_choice")
     if isinstance(choice, dict) and choice.get("type") == "custom":
+        choice_name = choice.get("name")
+        if not isinstance(choice_name, str) or not choice_name:
+            raise ValueError("Custom tool_choice requires a non-empty name")
         body["tool_choice"] = {
             "type": "function",
-            "name": custom_wire_name(choice.get("namespace"), choice["name"]),
+            "name": custom_wire_name(choice.get("namespace"), choice_name),
         }
     for tool in body["tools"]:
         if tool.get("type") == "web_search":

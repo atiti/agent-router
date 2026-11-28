@@ -1,6 +1,7 @@
 import json
 from unittest.mock import call, patch
 
+import pytest
 from rich.console import Console
 from rich.text import Text
 from typer.testing import CliRunner
@@ -340,15 +341,16 @@ def test_profile_bootstrap_is_a_noop_when_configuration_is_shared(tmp_path, monk
     assert "No bootstrap is needed" in result.output
 
 
+@pytest.mark.parametrize("enabled", [True, False])
 def test_capacity_status_uses_active_profile_telemetry_and_hides_raw_account_id(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, enabled
 ):
     path = tmp_path / "config.yaml"
     monkeypatch.setenv("AGENTROUTE_CONFIG", str(path))
     monkeypatch.setenv("AGENTROUTE_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path / "agentroute-home"))
     config = default_config()
-    config.capacity.enabled = True
+    config.capacity.enabled = enabled
     config.capacity.active_profile = "personal"
     config.capacity.profiles["personal"] = SubscriptionProfileConfig(
         codex_home=str(tmp_path / "codex-personal"),
@@ -389,12 +391,26 @@ def test_capacity_status_uses_active_profile_telemetry_and_hides_raw_account_id(
         ),
     ):
         result = runner.invoke(app, ["capacity", "status", "--json"])
+        with patch("agentroute.cli.console", Console(width=300)):
+            overview = runner.invoke(app, ["capacity", "status"])
 
     assert result.exit_code == 0
+    assert overview.exit_code == 0
     payload = json.loads(result.output)
+    assert payload["enabled"] is enabled
     gpt = next(item for item in payload["backends"] if item["name"] == "gpt")
-    assert gpt["status"] == "healthy"
+    # Disabled management must not report a live health decision as `status`,
+    # but the observed usage stays visible.
+    assert gpt["status"] == ("healthy" if enabled else "disabled")
+    assert gpt["observed_status"] == "healthy"
+    assert gpt["used_percent"] == 62
+    assert gpt["remaining_percent"] == 38
     assert gpt["detail"] == "subscription 62% used / 38% remaining"
+    if enabled:
+        assert "healthy: subscription 62% used" in overview.output
+    else:
+        assert all(item["status"] == "disabled" for item in payload["backends"])
+        assert "disabled (observed healthy)" in overview.output
     assert payload["profiles"][0]["account_hash"] == "hashed-account"
     assert "account_id" not in payload["profiles"][0]["capacity"]
     assert "raw-account-id" not in result.output

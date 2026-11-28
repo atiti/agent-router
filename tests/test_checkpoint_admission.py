@@ -37,6 +37,14 @@ def write_checkpoint(path, provider="openai", *, portable=False):
     )
 
 
+def assert_tag_not_applied(result, reason="opaque or unverifiable compaction checkpoint"):
+    assert set(result) == {"continue", "systemMessage"}
+    assert result["continue"] is True
+    assert "routing tag" in result["systemMessage"]
+    assert reason in result["systemMessage"]
+    assert "/compact" in result["systemMessage"]
+
+
 def setup_route(tmp_path):
     config = default_config()
     config.enabled = True
@@ -103,7 +111,7 @@ def test_mixed_checkpoint_defers_to_native_without_clearing_guard(tmp_path):
             account_id="test-account",
             model_provider="agentroute-azure",
         )
-    assert result == {"continue": True}
+    assert_tag_not_applied(result)
     assert store.latest("same-thread")["strip_provider_state"] == 1
 
 
@@ -124,9 +132,20 @@ def test_opaque_checkpoint_keeps_native_without_switch_or_account_inference(tmp_
     before = store.latest("same-thread")["id"]
     with patch("agentroute.hook.select_turn_profile", return_value=selection):
         result = invoke(config, store, prompt, transcript_path=path, account_id="test-account")
-    assert result == {"continue": True}
+    if prompt.startswith("@"):
+        assert_tag_not_applied(result)
+    else:
+        assert result == {"continue": True}
     assert store.latest("same-thread")["id"] == before
     assert "hookSpecificOutput" not in result
+
+
+@pytest.mark.parametrize("prompt", ["continue", "fix the failing test", "email a@b.com"])
+def test_opaque_checkpoint_plain_prompt_returns_only_continue(tmp_path, prompt):
+    config, store, path, selection = setup_route(tmp_path)
+    with patch("agentroute.hook.select_turn_profile", return_value=selection):
+        result = invoke(config, store, prompt, transcript_path=path, account_id="test-account")
+    assert result == {"continue": True}
 
 
 def test_plaintext_replacement_releases_checkpoint_constraint(tmp_path):
@@ -249,7 +268,7 @@ def test_subagent_uses_runtime_transcript_path_without_child_field(tmp_path):
             account_id="test-account",
             flat_agent_id="child",
         )
-    assert result == {"continue": True}
+    assert_tag_not_applied(result)
 
 
 def test_child_transcript_binds_root_session_id(tmp_path):
@@ -295,8 +314,12 @@ def test_absent_transcript_keeps_native_route_and_no_overrides(tmp_path):
         codex_user_prompt_submit(io.StringIO(json.dumps(payload)), sink, config=config, store=store)
         == 0
     )
-    assert json.loads(sink.getvalue()) == {"continue": True}
+    assert_tag_not_applied(json.loads(sink.getvalue()), "no conversation transcript")
     assert store.latest("missing-path-session") is None
+    sink = io.StringIO()
+    payload["prompt"] = "continue"
+    codex_user_prompt_submit(io.StringIO(json.dumps(payload)), sink, config=config, store=store)
+    assert json.loads(sink.getvalue()) == {"continue": True}
 
 
 @pytest.mark.parametrize("history_state", ["missing", "malformed", "wrong-thread"])
@@ -311,6 +334,6 @@ def test_uncertain_history_defers_to_native_without_route_mutations(tmp_path, hi
         path.write_text(path.read_text().replace("same-thread", "another-thread"))
     with patch("agentroute.hook.select_turn_profile") as choose:
         result = invoke(config, store, "@azure continue", transcript_path=path)
-    assert result == {"continue": True}
+    assert_tag_not_applied(result, "unverifiable compaction checkpoint")
     choose.assert_not_called()
     assert store.latest("same-thread") == before

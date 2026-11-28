@@ -221,6 +221,15 @@ def test_code_mode_custom_tool_roundtrip_preserves_namespace_and_input():
     assert "arguments" not in restored
 
 
+@pytest.mark.parametrize(
+    "choice",
+    [{"type": "custom"}, {"type": "custom", "name": ""}, {"type": "custom", "name": None}],
+)
+def test_custom_tool_choice_without_name_is_invalid_request(choice):
+    with pytest.raises(ValueError, match="Custom tool_choice requires a non-empty name"):
+        translate_request({"model": "grok-4.7", "tools": [], "tool_choice": choice})
+
+
 def test_code_mode_custom_stream_waits_for_complete_json_arguments():
     from agentroute.grok_bridge import tool_names
 
