@@ -864,8 +864,8 @@ signed-in account:
 
 The transcript and thread remain in the canonical home. When a switch is admitted, foreign
 provider-bound reasoning, encrypted function arguments, and response item IDs are removed from
-the outgoing request. If the history contains an opaque checkpoint, AgentRoute leaves route
-selection to the native runtime; failover may be blocked to preserve the history. AgentRoute
+the outgoing request. If the latest checkpoint is opaque or unverified, AgentRoute keeps the
+native route and lets the runtime validate it; failover may be blocked to preserve the history. AgentRoute
 never interrupts or replays an in-flight request, and
 unknown quota telemetry never triggers an account switch. When a turn has neither a quota snapshot
 nor account affinity, AgentRoute checks the matched account directly; a confirmed exhaustion for the same
