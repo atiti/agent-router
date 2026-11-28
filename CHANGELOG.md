@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Add setup-provenance checks to `agentroute doctor`. They warn, and never fail, when any of
+  these apply:
+  - the package was installed from an editable, VCS, or local-directory source
+  - installed files differ from the package `RECORD`
+  - runtime binaries changed after installation
+  - processes still run a replaced or private runtime
+  - the shared server's settings fingerprint no longer matches the installed runtime
+  - computer-use tooling points at an ad-hoc-signed or re-signed copy, or its Team ID differs
+    from the enclosing app's
+  - two profiles are signed in to the same account
+  - the runtime predates portable cross-provider compaction (v72)
+- Release and source installers now write `~/.agentroute/install-manifest.json`. It records the
+  version, build id, release tag or source commit, runtime file hashes, and install time.
+- Add `agentroute doctor --fingerprint`, which prints a redacted setup snapshot, and
+  `agentroute doctor --compare FILE [--json]`, which shows how another machine differs from
+  this one. See [docs/doctor.md](docs/doctor.md).
+
 ## 0.5.90 — 2026-11-28
 
 - Check the current GPT account's quota when a new turn has no snapshot, and fail over from a
