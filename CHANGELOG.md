@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Keep `waits.json` small: finished waits move to an append-only `waits-archive.jsonl`
+  six hours after their last activity (`AGENTROUTE_WAIT_RETENTION`), pruned by the wait
+  daemon and maintenance at most every five minutes or with `agentroute wait prune
+  [--older-than] [--dry-run]`. `wait show`, `resolve` and `stats` still see archived waits,
+  and `waits.json` is now written without indentation.
+
 - Add the explicit `@yolo` tier above MAX: the strongest configured model at its highest
   supported effort (GPT/Azure Astra at `ultra`, Claude Fable 5.2 at `max`, Grok 4.7 at
   `xhigh`). It is blocked until `policy.max_tier: yolo`, never chosen by automatic routing,

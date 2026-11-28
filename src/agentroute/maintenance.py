@@ -288,6 +288,10 @@ def run_once(apply: bool = False) -> dict:
             "running": waits.daemon_running(),
         }
         if apply:
+            try:
+                report["waits"]["archived"] = waits.prune()["archived"]
+            except (OSError, ValueError) as error:
+                report["waits"]["prune_error"] = str(error)[:300]
             atomic_write(status_path(), report)
         return report
 

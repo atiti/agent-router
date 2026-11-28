@@ -82,9 +82,19 @@ data through `wait show`.
 
 ```sh
 agentroute wait list            # pending waits for this thread
-agentroute wait list --all      # every thread, including finished waits from the last week
+agentroute wait list --all      # every thread, including recently finished waits
 agentroute wait cancel w-1a2b3c4d
+agentroute wait prune --dry-run # count finished waits ready to archive
 ```
+
+Finished waits (delivered, cancelled or undeliverable, with a settled delivery and no goal
+release outstanding) stay in `waits.json` for six hours after their last outcome, delivery,
+receipt or disposition, then move to the append-only `waits-archive.jsonl` beside it. Waits
+that carry a dashboard request or keyed event stay for seven days so retries are still
+recognised as duplicates. The wait daemon and periodic maintenance prune at most every few
+minutes; `agentroute wait prune [--older-than 2h] [--dry-run]` runs it by hand. Set
+`AGENTROUTE_WAIT_RETENTION` (for example `1d`) to change the default. `wait show`,
+`wait resolve` and `wait stats` still read archived waits; resolving one restores it.
 
 Cancelling the last wait that paused a goal reactivates the goal. The routing hook adds a
 one-line reminder of pending waits to each prompt on that thread, and on goal continuation turns
