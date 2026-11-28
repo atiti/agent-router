@@ -75,6 +75,11 @@ def invoke(
     turn_id="turn-1",
     goal_id=None,
 ):
+    if transcript_path is None:
+        transcript_path = store.path.parent / "portable-hook-test-rollout.jsonl"
+        transcript_path.write_text(
+            json.dumps({"type": "session_meta", "payload": {"id": "same-thread"}}) + "\n"
+        )
     source = io.StringIO(
         json.dumps(
             {
@@ -1866,6 +1871,10 @@ def test_confirmation_uses_previous_assistant_task_definition(tmp_path):
         )
         + "\n"
     )
+    transcript.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "same-thread"}})
+        + "\n" + transcript.read_text()
+    )
     config = default_config()
     config.enabled = True
     store = AuditStore(tmp_path / "audit.db")
@@ -1991,6 +2000,10 @@ def test_llm_context_telemetry_distinguishes_sent_from_inherited(tmp_path, monke
     config.routing.classifier.endpoint = "http://127.0.0.1:11434/v1/chat/completions"
     store = AuditStore(tmp_path / "audit.db")
 
+    transcript.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "same-thread"}})
+        + "\n" + transcript.read_text()
+    )
     invoke(config, store, "ok check?", transcript_path=transcript)
     row = store.latest("same-thread")
     receipt = json.loads(row["selection_receipt"])
@@ -2025,6 +2038,10 @@ def test_explicit_confirmation_approves_agent_request(tmp_path):
             }
         )
         + "\n"
+    )
+    transcript.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "same-thread"}})
+        + "\n" + transcript.read_text()
     )
     config = default_config()
     config.enabled = True

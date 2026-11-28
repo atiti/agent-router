@@ -4,6 +4,9 @@
 
 - Resume goals paused by AgentRoute waits after a supervisor inbox wake. Retry goal
   resumption independently of wake delivery and report its status in `wait show`.
+- Leave checkpoint-bearing threads on native settings instead of stopping ordinary
+  turns. Preserve native ownership validation without routing or account overrides.
+
 
 - Start a shared Codex session from Voice, deliver its first instruction, and open the same
   thread in the selected Herdr namespace. Track delivery and pane attachment separately.
