@@ -614,7 +614,10 @@ def capacity_status_command(
                 "name": name,
                 "ready": ready,
                 "readiness_detail": ", ".join(problems) or "ready",
-                "status": state.status,
+                # Scripts read `status` as the management decision. With capacity
+                # management disabled, live usage stays visible via observed_status.
+                "status": state.status if config.capacity.enabled else "disabled",
+                "observed_status": state.status,
                 "detail": state.detail,
                 "used_percent": state.used_percent,
                 "remaining_percent": (
@@ -693,7 +696,11 @@ def capacity_status_command(
         table.add_row(
             item["name"],
             "yes" if item["ready"] else item["readiness_detail"],
-            f"{item['status']}: {item['detail']}"
+            (
+                f"{item['status']}: {item['detail']}"
+                if item["status"] == item["observed_status"]
+                else f"{item['status']} (observed {item['observed_status']}): {item['detail']}"
+            )
             + (f"; reset {item['reset_local']}" if item["reset_local"] else ""),
             f"${item['daily_spend_usd']:.2f} / "
             f"{item['daily_budget_usd'] if item['daily_budget_usd'] else '∞'}",
