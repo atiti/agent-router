@@ -488,6 +488,13 @@ def _write_model_catalog(
                     _raise_gpt_context_window(by_slug[slug], capabilities.context_window)
                 if slug in by_slug:
                     _narrow_tool_surface(by_slug[slug], capabilities)
+                    if (
+                        backend_name in {"grok", "grok-api"}
+                        and backend.codex_provider == f"agentroute-{backend_name}"
+                        and backend.tool_compatibility == "full"
+                    ):
+                        by_slug[slug]["tool_mode"] = "code_mode_only"
+                        by_slug[slug]["supports_search_tool"] = True
                 continue
             if capabilities.context_window is None:
                 continue
@@ -528,6 +535,13 @@ def _write_model_catalog(
                 model["default_reasoning_level"] = None
                 model["supported_reasoning_levels"] = []
             _narrow_tool_surface(model, capabilities)
+            if (
+                backend_name in {"grok", "grok-api"}
+                and backend.codex_provider == f"agentroute-{backend_name}"
+                and backend.tool_compatibility == "full"
+            ):
+                model["tool_mode"] = "code_mode_only"
+                model["supports_search_tool"] = True
             if not capabilities.vision:
                 model["input_modalities"] = ["text"]
                 model["supports_image_detail_original"] = False

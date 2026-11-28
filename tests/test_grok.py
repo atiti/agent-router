@@ -82,6 +82,29 @@ def test_backend_install_preserves_routes_and_custom_tiers():
     assert config.capabilities.models["grok-4.7"].context_window == 256000
 
 
+def test_legacy_grok_transport_migrates_without_changing_routes_or_identity():
+    from agentroute.config import _with_default_backends
+
+    config = default_config()
+    ensure_backend(config)
+    backend = config.backends["grok"]
+    backend.tool_compatibility = "functions_and_apply_patch_preserve_reasoning"
+    backend.tiers["smart"].model = "grok-4.5"
+    config.capabilities.models["grok-4.5"].tool_calling = "apply_patch_only"
+    routes = dict(config.routing.backend_by_tier)
+    provider = backend.codex_provider
+    endpoint = backend.base_url
+
+    _with_default_backends(config)
+
+    assert backend.tool_compatibility == "full"
+    assert backend.tiers["smart"].model == "grok-4.5"
+    assert backend.codex_provider == provider and backend.base_url == endpoint
+    assert backend.api_key_env is None
+    assert config.routing.backend_by_tier == routes
+    assert config.capabilities.models["grok-4.5"].tool_calling == "full"
+
+
 def test_patch_roundtrip_and_reasoning_passthrough():
     patch = "*** Begin Patch\n*** End Patch"
     request = {
@@ -155,6 +178,111 @@ def test_namespaces_are_flattened_and_openai_metadata_removed():
     assert "service_tier" not in body
     assert body["tools"][0]["type"] == "function"
     assert body["tools"][0]["name"] == wire_name("functions", "read")
+
+
+def test_code_mode_custom_tool_roundtrip_preserves_namespace_and_input():
+    from agentroute.grok_bridge import patch_item, tool_names
+
+    source = "const result = await tools.check({value: 'quoted'});\ntext(result);"
+    request = {
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "functions",
+                "tools": [{"type": "custom", "name": "exec", "description": "Run JavaScript"}],
+            }
+        ],
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "namespace": "functions",
+                "name": "exec",
+                "input": source,
+                "call_id": "call-code",
+            },
+            {"type": "custom_tool_call_output", "call_id": "call-code", "output": "done"},
+        ],
+        "tool_choice": {"type": "custom", "namespace": "functions", "name": "exec"},
+    }
+    body = translate_request(request)
+    name = body["tools"][0]["name"]
+    assert body["tools"][0]["type"] == "function"
+    assert body["tools"][0]["parameters"]["required"] == ["input"]
+    assert body["input"][0]["name"] == name
+    assert json.loads(body["input"][0]["arguments"]) == {"input": source}
+    assert body["input"][1]["type"] == "function_call_output"
+    assert body["tool_choice"] == {"type": "function", "name": name}
+    item = {"type": "function_call", "name": name, "arguments": json.dumps({"input": source})}
+    restored = patch_item(item, tool_names(request))
+    assert restored["type"] == "custom_tool_call"
+    assert restored["namespace"] == "functions"
+    assert restored["name"] == "exec"
+    assert restored["input"] == source
+    assert "arguments" not in restored
+
+
+def test_code_mode_custom_stream_waits_for_complete_json_arguments():
+    from agentroute.grok_bridge import tool_names
+
+    request = {"tools": [{"type": "custom", "name": "exec"}]}
+    name = translate_request(request)["tools"][0]["name"]
+    source = 'text("hello\\nworld");'
+    events = [
+        {
+            "type": "response.output_item.added",
+            "item": {"type": "function_call", "name": name, "id": "code", "arguments": ""},
+        },
+        {"type": "response.function_call_arguments.delta", "item_id": "code", "delta": '{"input":'},
+        {
+            "type": "response.function_call_arguments.done",
+            "item_id": "code",
+            "arguments": json.dumps({"input": source}),
+        },
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "name": name,
+                "id": "code",
+                "arguments": json.dumps({"input": source}),
+            },
+        },
+    ]
+    upstream = BytesIO(
+        b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in events)
+    )
+    stream = b"".join(translate_stream(upstream, tool_names(request)))
+    parsed = [json.loads(line[6:]) for line in stream.splitlines() if line.startswith(b"data: ")]
+    assert parsed[0]["item"]["type"] == "custom_tool_call"
+    assert "namespace" not in parsed[0]["item"]
+    assert parsed[1]["type"] == "response.custom_tool_call_input.delta"
+    assert parsed[1]["delta"] == source
+    assert parsed[2]["item"]["input"] == source
+
+
+def test_custom_and_function_tools_with_matching_names_stay_distinct():
+    from agentroute.grok_bridge import patch_item, tool_names
+
+    request = {
+        "tools": [
+            {"type": "namespace", "name": namespace, "tools": [
+                {"type": "custom", "name": "exec"},
+                {"type": "function", "name": "exec", "parameters": {"type": "object"}},
+            ]}
+            for namespace in ("first", "second")
+        ]
+    }
+    tools = translate_request(request)["tools"]
+    assert len({tool["name"] for tool in tools}) == 4
+    for tool, namespace, kind in zip(
+        tools, ("first", "first", "second", "second"),
+        ("custom_tool_call", "function_call", "custom_tool_call", "function_call"), strict=True
+    ):
+        item = {"type": "function_call", "name": tool["name"], "arguments": '{"input":"code"}'}
+        restored = patch_item(item, tool_names(request))
+        assert (restored["namespace"], restored["name"], restored["type"]) == (
+            namespace, "exec", kind
+        )
 
 
 def test_compaction_without_tools_removes_tool_controls():
