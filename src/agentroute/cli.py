@@ -614,7 +614,10 @@ def capacity_status_command(
                 "name": name,
                 "ready": ready,
                 "readiness_detail": ", ".join(problems) or "ready",
-                "status": state.status,
+                # Scripts read `status` as the management decision. With capacity
+                # management disabled, live usage stays visible via observed_status.
+                "status": state.status if config.capacity.enabled else "disabled",
+                "observed_status": state.status,
                 "detail": state.detail,
                 "used_percent": state.used_percent,
                 "remaining_percent": (
@@ -693,7 +696,11 @@ def capacity_status_command(
         table.add_row(
             item["name"],
             "yes" if item["ready"] else item["readiness_detail"],
-            f"{item['status']}: {item['detail']}"
+            (
+                f"{item['status']}: {item['detail']}"
+                if item["status"] == item["observed_status"]
+                else f"{item['status']} (observed {item['observed_status']}): {item['detail']}"
+            )
             + (f"; reset {item['reset_local']}" if item["reset_local"] else ""),
             f"${item['daily_spend_usd']:.2f} / "
             f"{item['daily_budget_usd'] if item['daily_budget_usd'] else '∞'}",
@@ -2397,12 +2404,17 @@ def desktop_open_command(
 
     selected_runtime = runtime or agentroute_home() / "bin/codex"
     try:
-        open_official_desktop(source.expanduser(), selected_runtime.expanduser())
+        launched = open_official_desktop(source.expanduser(), selected_runtime.expanduser())
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         console.print(f"[red]Desktop launch failed: {error}[/red]")
         raise typer.Exit(1) from error
+    if not launched:
+        console.print(
+            "[yellow]The official Desktop app is already running and keeps its current "
+            "engine. Quit the app, then run `agentroute desktop open` again.[/yellow]"
+        )
+        return
     console.print("Opened the official Desktop app with the AgentRoute engine.")
-    console.print("An already-running app keeps its engine; quit normally before changing it.")
 
 
 @desktop_app.command("install")

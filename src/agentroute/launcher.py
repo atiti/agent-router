@@ -159,6 +159,9 @@ def _launch_command_position(user_args: Sequence[str]) -> tuple[int, str]:
         "-o",
         "--output-last-message",
         "--output-schema",
+        "--color",
+        "--thread-source",
+        "--cyber-access-program",
     }
     commands = {
         "exec",

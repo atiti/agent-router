@@ -15,6 +15,9 @@ from agentroute.launcher import codex_argv, launch_codex, startup_route_args
     ["e", "--json", "resume", "--last", "continue"],
     ["exec", "--output-last-message", "answer.txt", "resume", "--last"],
     ["fork", "saved-thread"],
+    ["exec", "--color", "never", "resume", "saved-thread"],
+    ["exec", "--thread-source", "automation", "resume", "--last"],
+    ["exec", "--cyber-access-program", "program", "resume", "saved-thread"],
 ])
 def test_existing_thread_launch_keeps_saved_route(user_args):
     config = default_config()
@@ -32,6 +35,7 @@ def test_existing_thread_launch_keeps_saved_route(user_args):
     ["exec", "--output-last-message", "resume", "new task"],
     ["--model", "resume", "exec", "new task"],
     ["--", "resume"],
+    ["exec", "--color", "resume", "new task"],
 ])
 def test_resume_word_in_prompt_or_option_value_keeps_new_session_defaults(user_args):
     assert 'model_provider="openai"' in startup_route_args(default_config(), user_args)

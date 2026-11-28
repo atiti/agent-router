@@ -25,15 +25,54 @@ def test_open_official_desktop_preserves_app_identity_and_passes_runtime(tmp_pat
     runtime.chmod(0o755)
     monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
     calls = []
-    monkeypatch.setattr(desktop, "_run", lambda *command, **kwargs: calls.append(command))
+    monkeypatch.setattr(desktop, "_run", _fake_launch_run(calls, running=False))
     result = CliRunner().invoke(
         app, ["desktop", "open", "--source", str(source), "--runtime", str(runtime)]
     )
     assert result.exit_code == 0, result.output
-    assert calls == [
-        ("open", "-a", source, "--env", f"CODEX_CLI_PATH={runtime.resolve()}")
-    ]
+    assert calls[-1] == ("open", "-a", source, "--env", f"CODEX_CLI_PATH={runtime.resolve()}")
+    assert calls[0][:2] == ("pgrep", "-f")
+    assert "Opened the official Desktop app with the AgentRoute engine." in result.output
     assert (source / "Contents/MacOS/ChatGPT").read_text() == "official"
+
+
+def _fake_launch_run(calls, *, running):
+    def fake_run(*command, capture=False):
+        calls.append(command)
+        if command[0] == "pgrep":
+            if not running:
+                raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess(command, 0, stdout="4242\n", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    return fake_run
+
+
+def test_open_official_desktop_warns_when_app_already_running(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from agentroute.cli import app
+
+    source = tmp_path / "Official (Beta).app"
+    source.mkdir()
+    runtime = tmp_path / "codex"
+    runtime.write_text("launcher")
+    runtime.chmod(0o755)
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    calls = []
+    monkeypatch.setattr(desktop, "_run", _fake_launch_run(calls, running=True))
+    result = CliRunner().invoke(
+        app, ["desktop", "open", "--source", str(source), "--runtime", str(runtime)]
+    )
+    assert result.exit_code == 0, result.output
+    pattern = calls[0][2]
+    assert calls == [("pgrep", "-f", pattern)]
+    assert pattern.endswith("/Contents/MacOS/")
+    assert r"Official \(Beta\)\.app" in pattern
+    output = " ".join(result.output.split())
+    assert "Opened the official Desktop app" not in output
+    assert "already running" in output
+    assert "Quit the app" in output
 
 
 def test_open_official_desktop_rejects_missing_runtime_before_launch(tmp_path, monkeypatch):
@@ -68,10 +107,10 @@ def test_open_official_desktop_defaults_to_installed_launcher(tmp_path, monkeypa
     monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
     monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
     calls = []
-    monkeypatch.setattr(desktop, "_run", lambda *command, **kwargs: calls.append(command))
+    monkeypatch.setattr(desktop, "_run", _fake_launch_run(calls, running=False))
     result = CliRunner().invoke(app, ["desktop", "open", "--source", str(source)])
     assert result.exit_code == 0, result.output
-    assert calls == [("open", "-a", source, "--env", f"CODEX_CLI_PATH={runtime.resolve()}")]
+    assert calls[-1] == ("open", "-a", source, "--env", f"CODEX_CLI_PATH={runtime.resolve()}")
 
 
 def _fake_app(path: Path) -> None:

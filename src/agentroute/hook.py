@@ -406,6 +406,27 @@ def _effective_current_tier(
     return config.providers["codex"].tier_for_model(model), "codex_model_fallback"
 
 
+def _has_routing_tag(prompt: str, config: AppConfig) -> bool:
+    """Whether the prompt starts with an explicit (possibly malformed) routing tag."""
+    try:
+        overrides = model_route_overrides(prompt, config.backends)
+    except DirectModelError:
+        return True
+    return any(value is not None for value in overrides[:5])
+
+
+def _abstain(sink: TextIO, prompt: str, config: AppConfig, reason: str) -> None:
+    """Keep native settings; tell the user only when an explicit tag was ignored."""
+    output: dict[str, Any] = {"continue": True}
+    if _has_routing_tag(prompt, config):
+        output["systemMessage"] = (
+            f"AgentRoute did not apply the routing tag: {reason}, so native model "
+            "settings are kept until a plaintext compaction (for example a manual /compact)."
+        )
+    json.dump(output, sink)
+    sink.write("\n")
+
+
 def codex_user_prompt_submit(
     source: TextIO = sys.stdin,
     sink: TextIO = sys.stdout,
@@ -440,8 +461,7 @@ def codex_user_prompt_submit(
         if not checkpoint_path:
             # Some native auxiliary sessions have no durable transcript. Leave
             # their native settings untouched; never guess history or route them.
-            json.dump({"continue": True}, sink)
-            sink.write("\n")
+            _abstain(sink, prompt, config, "no conversation transcript is available")
             return 0
         checkpoint = latest_checkpoint(
             checkpoint_path,
@@ -452,8 +472,12 @@ def codex_user_prompt_submit(
             # route override, including explicit tags, rather than blocking valid
             # same-owner turns or inferring account ownership from audit records.
             # Never clear strip state or rewrite history to manufacture admission.
-            json.dump({"continue": True}, sink)
-            sink.write("\n")
+            _abstain(
+                sink,
+                prompt,
+                config,
+                "this conversation has an opaque or unverifiable compaction checkpoint",
+            )
             return 0
         prompt = str(payload.get("prompt", ""))
         (

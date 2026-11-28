@@ -154,7 +154,8 @@ def test_account_list_reports_quota_without_enabling_switching(
     assert payload["profiles"][0]["authenticated"]
     assert payload["profiles"][0]["capacity"]["used_percent"] == 37
     gpt = next(row for row in payload["backends"] if row["name"] == "gpt")
-    assert gpt["status"] == "healthy"
+    assert gpt["status"] == "disabled"
+    assert gpt["observed_status"] == "healthy"
     assert gpt["remaining_percent"] == 63
     assert "private-account-id" not in result.output
     assert overview.exit_code == 0, overview.output
