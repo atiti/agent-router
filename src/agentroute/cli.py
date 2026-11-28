@@ -583,7 +583,12 @@ def capacity_status_command(
     config = load_config()
     rows = AuditStore().rows_since()
     daily, monthly = backend_spend(rows, config)
-    profiles = () if no_probe else probe_profiles(config)
+    # Status reports quota even when capacity-based switching is disabled. Only
+    # this diagnostic copy enables interpretation of the subscription snapshot.
+    probe_config = config.model_copy(
+        update={"capacity": config.capacity.model_copy(update={"enabled": True})}
+    )
+    profiles = () if no_probe else probe_profiles(probe_config)
     active_profile = next(
         (profile for profile in profiles if profile.name == config.capacity.active_profile),
         None,
