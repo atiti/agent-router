@@ -38,6 +38,7 @@ from .signals import (
     route_overrides,
 )
 from .subscription_classifier import SubscriptionClassifier
+from .yolo import effort_problem as yolo_effort_problem
 from .yolo import resolve_target as resolve_yolo_target
 
 CLASSIFIER_VERSION = "hybrid-v10"
@@ -988,9 +989,19 @@ class Router:
             if classifier_reasoning_effort or inherited_effort
             else target.reasoning_effort
         )
+        # A YOLO continuation carries only an explicit user effort, and only on the
+        # same backend; otherwise the backend's YOLO preset applies. The classifier
+        # never lowers YOLO effort.
+        yolo_carried_effort = (
+            context.previous_yolo_effort
+            if proposed is Tier.YOLO
+            and yolo_opt_in in {"continuation", "interrupted_turn"}
+            and context.previous_yolo_backend == backend_name
+            else None
+        )
+        yolo_explicit_effort = reasoning_effort_override or yolo_carried_effort
         selected_reasoning_effort = reasoning_effort_override or (
-            # YOLO applies its preset effort; the classifier never lowers it.
-            (inherited_effort or target.reasoning_effort)
+            (yolo_carried_effort or target.reasoning_effort)
             if proposed is Tier.YOLO
             else target.reasoning_effort
             if tier_effort_policy
@@ -1019,7 +1030,7 @@ class Router:
                 "manual"
                 if reasoning_effort_override
                 else "yolo_preset"
-                if proposed is Tier.YOLO and not inherited_effort
+                if proposed is Tier.YOLO and not yolo_carried_effort
                 else "inheritance"
                 if proposed is Tier.YOLO
                 else "tier_default"
@@ -1032,7 +1043,26 @@ class Router:
                 if (inherited or interrupted_turn_affinity) and context.previous_reasoning_effort
                 else "tier_default"
             )
-        if target.model in EFFORT_MODELS:
+        if proposed is Tier.YOLO and model_target is None and not capacity_blocked:
+            # Validate the final applied pair; never send an effort the provider
+            # does not accept (for example `@grok @yolo @ultra`).
+            effort_problem = yolo_effort_problem(
+                self.config, backend_name, target.model, selected_reasoning_effort
+            )
+            if effort_problem:
+                capacity_blocked = True
+                capacity_status = "yolo_blocked"
+                capacity_trigger = "yolo_unavailable"
+                capacity_detail = (
+                    f"No YOLO route is available: backend {backend_name}: {effort_problem}. "
+                    "Nothing was run; choose a supported effort or use @max."
+                )
+                contributions.append(
+                    ScoreContribution(
+                        code=ReasonCode.YOLO_BLOCKED, weight=0, detail=effort_problem
+                    )
+                )
+        if target.model in EFFORT_MODELS and not (capacity_blocked and proposed is Tier.YOLO):
             normalized = claude_effort(target.model, selected_reasoning_effort)
             selected_reasoning_effort = "ultra" if normalized == "max" else normalized
         elif target.model.startswith("claude-haiku"):
@@ -1260,6 +1290,8 @@ class Router:
                 "model": target.model,
                 "preset_reasoning_effort": target.reasoning_effort,
                 "requested_reasoning_effort": reasoning_effort_override,
+                # Explicit user effort, carried by continuations on the same backend.
+                "explicit_reasoning_effort": yolo_explicit_effort,
                 "applied_reasoning_effort": selected_reasoning_effort,
             }
         if economics:

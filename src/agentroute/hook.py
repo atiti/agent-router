@@ -42,6 +42,7 @@ from .signals import (
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
 from .waits import hook_context as wait_hook_context
 from .yolo import admitted as yolo_admitted
+from .yolo import effort_problem as yolo_effort_problem
 from .yolo import resolve_target as resolve_yolo_target
 
 
@@ -217,6 +218,23 @@ def _apply_profile_selection(
         target = yolo_target
         if decision.reasoning_effort_source == "yolo_preset":
             decision.reasoning_effort = target.reasoning_effort
+        problem = yolo_effort_problem(config, "gpt", target.model, decision.reasoning_effort)
+        if problem:
+            decision.capacity_blocked = True
+            decision.capacity_status = "yolo_blocked"
+            decision.capacity_trigger = "yolo_unavailable"
+            decision.capacity_detail = (
+                f"No YOLO route is available on ChatGPT account {selection.selected.name}: "
+                f"{problem}. Nothing was run; choose a supported effort or use @max."
+            )
+            yolo_receipt = decision.selection_receipt.get("yolo")
+            if isinstance(yolo_receipt, dict):
+                yolo_receipt.update(
+                    status="blocked",
+                    blocked_reason=decision.capacity_detail,
+                    opt_in_source=None,
+                )
+            return
     else:
         fallback = backend.target(decision.tier)
         target = (
@@ -461,7 +479,7 @@ def codex_user_prompt_submit(
             config, current_model, str(payload.get("model_provider", "openai")), previous_route
         )
         previous_tier = store.previous_tier(session_id, route_scope, agent_id)
-        previous_yolo_opt_in = None
+        previous_yolo_opt_in = previous_yolo_effort = previous_yolo_backend = None
         if previous_tier is Tier.YOLO and previous_route is not None:
             # Only a route that recorded an explicit opt-in can be continued as YOLO.
             try:
@@ -472,6 +490,8 @@ def codex_user_prompt_submit(
                 previous_yolo = None
             if isinstance(previous_yolo, dict):
                 previous_yolo_opt_in = previous_yolo.get("opt_in_source")
+                previous_yolo_effort = previous_yolo.get("explicit_reasoning_effort")
+                previous_yolo_backend = previous_yolo.get("backend")
         previous_reasoning_effort = store.previous_reasoning_effort(
             session_id, route_scope, agent_id
         )
@@ -684,6 +704,8 @@ def codex_user_prompt_submit(
             downgrade_streak=store.downgrade_streak(session_id, route_scope, agent_id),
             previous_task_tier=previous_tier,
             previous_yolo_opt_in=previous_yolo_opt_in if previous_tier is Tier.YOLO else None,
+            previous_yolo_effort=previous_yolo_effort if previous_tier is Tier.YOLO else None,
+            previous_yolo_backend=previous_yolo_backend if previous_tier is Tier.YOLO else None,
             previous_reasoning_effort=previous_reasoning_effort,
             interrupted_turn_affinity=interrupted_route is not None,
             interrupted_backend=interrupted_backend,

@@ -10,7 +10,7 @@ lowers an effort to make a target fit.
 from __future__ import annotations
 
 from .claude_models import EFFORT_MODELS
-from .config import AppConfig, ModelTarget
+from .config import AppConfig, ModelTarget, model_capabilities
 from .models import Tier
 
 # Subscription routes tried first, in this order unless task preferences reorder
@@ -49,8 +49,16 @@ def provider_family(config: AppConfig, backend_name: str) -> str:
 
 
 def supported_efforts(config: AppConfig, backend_name: str, model: str) -> frozenset[str] | None:
-    """Return the accepted efforts, or None for operator-verified other backends."""
+    """Return the accepted efforts, or None for operator-verified other backends.
+
+    Per-model capability data narrows this where it exists: a model declared
+    without reasoning accepts no effort. No per-effort model data exists, so the
+    family set applies otherwise.
+    """
     family = provider_family(config, backend_name)
+    if backend_name in config.backends:
+        if model_capabilities(config, backend_name, model).reasoning is False:
+            return frozenset()
     if family in {"openai", "azure"}:
         return OPENAI_EFFORTS
     if family == "claude":
@@ -75,21 +83,36 @@ def resolve_target(
             target = profile.tiers[str(Tier.YOLO)]
     if target is None:
         return None, "no_yolo_mapping"
-    efforts = supported_efforts(config, backend_name, target.model)
-    if efforts is not None and target.reasoning_effort is not None:
-        if target.reasoning_effort not in efforts:
-            return None, f"unsupported_effort:{target.model}/{target.reasoning_effort}"
+    reason = effort_problem(config, backend_name, target.model, target.reasoning_effort)
+    if reason:
+        return None, reason
     return target, None
 
 
+def effort_problem(
+    config: AppConfig, backend_name: str, model: str, effort: str | None
+) -> str | None:
+    """Return why a provider/model cannot run this effort, or None if it can."""
+    efforts = supported_efforts(config, backend_name, model)
+    if efforts is not None and effort is not None and effort not in efforts:
+        return f"unsupported_effort:{model}/{effort}"
+    return None
+
+
 def candidate_pool(config: AppConfig) -> list[str]:
-    """Subscriptions, then operator-admitted backends with a mapping, then Azure."""
-    others = [
-        name
-        for name in config.routing.provider_selection.candidates
-        if name not in SUBSCRIPTION_BACKENDS and name != LAST_RESORT_BACKEND
-    ]
-    return list(dict.fromkeys([*SUBSCRIPTION_BACKENDS, *others, LAST_RESORT_BACKEND]))
+    """Admitted candidates in YOLO order: subscriptions, others, then Azure.
+
+    `routing.provider_selection.candidates` stays the admission boundary. A backend
+    outside it, including Azure, is reachable only through an explicit pin.
+    """
+    allowed = list(dict.fromkeys(config.routing.provider_selection.candidates))
+    return sorted(
+        allowed,
+        key=lambda name: (
+            priority_group(name),
+            SUBSCRIPTION_BACKENDS.index(name) if name in SUBSCRIPTION_BACKENDS else 0,
+        ),
+    )
 
 
 def priority_group(name: str) -> int:

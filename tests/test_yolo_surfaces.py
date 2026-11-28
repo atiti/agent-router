@@ -46,7 +46,8 @@ def test_doctor_reports_yolo_admission():
     config.policy.max_tier = "yolo"
     detail = {check.name: check for check in run_doctor(config)}["yolo"].detail
     assert "gpt=gpt-6.2-astra/ultra" in detail
-    assert "azure: no_yolo_mapping" in detail  # Azure MAX is not an Astra deployment
+    assert "deepseek: no_yolo_mapping" in detail
+    assert "azure" not in detail  # not an admitted candidate by default
 
 
 def test_route_banner_labels_yolo_and_model_request(tmp_path):

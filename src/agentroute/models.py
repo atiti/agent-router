@@ -119,6 +119,10 @@ class RouteContext(BaseModel):
     # Source recorded when the previous route entered YOLO; continuation keeps YOLO
     # only when this is present, so stale session affinity cannot enroll a task.
     previous_yolo_opt_in: str | None = None
+    # Explicit user effort and backend of the previous YOLO route; the effort is
+    # carried only to the same backend.
+    previous_yolo_effort: str | None = None
+    previous_yolo_backend: str | None = None
     previous_reasoning_effort: str | None = None
     interrupted_turn_affinity: bool = False
     interrupted_backend: str | None = None
