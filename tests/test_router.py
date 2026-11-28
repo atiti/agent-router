@@ -2,7 +2,7 @@ import pytest
 
 from agentroute.classifier import ClassifierResult
 from agentroute.config import ExecutionBackendConfig, ModelTarget, default_config
-from agentroute.models import ReasonCode, RouteContext, Tier
+from agentroute.models import ORDINARY_TIERS, ReasonCode, RouteContext, Tier
 from agentroute.router import Router, confidence_for
 
 
@@ -807,7 +807,7 @@ def test_fable_is_only_selected_from_the_automatic_max_tier():
     config = default_config()
     ensure_claude_bridge_backend(config, 8090)
     config.routing.backend_by_tier = {tier: "claude" for tier in ("fast", "normal", "smart", "max")}
-    for tier in Tier:
+    for tier in ORDINARY_TIERS:
         result = Router(config).route(
             RouteContext(session_id="automatic", latest_prompt=f"@{tier} hello")
         )

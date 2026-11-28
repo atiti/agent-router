@@ -228,6 +228,11 @@ def ensure_backend(config, port=None, credential_mode="subscription"):
                 )
             },
         )
+        if not api_key:
+            # No Grok effort above xhigh is known, so YOLO intentionally equals MAX.
+            config.backends[name].tiers["yolo"] = ModelTarget(
+                model="grok-4.7", reasoning_effort="xhigh", context_window=256000
+            )
     else:
         config.backends[name].enabled = True
         config.backends[name].base_url = f"http://127.0.0.1:{port}/v1"

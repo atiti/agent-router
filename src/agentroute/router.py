@@ -14,10 +14,17 @@ from .classifier import (
     catalog_age_seconds,
 )
 from .claude_models import EFFORT_MODELS, claude_effort
-from .config import AppConfig, load_config, model_capabilities
+from .config import AppConfig, ModelTarget, load_config, model_capabilities
 from .economics import cache_switch_estimate
 from .model_selection import DirectModelError, resolve_model, source_models
-from .models import ReasonCode, RouteContext, RouteDecision, ScoreContribution, Tier
+from .models import (
+    ORDINARY_TIERS,
+    ReasonCode,
+    RouteContext,
+    RouteDecision,
+    ScoreContribution,
+    Tier,
+)
 from .profiles import TurnProfileSelection
 from .provider_selection import inferred_task_type, select_provider
 from .providers import backend_readiness
@@ -191,13 +198,18 @@ class Router:
         classifier_task_type: str | None = None
         classifier_reasoning_effort: str | None = None
         classifier_reason_hash: str | None = None
+        # Where an explicit YOLO choice came from. Without one, YOLO is never selected.
+        yolo_opt_in: str | None = None
 
         if manual:
             matching_tiers = (
                 [
                     name
                     for name, target in self.config.backends[backend_override].tiers.items()
-                    if model_target is not None and target.model == model_target.model
+                    # A direct model selects a model, never an implicit YOLO opt-in.
+                    if model_target is not None
+                    and target.model == model_target.model
+                    and name != str(Tier.YOLO)
                 ]
                 if model_target is not None
                 else []
@@ -214,17 +226,19 @@ class Router:
             )
             if model_target is not None:
                 selected_backend = self.config.backends[backend_override]
-                tier_target = selected_backend.target(proposed)
-                if backend_override == "gpt":
+                tier_target = selected_backend.tiers.get(str(proposed))
+                if backend_override == "gpt" and tier_target is not None:
                     profile = self.config.capacity.profiles.get(
                         self.config.capacity.active_profile or ""
                     )
                     if profile:
                         tier_target = profile.target(proposed, tier_target)
-                if tier_target.model == model_target.model:
+                if tier_target is not None and tier_target.model == model_target.model:
                     model_target = tier_target
             confidence = 1.0
             classification_source = "manual"
+            if proposed is Tier.YOLO:
+                yolo_opt_in = "explicit_tag"
             contributions.append(
                 ScoreContribution(
                     code=ReasonCode.MODEL_OVERRIDE
@@ -255,6 +269,8 @@ class Router:
             proposed = context.agent_requested_tier
             confidence = 0.99
             classification_source = "agent_request"
+            if proposed is Tier.YOLO:
+                yolo_opt_in = "agent_request"
             contributions.append(
                 ScoreContribution(
                     code=ReasonCode.AGENT_ESCALATION,
@@ -340,6 +356,29 @@ class Router:
 
         if (
             not manual
+            and override != "auto"
+            and classification_source != "agent_request"
+            and inherited
+            and context.previous_task_tier is Tier.YOLO
+            and context.previous_yolo_opt_in
+        ):
+            # Continuations (including interrupted-turn recovery) keep the task's
+            # recorded YOLO opt-in. A new task, @auto or an explicit tier exits it.
+            proposed = Tier.YOLO
+            confidence = max(confidence, 0.98)
+            yolo_opt_in = "interrupted_turn" if interrupted_turn_affinity else "continuation"
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.YOLO_OPT_IN,
+                    weight=0,
+                    detail=(
+                        "continuation retained the task's explicit YOLO opt-in "
+                        f"({context.previous_yolo_opt_in})"
+                    ),
+                )
+            )
+        if (
+            not manual
             and self.config.routing.fast_quality_floor
             and classification_source
             in {
@@ -370,9 +409,9 @@ class Router:
             and inherited
             and self.config.routing.continuation_capability_floor
             and context.previous_task_tier is not None
-            and proposed < context.previous_task_tier
+            and proposed < context.previous_task_tier.automatic()
         ):
-            proposed = context.previous_task_tier
+            proposed = context.previous_task_tier.automatic()
             contributions.append(
                 ScoreContribution(
                     code=ReasonCode.CONTINUATION_CAPABILITY_FLOOR,
@@ -382,20 +421,28 @@ class Router:
             )
 
         score_proposed = proposed
+        # Automatic paths see a YOLO session as MAX, so hysteresis, cache retention
+        # and task stickiness can hold MAX but never carry YOLO into a new task.
+        auto_context = (
+            context
+            if context.current_tier <= Tier.MAX
+            else context.model_copy(update={"current_tier": Tier.MAX})
+        )
 
         # An explicit tier is an escape hatch and therefore bypasses automatic
         # risk floors and hysteresis. Policy max_tier still caps every route.
         risk_floor_applied = False
-        if not manual:
+        if not manual and yolo_opt_in is None:
             proposed, risk_floor_applied = self._apply_risk_floor(proposed, context, contributions)
             if risk_floor_applied:
                 confidence = max(confidence, 0.90)
             proposed, confidence = self._apply_switching(
-                proposed, confidence, context, contributions
+                proposed, confidence, auto_context, contributions
             )
         economics = (
-            cache_switch_estimate(self.config, context, proposed)
+            cache_switch_estimate(self.config, auto_context, proposed)
             if not manual
+            and yolo_opt_in is None
             and override != "auto"
             and not backend_override
             and not reasoning_effort_override
@@ -403,7 +450,7 @@ class Router:
             else {}
         )
         if economics.get("retain"):
-            proposed = context.current_tier
+            proposed = auto_context.current_tier
             contributions.append(
                 ScoreContribution(
                     code=ReasonCode.CACHE_REUSE,
@@ -419,11 +466,12 @@ class Router:
         stickiness: dict[str, object] = {}
         if (
             not manual
+            and yolo_opt_in is None
             and override != "auto"
             and context.agent_requested_tier is None
             and switching.downgrade_confirmations > 1
             and context_tokens >= switching.hold_context_tokens
-            and proposed < context.current_tier
+            and proposed < auto_context.current_tier
         ):
             streak = context.downgrade_streak + 1
             held = streak < switching.downgrade_confirmations
@@ -435,7 +483,7 @@ class Router:
                 "context_tokens": context_tokens,
             }
             if held:
-                proposed = context.current_tier
+                proposed = auto_context.current_tier
                 contributions.append(
                     ScoreContribution(
                         code=ReasonCode.TASK_STICKINESS,
@@ -455,6 +503,17 @@ class Router:
                 code=ReasonCode.SUPERVISOR_CAPABILITY_FLOOR, weight=0,
                 detail="registered supervisor retains at least SMART for its ongoing objective",
             ))
+        if proposed is Tier.YOLO and yolo_opt_in is None:
+            # Invariant: classifiers, risk floors, hysteresis and progress review
+            # cannot introduce YOLO. Anything automatic is clamped to MAX.
+            proposed = Tier.MAX
+            contributions.append(
+                ScoreContribution(
+                    code=ReasonCode.YOLO_CLAMPED,
+                    weight=0,
+                    detail="automatic routing cannot select YOLO without an explicit opt-in",
+                )
+            )
         max_tier = Tier.parse(self.config.policy.max_tier)
         if requested_model and model_target is not None:
             policy_profile = (
@@ -464,7 +523,8 @@ class Router:
             model_tiers = [
                 Tier.parse(name)
                 for name, value in self.config.backends[backend_override].tiers.items()
-                if (
+                if name != str(Tier.YOLO)
+                and (
                     policy_profile.target(Tier.parse(name), value) if policy_profile else value
                 ).model == model_target.model
             ]
@@ -473,15 +533,31 @@ class Router:
                     f"Direct model exceeds policy max_tier {max_tier.name}; "
                     "an explicit tier cannot bypass that limit."
                 )
+        yolo_block: str | None = None
         if proposed > max_tier:
             if requested_model:
                 raise DirectModelError(
                     f"Direct model requires {proposed.name}, above policy max_tier {max_tier.name}."
                 )
-            proposed = max_tier
-            contributions.append(
-                ScoreContribution(code=ReasonCode.QUOTA_LIMIT, weight=0, detail="policy max tier")
-            )
+            if proposed is Tier.YOLO:
+                # Never run MAX under a YOLO label (or silently instead of YOLO).
+                yolo_block = (
+                    f"@yolo is not admitted: policy.max_tier is {max_tier}. Set "
+                    "policy.max_tier: yolo in ~/.agentroute/config.yaml to enable YOLO, "
+                    "or use @max. Nothing was run."
+                )
+                contributions.append(
+                    ScoreContribution(
+                        code=ReasonCode.YOLO_BLOCKED, weight=0, detail="policy max_tier"
+                    )
+                )
+            else:
+                proposed = max_tier
+                contributions.append(
+                    ScoreContribution(
+                        code=ReasonCode.QUOTA_LIMIT, weight=0, detail="policy max tier"
+                    )
+                )
 
         backend_name = (
             backend_override
@@ -621,7 +697,7 @@ class Router:
             )
         if (
             proposed is Tier.MAX
-            and context.current_tier is not Tier.MAX
+            and auto_context.current_tier is not Tier.MAX
             and not manual
             and not interrupted_turn_affinity
             and backend_name == "gpt"
@@ -830,12 +906,36 @@ class Router:
             capacity_detail = (
                 "No admitted provider meets task/capacity constraints; see exclusions."
             )
-        target = model_target or backend.target(proposed)
-        if backend_name == "gpt" and model_target is None:
+        yolo_unavailable: str | None = None
+        if model_target is not None:
+            target = model_target
+        elif proposed is Tier.YOLO:
+            mapped = backend.tiers.get(str(Tier.YOLO))
+            if mapped is None:
+                # An omitted YOLO mapping is unavailable, never an implicit MAX target.
+                yolo_unavailable = f"backend {backend_name} has no YOLO mapping"
+            target = mapped or ModelTarget(model="unavailable")
+        else:
+            target = backend.target(proposed)
+        if backend_name == "gpt" and model_target is None and not yolo_unavailable:
             for candidate in provider_selection.get("candidates", []):
                 if candidate["backend"] == "gpt" and candidate.get("subscription_profile"):
                     profile = self.config.capacity.profiles[candidate["subscription_profile"]]
                     target = profile.target(proposed, target)
+        if yolo_block or yolo_unavailable:
+            capacity_blocked = True
+            capacity_status = "blocked"
+            capacity_trigger = "yolo_admission" if yolo_block else "yolo_unavailable"
+            capacity_detail = yolo_block or (
+                f"No YOLO route is available: {yolo_unavailable}. Nothing was run; "
+                "use @max or configure a verified YOLO mapping."
+            )
+            if yolo_unavailable:
+                contributions.append(
+                    ScoreContribution(
+                        code=ReasonCode.YOLO_BLOCKED, weight=0, detail=yolo_unavailable
+                    )
+                )
         inherited_effort = (
             context.previous_reasoning_effort if inherited or interrupted_turn_affinity else None
         )
@@ -846,7 +946,12 @@ class Router:
             else target.reasoning_effort
         )
         selected_reasoning_effort = reasoning_effort_override or (
-            target.reasoning_effort if tier_effort_policy else automatic_effort
+            # YOLO applies its preset effort; the classifier never lowers it.
+            (inherited_effort or target.reasoning_effort)
+            if proposed is Tier.YOLO
+            else target.reasoning_effort
+            if tier_effort_policy
+            else automatic_effort
         )
         minimum_reasoning_effort = _minimum_model_reasoning_effort(backend_name, target.model)
         if (
@@ -870,6 +975,10 @@ class Router:
             reasoning_effort_source = (
                 "manual"
                 if reasoning_effort_override
+                else "yolo_preset"
+                if proposed is Tier.YOLO and not inherited_effort
+                else "inheritance"
+                if proposed is Tier.YOLO
                 else "tier_default"
                 if tier_effort_policy
                 else "classifier+inheritance"
@@ -969,7 +1078,7 @@ class Router:
         else:
             catalog_status = "stale"
         candidates: list[dict[str, object]] = []
-        for candidate_tier in Tier:
+        for candidate_tier in ORDINARY_TIERS:
             candidate_backend_name = self.config.routing.backend_by_tier.get(
                 str(candidate_tier), "gpt"
             )
@@ -994,7 +1103,11 @@ class Router:
             exclusions: list[str] = []
             if candidate_tier > max_tier:
                 exclusions.append("policy_max_tier")
-            if candidate_tier is Tier.MAX and not manual and context.current_tier is not Tier.MAX:
+            if (
+                candidate_tier is Tier.MAX
+                and not manual
+                and auto_context.current_tier is not Tier.MAX
+            ):
                 exclusions.append("codex_step_safety_metadata_incompatible")
             candidates.append(
                 {
@@ -1083,6 +1196,27 @@ class Router:
                 "resolved_task_inherited": resolved_task_inherited,
             },
         }
+        if proposed is Tier.YOLO or yolo_block or ReasonCode.YOLO_CLAMPED in reason_codes(
+            contributions
+        ):
+            receipt["yolo"] = {
+                "requested": proposed is Tier.YOLO,
+                "opt_in_source": yolo_opt_in,
+                "admitted": max_tier >= Tier.YOLO,
+                "status": (
+                    "blocked"
+                    if capacity_blocked
+                    else "selected"
+                    if proposed is Tier.YOLO
+                    else "clamped_to_max"
+                ),
+                "blocked_reason": capacity_detail if capacity_blocked else None,
+                "backend": backend_name,
+                "model": target.model,
+                "preset_reasoning_effort": target.reasoning_effort,
+                "requested_reasoning_effort": reasoning_effort_override,
+                "applied_reasoning_effort": selected_reasoning_effort,
+            }
         if economics:
             receipt["cache_economics"] = economics
         if stickiness:

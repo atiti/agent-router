@@ -12,6 +12,7 @@ from typing import Any
 
 from .classifier import normalize_task_type
 from .config import PricingConfig
+from .models import Tier
 from .pricing import CostReport, canonical_model, cost_report, token_cost
 
 
@@ -270,7 +271,7 @@ def _calibration_summary(rows: list[Any]) -> CalibrationSummary:
     task_types: dict[str, int] = defaultdict(int)
     confidence_bands: dict[str, int] = defaultdict(int)
     override_signals = stronger_override_signals = 0
-    tier_rank = {"fast": 0, "normal": 1, "smart": 2, "max": 3}
+    tier_rank = {str(tier): int(tier) for tier in Tier}
     for row in automatic:
         if row["outcome_label"]:
             labels[str(row["outcome_label"])] += 1

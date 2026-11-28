@@ -10,6 +10,9 @@ class Tier(IntEnum):
     NORMAL = 1
     SMART = 2
     MAX = 3
+    # Explicit opt-in only. Automatic routing (classifiers, risk floors, hysteresis,
+    # progress review) is limited to ORDINARY_TIERS and clamps to MAX.
+    YOLO = 4
 
     @classmethod
     def parse(cls, value: str) -> Tier:
@@ -20,6 +23,14 @@ class Tier(IntEnum):
 
     def __str__(self) -> str:
         return self.name.lower()
+
+    def automatic(self) -> Tier:
+        """Return the highest tier an automatic routing path may select."""
+        return min(self, Tier.MAX)
+
+
+# The tiers automatic routing may produce. YOLO requires a recorded explicit opt-in.
+ORDINARY_TIERS: tuple[Tier, ...] = (Tier.FAST, Tier.NORMAL, Tier.SMART, Tier.MAX)
 
 
 class ReasonCode(str, Enum):
@@ -74,6 +85,9 @@ class ReasonCode(str, Enum):
     CAPACITY_FALLBACK = "CAPACITY_FALLBACK"
     CAPACITY_BLOCKED = "CAPACITY_BLOCKED"
     PROFILE_FAILOVER = "PROFILE_FAILOVER"
+    YOLO_OPT_IN = "YOLO_OPT_IN"
+    YOLO_CLAMPED = "YOLO_CLAMPED"
+    YOLO_BLOCKED = "YOLO_BLOCKED"
 
 
 class ScoreContribution(BaseModel):
@@ -102,6 +116,9 @@ class RouteContext(BaseModel):
     current_tier: Tier = Tier.NORMAL
     downgrade_streak: int = 0
     previous_task_tier: Tier | None = None
+    # Source recorded when the previous route entered YOLO; continuation keeps YOLO
+    # only when this is present, so stale session affinity cannot enroll a task.
+    previous_yolo_opt_in: str | None = None
     previous_reasoning_effort: str | None = None
     interrupted_turn_affinity: bool = False
     interrupted_backend: str | None = None

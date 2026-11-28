@@ -155,7 +155,12 @@ def _unique_backend_for_model(config: AppConfig, model: str) -> str | None:
     matches = {
         name
         for name, backend in config.backends.items()
-        if any(target.model == model for target in backend.tiers.values())
+        # YOLO mappings are opt-in targets; they do not identify a child's backend.
+        if any(
+            target.model == model
+            for tier, target in backend.tiers.items()
+            if tier != str(Tier.YOLO)
+        )
     }
     return next(iter(matches)) if len(matches) == 1 else None
 
@@ -331,8 +336,11 @@ def _effective_current_tier(
             pass
     backend = next((b for b in config.backends.values() if b.codex_provider == provider), None)
     if backend is not None:
+        # A shared model never proves YOLO; only a matching applied route does.
         tiers = [
-            Tier.parse(name) for name, target in backend.tiers.items() if target.model == model
+            Tier.parse(name)
+            for name, target in backend.tiers.items()
+            if target.model == model and name != str(Tier.YOLO)
         ]
         if tiers:
             return max(tiers), "backend_model_conservative"

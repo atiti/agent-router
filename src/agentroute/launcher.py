@@ -89,11 +89,12 @@ def progress_review_route_args(config: AppConfig, user_args: Sequence[str]) -> l
     if config.routing.progress_review_live_switching and not _has_model_override(user_args):
         # Keep policy in AgentRoute. Core only accepts this explicit allowlist.
         # Budgeted backends require a live capacity check and are excluded here.
-        from .models import Tier
+        from .models import ORDINARY_TIERS, Tier
 
         routes = {}
         ceiling = Tier.parse(config.policy.max_tier)
-        for tier in Tier:
+        # Progress review is automatic and therefore never offers YOLO.
+        for tier in ORDINARY_TIERS:
             if tier > ceiling:
                 continue
             backend_name = config.routing.backend_by_tier.get(str(tier), "gpt")

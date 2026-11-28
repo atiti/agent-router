@@ -78,6 +78,8 @@ def ensure_claude_bridge_backend(
         )
         for tier, model in CLAUDE_BRIDGE_TIERS.items()
     }
+    # YOLO: Fable 5.2 at the router's `ultra`, which the bridge sends as Anthropic `max`.
+    tiers["yolo"] = ModelTarget(model=CLAUDE_FABLE_MODEL, reasoning_effort="ultra")
     if created:
         config.backends["claude"] = ExecutionBackendConfig(
             enabled=True,
@@ -104,6 +106,7 @@ def ensure_claude_bridge_backend(
         tier: ModelTarget(model=CLAUDE_FABLE_MODEL, reasoning_effort="high")
         for tier in CLAUDE_BRIDGE_TIERS
     }
+    fable_tiers["yolo"] = ModelTarget(model=CLAUDE_FABLE_MODEL, reasoning_effort="ultra")
     if "fable" not in config.backends:
         config.backends["fable"] = ExecutionBackendConfig(
             enabled=True,

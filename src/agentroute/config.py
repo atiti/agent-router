@@ -13,6 +13,10 @@ from .claude_models import MODERN_CLAUDE_MODELS
 from .models import Tier
 
 
+class TierUnavailableError(KeyError):
+    """A backend has no mapping for the requested tier (an omitted YOLO mapping)."""
+
+
 class ModelTarget(BaseModel):
     model: str
     reasoning_effort: str | None = None
@@ -44,7 +48,14 @@ class ExecutionBackendConfig(BaseModel):
     models: dict[str, ModelTarget] = Field(default_factory=dict)
 
     def target(self, tier: Tier) -> ModelTarget:
-        return self.tiers[str(tier)]
+        try:
+            return self.tiers[str(tier)]
+        except KeyError as error:
+            # An omitted mapping (normally YOLO) means unavailable on this backend;
+            # it never falls back to another tier's target.
+            raise TierUnavailableError(
+                f"{self.display_name} has no {tier.name} mapping"
+            ) from error
 
 
 class ProviderConfig(BaseModel):
@@ -56,7 +67,8 @@ class ProviderConfig(BaseModel):
 
     def tier_for_model(self, model: str) -> Tier:
         for name, target in self.tiers.items():
-            if target.model == model:
+            # A model alone never proves a YOLO opt-in; only a recorded route can.
+            if target.model == model and name != str(Tier.YOLO):
                 return Tier.parse(name)
         return Tier.NORMAL
 
@@ -190,6 +202,8 @@ class RoutingConfig(BaseModel):
 
 
 class PolicyConfig(BaseModel):
+    # The admission ceiling. The default "max" keeps the explicit YOLO tier blocked
+    # until an operator sets max_tier: yolo.
     max_tier: str = "max"
     backend_risk_floors: dict[str, dict[str, str]] = Field(default_factory=dict)
     risk_floors: dict[str, str] = Field(
@@ -202,6 +216,35 @@ class PolicyConfig(BaseModel):
             "cryptography": "max",
         }
     )
+
+    @field_validator("max_tier")
+    @classmethod
+    def valid_max_tier(cls, value: str) -> str:
+        return str(Tier.parse(value))
+
+    @field_validator("risk_floors")
+    @classmethod
+    def ordinary_risk_floors(cls, value: dict[str, str]) -> dict[str, str]:
+        _reject_yolo_floors(value)
+        return value
+
+    @field_validator("backend_risk_floors")
+    @classmethod
+    def ordinary_backend_risk_floors(
+        cls, value: dict[str, dict[str, str]]
+    ) -> dict[str, dict[str, str]]:
+        for floors in value.values():
+            _reject_yolo_floors(floors)
+        return value
+
+
+def _reject_yolo_floors(floors: dict[str, str]) -> None:
+    """Risk floors are automatic; they may never enter the explicit YOLO tier."""
+    for flag, tier in floors.items():
+        if str(tier).strip().lower() == str(Tier.YOLO):
+            raise ValueError(
+                f"risk floor {flag!r} cannot be yolo; YOLO requires an explicit @yolo opt-in"
+            )
 
 
 class AuditConfig(BaseModel):
@@ -638,6 +681,7 @@ def default_config() -> AppConfig:
         "normal": ModelTarget(model="gpt-6-luna", reasoning_effort="xhigh"),
         "smart": ModelTarget(model="gpt-6.2-sol", reasoning_effort="high"),
         "max": ModelTarget(model="gpt-6.2-astra", reasoning_effort="xhigh"),
+        "yolo": ModelTarget(model="gpt-6.2-astra", reasoning_effort="ultra"),
     }
     config = AppConfig(
         providers={
@@ -671,6 +715,7 @@ def default_config() -> AppConfig:
                     "normal": ModelTarget(model="gpt-5", reasoning_effort="medium"),
                     "smart": ModelTarget(model="gpt-5", reasoning_effort="high"),
                     "max": ModelTarget(model="gpt-5", reasoning_effort="high"),
+                    "yolo": ModelTarget(model="gpt-6.2-astra", reasoning_effort="ultra"),
                 },
             ),
             "deepseek": ExecutionBackendConfig(
@@ -834,6 +879,53 @@ def retire_backends(config: AppConfig) -> list[str]:
     return removed
 
 
+# Bundled YOLO targets: backend -> (Codex provider identity, model, router effort,
+# context window). Router effort `ultra` is the existing spelling for the highest GPT
+# effort, and the Claude bridge translates `ultra` to Anthropic `max`. Grok has no
+# effort above xhigh. Other backends (Gemini, DeepSeek, local, custom) get no
+# mapping; an omitted mapping means that backend cannot serve YOLO.
+BUNDLED_YOLO_TARGETS: dict[str, tuple[str, str, str, int | None]] = {
+    "gpt": ("openai", "gpt-6.2-astra", "ultra", None),
+    "azure": ("agentroute-azure", "gpt-6.2-astra", "ultra", None),
+    "claude": ("agentroute-claude", "claude-fable-5-2", "ultra", None),
+    "fable": ("agentroute-claude-fable", "claude-fable-5-2", "ultra", None),
+    "grok": ("agentroute-grok", "grok-4.7", "xhigh", 256_000),
+}
+_ASTRA = re.compile(r"(?:^|[-_/])astra(?:$|[-_/])", re.I)
+
+
+def bundled_yolo_target(name: str, backend: ExecutionBackendConfig) -> ModelTarget | None:
+    """Return the bundled YOLO target for a recognised backend, if any.
+
+    GPT and Azure reuse the operator's configured Astra model or deployment name
+    when MAX already names one (accounts may expose ``gpt-6-astra`` rather than
+    ``gpt-6.2-astra``); only the effort is raised. Nothing else is inherited from MAX.
+    """
+    spec = BUNDLED_YOLO_TARGETS.get(name)
+    if spec is None or backend.codex_provider != spec[0]:
+        return None
+    _, model, effort, context_window = spec
+    if name in {"gpt", "azure"}:
+        configured_max = backend.tiers.get(str(Tier.MAX))
+        if configured_max is not None and _ASTRA.search(configured_max.model):
+            model = configured_max.model
+    return ModelTarget(model=model, reasoning_effort=effort, context_window=context_window)
+
+
+def merge_default_yolo_targets(config: AppConfig) -> list[str]:
+    """Add bundled YOLO targets without changing any existing mapping."""
+    added: list[str] = []
+    for name in BUNDLED_YOLO_TARGETS:
+        backend = config.backends.get(name)
+        if backend is None or str(Tier.YOLO) in backend.tiers:
+            continue
+        target = bundled_yolo_target(name, backend)
+        if target is not None:
+            backend.tiers[str(Tier.YOLO)] = target
+            added.append(name)
+    return added
+
+
 def _with_default_backends(config: AppConfig) -> AppConfig:
     """Add backend defaults and migrate former bundled GPT SMART/MAX targets."""
     defaults = default_config()
@@ -854,6 +946,7 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
             configured = config.backends[name]
             if configured.tool_compatibility is None:
                 configured.tool_compatibility = backend.tool_compatibility
+    merge_default_yolo_targets(config)
     for name in ("grok", "grok-api"):
         backend = config.backends.get(name)
         if backend is None or backend.codex_provider != f"agentroute-{name}":
