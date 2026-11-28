@@ -1,5 +1,27 @@
 # Codex Desktop with AgentRoute
 
+## Open the official signed app
+
+```sh
+agentroute desktop open
+```
+
+This launches the official Desktop app with `CODEX_CLI_PATH` pointing to the
+installed AgentRoute launcher. It leaves the app bundle and its signature intact,
+so macOS permissions apply to the official app's stable identity. Existing engine
+configuration and saved threads continue through AgentRoute.
+
+An app already running keeps its original engine. Quit it normally before using
+this command to change the engine; a locally rebuilt copy sharing the same bundle
+ID can also intercept an open request. Grant required browser/computer permissions
+in the official app and verify the chosen workflow. A successful launch alone is
+not proof that every computer-use or browser integration is compatible.
+
+`--source` selects the official app's location, and `--runtime` selects the
+AgentRoute launcher. The built-in browser belongs to the Desktop app; a standalone
+CLI session does not acquire its per-chat browser authorization merely by starting
+the app. See the [official browser documentation](https://learn.chatgpt.com/docs/browser).
+
 AgentRoute 0.5.79 bundles the patched Codex 0.165.0 runtime and matching
 Code Mode host. It supports the official app's legacy and nested CLI package layouts.
 

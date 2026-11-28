@@ -213,12 +213,12 @@ def test_old_bundled_gpt_6_1_context_migrates_without_overriding_custom_limit():
     )
 
 
-def test_existing_gpt_smart_default_migrates_without_overriding_custom_target():
+def test_existing_gpt_smart_target_is_preserved():
     config = default_config()
     config.backends["gpt"].tiers["smart"] = ModelTarget(
         model="gpt-6-sol", reasoning_effort="high"
     )
-    assert _with_default_backends(config).backends["gpt"].tiers["smart"].model == "gpt-6.2-sol"
+    assert _with_default_backends(config).backends["gpt"].tiers["smart"].model == "gpt-6-sol"
 
     config.backends["gpt"].tiers["smart"] = ModelTarget(
         model="gpt-6-sol", reasoning_effort="xhigh"
@@ -390,16 +390,16 @@ def test_jev_classifier_cost_charges_input_only():
 @pytest.mark.parametrize(
     ("tier", "previous", "effort", "expected"),
     [
-        ("smart", "gpt-6-sol", "high", "gpt-6.2-sol"),
-        ("smart", "gpt-6.1-sol", "high", "gpt-6.2-sol"),
-        ("max", "gpt-6-astra", "xhigh", "gpt-6.2-astra"),
+        ("smart", "gpt-6-sol", "high", "gpt-6-sol"),
+        ("smart", "gpt-6.1-sol", "high", "gpt-6.1-sol"),
+        ("max", "gpt-6-astra", "xhigh", "gpt-6-astra"),
         ("smart", "gpt-6.1-sol", "xhigh", "gpt-6.1-sol"),
         ("max", "gpt-6-astra", "high", "gpt-6-astra"),
         ("smart", "custom-model", "high", "custom-model"),
         ("max", "custom-model", "xhigh", "custom-model"),
     ],
 )
-def test_gpt_6_2_migration_preserves_custom_model_and_effort(tier, previous, effort, expected):
+def test_config_load_preserves_selected_gpt_model_and_effort(tier, previous, effort, expected):
     config = default_config()
     config.backends["gpt"].tiers[tier] = ModelTarget(
         model=previous, reasoning_effort=effort

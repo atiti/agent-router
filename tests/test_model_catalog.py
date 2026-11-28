@@ -328,6 +328,42 @@ def test_routed_provider_models_use_configured_context_limits_and_tool_modes(
     assert qwen["supports_search_tool"] is False
 
 
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize("backend_name", ["grok", "grok-api"])
+def test_grok_catalog_keeps_client_code_mode_discovery(
+    tmp_path, monkeypatch, existing, managed, backend_name
+):
+    from agentroute.grok_bridge import ensure_backend
+    from agentroute.providers import refresh_launch_catalog
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    models = [{"slug": "gpt-6-astra", "context_window": 272_000,
+               "max_context_window": 872_000, "tool_mode": "direct"}]
+    if existing:
+        models.append({"slug": "grok-4.7", "context_window": 256_000,
+                       "max_context_window": 256_000, "tool_mode": "direct",
+                       "supports_search_tool": False})
+    monkeypatch.setattr("agentroute.providers._installed_codex_catalog", lambda source: {
+        "models": models,
+    })
+    config = default_config()
+    ensure_backend(
+        config, credential_mode="api-key" if backend_name == "grok-api" else "subscription"
+    )
+    if not managed:
+        config.backends[backend_name].codex_provider = "custom-grok"
+    path = refresh_launch_catalog(config)
+    generated = {model["slug"]: model for model in json.loads(path.read_text())["models"]}
+
+    assert generated["grok-4.7"]["tool_mode"] == ("code_mode_only" if managed else "direct")
+    assert generated["grok-4.7"]["supports_search_tool"] is managed
+    assert generated["grok-4.7"]["context_window"] == (
+        500_000 if backend_name == "grok-api" else 256_000
+    )
+    assert generated["gpt-6-astra"]["tool_mode"] == "direct"
+
+
 @pytest.mark.parametrize("slug", ["qwen-local", "qwen3-4b-instruct-2507", "other-model"])
 def test_unknown_custom_model_uses_conservative_wire_metadata(tmp_path, monkeypatch, slug):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))

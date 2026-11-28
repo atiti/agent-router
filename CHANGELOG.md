@@ -2,8 +2,28 @@
 
 ## Unreleased
 
+- Add `agentroute desktop open` to launch the unchanged official signed app with
+  AgentRoute as its engine. macOS permissions keep the vendor app's stable identity.
+
+- Preserve configured GPT models when routing hooks reload settings. Silently
+  upgrading a model inside a running Codex process could select missing catalog
+  metadata, expand tool input, and repeatedly trigger compaction.
+
+- Preserve the saved model provider when resuming or forking a Codex thread.
+  New-session defaults no longer become unwanted explicit resume overrides;
+  explicit user model/provider/effort arguments still pass through unchanged.
+
+- Report the existing ChatGPT login under API-backed Codex configurations, and show live GPT
+  subscription usage in account status without enabling automatic capacity management.
+
+- Back off wait delivery when Codex refuses `thread/resume`, for example while another
+  process holds the thread. Retries no longer repeat every daemon tick or flood the shared
+  server log, and delivery still succeeds once the thread is free.
+
 - Resume goals paused by AgentRoute waits after a supervisor inbox wake. Retry goal
   resumption independently of wake delivery and report its status in `wait show`.
+- Leave checkpoint-bearing threads on native settings instead of stopping ordinary
+  turns. Preserve native ownership validation without routing or account overrides.
 
 - Start a shared Codex session from Voice, deliver its first instruction, and open the same
   thread in the selected Herdr namespace. Track delivery and pane attachment separately.
@@ -351,7 +371,6 @@
 - Port the complete routing stack to Codex `0.158.0-alpha.2.1` (runtime v47), matching
   the current Desktop bundle and Code Mode host. Preserve Guardian authorization,
   provider isolation, Claude quota handling, and route application receipts.
-
 
 - Add opt-in `agentroute context profile` capture and reports for provider input, cache reads,
   cache writes by TTL, output, API-equivalent USD estimates, context composition and repeated

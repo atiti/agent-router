@@ -103,6 +103,7 @@ from .desktop import (
     DEFAULT_SOURCE_APP,
     build_desktop_app,
     desktop_status,
+    open_official_desktop,
     rollback_desktop_app,
 )
 from .doctor import run_doctor
@@ -584,7 +585,12 @@ def capacity_status_command(
     config = load_config()
     rows = AuditStore().rows_since()
     daily, monthly = backend_spend(rows, config)
-    profiles = () if no_probe else probe_profiles(config)
+    # Status reports quota even when capacity-based switching is disabled. Only
+    # this diagnostic copy enables interpretation of the subscription snapshot.
+    probe_config = config.model_copy(
+        update={"capacity": config.capacity.model_copy(update={"enabled": True})}
+    )
+    profiles = () if no_probe else probe_profiles(probe_config)
     active_profile = next(
         (profile for profile in profiles if profile.name == config.capacity.active_profile),
         None,
@@ -2370,6 +2376,26 @@ def desktop_status_command(
     status = desktop_status(source.expanduser(), destination.expanduser())
     for key, value in status.items():
         console.print(f"{key.replace('_', ' ').title()}: {value}")
+
+
+@desktop_app.command("open")
+def desktop_open_command(
+    source: Path = typer.Option(DEFAULT_SOURCE_APP, help="Unchanged official Desktop app."),
+    runtime: Path | None = typer.Option(
+        None, help="AgentRoute launcher; defaults to the installation."
+    ),
+) -> None:
+    """Open the official signed app with AgentRoute as its engine."""
+    from .config import agentroute_home
+
+    selected_runtime = runtime or agentroute_home() / "bin/codex"
+    try:
+        open_official_desktop(source.expanduser(), selected_runtime.expanduser())
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        console.print(f"[red]Desktop launch failed: {error}[/red]")
+        raise typer.Exit(1) from error
+    console.print("Opened the official Desktop app with the AgentRoute engine.")
+    console.print("An already-running app keeps its engine; quit normally before changing it.")
 
 
 @desktop_app.command("install")

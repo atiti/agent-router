@@ -7,6 +7,46 @@ from agentroute.config import SubscriptionProfileConfig, default_config
 from agentroute.launcher import codex_argv, launch_codex, startup_route_args
 
 
+@pytest.mark.parametrize("user_args", [
+    ["resume"],
+    ["resume", "--last"],
+    ["--cd", "/project", "resume", "saved-thread"],
+    ["exec", "resume", "saved-thread", "continue"],
+    ["e", "--json", "resume", "--last", "continue"],
+    ["exec", "--output-last-message", "answer.txt", "resume", "--last"],
+    ["fork", "saved-thread"],
+])
+def test_existing_thread_launch_keeps_saved_route(user_args):
+    config = default_config()
+    assert startup_route_args(config, user_args) == []
+    args = codex_argv(Path("/tmp/codex-bin"), user_args, config)
+    assert args[-len(user_args):] == user_args
+    assert not any(arg.startswith("model_provider=") for arg in args)
+    assert "--model" not in args
+    assert not any(arg.startswith("model_reasoning_effort=") for arg in args)
+
+
+@pytest.mark.parametrize("user_args", [
+    ["exec", "resume the work described here"],
+    ["exec", "--", "resume"],
+    ["exec", "--output-last-message", "resume", "new task"],
+    ["--model", "resume", "exec", "new task"],
+    ["--", "resume"],
+])
+def test_resume_word_in_prompt_or_option_value_keeps_new_session_defaults(user_args):
+    assert 'model_provider="openai"' in startup_route_args(default_config(), user_args)
+
+
+def test_resume_preserves_explicit_route_arguments_without_adding_defaults():
+    user_args = ["resume", "saved-thread", "--model", "custom",
+                 "-c", 'model_provider="custom-provider"',
+                 "-c", 'model_reasoning_effort="high"']
+    args = codex_argv(Path("/tmp/codex-bin"), user_args, default_config())
+    assert args[-len(user_args):] == user_args
+    assert args.count("--model") == 1
+    assert sum(arg.startswith("model_provider=") for arg in args) == 1
+
+
 def test_startup_uses_normal_tier_backend_before_first_turn():
     config = default_config()
     config.backends["azure"].enabled = True
