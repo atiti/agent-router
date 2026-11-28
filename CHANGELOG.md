@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `agentroute desktop open` to launch the unchanged official signed app with
+  AgentRoute as its engine. macOS permissions keep the vendor app's stable identity.
+
 - Preserve configured GPT models when routing hooks reload settings. Silently
   upgrading a model inside a running Codex process could select missing catalog
   metadata, expand tool input, and repeatedly trigger compaction.

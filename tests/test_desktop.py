@@ -10,6 +10,70 @@ import pytest
 from agentroute import __version__, desktop
 
 
+def test_open_official_desktop_preserves_app_identity_and_passes_runtime(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from agentroute.cli import app
+
+    source = tmp_path / "Official App.app"
+    source.mkdir()
+    (source / "Contents/MacOS").mkdir(parents=True)
+    (source / "Contents/MacOS/ChatGPT").write_text("official")
+    runtime = tmp_path / "runtime with spaces/codex"
+    runtime.parent.mkdir()
+    runtime.write_text("launcher")
+    runtime.chmod(0o755)
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    calls = []
+    monkeypatch.setattr(desktop, "_run", lambda *command, **kwargs: calls.append(command))
+    result = CliRunner().invoke(
+        app, ["desktop", "open", "--source", str(source), "--runtime", str(runtime)]
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        ("open", "-a", source, "--env", f"CODEX_CLI_PATH={runtime.resolve()}")
+    ]
+    assert (source / "Contents/MacOS/ChatGPT").read_text() == "official"
+
+
+def test_open_official_desktop_rejects_missing_runtime_before_launch(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from agentroute.cli import app
+
+    source = tmp_path / "Official.app"
+    source.mkdir()
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    calls = []
+    monkeypatch.setattr(desktop, "_run", lambda *command, **kwargs: calls.append(command))
+    result = CliRunner().invoke(
+        app, ["desktop", "open", "--source", str(source), "--runtime", str(tmp_path / "missing")]
+    )
+    assert result.exit_code == 1
+    assert calls == []
+    assert "runtime" in result.output.lower()
+
+
+def test_open_official_desktop_defaults_to_installed_launcher(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from agentroute.cli import app
+
+    source = tmp_path / "Official.app"
+    source.mkdir()
+    runtime = tmp_path / "bin/codex"
+    runtime.parent.mkdir()
+    runtime.write_text("launcher")
+    runtime.chmod(0o755)
+    monkeypatch.setenv("AGENTROUTE_HOME", str(tmp_path))
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    calls = []
+    monkeypatch.setattr(desktop, "_run", lambda *command, **kwargs: calls.append(command))
+    result = CliRunner().invoke(app, ["desktop", "open", "--source", str(source)])
+    assert result.exit_code == 0, result.output
+    assert calls == [("open", "-a", source, "--env", f"CODEX_CLI_PATH={runtime.resolve()}")]
+
+
 def _fake_app(path: Path) -> None:
     resources = path / "Contents/Resources"
     resources.mkdir(parents=True)
