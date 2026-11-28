@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Pin the Codex runtime that caches AgentRoute wait status in the TUI. Active sessions no longer
+  re-parse the wait registry on every frame, which pinned a core per running turn and lagged typing.
+
 - Keep `waits.json` small: finished waits move to an append-only `waits-archive.jsonl`
   six hours after their last activity (`AGENTROUTE_WAIT_RETENTION`), pruned by the wait
   daemon and maintenance at most every five minutes or with `agentroute wait prune
