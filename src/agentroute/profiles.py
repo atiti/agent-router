@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .capacity import CapacityState, subscription_state
-from .config import AppConfig, SubscriptionProfileConfig, agentroute_home
+from .config import AppConfig, SubscriptionProfileConfig, TierUnavailableError, agentroute_home
 from .config import codex_home as canonical_codex_home
 from .install import _CodexAppServer
 from .model_selection import DirectModelError, resolve_model
@@ -183,7 +183,7 @@ def profile_model_support(
             if requested_model
             else profile.target(tier, config.backends["gpt"].target(tier))
         )
-    except DirectModelError:
+    except (DirectModelError, TierUnavailableError):
         return False
     slugs = profile_catalog_slugs(name, profile)
     return target.model in slugs if slugs is not None else None

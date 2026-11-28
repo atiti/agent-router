@@ -387,7 +387,9 @@ def test_bridge_model_update_is_explicit_and_preserves_automatic_routes(tmp_path
     assert config.backends["claude"].tiers["max"].model == "claude-fable-5-2"
     assert all(
         target.model == "claude-fable-5-2" and target.reasoning_effort == "high"
-        for target in config.backends["fable"].tiers.values()
+        for tier, target in config.backends["fable"].tiers.items()
+        if tier != "yolo"
     )
+    assert config.backends["fable"].tiers["yolo"].reasoning_effort == "ultra"
     assert config.routing.backend_by_tier == routes
     assert config.backends["fable"].review_model == "claude-haiku-5-5"

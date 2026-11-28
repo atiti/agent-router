@@ -41,6 +41,9 @@ from .signals import (
 )
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
 from .waits import hook_context as wait_hook_context
+from .yolo import admitted as yolo_admitted
+from .yolo import effort_problem as yolo_effort_problem
+from .yolo import resolve_target as resolve_yolo_target
 
 
 def _prompt_help(config: AppConfig) -> str:
@@ -57,6 +60,9 @@ def _prompt_help(config: AppConfig) -> str:
             "AgentRoute prompt tags",
             "",
             "Tier: @fast @normal @smart @max @auto",
+            "Opt-in tier: @yolo ("
+            + ("admitted" if yolo_admitted(config) else "blocked until policy.max_tier: yolo")
+            + "; subscriptions before Azure)",
             f"Backend (enabled): {backend_tags}",
             "Model: @terra @sol @luna @astra @haiku @sonnet @opus or @model:EXACT_ID",
             "Claude subscription: @claude:<profile>",
@@ -69,6 +75,7 @@ def _prompt_help(config: AppConfig) -> str:
             "  @gpt @normal @medium explain this architecture",
             "  @qwen @normal @low fix this focused test failure",
             "  @claude:second @max review this migration",
+            "  @gpt @yolo review this design",
             "  @auto continue",
             "",
             "Prefixes are removed before the model receives the task. @auto clears a",
@@ -155,7 +162,12 @@ def _unique_backend_for_model(config: AppConfig, model: str) -> str | None:
     matches = {
         name
         for name, backend in config.backends.items()
-        if any(target.model == model for target in backend.tiers.values())
+        # YOLO mappings are opt-in targets; they do not identify a child's backend.
+        if any(
+            target.model == model
+            for tier, target in backend.tiers.items()
+            if tier != str(Tier.YOLO)
+        )
     }
     return next(iter(matches)) if len(matches) == 1 else None
 
@@ -178,22 +190,74 @@ def _apply_profile_selection(
     """Keep a GPT route on the selected ChatGPT account."""
     if selection.selected is None:
         return
+    if decision.capacity_blocked and str(decision.capacity_trigger).startswith("yolo_"):
+        # A blocked YOLO request stays blocked; account selection cannot admit it.
+        return
     backend = config.backends["gpt"]
     profile = config.capacity.profiles.get(selection.selected.name)
-    fallback = backend.target(decision.tier)
-    target = (
-        resolve_model(config, "gpt", decision.requested_model, selection.selected.name)
-        if decision.requested_model
-        else profile.target(decision.tier, fallback)
-        if profile
-        else fallback
-    )
+    if decision.tier is Tier.YOLO and not decision.requested_model:
+        # The account may override YOLO; an unsupported or missing target blocks
+        # the turn rather than lowering effort or substituting another tier.
+        yolo_target, reason = resolve_yolo_target(config, "gpt", selection.selected.name)
+        if yolo_target is None:
+            decision.capacity_blocked = True
+            decision.capacity_status = "yolo_blocked"
+            decision.capacity_trigger = "yolo_unavailable"
+            decision.capacity_detail = (
+                f"No YOLO route is available on ChatGPT account {selection.selected.name}: "
+                f"{reason}. Nothing was run; use @max or fix the account's YOLO mapping."
+            )
+            yolo_receipt = decision.selection_receipt.get("yolo")
+            if isinstance(yolo_receipt, dict):
+                yolo_receipt.update(
+                    status="blocked",
+                    blocked_reason=decision.capacity_detail,
+                    opt_in_source=None,
+                )
+            return
+        target = yolo_target
+        if decision.reasoning_effort_source == "yolo_preset":
+            decision.reasoning_effort = target.reasoning_effort
+        problem = yolo_effort_problem(config, "gpt", target.model, decision.reasoning_effort)
+        if problem:
+            decision.capacity_blocked = True
+            decision.capacity_status = "yolo_blocked"
+            decision.capacity_trigger = "yolo_unavailable"
+            decision.capacity_detail = (
+                f"No YOLO route is available on ChatGPT account {selection.selected.name}: "
+                f"{problem}. Nothing was run; choose a supported effort or use @max."
+            )
+            yolo_receipt = decision.selection_receipt.get("yolo")
+            if isinstance(yolo_receipt, dict):
+                yolo_receipt.update(
+                    status="blocked",
+                    blocked_reason=decision.capacity_detail,
+                    opt_in_source=None,
+                )
+            return
+    else:
+        fallback = backend.target(decision.tier)
+        target = (
+            resolve_model(config, "gpt", decision.requested_model, selection.selected.name)
+            if decision.requested_model
+            else profile.target(decision.tier, fallback)
+            if profile
+            else fallback
+        )
     decision.backend = "gpt"
     decision.model_provider = backend.codex_provider
     decision.model = target.model
     decision.reasoning_effort = (
         decision.requested_reasoning_effort or decision.reasoning_effort or target.reasoning_effort
     )
+    yolo_receipt = decision.selection_receipt.get("yolo")
+    if decision.tier is Tier.YOLO and isinstance(yolo_receipt, dict):
+        yolo_receipt.update(
+            backend="gpt",
+            model=target.model,
+            preset_reasoning_effort=target.reasoning_effort,
+            applied_reasoning_effort=decision.reasoning_effort,
+        )
     decision.capacity_status = selection.selected.capacity.status
     decision.capacity_detail = (
         f"account {selection.selected.name}: {selection.selected.capacity.detail}"
@@ -331,8 +395,11 @@ def _effective_current_tier(
             pass
     backend = next((b for b in config.backends.values() if b.codex_provider == provider), None)
     if backend is not None:
+        # A shared model never proves YOLO; only a matching applied route does.
         tiers = [
-            Tier.parse(name) for name, target in backend.tiers.items() if target.model == model
+            Tier.parse(name)
+            for name, target in backend.tiers.items()
+            if target.model == model and name != str(Tier.YOLO)
         ]
         if tiers:
             return max(tiers), "backend_model_conservative"
@@ -436,9 +503,28 @@ def codex_user_prompt_submit(
             config, current_model, str(payload.get("model_provider", "openai")), previous_route
         )
         previous_tier = store.previous_tier(session_id, route_scope, agent_id)
+        previous_yolo_opt_in = previous_yolo_effort = previous_yolo_backend = None
+        if previous_tier is Tier.YOLO and previous_route is not None:
+            # Only a route that recorded an explicit opt-in can be continued as YOLO.
+            try:
+                previous_yolo = json.loads(previous_route["selection_receipt"] or "{}").get(
+                    "yolo"
+                )
+            except (ValueError, AttributeError):
+                previous_yolo = None
+            if isinstance(previous_yolo, dict):
+                previous_yolo_opt_in = previous_yolo.get("opt_in_source")
+                previous_yolo_effort = previous_yolo.get("explicit_reasoning_effort")
+                previous_yolo_backend = previous_yolo.get("backend")
         previous_reasoning_effort = store.previous_reasoning_effort(
             session_id, route_scope, agent_id
         )
+        if previous_tier is Tier.YOLO and previous_yolo_opt_in is None:
+            # A blocked @yolo attempt (audited with capacity_status yolo_blocked and
+            # no opt-in source) never ran. It must not leave the thread in YOLO, so
+            # the next plain prompt is routed by ordinary classification.
+            previous_tier = None
+            previous_reasoning_effort = None
         if (
             requested_model is None
             and tier_override is None
@@ -641,6 +727,9 @@ def codex_user_prompt_submit(
             current_tier=current_tier,
             downgrade_streak=store.downgrade_streak(session_id, route_scope, agent_id),
             previous_task_tier=previous_tier,
+            previous_yolo_opt_in=previous_yolo_opt_in if previous_tier is Tier.YOLO else None,
+            previous_yolo_effort=previous_yolo_effort if previous_tier is Tier.YOLO else None,
+            previous_yolo_backend=previous_yolo_backend if previous_tier is Tier.YOLO else None,
             previous_reasoning_effort=previous_reasoning_effort,
             interrupted_turn_affinity=interrupted_route is not None,
             interrupted_backend=interrupted_backend,
@@ -932,7 +1021,13 @@ def codex_user_prompt_submit(
                     f"{action} {decision.tier.name} → {decision.model} "
                     f"({decision.confidence:.0%} {confidence_kind}); reasons: {reasons}.\n"
                     "If this tier is materially insufficient, end your final response with "
-                    "two plain lines: MODEL_REQUEST: <FAST|NORMAL|SMART|MAX> and "
+                    "two plain lines: MODEL_REQUEST: "
+                    + (
+                        "<FAST|NORMAL|SMART|MAX|YOLO>"
+                        if yolo_admitted(config)
+                        else "<FAST|NORMAL|SMART|MAX>"
+                    )
+                    + " and "
                     "MODEL_REQUEST_REASON: <one-line reason>. Request only when needed; it is "
                     "applied only after explicit user confirmation."
                     + related_context
@@ -1026,6 +1121,17 @@ def codex_user_prompt_submit(
                     else ""
                 )
                 + (
+                    f" · YOLO OPT-IN ({decision.selection_receipt['yolo']['opt_in_source']})"
+                    if decision.tier is Tier.YOLO
+                    and not decision.capacity_blocked
+                    and isinstance(decision.selection_receipt.get("yolo"), dict)
+                    else " · YOLO NOT RUN"
+                    if decision.tier is Tier.YOLO
+                    else " · YOLO CLAMPED TO MAX"
+                    if ReasonCode.YOLO_CLAMPED in decision.reason_codes
+                    else ""
+                )
+                + (
                     " · AGENT REQUEST APPROVED"
                     if ReasonCode.AGENT_ESCALATION in decision.reason_codes
                     else ""
@@ -1082,9 +1188,10 @@ def codex_user_prompt_submit(
             if decision.capacity_blocked:
                 output["stopReason"] = decision.capacity_detail
                 output["systemMessage"] = (
-                    "AgentRoute blocked this turn to avoid an unsafe or over-budget route. "
-                    + (decision.capacity_detail or "No backend has available capacity.")
-                )
+                    "AgentRoute did not run this @yolo turn. "
+                    if str(decision.capacity_trigger).startswith("yolo_")
+                    else "AgentRoute blocked this turn to avoid an unsafe or over-budget route. "
+                ) + (decision.capacity_detail or "No backend has available capacity.")
         json.dump(output, sink, separators=(",", ":"))
         sink.write("\n")
         return 0

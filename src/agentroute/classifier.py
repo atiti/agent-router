@@ -16,7 +16,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .config import ClassifierConfig, JevShadowConfig
 from .models import RouteContext, Tier
@@ -77,12 +77,18 @@ class ClassifierResult(BaseModel):
     task_type: ClassifierTaskType
     reason: str = Field(min_length=1, max_length=500)
 
+    @field_validator("tier")
+    @classmethod
+    def ordinary_tier(cls, value: Tier) -> Tier:
+        return value.automatic()
+
     @classmethod
     def from_payload(cls, payload: object) -> ClassifierResult:
         if not isinstance(payload, dict):
             raise ValueError("classifier response must be an object")
         normalized = dict(payload)
-        normalized["tier"] = Tier.parse(str(normalized.get("tier", "")))
+        # Classifiers choose among ordinary tiers only; YOLO needs an explicit opt-in.
+        normalized["tier"] = Tier.parse(str(normalized.get("tier", ""))).automatic()
         if normalized.get("reasoning_effort") is not None:
             normalized["reasoning_effort"] = str(normalized["reasoning_effort"]).lower()
         normalized["task_type"] = normalize_task_type(str(normalized.get("task_type", "")))
@@ -170,7 +176,9 @@ def _task_context(
         "route_scope": context.route_scope[:32],
         "coordination_role": (context.coordination_role or "")[:32],
         "previous_task_tier": (
-            str(context.previous_task_tier) if context.previous_task_tier is not None else None
+            str(context.previous_task_tier.automatic())
+            if context.previous_task_tier is not None
+            else None
         ),
         "touched_files": max(0, min(context.touched_files, 100_000)),
         "changed_lines": max(0, min(context.changed_lines, 1_000_000)),
@@ -334,7 +342,7 @@ class OpenAICompatibleClassifier:
             "previous_assistant_context": previous,
             "ongoing_objective": objective,
             "task_state": state,
-            "current_tier": str(context.current_tier),
+            "current_tier": str(context.current_tier.automatic()),
             "candidate_tiers": ["FAST", "NORMAL", "SMART", "MAX"],
             "candidate_reasoning_efforts": ["LOW", "MEDIUM", "HIGH", "XHIGH"],
         }

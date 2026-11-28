@@ -1756,7 +1756,7 @@ def catalog_from_config(config: Any, backend_name: str = "claude") -> list[tuple
     if backend is None:
         return [(DEFAULT_MODEL, DEFAULT_CONTEXT_WINDOW)]
     seen: list[str] = []
-    for tier in ("fast", "normal", "smart", "max"):
+    for tier in ("fast", "normal", "smart", "max", "yolo"):
         target = backend.tiers.get(tier)
         if target and target.model not in seen:
             seen.append(target.model)

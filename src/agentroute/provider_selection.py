@@ -21,6 +21,7 @@ from .models import ReasonCode, RouteContext, Tier
 from .pricing import canonical_model
 from .profiles import TurnProfileSelection
 from .providers import backend_readiness
+from .yolo import candidate_pool, group_label, priority_group, resolve_target
 
 
 def _claude_capacity(config: AppConfig, state: CapacityState) -> CapacityState:
@@ -132,6 +133,7 @@ def select_provider(
     enforce_risk_floors: bool = True,
 ) -> tuple[str | None, dict[str, object]]:
     policy = config.routing.provider_selection
+    yolo = tier is Tier.YOLO
     receipt: dict[str, object] = {
         "version": "provider-selection-v1",
         "mode": policy.mode,
@@ -140,14 +142,17 @@ def select_provider(
         "locked_by": locked_by,
         "prefer_subscriptions": policy.prefer_subscriptions,
     }
-    if policy.mode == "static" or locked_by:
+    # Explicit pins stay binding. YOLO always ranks its own priority groups,
+    # even when ordinary routing is static.
+    if (policy.mode == "static" and not yolo) or locked_by:
         receipt.update(selected_backend=default_backend, candidates=[])
         return default_backend, receipt
 
     preference = policy.task_preferences.get(task_type, [])
     rows: list[dict[str, object]] = []
     # The allowlist is an admission boundary; never add a backend through fallback.
-    names = list(dict.fromkeys(policy.candidates))
+    # YOLO uses subscriptions, then admitted candidates, then Azure as last resort.
+    names = candidate_pool(config) if yolo else list(dict.fromkeys(policy.candidates))
     required_context = context.previous_response_usage.get("input_tokens", 0)
     flags = set(context.task_risk_flags)
     for code, flag in (
@@ -165,8 +170,14 @@ def select_provider(
         exclusions: list[str] = []
         row: dict[str, object] = {
             "backend": name, "exclusions": exclusions,
-            "billing_class": "subscription" if name in policy.subscription_backends else "other",
+            "billing_class": (
+                "subscription"
+                if (priority_group(name) == 0 if yolo else name in policy.subscription_backends)
+                else "other"
+            ),
         }
+        if yolo:
+            row["priority_group"] = group_label(priority_group(name))
         rows.append(row)
         if backend is None:
             exclusions.append("not_configured")
@@ -175,7 +186,9 @@ def select_provider(
         floors = config.policy.backend_risk_floors.get(name, {})
         required_tier = max(
             (
-                Tier.parse(floors.get(flag, config.policy.risk_floors.get(flag, "fast")))
+                Tier.parse(
+                    floors.get(flag, config.policy.risk_floors.get(flag, "fast"))
+                ).automatic()
                 for flag in flags
             ),
             default=Tier.FAST,
@@ -185,7 +198,14 @@ def select_provider(
         ready, problems = backend_readiness(config, name)
         if not ready:
             exclusions.extend(problems)
-        target = backend.tiers.get(str(tier))
+        if yolo:
+            target, unavailable = resolve_target(config, name)
+            if target is None:
+                exclusions.append(str(unavailable))
+                row["eligible"] = False
+                continue
+        else:
+            target = backend.tiers.get(str(tier))
         if target is None:
             exclusions.append("tier_not_configured")
             row["eligible"] = False
@@ -205,7 +225,13 @@ def select_provider(
             elif selection:
                 state = CapacityState("gpt", "unavailable", "No compatible ChatGPT account")
         profile = config.capacity.profiles.get(profile_name or "")
-        if name == "gpt" and profile:
+        if name == "gpt" and profile and yolo:
+            account_target, unavailable = resolve_target(config, name, profile_name)
+            if account_target is None:
+                exclusions.append(f"account_{unavailable}")
+            else:
+                target = account_target
+        elif name == "gpt" and profile:
             target = profile.target(tier, target)
         caps = model_capabilities(config, name, target.model)
         window = target.context_window or caps.context_window
@@ -256,7 +282,7 @@ def select_provider(
             else 0
         )
         cost_penalty = (
-            0.0 if name in policy.subscription_backends else
+            0.0 if row["billing_class"] == "subscription" else
             policy.cost_weight * math.log1p(cost * 100) if cost is not None else policy.cost_weight
         )
         # Budget headroom influences ranking before the hard budget guard fires.
@@ -287,6 +313,30 @@ def select_provider(
             prior_input_fits=bool(required_context and window and required_context <= window),
         )
     eligible = [row for row in rows if row["eligible"]]
+    if yolo:
+        # Group order is strict: a cheaper or less disruptive Azure route never
+        # outranks an eligible subscription. Scores order backends within a group.
+        ordered = sorted(
+            eligible,
+            key=lambda row: (
+                priority_group(str(row["backend"])),
+                -float(row["score"]),
+                config.backends[row["backend"]].codex_provider != context.current_model_provider,
+            ),
+        )
+        receipt["yolo_priority"] = [row["backend"] for row in ordered]
+        receipt["selection_pool"] = (
+            group_label(priority_group(str(ordered[0]["backend"]))) if ordered else "none"
+        )
+        selected_yolo = ordered[0]["backend"] if ordered else None
+        receipt.update(
+            candidates=rows,
+            recommended_backend=selected_yolo,
+            selected_backend=selected_yolo,
+            observed_at=int(time.time()),
+            capacity_probes="local_snapshots_and_existing_GPT_account_failover",
+        )
+        return selected_yolo, receipt
     subscriptions = [row for row in eligible if row["billing_class"] == "subscription"]
     ranked = subscriptions if policy.prefer_subscriptions and subscriptions else eligible
     receipt["selection_pool"] = (

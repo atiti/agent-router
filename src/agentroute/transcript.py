@@ -9,7 +9,7 @@ from typing import Any
 MAX_TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024
 MAX_TASK_DEFINITION_CHARS = 12_000
 MODEL_REQUEST = re.compile(
-    r"(?:^|\n)MODEL_REQUEST:\s*(FAST|NORMAL|SMART|MAX)\s*\n"
+    r"(?:^|\n)MODEL_REQUEST:\s*(FAST|NORMAL|SMART|MAX|YOLO)\s*\n"
     r"MODEL_REQUEST_REASON:\s*([^\n]{3,500})\s*\Z",
     re.IGNORECASE,
 )
