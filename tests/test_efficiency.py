@@ -292,7 +292,10 @@ def test_stop_persists_execution_receipt_idempotently(tmp_path):
     store = AuditStore(tmp_path / "audit.db")
     config = default_config()
     config.enabled = True
-    prompt = {"session_id": "s", "turn_id": "t", "prompt": "@normal hello"}
+    portable = tmp_path / "portable.jsonl"
+    portable.write_text(json.dumps({"type": "session_meta", "payload": {"id": "s"}}) + "\n")
+    prompt = {"session_id": "s", "turn_id": "t", "prompt": "@normal hello",
+              "transcript_path": str(portable)}
     assert (
         codex_user_prompt_submit(
             io.StringIO(json.dumps(prompt)), io.StringIO(), config=config, store=store

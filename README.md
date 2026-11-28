@@ -312,6 +312,20 @@ requests, high-confidence rules, and credential-shaped prompts never reach it. I
 cheapest sufficient tier, confidence, and task type; only the task type, confidence, and a hash of
 its explanation are audited.
 
+### Provider-owned checkpoints
+
+When an opaque checkpoint is present or its transcript cannot be safely inspected,
+AgentRoute leaves the native model, provider, account and effort unchanged. This
+also applies to explicit routing tags: the hook returns no route overrides and
+does not stop the turn. Codex validates checkpoint ownership; valid same-owner
+continuation remains available and a genuinely foreign checkpoint is still rejected.
+
+AgentRoute never infers account ownership from older routing records, clears
+native history filters, or edits saved history. Sessions without a transcript
+use the same native-only fallback. To enable adaptive routing again, compact to
+plaintext on the original provider/account. This fallback does not repair an
+already foreign checkpoint or automatically convert its history.
+
 ### Adaptive provider selection
 
 Tier classification answers how much capability the task needs. Optional provider selection then
