@@ -600,6 +600,7 @@ def test_run_doctor_adds_provenance_rows_that_never_fail(monkeypatch):
 
 def test_shared_server_fingerprint_ignores_rebuilt_binary_with_same_build_id(tmp_path):
     import os
+
     from agentroute import shared_server
     from agentroute.config import default_config
 
