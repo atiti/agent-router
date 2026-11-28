@@ -46,16 +46,20 @@ class _CodexAppServer:
             bufsize=1,
             env=environment,
         )
-        self.request(
-            "initialize",
-            {
-                "clientInfo": {
-                    "name": "agentroute",
-                    "version": "hook-trust",
-                }
-            },
-        )
-        self.notify("notifications/initialized", {})
+        try:
+            self.request(
+                "initialize",
+                {
+                    "clientInfo": {
+                        "name": "agentroute",
+                        "version": "hook-trust",
+                    }
+                },
+            )
+            self.notify("notifications/initialized", {})
+        except Exception:
+            self.close()
+            raise
 
     def _send(self, payload: dict[str, Any]) -> None:
         if self.process.stdin is None:
