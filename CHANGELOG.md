@@ -10,6 +10,9 @@
 - Detect `codex exec resume` after value-taking options such as `--color never`,
   `--thread-source`, and `--cyber-access-program`, so the saved provider is kept.
 
+- Reject a Grok custom `tool_choice` without a name as an invalid request
+  instead of failing on a missing key.
+
 ## 0.5.88 — 2026-11-28
 
 - Keep idle supervisor observations in Herdr health reports without opening
