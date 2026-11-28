@@ -49,7 +49,7 @@ class SubscriptionClassifier:
                 previous_assistant_context=previous,
                 ongoing_objective=objective,
                 task_state=state,
-                current_tier=str(context.current_tier),
+                current_tier=str(context.current_tier.automatic()),
             ),
             sort_keys=True,
         )

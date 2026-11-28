@@ -22,6 +22,7 @@ from .config import (
     ModelTarget,
     agentroute_home,
     codex_home,
+    merge_default_yolo_targets,
     model_capabilities,
 )
 
@@ -128,6 +129,8 @@ def ensure_claude_bridge_backend(
     config.policy.backend_risk_floors.setdefault(
         "claude", {flag: "max" for flag in ("auth", "security", "database_migration", "production")}
     )
+    # YOLO: Fable 5.2 at the router's `ultra` (Anthropic `max`), in memory only.
+    merge_default_yolo_targets(config)
     return created
 
 

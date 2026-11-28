@@ -77,7 +77,7 @@ CONTEXT_FOLLOWUP = re.compile(
     r"|^\s*i\s+(?:meant|wanted)\s+(?:you\s+)?to\b",
     re.IGNORECASE,
 )
-MANUAL = re.compile(r"^\s*@(?P<tier>fast|normal|smart|max|auto)\b[: ]*", re.I)
+MANUAL = re.compile(r"^\s*@(?P<tier>fast|normal|smart|max|yolo|auto)\b[: ]*", re.I)
 REASONING_EFFORT = re.compile(
     r"^\s*@(?P<effort>none|minimal|low|medium|high|xhigh|ultra|persistent)\b[: ]*",
     re.I,

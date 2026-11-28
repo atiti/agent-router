@@ -7,10 +7,14 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 from .claude_models import MODERN_CLAUDE_MODELS
 from .models import Tier
+
+
+class TierUnavailableError(KeyError):
+    """A backend has no mapping for the requested tier (an omitted YOLO mapping)."""
 
 
 class ModelTarget(BaseModel):
@@ -42,9 +46,19 @@ class ExecutionBackendConfig(BaseModel):
     fallback_backend: str | None = None
     tiers: dict[str, ModelTarget]
     models: dict[str, ModelTarget] = Field(default_factory=dict)
+    # The bundled YOLO target merged in memory. It is never written by save_config
+    # unless the operator changed it, so older releases can still read the file.
+    _bundled_yolo: ModelTarget | None = PrivateAttr(default=None)
 
     def target(self, tier: Tier) -> ModelTarget:
-        return self.tiers[str(tier)]
+        try:
+            return self.tiers[str(tier)]
+        except KeyError as error:
+            # An omitted mapping (normally YOLO) means unavailable on this backend;
+            # it never falls back to another tier's target.
+            raise TierUnavailableError(
+                f"{self.display_name} has no {tier.name} mapping"
+            ) from error
 
 
 class ProviderConfig(BaseModel):
@@ -56,7 +70,8 @@ class ProviderConfig(BaseModel):
 
     def tier_for_model(self, model: str) -> Tier:
         for name, target in self.tiers.items():
-            if target.model == model:
+            # A model alone never proves a YOLO opt-in; only a recorded route can.
+            if target.model == model and name != str(Tier.YOLO):
                 return Tier.parse(name)
         return Tier.NORMAL
 
@@ -190,6 +205,8 @@ class RoutingConfig(BaseModel):
 
 
 class PolicyConfig(BaseModel):
+    # The admission ceiling. The default "max" keeps the explicit YOLO tier blocked
+    # until an operator sets max_tier: yolo.
     max_tier: str = "max"
     backend_risk_floors: dict[str, dict[str, str]] = Field(default_factory=dict)
     risk_floors: dict[str, str] = Field(
@@ -202,6 +219,40 @@ class PolicyConfig(BaseModel):
             "cryptography": "max",
         }
     )
+
+    @field_validator("max_tier")
+    @classmethod
+    def normalized_max_tier(cls, value: str) -> str:
+        # Normalize known tiers (including yolo); keep any other value as before,
+        # where it is reported when routing parses it.
+        try:
+            return str(Tier.parse(value))
+        except ValueError:
+            return value
+
+    @field_validator("risk_floors")
+    @classmethod
+    def ordinary_risk_floors(cls, value: dict[str, str]) -> dict[str, str]:
+        _reject_yolo_floors(value)
+        return value
+
+    @field_validator("backend_risk_floors")
+    @classmethod
+    def ordinary_backend_risk_floors(
+        cls, value: dict[str, dict[str, str]]
+    ) -> dict[str, dict[str, str]]:
+        for floors in value.values():
+            _reject_yolo_floors(floors)
+        return value
+
+
+def _reject_yolo_floors(floors: dict[str, str]) -> None:
+    """Risk floors are automatic; they may never enter the explicit YOLO tier."""
+    for flag, tier in floors.items():
+        if str(tier).strip().lower() == str(Tier.YOLO):
+            raise ValueError(
+                f"risk floor {flag!r} cannot be yolo; YOLO requires an explicit @yolo opt-in"
+            )
 
 
 class AuditConfig(BaseModel):
@@ -641,7 +692,7 @@ def default_config() -> AppConfig:
     }
     config = AppConfig(
         providers={
-            "codex": ProviderConfig(tiers=gpt_tiers),
+            "codex": ProviderConfig(tiers=dict(gpt_tiers)),
             "claude": ProviderConfig(
                 enabled=False,
                 tiers={
@@ -775,6 +826,7 @@ def default_config() -> AppConfig:
             ),
         )
     config.capacity.active_profile = "default"
+    merge_default_yolo_targets(config)
     return config
 
 
@@ -834,6 +886,57 @@ def retire_backends(config: AppConfig) -> list[str]:
     return removed
 
 
+# Bundled YOLO targets: backend -> (Codex provider identity, model, router effort,
+# context window). Router effort `ultra` is the existing spelling for the highest GPT
+# effort, and the Claude bridge translates `ultra` to Anthropic `max`. Grok has no
+# effort above xhigh. GPT and Azure have no bundled model: they reuse the Astra model
+# or deployment their MAX already names. Other backends (Gemini, DeepSeek, local,
+# custom) get no mapping; an omitted mapping means that backend cannot serve YOLO.
+BUNDLED_YOLO_TARGETS: dict[str, tuple[str, str | None, str, int | None]] = {
+    "gpt": ("openai", None, "ultra", None),
+    "azure": ("agentroute-azure", None, "ultra", None),
+    "claude": ("agentroute-claude", "claude-fable-5-2", "ultra", None),
+    "fable": ("agentroute-claude-fable", "claude-fable-5-2", "ultra", None),
+    "grok": ("agentroute-grok", "grok-4.7", "xhigh", 256_000),
+}
+_ASTRA = re.compile(r"(?:^|[-_/])astra(?:$|[-_/])", re.I)
+
+
+def bundled_yolo_target(name: str, backend: ExecutionBackendConfig) -> ModelTarget | None:
+    """Return the bundled YOLO target for a recognised backend, if any.
+
+    GPT and Azure reuse the exact Astra model or deployment name their MAX target
+    already uses (for example ``gpt-6-astra`` or ``dev-gpt-6-astra``) at a raised
+    effort. When MAX is not an Astra model, YOLO stays unmapped (unavailable).
+    """
+    spec = BUNDLED_YOLO_TARGETS.get(name)
+    if spec is None or backend.codex_provider != spec[0]:
+        return None
+    _, model, effort, context_window = spec
+    if model is None:
+        configured_max = backend.tiers.get(str(Tier.MAX))
+        if configured_max is None or not _ASTRA.search(configured_max.model):
+            return None
+        model = configured_max.model
+        context_window = configured_max.context_window
+    return ModelTarget(model=model, reasoning_effort=effort, context_window=context_window)
+
+
+def merge_default_yolo_targets(config: AppConfig) -> list[str]:
+    """Add bundled YOLO targets in memory without changing any existing mapping."""
+    added: list[str] = []
+    for name in BUNDLED_YOLO_TARGETS:
+        backend = config.backends.get(name)
+        if backend is None or str(Tier.YOLO) in backend.tiers:
+            continue
+        target = bundled_yolo_target(name, backend)
+        if target is not None:
+            backend.tiers[str(Tier.YOLO)] = target
+            backend._bundled_yolo = target.model_copy()
+            added.append(name)
+    return added
+
+
 def _with_default_backends(config: AppConfig) -> AppConfig:
     """Add backend defaults and migrate former bundled GPT SMART/MAX targets."""
     defaults = default_config()
@@ -846,7 +949,9 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
     if config.capacity.active_profile is None:
         config.capacity.active_profile = "default"
     if not config.backends:
-        defaults.backends["gpt"].tiers = config.providers["codex"].tiers
+        # Copy: YOLO merged into the GPT backend must not leak into providers.codex.
+        defaults.backends["gpt"].tiers = dict(config.providers["codex"].tiers)
+        defaults.backends["gpt"]._bundled_yolo = None
         config.backends = defaults.backends
     else:
         for name, backend in defaults.backends.items():
@@ -854,6 +959,7 @@ def _with_default_backends(config: AppConfig) -> AppConfig:
             configured = config.backends[name]
             if configured.tool_compatibility is None:
                 configured.tool_compatibility = backend.tool_compatibility
+    merge_default_yolo_targets(config)
     for name in ("grok", "grok-api"):
         backend = config.backends.get(name)
         if backend is None or backend.codex_provider != f"agentroute-{name}":
@@ -1042,5 +1148,11 @@ def save_config(config: AppConfig, path: Path | None = None) -> Path:
     path = path or config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = config.model_dump(mode="json", exclude_none=True)
+    # Bundled YOLO targets live in memory only; persist an entry only when the
+    # operator configured or changed it.
+    for name, backend in config.backends.items():
+        bundled = backend._bundled_yolo
+        if bundled is not None and backend.tiers.get(str(Tier.YOLO)) == bundled:
+            payload["backends"][name]["tiers"].pop(str(Tier.YOLO), None)
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     return path

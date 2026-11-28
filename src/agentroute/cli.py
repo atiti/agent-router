@@ -1249,7 +1249,7 @@ def audit_report_command(limit: int = 500) -> None:
     rows = AuditStore().history(limit=limit)
     automatic = [row for row in rows if not row["manual_override"]]
     console.print(f"Automatic decisions: {len(automatic)} of {len(rows)}")
-    for tier in ("fast", "normal", "smart", "max"):
+    for tier in map(str, Tier):
         console.print(f"  {tier.upper()}: {sum(row['selected_tier'] == tier for row in automatic)}")
     sources: dict[str, int] = {}
     for row in automatic:
@@ -2208,7 +2208,7 @@ def backend_add_command(
         )
     if normalized_name in {"gpt", "azure", "deepseek"}:
         raise typer.BadParameter(f"{normalized_name} is built in; use backend-enable instead")
-    if normalized_name in {"fast", "normal", "smart", "max", "auto"}:
+    if normalized_name in {"fast", "normal", "smart", "max", "yolo", "auto"}:
         raise typer.BadParameter(f"{normalized_name} is reserved for routing directives")
     if not base_url.rstrip().endswith("/v1"):
         raise typer.BadParameter("--base-url must end in /v1")
@@ -2302,12 +2302,19 @@ def backend_credential_import_command(
 
 @app.command("backend-route")
 def backend_route_command(
-    tier: str = typer.Argument(..., help="fast, normal, smart, or max"),
+    tier: str = typer.Argument(
+        ..., help="fast, normal, smart, or max (YOLO uses its own subscription-first order)"
+    ),
     backend: str = typer.Argument(..., help="Enabled backend name."),
 ) -> None:
     """Choose the default execution backend for one intelligence tier."""
     config = load_config()
     parsed_tier = str(Tier.parse(tier))
+    if parsed_tier == str(Tier.YOLO):
+        raise typer.BadParameter(
+            "YOLO has no default backend; it tries subscriptions before Azure. "
+            "Configure backends.<name>.tiers.yolo and pin a backend with @name @yolo."
+        )
     backend = backend.lower()
     if backend not in config.backends or not config.backends[backend].enabled:
         raise typer.BadParameter(f"backend is not enabled: {backend}")
