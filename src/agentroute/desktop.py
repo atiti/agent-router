@@ -315,9 +315,14 @@ def _build_desktop_app_locked(
                 code_mode_entitlements,
                 resources / "codex-code-mode-host",
             )
+        # --deep re-signs nested frameworks and helper apps with the same local
+        # identity as the outer app, which Chromium-style helper peer checks
+        # require. It does not touch plain executables under Contents/Resources,
+        # so the Developer ID runtime signatures preserved above survive it.
         _run(
             "codesign",
             "--force",
+            "--deep",
             "--sign",
             signing_identity,
             "--options",

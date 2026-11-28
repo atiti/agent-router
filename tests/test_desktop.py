@@ -143,7 +143,8 @@ def test_desktop_build_is_local_reversible_and_preserves_bundle_id(
         )
         app_signing = [c for c in run_calls if c[0] == "codesign" and "--sign" in c
                        and str(c[-1]).endswith(".app")]
-        assert all("--deep" not in c for c in app_signing)
+        # Nested frameworks/helpers must still be re-signed with the outer identity.
+        assert app_signing and all("--deep" in c for c in app_signing)
     else:
         assert len(helper_signing) == 1
         assert "--entitlements" in helper_signing[0]

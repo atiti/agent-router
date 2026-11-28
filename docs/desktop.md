@@ -48,7 +48,10 @@ Updating the CLI alone does not update Desktop.
 Rebuilds preserve valid Developer ID signatures on the embedded CLI and Code Mode
 host. Only unsigned or ad-hoc runtime binaries are locally signed. This keeps
 the runtime's Keychain identity stable instead of replacing it on every rebuild.
-The outer routed app remains locally signed; this does not grant it access to
+The outer app is still signed with `--deep`, so nested frameworks and helper apps
+share its local identity (mixed team signatures there make the app unusable);
+`--deep` does not re-sign plain executables under `Contents/Resources`, so the
+preserved runtime signatures survive. The outer routed app remains locally signed; this does not grant it access to
 services that require the official app's identity. Code Mode validation uses the
 gRPC protocol for Codex 0.172 and newer.
 
