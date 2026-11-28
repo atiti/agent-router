@@ -7,6 +7,8 @@
 
 - Keep backend `status` as `disabled` in `capacity status` when capacity management is
   off; live GPT usage health is reported separately as `observed_status`.
+- Detect `codex exec resume` after value-taking options such as `--color never`,
+  `--thread-source`, and `--cyber-access-program`, so the saved provider is kept.
 
 ## 0.5.88 — 2026-11-28
 
