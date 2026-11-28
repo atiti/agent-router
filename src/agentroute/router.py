@@ -38,6 +38,7 @@ from .signals import (
     route_overrides,
 )
 from .subscription_classifier import SubscriptionClassifier
+from .yolo import resolve_target as resolve_yolo_target
 
 CLASSIFIER_VERSION = "hybrid-v10"
 
@@ -574,18 +575,29 @@ class Router:
             "interrupted_turn" if interrupted_turn_affinity and context.interrupted_backend else
             "explicit_spawn_model" if context.spawn_model_explicit else None
         )
-        if self.config.routing.provider_selection.mode == "adaptive" and not provider_lock:
+        yolo_route = proposed is Tier.YOLO
+        # Adaptive routing, and every unpinned YOLO route, rank admitted providers.
+        # YOLO ranks subscriptions (GPT, Claude, Grok) strictly before Azure.
+        ranked_selection = (
+            self.config.routing.provider_selection.mode == "adaptive" or yolo_route
+        ) and not provider_lock
+        if ranked_selection and not yolo_route:
             backend_name = self.config.routing.backend_by_tier.get(str(proposed), "gpt")
         selected_provider, provider_selection = select_provider(
             self.config, context, proposed,
             classifier_task_type or inferred_task_type(context, reason_codes(contributions)),
-            backend_name, locked_by=provider_lock, gpt_profile_selector=self.gpt_profile_selector,
+            backend_name,
+            # A blocked YOLO request is not ranked: it must not look like a selection.
+            locked_by=provider_lock or ("yolo_not_admitted" if yolo_block else None),
+            gpt_profile_selector=self.gpt_profile_selector,
             risk_codes=reason_codes(contributions), enforce_risk_floors=not manual,
         )
+        if yolo_block:
+            ranked_selection = False
         adaptive_unavailable = selected_provider is None
         if selected_provider:
             backend_name = selected_provider
-        if self.config.routing.provider_selection.mode == "adaptive" and not provider_lock:
+        if ranked_selection:
             contributions.append(ScoreContribution(
                 code=ReasonCode.PROVIDER_SELECTION_BLOCKED if adaptive_unavailable
                 else ReasonCode.PROVIDER_SELECTION,
@@ -656,8 +668,10 @@ class Router:
                 not self.config.capacity.enabled and not context.requested_backend
             ):
                 candidates = (
-                    [] if self.config.routing.provider_selection.mode == "adaptive"
-                    and not provider_lock else fallback_chain(self.config, backend_name)
+                    [] if ranked_selection
+                    # A pinned YOLO route is binding: never substitute a provider.
+                    or (yolo_route and unavailable_locked)
+                    else fallback_chain(self.config, backend_name)
                     if self.config.capacity.enabled
                     else ["gpt"]
                 )
@@ -670,8 +684,7 @@ class Router:
                     ):
                         selected_ready = candidate
                         break
-            if (self.config.routing.provider_selection.mode == "adaptive"
-                    and not provider_lock and selected_ready is None):
+            if ranked_selection and selected_ready is None:
                 adaptive_unavailable = True
             backend_name = selected_ready or (
                 unavailable_requested_backend
@@ -756,7 +769,7 @@ class Router:
                 and context.previous_capacity_status in {"fallback", "blocked", "exhausted"}
             ),
         )
-        if self.config.routing.provider_selection.mode == "adaptive" and not provider_lock:
+        if ranked_selection:
             for candidate in provider_selection.get("candidates", []):
                 if candidate["backend"] == backend_name and candidate.get("profile_capacity"):
                     capacity = CapacityState(**candidate["profile_capacity"])
@@ -836,7 +849,14 @@ class Router:
                 fallback_details: list[str] = []
                 selected_fallback: str | None = None
                 fallback_candidates = fallback_chain(self.config, backend_name)
-                if self.config.routing.provider_selection.mode == "adaptive" and not provider_lock:
+                if ranked_selection and yolo_route:
+                    # Continue down the YOLO priority list: subscriptions, then Azure.
+                    fallback_candidates = [
+                        name
+                        for name in provider_selection.get("yolo_priority", [])
+                        if name != backend_name
+                    ]
+                elif ranked_selection:
                     # Keep the original admission boundary when capacity changes after ranking.
                     admitted = {row["backend"] for row in provider_selection["candidates"]
                                 if row.get("eligible")}
@@ -910,14 +930,35 @@ class Router:
         if model_target is not None:
             target = model_target
         elif proposed is Tier.YOLO:
-            mapped = backend.tiers.get(str(Tier.YOLO))
+            yolo_profile = (
+                next(
+                    (
+                        str(candidate["subscription_profile"])
+                        for candidate in provider_selection.get("candidates", [])
+                        if candidate["backend"] == "gpt" and candidate.get("subscription_profile")
+                    ),
+                    self.config.capacity.active_profile,
+                )
+                if backend_name == "gpt"
+                else None
+            )
+            mapped, reason = resolve_yolo_target(self.config, backend_name, yolo_profile)
             if mapped is None:
-                # An omitted YOLO mapping is unavailable, never an implicit MAX target.
-                yolo_unavailable = f"backend {backend_name} has no YOLO mapping"
+                # An omitted mapping or unsupported effort is unavailable; never an
+                # implicit MAX target and never a silently lowered effort.
+                yolo_unavailable = f"backend {backend_name}: {reason}"
+            elif unavailable_locked and backend_unavailable:
+                yolo_unavailable = f"pinned backend {backend_name} is unavailable"
+            elif adaptive_unavailable:
+                yolo_unavailable = "no eligible provider; " + "; ".join(
+                    f"{row['backend']}: {', '.join(row['exclusions'])}"
+                    for row in provider_selection.get("candidates", [])
+                    if row.get("exclusions")
+                )
             target = mapped or ModelTarget(model="unavailable")
         else:
             target = backend.target(proposed)
-        if backend_name == "gpt" and model_target is None and not yolo_unavailable:
+        if backend_name == "gpt" and model_target is None and proposed is not Tier.YOLO:
             for candidate in provider_selection.get("candidates", []):
                 if candidate["backend"] == "gpt" and candidate.get("subscription_profile"):
                     profile = self.config.capacity.profiles[candidate["subscription_profile"]]

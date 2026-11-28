@@ -41,6 +41,7 @@ from .signals import (
 )
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
 from .waits import hook_context as wait_hook_context
+from .yolo import resolve_target as resolve_yolo_target
 
 
 def _prompt_help(config: AppConfig) -> str:
@@ -183,22 +184,53 @@ def _apply_profile_selection(
     """Keep a GPT route on the selected ChatGPT account."""
     if selection.selected is None:
         return
+    if decision.capacity_blocked and str(decision.capacity_trigger).startswith("yolo_"):
+        # A blocked YOLO request stays blocked; account selection cannot admit it.
+        return
     backend = config.backends["gpt"]
     profile = config.capacity.profiles.get(selection.selected.name)
-    fallback = backend.target(decision.tier)
-    target = (
-        resolve_model(config, "gpt", decision.requested_model, selection.selected.name)
-        if decision.requested_model
-        else profile.target(decision.tier, fallback)
-        if profile
-        else fallback
-    )
+    if decision.tier is Tier.YOLO and not decision.requested_model:
+        # The account may override YOLO; an unsupported or missing target blocks
+        # the turn rather than lowering effort or substituting another tier.
+        yolo_target, reason = resolve_yolo_target(config, "gpt", selection.selected.name)
+        if yolo_target is None:
+            decision.capacity_blocked = True
+            decision.capacity_status = "blocked"
+            decision.capacity_trigger = "yolo_unavailable"
+            decision.capacity_detail = (
+                f"No YOLO route is available on ChatGPT account {selection.selected.name}: "
+                f"{reason}. Nothing was run; use @max or fix the account's YOLO mapping."
+            )
+            yolo_receipt = decision.selection_receipt.get("yolo")
+            if isinstance(yolo_receipt, dict):
+                yolo_receipt.update(status="blocked", blocked_reason=decision.capacity_detail)
+            return
+        target = yolo_target
+        if decision.reasoning_effort_source == "yolo_preset":
+            decision.reasoning_effort = target.reasoning_effort
+    else:
+        fallback = backend.target(decision.tier)
+        target = (
+            resolve_model(config, "gpt", decision.requested_model, selection.selected.name)
+            if decision.requested_model
+            else profile.target(decision.tier, fallback)
+            if profile
+            else fallback
+        )
     decision.backend = "gpt"
     decision.model_provider = backend.codex_provider
     decision.model = target.model
     decision.reasoning_effort = (
         decision.requested_reasoning_effort or decision.reasoning_effort or target.reasoning_effort
     )
+    yolo_receipt = decision.selection_receipt.get("yolo")
+    if decision.tier is Tier.YOLO and isinstance(yolo_receipt, dict):
+        yolo_receipt.update(
+            backend="gpt",
+            model=target.model,
+            preset_reasoning_effort=target.reasoning_effort,
+            applied_reasoning_effort=decision.reasoning_effort,
+        )
     decision.capacity_status = selection.selected.capacity.status
     decision.capacity_detail = (
         f"account {selection.selected.name}: {selection.selected.capacity.detail}"
@@ -420,6 +452,17 @@ def codex_user_prompt_submit(
             config, current_model, str(payload.get("model_provider", "openai")), previous_route
         )
         previous_tier = store.previous_tier(session_id, route_scope, agent_id)
+        previous_yolo_opt_in = None
+        if previous_tier is Tier.YOLO and previous_route is not None:
+            # Only a route that recorded an explicit opt-in can be continued as YOLO.
+            try:
+                previous_yolo = json.loads(previous_route["selection_receipt"] or "{}").get(
+                    "yolo"
+                )
+            except (ValueError, AttributeError):
+                previous_yolo = None
+            if isinstance(previous_yolo, dict):
+                previous_yolo_opt_in = previous_yolo.get("opt_in_source")
         previous_reasoning_effort = store.previous_reasoning_effort(
             session_id, route_scope, agent_id
         )
@@ -625,6 +668,7 @@ def codex_user_prompt_submit(
             current_tier=current_tier,
             downgrade_streak=store.downgrade_streak(session_id, route_scope, agent_id),
             previous_task_tier=previous_tier,
+            previous_yolo_opt_in=previous_yolo_opt_in if previous_tier is Tier.YOLO else None,
             previous_reasoning_effort=previous_reasoning_effort,
             interrupted_turn_affinity=interrupted_route is not None,
             interrupted_backend=interrupted_backend,
