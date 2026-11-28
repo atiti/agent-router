@@ -123,10 +123,11 @@ def prune_build_cache(home: Path | None = None) -> int:
     return removed
 
 
-def prepare_capture(environment: dict[str, str]) -> None:
+def prepare_capture(environment: dict[str, str], *, prune: bool = True) -> None:
     from .context_profile import capture_enabled, profile_root
 
-    periodic_prune()
+    if prune:
+        periodic_prune()
     if capture_enabled() and not environment.get("CODEX_ROLLOUT_TRACE_ROOT"):
         environment["CODEX_ROLLOUT_TRACE_ROOT"] = str(profile_root() / "traces")
     if environment.get("CODEX_ROLLOUT_TRACE_ROOT"):

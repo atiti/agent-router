@@ -1166,6 +1166,16 @@ credential presence, classifier catalog freshness, SQLite integrity, model capab
 coverage, and the routed Desktop bundle when installed. It never prints credential values or makes
 network requests; `--json` is available for automation.
 
+Doctor also checks setup provenance. It reports how the package was installed (release,
+editable, or VCS), package files edited after installation, runtime binaries that differ from
+the install manifest, processes still running a replaced or private runtime, a shared server
+whose settings no longer match, computer-use tools wired to re-signed copies, duplicate account
+logins, and runtimes too old for portable cross-provider compaction. These rows warn but never
+fail. To compare two machines, run `agentroute doctor --fingerprint > fingerprint.json` on one
+machine and `agentroute doctor --compare fingerprint.json` on the other. The fingerprint is a
+redacted snapshot: it has no keys, account IDs, emails, hostnames, or home paths. See
+[docs/doctor.md](docs/doctor.md).
+
 Codex runtimes before AgentRoute runtime v23 supplied the frozen session-start model to Stop hooks.
 AgentRoute preserves that reported value for audit, attributes the receipt to the routed step model,
 and labels the mismatch in analytics. Runtime v23 reports the routed step model directly. A zero-token

@@ -120,6 +120,14 @@ fi
 
 INSTALL_COMMITTED=1
 
+# Record provenance for `agentroute doctor`; a failure here must not undo the install.
+RELEASE_VERSION=$(sed -n '1p' "$PAYLOAD_ROOT/VERSION" 2>/dev/null || true)
+if ! "$AGENTROUTE_HOME_DIR/venv/bin/python" -m agentroute.install_manifest \
+    --home "$AGENTROUTE_HOME_DIR" --source-kind release \
+    --source-ref "v${RELEASE_VERSION:-unknown}"; then
+    printf 'Could not record the install manifest; agentroute doctor will report unknown provenance.\n' >&2
+fi
+
 # Upgrade old installations that retained source-build caches. Active builds are
 # protected; a skipped cleanup must not roll back a successful runtime install.
 if ! "$AGENTROUTE_BIN_DIR/agentroute" storage prune --build-cache; then

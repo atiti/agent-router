@@ -210,6 +210,18 @@ fi
 cp "$AGENTROUTE_PROJECT_ROOT/packaging/codex-launcher" "$AGENTROUTE_BIN_DIR/codex"
 chmod 755 "$AGENTROUTE_BIN_DIR/codex"
 
+# Record provenance for `agentroute doctor` after the last write to the runtime files.
+AGENTROUTE_SOURCE_REF=$(git -C "$AGENTROUTE_PROJECT_ROOT" rev-parse HEAD 2>/dev/null || printf unknown)
+AGENTROUTE_SOURCE_DIRTY=
+if [ -n "$(git -C "$AGENTROUTE_PROJECT_ROOT" status --porcelain 2>/dev/null)" ]; then
+    AGENTROUTE_SOURCE_DIRTY=--dirty
+fi
+if ! "$AGENTROUTE_HOME_DIR/venv/bin/python" -m agentroute.install_manifest \
+    --home "$AGENTROUTE_HOME_DIR" --source-kind source \
+    --source-ref "$AGENTROUTE_SOURCE_REF" $AGENTROUTE_SOURCE_DIRTY; then
+    printf 'Could not record the install manifest; agentroute doctor will report unknown provenance.\n' >&2
+fi
+
 if [ "${AGENTROUTE_INSTALL_ACTIVATE:-1}" = 1 ]; then
     AGENTROUTE_RUNTIME_BUILD_ID="$AGENTROUTE_BUILD_ID" "$AGENTROUTE_BIN_DIR/agentroute" setup
     sh "$AGENTROUTE_PROJECT_ROOT/scripts/install-progress-skill.sh" \

@@ -118,6 +118,8 @@ def test_release_catalog_install_and_rollback_preserve_user_skills(
         "AGENTROUTE_HOME": str(installed),
         "AGENTROUTE_RELEASE_PREBUILT_HOME": str(prebuilt),
         "AGENTROUTE_RUNTIME_BUILD_ID": "b" * 40 + "-provider-routing-v63",
+        # The fake uv installs nothing; let the venv Python import the test environment.
+        "PYTHONPATH": os.pathsep.join(path for path in sys.path if path),
     }
     output = tmp_path / "dist"
     subprocess.run(
@@ -136,6 +138,12 @@ def test_release_catalog_install_and_rollback_preserve_user_skills(
         assert not (installed / "build-id").exists()
         return
     assert json.loads((installed / "models/native-catalog.json").read_text()) == bundled
+    manifest = json.loads((installed / "install-manifest.json").read_text())
+    assert manifest["source"]["kind"] == "release"
+    assert manifest["source"]["ref"].startswith("v")
+    assert manifest["build_id"] == build_id
+    assert set(manifest["binaries"]) == {"bin/codex-bin", "bin/codex-code-mode-host", "bin/codex"}
+    assert str(tmp_path) not in json.dumps(manifest)
     monkeypatch.setenv("AGENTROUTE_HOME", str(installed))
     from agentroute.providers import _installed_codex_catalog
 
@@ -165,6 +173,21 @@ def test_release_installer_is_transactional_and_validates_runtime():
     assert "codex-code-mode-host" in installer
     assert "valid Developer ID signature" in installer
     assert installer.index("code-mode-smoke.py") < installer.index("INSTALL_COMMITTED=1")
+    # Provenance is recorded only after the install is committed and never rolls it back.
+    assert installer.index("INSTALL_COMMITTED=1") < installer.index("agentroute.install_manifest")
+    assert "--source-kind release" in installer
+
+
+def test_source_installer_records_provenance_after_last_runtime_write():
+    installer = (Path(__file__).parents[1] / "scripts" / "install.sh").read_text()
+
+    assert "--source-kind source" in installer
+    assert installer.index('chmod 755 "$AGENTROUTE_BIN_DIR/codex"') < installer.index(
+        "agentroute.install_manifest"
+    )
+    assert installer.index("codex-code-mode-host.entitlements.plist") < installer.index(
+        "agentroute.install_manifest"
+    )
 
 
 def test_macos_release_build_fails_closed_without_developer_id():

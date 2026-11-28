@@ -32,6 +32,7 @@ from .install import hook_command
 from .model_selection import DirectModelError, source_models
 from .models import Tier
 from .profiles import account_credential_home, profile_catalog_slugs
+from .provenance import ProvenanceCheck, provenance_checks
 from .providers import (
     END_MARKER,
     START_MARKER,
@@ -413,6 +414,13 @@ def _yolo_check(config: AppConfig) -> DoctorCheck:
 
 def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
     """Run local, non-networked checks without exposing credentials."""
+    return run_doctor_report(config)[0]
+
+
+def run_doctor_report(
+    config: AppConfig,
+) -> tuple[tuple[DoctorCheck, ...], list[ProvenanceCheck], str]:
+    """Run doctor and also return the provenance summaries used by ``--fingerprint``."""
     checks: list[DoctorCheck] = []
     checks.append(
         DoctorCheck(
@@ -643,4 +651,6 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
         destination = Path("/Applications/ChatGPT-Routed.app")
         if destination.exists():
             checks.append(_desktop_check(destination, build_id))
-    return tuple(checks)
+    provenance = provenance_checks(config, build_id)
+    checks.extend(DoctorCheck(item.name, item.status, item.detail) for item in provenance)
+    return tuple(checks), provenance, build_id
