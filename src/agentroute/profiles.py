@@ -287,7 +287,9 @@ def probe_profile(
             "routed Codex binary missing",
         )
     try:
-        with _CodexAppServer(binary, codex_home=home) as client:
+        # Account discovery hides ChatGPT auth under API-backed providers. Scope
+        # OpenAI to this probe; never change the user's saved execution provider.
+        with _CodexAppServer(binary, codex_home=home, model_provider="openai") as client:
             account = client.request("account/read", {"refreshToken": False})
             limits = client.request(
                 "account/rateLimits/read", {"supportsLunaReserve": False}
