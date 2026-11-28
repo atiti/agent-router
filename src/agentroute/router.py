@@ -965,7 +965,9 @@ class Router:
                     target = profile.target(proposed, target)
         if yolo_block or yolo_unavailable:
             capacity_blocked = True
-            capacity_status = "blocked"
+            # Distinct from capacity blocks: it must not trigger capacity recovery holds,
+            # and the hook never continues a blocked attempt as YOLO.
+            capacity_status = "yolo_blocked"
             capacity_trigger = "yolo_admission" if yolo_block else "yolo_unavailable"
             capacity_detail = yolo_block or (
                 f"No YOLO route is available: {yolo_unavailable}. Nothing was run; "
@@ -1242,7 +1244,9 @@ class Router:
         ):
             receipt["yolo"] = {
                 "requested": proposed is Tier.YOLO,
-                "opt_in_source": yolo_opt_in,
+                # A blocked attempt records no opt-in, so it cannot be continued.
+                "opt_in_source": None if capacity_blocked else yolo_opt_in,
+                "attempted_opt_in": yolo_opt_in,
                 "admitted": max_tier >= Tier.YOLO,
                 "status": (
                     "blocked"

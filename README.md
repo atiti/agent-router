@@ -460,7 +460,8 @@ policy:
 ```
 
 With the default `max_tier: max`, `@yolo` stops the turn with a visible message; it never
-runs MAX under a YOLO label. `agentroute doctor` reports admission and each backend's YOLO
+runs MAX under a YOLO label. A blocked attempt is audited (`capacity_status: yolo_blocked`) but
+does not leave the thread in YOLO: the next plain prompt routes normally. `agentroute doctor` reports admission and each backend's YOLO
 target.
 
 | Backend | Bundled YOLO target | Wire effort |
@@ -470,7 +471,9 @@ target.
 | `grok` | `grok-4.7`, `xhigh` (equal to MAX; no stronger Grok effort is known) | `xhigh` |
 | `azure` | Astra deployment (`gpt-6.2-astra`, or the Astra deployment your MAX names), `ultra` | `ultra` |
 
-Bundled targets are added to existing configurations without changing any mapping. Other
+Bundled targets are added to existing configurations without changing any mapping. Deleting a
+bundled backend's `tiers.yolo` entry does not disable it (it is re-added on load); override
+the entry, pin another provider, or keep `policy.max_tier: max` instead. Other
 backends (Gemini, DeepSeek, local or custom) have no YOLO mapping, which means unavailable;
 there is no fallback to their MAX target. Add `backends.<name>.tiers.yolo` (or a ChatGPT
 account's `capacity.profiles.<name>.tiers.yolo`) only after verifying that model and effort

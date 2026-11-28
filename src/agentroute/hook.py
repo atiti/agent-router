@@ -200,7 +200,7 @@ def _apply_profile_selection(
         yolo_target, reason = resolve_yolo_target(config, "gpt", selection.selected.name)
         if yolo_target is None:
             decision.capacity_blocked = True
-            decision.capacity_status = "blocked"
+            decision.capacity_status = "yolo_blocked"
             decision.capacity_trigger = "yolo_unavailable"
             decision.capacity_detail = (
                 f"No YOLO route is available on ChatGPT account {selection.selected.name}: "
@@ -208,7 +208,11 @@ def _apply_profile_selection(
             )
             yolo_receipt = decision.selection_receipt.get("yolo")
             if isinstance(yolo_receipt, dict):
-                yolo_receipt.update(status="blocked", blocked_reason=decision.capacity_detail)
+                yolo_receipt.update(
+                    status="blocked",
+                    blocked_reason=decision.capacity_detail,
+                    opt_in_source=None,
+                )
             return
         target = yolo_target
         if decision.reasoning_effort_source == "yolo_preset":
@@ -471,6 +475,12 @@ def codex_user_prompt_submit(
         previous_reasoning_effort = store.previous_reasoning_effort(
             session_id, route_scope, agent_id
         )
+        if previous_tier is Tier.YOLO and previous_yolo_opt_in is None:
+            # A blocked @yolo attempt (audited with capacity_status yolo_blocked and
+            # no opt-in source) never ran. It must not leave the thread in YOLO, so
+            # the next plain prompt is routed by ordinary classification.
+            previous_tier = None
+            previous_reasoning_effort = None
         if (
             requested_model is None
             and tier_override is None

@@ -223,3 +223,56 @@ def test_hook_continuation_keeps_yolo_and_new_task_exits(tmp_path):
     assert store.latest_route("same-thread", "root", None)["selected_tier"] == "max"
     invoke(config, store, "ok continue", model="gpt-6.2-astra", turn_id="t4")
     assert store.latest_route("same-thread", "root", None)["selected_tier"] != "yolo"
+
+
+# --- Blocked attempts never leave the thread in YOLO --------------------------------
+
+
+def test_blocked_yolo_then_continue_routes_normally(tmp_path):
+    config = default_config()
+    config.enabled = True
+    store = AuditStore(tmp_path / "audit.db")
+    blocked = invoke(config, store, "@yolo do X", turn_id="t1")
+    assert blocked["continue"] is False
+    assert "policy.max_tier" in blocked["systemMessage"]
+    row = store.latest_route("same-thread", "root", None)
+    assert row["capacity_status"] == "yolo_blocked"
+    receipt = json.loads(row["selection_receipt"])["yolo"]
+    assert receipt["status"] == "blocked"
+    assert receipt["opt_in_source"] is None
+    assert receipt["attempted_opt_in"] == "explicit_tag"
+
+    followup = invoke(config, store, "continue", turn_id="t2")
+    assert followup["continue"] is True
+    row = store.latest_route("same-thread", "root", None)
+    assert row["selected_tier"] in {"fast", "normal", "smart", "max"}
+    assert not row["capacity_blocked"]
+    assert "yolo" not in json.loads(row["selection_receipt"])
+
+    again = invoke(config, store, "@yolo do X", turn_id="t3")
+    assert again["continue"] is False
+
+
+def test_unavailable_pinned_yolo_then_continue_routes_normally(tmp_path, monkeypatch):
+    config = default_config()
+    config.enabled = True
+    config.policy.max_tier = "yolo"
+    config.backends["deepseek"].enabled = True
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    store = AuditStore(tmp_path / "audit.db")
+    assert invoke(config, store, "@deepseek @yolo do X", turn_id="t1")["continue"] is False
+    followup = invoke(config, store, "continue", turn_id="t2")
+    assert followup["continue"] is True
+    assert store.latest_route("same-thread", "root", None)["selected_tier"] != "yolo"
+
+
+def test_successful_yolo_then_continue_keeps_yolo(tmp_path):
+    config = default_config()
+    config.enabled = True
+    config.policy.max_tier = "yolo"
+    store = AuditStore(tmp_path / "audit.db")
+    assert invoke(config, store, "@yolo do X", turn_id="t1")["continue"] is True
+    invoke(config, store, "continue", model="gpt-6.2-astra", turn_id="t2")
+    row = store.latest_route("same-thread", "root", None)
+    assert row["selected_tier"] == "yolo"
+    assert json.loads(row["selection_receipt"])["yolo"]["opt_in_source"] == "continuation"

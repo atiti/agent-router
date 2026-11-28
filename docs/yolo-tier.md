@@ -31,6 +31,12 @@ whose Codex provider identity matches the bundled backend (`openai`, `agentroute
 `grok-api`, local and custom backends receive no mapping: an omitted mapping means that
 backend cannot serve YOLO, never a fallback to its MAX target.
 
+Deleting a bundled backend's `tiers.yolo` entry does **not** disable YOLO there: the
+merge-on-load step re-adds the bundled target on the next load. To keep YOLO off a
+bundled backend, override its `tiers.yolo` instead (for example a different verified
+model, or `enabled: false` for the whole backend), avoid it with an explicit provider pin
+(`@claude @yolo`), or keep YOLO off everywhere with `policy.max_tier: max` (the default).
+
 Before execution each target's effort is validated per provider family (GPT/Azure:
 `none`…`ultra`; Claude: `low`…`max`/`ultra` on effort-capable models; Grok: `low`…`xhigh`;
 other backends: operator-verified, not validated). An unsupported pair excludes that target
@@ -63,6 +69,14 @@ records the preset, requested and applied efforts.
   other tier tag or `@auto` exits YOLO.
 - Admission reuses `policy.max_tier`. The default `max` blocks `@yolo` with a visible stop
   message (`YOLO_BLOCKED`, trigger `yolo_admission`); it never runs MAX labeled YOLO.
+- A blocked attempt (not admitted, no eligible route, unavailable pin, missing mapping or
+  unsupported effort) stays visible: the audit row keeps tier `yolo` with
+  `capacity_status: yolo_blocked`, and the receipt's `yolo` block has `status: blocked`,
+  the reason and `attempted_opt_in`, but `opt_in_source: null`. The hook ignores such a
+  row for continuation (previous tier and effort), so the next plain prompt such as
+  `continue` is routed by ordinary FAST–MAX classification. Only a new explicit `@yolo`
+  hits the block again. `yolo_blocked` also avoids the capacity recovery hold that an
+  ordinary `blocked` status would trigger.
 - Unpinned YOLO ranks its own groups in every routing mode: eligible GPT, Claude and Grok
   subscriptions first (ordered within the group by task preference, usage and switching
   scores), then operator-admitted `provider_selection.candidates` that have a YOLO mapping,
