@@ -270,6 +270,7 @@ def poll(team: str, stale_after: int, ack_after: int, now: float | None = None) 
     h = api()
     now = time.time() if now is None else now
     alerts = []
+    observation_only = set()
     with h.locked(team) as data:
         packet = json.loads(h.packet_command(data, "status", "--packet", data["packet"]))
         items = {i["id"]: i for i in packet["items"]}
@@ -304,9 +305,15 @@ def poll(team: str, stale_after: int, ack_after: int, now: float | None = None) 
             elif state in {"blocked", "error"}:
                 alerts.append(f"{name}: {state}; inspect and follow approval boundaries")
             elif now - health["last_activity"] >= stale_after:
-                alerts.append(f"{name}: observed activity overdue")
+                alert = f"{name}: observed activity overdue"
+                alerts.append(alert)
+                if member["spec"]["role"] == "supervisor" and state in {"idle", "done"}:
+                    observation_only.add(alert)
             elif state in {"idle", "done"} and now-health["state_since"] >= ack_after:
-                alerts.append(f"{name}: waiting for follow-up; packet is not complete")
+                alert = f"{name}: waiting for follow-up; packet is not complete"
+                alerts.append(alert)
+                if member["spec"]["role"] == "supervisor":
+                    observation_only.add(alert)
             if checkpoint and not completed(item):
                 age = now-datetime.fromisoformat(checkpoint.replace("Z", "+00:00")).timestamp()
                 if age >= stale_after:
@@ -353,7 +360,10 @@ def poll(team: str, stale_after: int, ack_after: int, now: float | None = None) 
         monitor.update(checked_at=now, alerts=alerts,
                        live_review_recipients=sorted(live_review_recipients))
         h.save(team, data)
-    return {"team": team, "checked_at": now, "alerts": alerts}
+    # A wake changes the supervisor's idle state and would make the same alert
+    # recur as a new inbox event after the turn. Keep it in the health record only.
+    return {"team": team, "checked_at": now, "alerts": alerts,
+            "notification_alerts": [alert for alert in alerts if alert not in observation_only]}
 
 
 def monitor(team: str, watch: bool = False, notify: bool = False,
@@ -373,9 +383,10 @@ def monitor(team: str, watch: bool = False, notify: bool = False,
         while True:
             try:
                 result = poll(team, stale_after, ack_after)
+                notification_alerts = result.pop("notification_alerts")
                 typer.echo(json.dumps(result))
                 data = h.load(team)
-                digest = hashlib.sha256(json.dumps(result["alerts"]).encode()).hexdigest()[:16]
+                digest = hashlib.sha256(json.dumps(notification_alerts).encode()).hexdigest()[:16]
                 previous = data.get("monitor", {}).get("notification", {})
                 recipients = (data.get("monitor") or {}).get("live_review_recipients") or []
                 if data.get("inbox_consumer", {}).get("version") != 1:
@@ -392,13 +403,13 @@ def monitor(team: str, watch: bool = False, notify: bool = False,
                                                  event_key=f"health-{digest}-{sequence}")
                         key = monitor_state["event_key"]
                         h.save(team, current)  # Stable occurrence identity precedes delivery.
-                    if (result["alerts"] and key not in data["messages"]
+                    if (notification_alerts and key not in data["messages"]
                             and previous.get("event_key") != key):
                         due = not previous.get("at") or time.time()-previous["at"] >= stale_after
                         prompt = due and not data.get("monitor", {}).get("notification_hold")
                         h.send(team, recipient, key,
                                "Team health requires inspection (no automatic approval/restart):\n"
-                               + "\n".join(result["alerts"]), notify=bool(prompt))
+                               + "\n".join(notification_alerts), notify=bool(prompt))
                         with h.locked(team) as current:
                             current.setdefault("monitor", {})["notification"] = {
                                 "digest": digest, "event_key": key,
@@ -412,12 +423,12 @@ def monitor(team: str, watch: bool = False, notify: bool = False,
                             if (entry and entry["kind"] == "health"
                                     and entry["state"] != "dispositioned" and message_key != key):
                                 entry.update(state="dispositioned", actionable=False,
-                                    disposition={"action": "superseded" if result["alerts"]
+                                    disposition={"action": "superseded" if notification_alerts
                                                  else "resolved",
                                         "reason": "Fresh health poll replaced this set",
                                         "owner": "team-monitor",
                                         "next_action": "Inspect the latest health event" if
-                                            result["alerts"] else "No current health alert",
+                                            notification_alerts else "No event pending",
                                         "evidence": [f"herdr poll {result.get('checked_at')} "
                                                      f"alerts-sha256:{digest}"]})
                         h.save(team, current)

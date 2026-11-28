@@ -151,7 +151,7 @@ def test_cleanup_refuses_repurposed_pane(team, monkeypatch):
 
 def test_monitor_alert_is_deduplicated_and_does_not_send_without_notify(team, monkeypatch):
     monkeypatch.setattr(lifecycle, "poll", lambda *_: {
-        "alerts": ["worker: blocked"], "team": "demo"})
+        "alerts": ["worker: blocked"], "notification_alerts": ["worker: blocked"], "team": "demo"})
     send = Mock()
     monkeypatch.setattr(h, "send", send)
     lifecycle.monitor("demo", False, False, 900, 300, 30)
@@ -163,7 +163,7 @@ def test_monitor_alert_is_deduplicated_and_does_not_send_without_notify(team, mo
 
 def test_unknown_notification_is_not_replayed(team, monkeypatch):
     monkeypatch.setattr(lifecycle, "poll", lambda *_: {
-        "alerts": ["worker: blocked"], "team": "demo"})
+        "alerts": ["worker: blocked"], "notification_alerts": ["worker: blocked"], "team": "demo"})
 
     def unknown_send(team, recipient, key, text, **kwargs):
         data = h.load(team)
@@ -177,6 +177,71 @@ def test_unknown_notification_is_not_replayed(team, monkeypatch):
         lifecycle.monitor("demo", False, True, 900, 300, 30)
     lifecycle.monitor("demo", False, True, 900, 300, 30)
     assert send.call_count == 1
+
+
+def test_supervisor_idle_does_not_reopen_native_health_event(team, monkeypatch, tmp_path):
+    from agentroute import supervisor_inbox as inbox
+
+    monkeypatch.setattr(inbox, "codex_home", lambda: tmp_path / "codex")
+    data = h.load("demo")
+    data["members"]["boss"] = {
+        "thread": "22222222-2222-4222-8222-222222222222",
+        "spec": {"role": "supervisor"},
+    }
+    data["inbox_consumer"] = {"version": 1}
+    h.save("demo", data)
+    worker = {"address": "t1", "state": "live", "status": {"state": "blocked"}}
+    boss = {"address": "t2", "state": "live", "status": {"state": "idle"}}
+    setup_poll(monkeypatch, {"id": "owned", "status": "active"}, worker)
+    monkeypatch.setattr(h, "own_terminal", lambda _, member: worker
+                        if member["spec"]["role"] == "worker" else boss)
+    now = 100
+    monkeypatch.setattr(lifecycle.time, "time", lambda: now)
+
+    def inspect():
+        lifecycle.monitor("demo", False, True, 60, 30, 30)
+        return h.load("demo")
+
+    original = next(iter(inspect()["messages"]))
+    now = 131
+    observed = inspect()
+    assert "boss: waiting for follow-up; packet is not complete" in observed["monitor"]["alerts"]
+    assert list(observed["messages"]) == [original]
+
+    now = 132
+    boss["status"]["state"] = "working"
+    assert list(inspect()["messages"]) == [original]
+    now = 133
+    boss["status"]["state"] = "done"
+    inspect()
+    now = 164
+    observed = inspect()
+    assert "boss: observed activity overdue" in observed["monitor"]["alerts"]
+    assert observed["members"]["boss"]["health"]["checked_at"] == now
+    assert list(observed["messages"]) == [original]
+
+    now = 165
+    boss["status"]["state"] = "error"
+    worker["status"]["state"] = "error"
+    changed = inspect()
+    assert len(changed["messages"]) == 2
+    new_event = list(changed["messages"].values())[-1]["coordination_event"]
+    assert new_event["actionable"] is True
+    assert "worker: error;" in new_event["message"]
+    assert "boss: error;" in new_event["message"]
+
+    now = 166
+    boss["status"]["state"] = "idle"
+    worker["status"]["state"] = "idle"
+    worker["status_ms"] = 166_000
+    inspect()
+    now = 197
+    changed = inspect()
+    new_event = list(changed["messages"].values())[-1]["coordination_event"]
+    assert len(changed["messages"]) == 3
+    assert new_event["actionable"] is True
+    assert "worker: waiting for follow-up;" in new_event["message"]
+    assert "boss: waiting for follow-up;" not in new_event["message"]
 
 
 def test_cleanup_closes_only_owned_view_and_preserves_receipts(team, monkeypatch):

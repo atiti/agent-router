@@ -298,8 +298,10 @@ def test_hook_applies_bound_role_objective_and_excludes_native_subagents(team, t
     config = default_config()
     config.routing.switching.downgrade_confidence = 0
     store = AuditStore(tmp_path / "audit.jsonl")
+    transcript = tmp_path / "portable-rollout.jsonl"
+    transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": THREAD}}) + "\n")
     payload = {"session_id": THREAD, "turn_id": "short", "model": "gpt-5.6-terra",
-               "prompt": "list files"}
+               "prompt": "list files", "transcript_path": str(transcript)}
     out = io.StringIO()
     assert codex_user_prompt_submit(io.StringIO(json.dumps(payload)), out,
                                     config=config, store=store) == 0
@@ -322,7 +324,8 @@ def test_monitor_health_supersession_and_cooldown_keep_latest_actionable(team, m
     monkeypatch.setattr(h, "own_terminal", lambda *_: None)
     alerts = ["worker: blocked"]
     monkeypatch.setattr(lifecycle, "poll", lambda *_: {
-        "team": "demo", "checked_at": 1, "alerts": list(alerts)})
+        "team": "demo", "checked_at": 1, "alerts": list(alerts),
+        "notification_alerts": list(alerts)})
     lifecycle.monitor("demo", False, True, 900, 300, 30)
     first = snapshot()["events"][0]["id"]
     alerts.append("worker: checkpoint overdue")

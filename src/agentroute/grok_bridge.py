@@ -212,7 +212,7 @@ def ensure_backend(config, port=None, credential_mode="subscription"):
             codex_provider="agentroute-grok-api" if api_key else "agentroute-grok",
             display_name="Grok API" if api_key else "Grok subscription (Grok CLI)",
             base_url=f"http://127.0.0.1:{port}/v1",
-            tool_compatibility="functions_and_apply_patch_preserve_reasoning",
+            tool_compatibility="full",
             review_model="grok-4.7" if api_key else MODELS[0],
             tiers={
                 tier: ModelTarget(
@@ -232,6 +232,11 @@ def ensure_backend(config, port=None, credential_mode="subscription"):
         config.backends[name].enabled = True
         config.backends[name].base_url = f"http://127.0.0.1:{port}/v1"
     backend = config.backends[name]
+    if backend.tool_compatibility in {
+        "functions_and_apply_patch",
+        "functions_and_apply_patch_preserve_reasoning",
+    }:
+        backend.tool_compatibility = "full"
     # Clients authenticate locally with a separate key; xAI credentials stay upstream.
     backend.api_key_env = BRIDGE_KEY_ENV if api_key else None
     backend.api_key_header = "authorization"
@@ -239,7 +244,7 @@ def ensure_backend(config, port=None, credential_mode="subscription"):
         config.capabilities.models.setdefault(
             model,
             ModelCapabilities(
-                tool_calling="apply_patch_only",
+                tool_calling="full",
                 reasoning=True,
                 vision=True,
                 context_window=500000 if api_key and model == "grok-4.7" else 256000,
@@ -463,7 +468,7 @@ PATCH_FUNCTION = "agentroute_apply_patch"
 
 
 def translate_request(body):
-    """Encode Codex's freeform patch tool as an ordinary function."""
+    """Encode Codex's freeform tools as ordinary functions."""
     body = json.loads(json.dumps(body))
     # OpenAI account service tiers are not Grok subscription entitlements.
     body = {
@@ -494,24 +499,24 @@ def translate_request(body):
     body["tools"] = flattened_tools(body.get("tools", []))
     choice = body.get("tool_choice")
     if isinstance(choice, dict) and choice.get("type") == "custom":
-        if choice.get("name") != "apply_patch":
-            raise ValueError("Unsupported custom tool choice")
-        body["tool_choice"] = {"type": "function", "name": PATCH_FUNCTION}
+        body["tool_choice"] = {
+            "type": "function",
+            "name": custom_wire_name(choice.get("namespace"), choice["name"]),
+        }
     for tool in body["tools"]:
         if tool.get("type") == "web_search":
             # Codex's OpenAI-only toggle is rejected by Grok's search tool.
             tool.pop("external_web_access", None)
         if tool.get("type") == "custom":
-            if tool.get("name") != "apply_patch":
-                raise ValueError("Unsupported custom tool")
+            name = custom_wire_name(tool.pop("_namespace", None), tool["name"])
             description = (
                 tool.get("description", "") + "\n" + tool.get("format", {}).get("definition", "")
             )
             tool.clear()
             tool.update(
                 type="function",
-                name=PATCH_FUNCTION,
-                description=description + "\nSupply the complete patch text in input.",
+                name=name,
+                description=description + "\nSupply the complete freeform tool input in input.",
                 parameters={
                     "type": "object",
                     "properties": {"input": {"type": "string"}},
@@ -543,16 +548,14 @@ def translate_request(body):
             # Codex serializes absent content as null. Grok interprets that field
             # as a compaction envelope and rejects otherwise valid reasoning.
             item.pop("content", None)
-        if item.get("type") in {"function_call", "custom_tool_call"}:
+        if item.get("type") == "function_call":
             namespace = item.pop("namespace", None)
             if namespace:
                 item["name"] = wire_name(namespace, item["name"])
         if item.get("type") == "custom_tool_call":
-            if item.get("name") != "apply_patch":
-                raise ValueError("Unsupported custom tool history")
             item.update(
                 type="function_call",
-                name=PATCH_FUNCTION,
+                name=custom_wire_name(item.pop("namespace", None), item["name"]),
                 arguments=json.dumps({"input": item.pop("input", "")}),
             )
         elif item.get("type") == "custom_tool_call_output":
@@ -567,6 +570,13 @@ def wire_name(namespace, name):
     return "ar_" + digest
 
 
+def custom_wire_name(namespace, name):
+    if namespace is None and name == "apply_patch":
+        return PATCH_FUNCTION
+    digest = hashlib.sha256(json.dumps([namespace, name]).encode()).hexdigest()[:24]
+    return "ar_custom_" + digest
+
+
 def flattened_tools(tools, namespace=None):
     result = []
     for tool in tools:
@@ -578,6 +588,8 @@ def flattened_tools(tools, namespace=None):
                 original = tool["name"]
                 tool["name"] = wire_name(namespace, original)
                 tool["description"] = f"Tool {namespace}.{original}. " + tool.get("description", "")
+            elif namespace and tool.get("type") == "custom":
+                tool["_namespace"] = namespace
             result.append(tool)
     return result
 
@@ -591,18 +603,30 @@ def tool_names(body):
                 visit(tool.get("tools", []), tool["name"])
             elif namespace and tool.get("type") == "function":
                 names[wire_name(namespace, tool["name"])] = (namespace, tool["name"])
+            elif tool.get("type") == "custom":
+                names[custom_wire_name(namespace, tool["name"])] = (
+                    namespace,
+                    tool["name"],
+                    "custom",
+                )
 
     visit(body.get("tools", []))
     return names
 
 
 def patch_item(item, names=None):
-    if item.get("type") == "function_call" and item.get("name") in (names or {}):
-        item["namespace"], item["name"] = names[item["name"]]
-
-    if item.get("type") == "function_call" and item.get("name") == PATCH_FUNCTION:
-        item["type"] = "custom_tool_call"
+    if item.get("type") != "function_call":
+        return item
+    original = (names or {}).get(item.get("name"))
+    custom = item.get("name") == PATCH_FUNCTION or (original and len(original) == 3)
+    if original:
+        namespace, item["name"] = original[:2]
+        if namespace is not None:
+            item["namespace"] = namespace
+    elif item.get("name") == PATCH_FUNCTION:
         item["name"] = "apply_patch"
+    if custom:
+        item["type"] = "custom_tool_call"
         arguments = item.pop("arguments", "")
         item["input"] = json.loads(arguments)["input"] if arguments else ""
     return item
@@ -648,7 +672,7 @@ def sequential_stream(upstream):
 
 
 def translate_stream(upstream, names=None):
-    """Leave all Responses events intact except patch function encoding."""
+    """Leave Responses events intact except freeform function encoding."""
     patches = set()
     for raw in sequential_stream(upstream):
         if not raw.startswith(b"data: "):
@@ -663,7 +687,9 @@ def translate_stream(upstream, names=None):
             continue
         kind = event.get("type", "")
         item = event.get("item")
-        if isinstance(item, dict) and item.get("name") == PATCH_FUNCTION:
+        if isinstance(item, dict) and (
+            item.get("name") == PATCH_FUNCTION or len((names or {}).get(item.get("name"), ())) == 3
+        ):
             patches.add(item["id"])
         if isinstance(item, dict):
             patch_item(item, names)
