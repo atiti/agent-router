@@ -596,3 +596,33 @@ def test_run_doctor_adds_provenance_rows_that_never_fail(monkeypatch):
     for name in ("install-provenance", "install-integrity", "runtime-integrity",
                  "running-runtimes", "shared-server", "computer-use", "accounts", "compaction"):
         assert checks[name].status in {"pass", "warn"}, name
+
+
+def test_shared_server_fingerprint_ignores_rebuilt_binary_with_same_build_id(tmp_path):
+    import os
+    from agentroute import shared_server
+    from agentroute.config import default_config
+
+    binary = tmp_path / "codex-bin"
+    binary.write_bytes(b"one")
+    config = default_config()
+    env = {"AGENTROUTE_RUNTIME_BUILD_ID": "abc123-provider-routing-v73"}
+    first = shared_server._fingerprint(binary, config, env)
+    binary.write_bytes(b"rebuilt binary with a different size")
+    os.utime(binary, (1, 1))
+    assert shared_server._fingerprint(binary, config, env) == first
+    assert shared_server._fingerprint(
+        binary, config, {"AGENTROUTE_RUNTIME_BUILD_ID": "def456-provider-routing-v74"}
+    ) != first
+
+
+def test_shared_server_fingerprint_falls_back_to_binary_identity_without_build_id(tmp_path):
+    from agentroute import shared_server
+    from agentroute.config import default_config
+
+    binary = tmp_path / "codex-bin"
+    binary.write_bytes(b"one")
+    config = default_config()
+    first = shared_server._fingerprint(binary, config, {})
+    binary.write_bytes(b"different size")
+    assert shared_server._fingerprint(binary, config, {}) != first

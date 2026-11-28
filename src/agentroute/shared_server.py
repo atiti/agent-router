@@ -119,13 +119,20 @@ def server_argv(binary: Path, config: AppConfig) -> list[str]:
 
 
 def _fingerprint(binary: Path, config: AppConfig, environment: Mapping[str, str]) -> str:
-    stat = binary.stat()
     # No credentials are serialized. Changes require an explicit, safe restart.
+    build_id = environment.get("AGENTROUTE_RUNTIME_BUILD_ID")
+    if build_id:
+        # The build id names the pinned runtime commit and revision. Releases rebuild the
+        # binary even when the pin is unchanged, so its mtime/size must not invalidate a
+        # running server whose runtime is functionally identical.
+        identity: list[Any] = []
+    else:
+        stat = binary.stat()
+        identity = [stat.st_mtime_ns, stat.st_size]
     settings = [
         server_argv(binary, config),
-        stat.st_mtime_ns,
-        stat.st_size,
-        environment.get("AGENTROUTE_RUNTIME_BUILD_ID"),
+        *identity,
+        build_id,
         environment.get("CODEX_ROLLOUT_TRACE_ROOT"),
         {
             backend.api_key_env: environment.get(backend.api_key_env)

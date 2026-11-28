@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Identify the shared server's runtime by its build id instead of the binary's mtime and size, so
+  an update that keeps the same pinned runtime no longer locks new clients out of a running
+  server. Installs without a build id keep the previous behavior. Updating to this release
+  needs one last server restart because the fingerprint format changes.
+
 - Add setup-provenance checks to `agentroute doctor`. They warn, and never fail, when any of
   these apply:
   - the package was installed from an editable, VCS, or local-directory source
