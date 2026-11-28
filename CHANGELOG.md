@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.90 — 2026-11-28
+
+- Check the current GPT account's quota when a new turn has no snapshot, and fail over from a
+  confirmed-exhausted account to a compatible healthy one before backend fallback (#269).
+
 ## 0.5.89 — 2026-11-28
 
 - Pin the Codex runtime that caches AgentRoute wait status in the TUI. Active sessions no longer
