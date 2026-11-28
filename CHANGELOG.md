@@ -23,6 +23,9 @@
   process holds the thread. Retries no longer repeat every daemon tick or flood the shared
   server log, and delivery still succeeds once the thread is free.
 
+- Record the validated Chrome user-data root when binding a browser profile, so a later
+  `CODEX_CHROMIUM_USER_DATA_DIR` change cannot resolve a different profile under the same alias.
+
 - Resume goals paused by AgentRoute waits after a supervisor inbox wake. Retry goal
   resumption independently of wake delivery and report its status in `wait show`.
 - Leave checkpoint-bearing threads on native settings instead of stopping ordinary

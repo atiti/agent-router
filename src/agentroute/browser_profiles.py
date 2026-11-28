@@ -351,7 +351,7 @@ def bind(
     validate_alias(alias)
     if user_data_dir is not None and not user_data_dir.is_absolute():
         raise BrowserProfileError("--user-data-dir must be an absolute path")
-    root = user_data_dir or default_user_data_dir()
+    root = (user_data_dir or default_user_data_dir()).resolve()
     _require_existing_profile(root, profile_dir)
     site_labels = _validate_labels(list(sites), "sites")
     workflow_labels = _validate_labels(list(workflows), "workflows")
@@ -363,7 +363,9 @@ def bind(
             alias=alias,
             profile_dir=profile_dir,
             mode=chosen,
-            user_data_dir=str(user_data_dir) if user_data_dir else None,
+            # Record the root that was validated, so a later change of the
+            # environment override cannot silently resolve another profile.
+            user_data_dir=str(root),
             sites=site_labels,
             workflows=workflow_labels,
         )
