@@ -41,6 +41,7 @@ from .signals import (
 )
 from .transcript import parse_agent_model_request, previous_assistant_task, turn_token_usage
 from .waits import hook_context as wait_hook_context
+from .yolo import admitted as yolo_admitted
 from .yolo import resolve_target as resolve_yolo_target
 
 
@@ -58,6 +59,9 @@ def _prompt_help(config: AppConfig) -> str:
             "AgentRoute prompt tags",
             "",
             "Tier: @fast @normal @smart @max @auto",
+            "Opt-in tier: @yolo ("
+            + ("admitted" if yolo_admitted(config) else "blocked until policy.max_tier: yolo")
+            + "; subscriptions before Azure)",
             f"Backend (enabled): {backend_tags}",
             "Model: @terra @sol @luna @astra @haiku @sonnet @opus or @model:EXACT_ID",
             "Claude subscription: @claude:<profile>",
@@ -70,6 +74,7 @@ def _prompt_help(config: AppConfig) -> str:
             "  @gpt @normal @medium explain this architecture",
             "  @qwen @normal @low fix this focused test failure",
             "  @claude:second @max review this migration",
+            "  @gpt @yolo review this design",
             "  @auto continue",
             "",
             "Prefixes are removed before the model receives the task. @auto clears a",
@@ -960,7 +965,13 @@ def codex_user_prompt_submit(
                     f"{action} {decision.tier.name} → {decision.model} "
                     f"({decision.confidence:.0%} {confidence_kind}); reasons: {reasons}.\n"
                     "If this tier is materially insufficient, end your final response with "
-                    "two plain lines: MODEL_REQUEST: <FAST|NORMAL|SMART|MAX> and "
+                    "two plain lines: MODEL_REQUEST: "
+                    + (
+                        "<FAST|NORMAL|SMART|MAX|YOLO>"
+                        if yolo_admitted(config)
+                        else "<FAST|NORMAL|SMART|MAX>"
+                    )
+                    + " and "
                     "MODEL_REQUEST_REASON: <one-line reason>. Request only when needed; it is "
                     "applied only after explicit user confirmation."
                     + related_context
@@ -1054,6 +1065,17 @@ def codex_user_prompt_submit(
                     else ""
                 )
                 + (
+                    f" · YOLO OPT-IN ({decision.selection_receipt['yolo']['opt_in_source']})"
+                    if decision.tier is Tier.YOLO
+                    and not decision.capacity_blocked
+                    and isinstance(decision.selection_receipt.get("yolo"), dict)
+                    else " · YOLO NOT RUN"
+                    if decision.tier is Tier.YOLO
+                    else " · YOLO CLAMPED TO MAX"
+                    if ReasonCode.YOLO_CLAMPED in decision.reason_codes
+                    else ""
+                )
+                + (
                     " · AGENT REQUEST APPROVED"
                     if ReasonCode.AGENT_ESCALATION in decision.reason_codes
                     else ""
@@ -1110,9 +1132,10 @@ def codex_user_prompt_submit(
             if decision.capacity_blocked:
                 output["stopReason"] = decision.capacity_detail
                 output["systemMessage"] = (
-                    "AgentRoute blocked this turn to avoid an unsafe or over-budget route. "
-                    + (decision.capacity_detail or "No backend has available capacity.")
-                )
+                    "AgentRoute did not run this @yolo turn. "
+                    if str(decision.capacity_trigger).startswith("yolo_")
+                    else "AgentRoute blocked this turn to avoid an unsafe or over-budget route. "
+                ) + (decision.capacity_detail or "No backend has available capacity.")
         json.dump(output, sink, separators=(",", ":"))
         sink.write("\n")
         return 0

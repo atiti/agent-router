@@ -2295,7 +2295,9 @@ def backend_credential_import_command(
 
 @app.command("backend-route")
 def backend_route_command(
-    tier: str = typer.Argument(..., help="fast, normal, smart, or max"),
+    tier: str = typer.Argument(
+        ..., help="fast, normal, smart, or max (YOLO uses its own subscription-first order)"
+    ),
     backend: str = typer.Argument(..., help="Enabled backend name."),
 ) -> None:
     """Choose the default execution backend for one intelligence tier."""

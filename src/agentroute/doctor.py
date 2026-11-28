@@ -379,6 +379,38 @@ def _account_models_check(config: AppConfig) -> DoctorCheck:
     return DoctorCheck("account-models", "pass", detail)
 
 
+def _yolo_check(config: AppConfig) -> DoctorCheck:
+    """Report YOLO admission and each priority backend's mapping, without probing."""
+    from .yolo import admitted, candidate_pool, resolve_target
+
+    if not admitted(config):
+        return DoctorCheck(
+            "yolo",
+            "pass",
+            f"not admitted (policy.max_tier {config.policy.max_tier}); @yolo is blocked",
+        )
+    routes: list[str] = []
+    available = 0
+    for name in candidate_pool(config):
+        backend = config.backends.get(name)
+        if backend is None:
+            continue
+        target, reason = resolve_target(config, name)
+        if target is None:
+            routes.append(f"{name}: {reason}")
+        elif not backend_readiness(config, name)[0]:
+            routes.append(f"{name}: not ready")
+        else:
+            available += 1
+            routes.append(f"{name}={target.model}/{target.reasoning_effort or 'default'}")
+    detail = "admitted; priority " + "; ".join(routes)
+    if not available:
+        return DoctorCheck("yolo", "warn", detail + "; no ready YOLO route")
+    return DoctorCheck(
+        "yolo", "pass", detail + "; mappings are configuration, verify with a live smoke"
+    )
+
+
 def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
     """Run local, non-networked checks without exposing credentials."""
     checks: list[DoctorCheck] = []
@@ -542,6 +574,7 @@ def run_doctor(config: AppConfig) -> tuple[DoctorCheck, ...]:
                 )
 
     checks.append(_context_windows_check(config, backend_config_ready))
+    checks.append(_yolo_check(config))
 
     classifier = config.routing.classifier
     if not classifier.enabled:

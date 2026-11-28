@@ -227,6 +227,7 @@ prefix. AgentRoute removes tags before your task is sent to the model.
 | Group | Tags | Purpose |
 |---|---|---|
 | Tier | `@fast` `@normal` `@smart` `@max` | Select the capability tier. |
+| Opt-in tier | `@yolo` | Strongest configured model at its highest supported effort; blocked until admitted. See [YOLO tier](#yolo-tier). |
 | Automatic | `@auto` | Clear a manual tier/backend preference and return to automatic routing. |
 | Backend | `@gpt` `@azure` `@deepseek` `@qwen` | Select an enabled backend. Custom backend names use the same `@name` form. |
 | Claude subscription | `@claude:<profile>` | Select a named Claude Code subscription profile for the conversation. |
@@ -434,6 +435,70 @@ Existing GPT model and effort selections are preserved when configuration loads.
 New installations receive the current bundled defaults. To adopt a newer model,
 update its mapping explicitly and start or resume Codex with a refreshed model
 catalog; a running process retains the catalog it loaded at startup.
+
+### YOLO tier
+
+`@yolo` is an explicit fifth tier above MAX: the strongest configured model at its highest
+supported reasoning effort. It changes only the model and effort; tool permissions,
+approvals, sandboxing, budgets and account access are unchanged. Automatic routing never
+selects it: classifiers, risk floors, hysteresis and progress review stay within FAST–MAX.
+
+```text
+@yolo solve this difficult problem
+@gpt @yolo review this design
+@claude @yolo investigate the failure
+@grok @yolo research this question
+@azure @yolo use my Astra deployment
+@max return to my normal maximum tier
+```
+
+**Admission.** YOLO is disabled until the operator raises the existing policy cap:
+
+```yaml
+policy:
+  max_tier: yolo
+```
+
+With the default `max_tier: max`, `@yolo` stops the turn with a visible message; it never
+runs MAX under a YOLO label. `agentroute doctor` reports admission and each backend's YOLO
+target.
+
+| Backend | Bundled YOLO target | Wire effort |
+|---|---|---|
+| `gpt` | GPT-6 Astra (`gpt-6.2-astra`, or the Astra model your MAX already names), `ultra` | `ultra` |
+| `claude`, `fable` | `claude-fable-5-2`, `ultra` | Anthropic `max` (bridge translation) |
+| `grok` | `grok-4.7`, `xhigh` (equal to MAX; no stronger Grok effort is known) | `xhigh` |
+| `azure` | Astra deployment (`gpt-6.2-astra`, or the Astra deployment your MAX names), `ultra` | `ultra` |
+
+Bundled targets are added to existing configurations without changing any mapping. Other
+backends (Gemini, DeepSeek, local or custom) have no YOLO mapping, which means unavailable;
+there is no fallback to their MAX target. Add `backends.<name>.tiers.yolo` (or a ChatGPT
+account's `capacity.profiles.<name>.tiers.yolo`) only after verifying that model and effort
+with a live request. A target whose effort the provider is not known to accept (GPT/Azure up
+to `ultra`, Claude `low`–`max`/`ultra` on effort-capable models, Grok up to `xhigh`) is excluded
+with a reason; effort is never silently lowered. `@yolo @high` applies an explicit lower effort
+and records both the preset and the applied effort in the receipt.
+
+**Provider order.** Without a provider tag, YOLO tries eligible subscriptions (GPT, Claude,
+Grok; ordered within the group by task preference, usage and switching cost), then
+operator-admitted `provider_selection.candidates` with a YOLO mapping, and Azure last. A
+cheaper or less disruptive Azure route never outranks an eligible subscription. Account
+rotation, capacity, login, context-window and tool checks apply as for other tiers; unknown
+quota is not treated as exhaustion. Provider, session and interrupted-turn pins are binding:
+if `@azure @yolo` cannot run, the turn stops instead of moving to another provider.
+
+**Continuation.** Continuations of the opted-in task (`ok continue`, interruption recovery,
+goal continuation) keep YOLO only when the previous route recorded its opt-in source. A new
+independent task returns to ordinary classification, and `@max`, any other tier tag or `@auto`
+exits YOLO. A confirmed `MODEL_REQUEST: YOLO` is offered to agents only while YOLO is admitted.
+Receipts include a `yolo` block with the opt-in source, model, backend and the preset,
+requested and applied efforts.
+
+**Rollback.** Select `@max` (or another tier), set `policy.max_tier: max`, and restore your
+saved configuration. Before downgrading to a release without YOLO, remove `tiers.yolo`
+entries and `max_tier: yolo` (an older release cannot parse it and fails open). It also
+cannot parse a `yolo` audit tier, so its hook fails open in a session whose latest route was
+YOLO; start a new session there. Do not delete audit history or credentials. See [docs/yolo-tier.md](docs/yolo-tier.md) for the acceptance matrix.
 
 ### Daybreak Blue for security work
 
