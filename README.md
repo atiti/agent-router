@@ -312,6 +312,20 @@ requests, high-confidence rules, and credential-shaped prompts never reach it. I
 cheapest sufficient tier, confidence, and task type; only the task type, confidence, and a hash of
 its explanation are audited.
 
+### Provider-owned checkpoints
+
+When an opaque checkpoint is present or its transcript cannot be safely inspected,
+AgentRoute leaves the native model, provider, account and effort unchanged. This
+also applies to explicit routing tags: the hook returns no route overrides and
+does not stop the turn. Codex validates checkpoint ownership; valid same-owner
+continuation remains available and a genuinely foreign checkpoint is still rejected.
+
+AgentRoute never infers account ownership from older routing records, clears
+native history filters, or edits saved history. Sessions without a transcript
+use the same native-only fallback. To enable adaptive routing again, compact to
+plaintext on the original provider/account. This fallback does not repair an
+already foreign checkpoint or automatically convert its history.
+
 ### Adaptive provider selection
 
 Tier classification answers how much capability the task needs. Optional provider selection then
@@ -715,6 +729,9 @@ and includes the Grok allowance in the backend table.
 Each Claude profile has its own usage and identity row; `Default` marks the profile used for new
 Claude threads. Account IDs in the GPT profile table are masked hashes. `--no-probe` skips live
 quota reads and shows saved samples only. Reset times are displayed in local time.
+GPT status probes use OpenAI regardless of the execution provider in your Codex configuration.
+They show live subscription usage even when capacity management is disabled; viewing status
+does not enable automatic account or provider switching.
 
 When capacity is healthy the route banner includes `capacity healthy · subscription 62% used`.
 At the warning threshold it says `CAPACITY WARNING` and includes the reset time when available.
