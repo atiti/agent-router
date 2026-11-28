@@ -189,8 +189,10 @@ first-party logins are rejected. If authentication fails, run `grok login` and
 
 Requests use Grok's CLI proxy Responses endpoint and its required token-auth,
 model override, and installed CLI version headers. Namespace tools retain their
-identities across the wire; the patch tool becomes an ordinary upstream function
-and is restored to Codex's custom tool downstream. Encrypted reasoning is retained;
+identities across the wire; freeform tools, including Code Mode and patch input,
+become ordinary upstream functions and are restored to Codex's custom tools downstream.
+Code Mode keeps connector discovery local, avoiding Grok's 1,000-tool limit without
+dropping tools or enabling upstream alpha tool search. The bridge retains encrypted reasoning;
 the incompatible Codex `content: null` field is removed on replay. Codex retains
 tool execution, sandbox, and approval authority.
 

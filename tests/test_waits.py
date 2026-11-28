@@ -207,6 +207,32 @@ def test_unknown_delivery_is_reconciled_before_any_resend():
     assert waits.load()[0]["state"] == "delivered" and len(client.turn_texts) == 1
 
 
+def test_refused_resume_backs_off_instead_of_retrying_every_tick():
+    waits.register(THREAD, "timer", {}, timeout=10, now=1000)
+    client = FakeClient(loaded=False)
+
+    def refuse(method, params=None, _orig=client.request):
+        if method == "thread/resume":
+            client.calls.append((method, params))
+            raise RuntimeError(f"thread/resume: thread {THREAD} already has an active writer")
+        return _orig(method, params)
+
+    client.request = refuse
+    waits.tick(lambda: client, now=1011)
+    waits.tick(lambda: client, now=1012)
+    waits.tick(lambda: client, now=1013)
+    resumes = [c for c in client.calls if c[0] == "thread/resume"]
+    delivery = waits.load()[0]["delivery"]
+    assert len(resumes) == 1 and delivery["failures"] == 1 and delivery["attempts"] == 0
+    waits.tick(lambda: client, now=1022)
+    assert len([c for c in client.calls if c[0] == "thread/resume"]) == 2
+    assert waits.load()[0]["state"] == "fired"
+    # The writer lock clears: delivery proceeds normally.
+    client.request = lambda method, params=None, _c=FakeClient.request: _c(client, method, params)
+    waits.tick(lambda: client, now=1100)
+    assert waits.load()[0]["state"] == "delivered" and len(client.turn_texts) == 1
+
+
 def test_trigger_file_dropped_by_an_outside_app_fires_the_named_event():
     waits.register(THREAD, "event", {"name": "render-finished"}, now=1000)
     waits.triggers_dir().mkdir(parents=True)

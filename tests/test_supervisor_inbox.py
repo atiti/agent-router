@@ -298,8 +298,10 @@ def test_hook_applies_bound_role_objective_and_excludes_native_subagents(team, t
     config = default_config()
     config.routing.switching.downgrade_confidence = 0
     store = AuditStore(tmp_path / "audit.jsonl")
+    transcript = tmp_path / "portable-rollout.jsonl"
+    transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": THREAD}}) + "\n")
     payload = {"session_id": THREAD, "turn_id": "short", "model": "gpt-5.6-terra",
-               "prompt": "list files"}
+               "prompt": "list files", "transcript_path": str(transcript)}
     out = io.StringIO()
     assert codex_user_prompt_submit(io.StringIO(json.dumps(payload)), out,
                                     config=config, store=store) == 0

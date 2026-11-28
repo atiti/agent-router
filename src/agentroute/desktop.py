@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import plistlib
 import re
@@ -44,6 +45,18 @@ def _run(*command: str | Path, capture: bool = False) -> subprocess.CompletedPro
 def _require_macos() -> None:
     if platform.system() != "Darwin":
         raise RuntimeError("Codex Desktop installation is supported only on macOS")
+
+
+def open_official_desktop(source: Path, runtime: Path) -> None:
+    """Launch the unchanged vendor app with an explicit routed engine override."""
+    _require_macos()
+    if not source.is_dir():
+        raise FileNotFoundError(f"official Desktop app does not exist: {source}")
+    if not runtime.is_file() or not os.access(runtime, os.X_OK):
+        raise FileNotFoundError(f"executable AgentRoute runtime does not exist: {runtime}")
+    # LaunchServices retains the signed application's identity for OS permissions.
+    # An existing instance keeps the environment from its original launch.
+    _run("open", "-a", source, "--env", f"CODEX_CLI_PATH={runtime.resolve()}")
 
 
 @contextmanager
