@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Back off wait delivery when Codex refuses `thread/resume`, for example while another
+  process holds the thread. Retries no longer repeat every daemon tick or flood the shared
+  server log, and delivery still succeeds once the thread is free.
+
 - Resume goals paused by AgentRoute waits after a supervisor inbox wake. Retry goal
   resumption independently of wake delivery and report its status in `wait show`.
 - Leave checkpoint-bearing threads on native settings instead of stopping ordinary
