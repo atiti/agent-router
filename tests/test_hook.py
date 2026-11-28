@@ -108,6 +108,40 @@ def invoke(
     return json.loads(sink.getvalue())
 
 
+@pytest.mark.parametrize("prompt,expected_continue", [("@auto respond briefly", True),
+                                                    ("@gpt respond briefly", False)])
+def test_probed_gpt_exhaustion_uses_only_allowed_backend_fallback(
+    tmp_path, prompt, expected_continue
+):
+    config = default_config()
+    config.enabled = True
+    config.capacity.enabled = True
+    config.capacity.active_profile = "personal"
+    config.routing.classifier.enabled = False
+    home = tmp_path / "personal"
+    home.mkdir()
+    config.capacity.profiles = {"personal": SubscriptionProfileConfig(credential_home=str(home))}
+    (home / "auth.json").write_text(json.dumps({"tokens": {"account_id": "personal-account"}}))
+    (home / "models_cache.json").write_text(json.dumps({
+        "fetched_at": "2999-01-01T00:00:00+00:00",
+        "models": [{"slug": target.model} for target in config.backends["gpt"].tiers.values()],
+    }))
+    config.backends["azure"].enabled = True
+    config.backends["azure"].base_url = "https://example.com/v1"
+    exhausted = ProfileStatus(
+        "personal", str(home), 0, True, True, account_hash("personal-account"),
+        CapacityState("gpt", "exhausted", "subscription exhausted", "subscription", 100),
+    )
+    with (
+        patch("agentroute.profiles.probe_profile", return_value=exhausted),
+        patch("agentroute.router.backend_readiness", return_value=(True, [])),
+    ):
+        result = invoke(config, AuditStore(tmp_path / "test.db"), prompt,
+                        account_id="personal-account", rate_limits=None)
+    assert result["continue"] is expected_continue
+    if expected_continue:
+        assert result["hookSpecificOutput"]["modelProvider"] == "agentroute-azure"
+
 def test_daybreak_security_model_follows_selected_chatgpt_profile(tmp_path):
     default_home = tmp_path / "default"
     markster_home = tmp_path / "markster"
